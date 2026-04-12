@@ -4,10 +4,29 @@ import json
 from vpn_automation.pipeline.models import CanonicalNodeKey
 
 
+def _pad_base64(encoded: str) -> str:
+    return encoded + "=" * (-len(encoded) % 4)
+
+
 def parse_vmess_link(link: str) -> dict:
-    encoded = link.removeprefix("vmess://")
-    padded = encoded + "=" * (-len(encoded) % 4)
-    return json.loads(base64.b64decode(padded).decode("utf-8"))
+    encoded = _pad_base64(link.removeprefix("vmess://"))
+    return json.loads(base64.urlsafe_b64decode(encoded).decode("utf-8"))
+
+
+def generate_vmess_link(payload: dict) -> str:
+    encoded = base64.urlsafe_b64encode(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).decode("utf-8")
+    return f"vmess://{encoded}"
+
+
+def transform_node_id(original: str) -> str:
+    parts = original.split("-")
+    swapped_parts: list[str] = []
+    for part in parts:
+        chunks = [part[index : index + 4] for index in range(0, len(part), 4)]
+        swapped_parts.append("".join(chunk[2:] + chunk[:2] for chunk in chunks if chunk))
+    return "-".join(swapped_parts)
 
 
 def canonical_key(payload: dict) -> CanonicalNodeKey:

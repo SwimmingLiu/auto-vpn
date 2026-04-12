@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from vpn_automation.config.models import AppProfile, DeployConfig, SourceConfig, SpeedTestConfig
+from vpn_automation.config.models import AppProfile, create_default_profile
 
 
 class ProfileStore:
@@ -17,8 +17,11 @@ class ProfileStore:
 
     def load(self) -> AppProfile:
         data = json.loads(self.path.read_text(encoding="utf-8"))
-        return AppProfile(
-            sources={name: SourceConfig(**value) for name, value in data["sources"].items()},
-            speed_test=SpeedTestConfig(**data["speed_test"]),
-            deploy=DeployConfig(**data["deploy"]),
-        )
+        return AppProfile.from_dict(data)
+
+    def load_or_create(self, project_root: Path) -> AppProfile:
+        if self.path.exists():
+            return self.load()
+        profile = create_default_profile(project_root)
+        self.save(profile)
+        return profile

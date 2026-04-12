@@ -20,3 +20,13 @@ def test_profile_store_round_trip(tmp_path: Path) -> None:
     loaded = store.load()
     assert loaded.sources["leiting"].url == "https://a.example"
     assert loaded.deploy.project_name == "vmessnodes"
+
+
+def test_profile_store_load_or_create_returns_default_profile(tmp_path: Path) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    store = ProfileStore(project_root / "state" / "profiles" / "default.json")
+
+    profile = store.load_or_create(project_root)
+
+    assert profile.workspace.project_root == str(project_root)
+    assert store.path.exists()
