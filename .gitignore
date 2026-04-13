@@ -9,4 +9,5 @@ artifacts/
 state/
 node_modules/
 dist/
+dist-electron/
 build/

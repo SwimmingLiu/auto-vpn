@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VPN Subscription Automation</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark"></div>
+          <div>
+            <div class="brand-title">VPN Automation</div>
+            <div class="brand-subtitle">Electron Control Center</div>
+          </div>
+        </div>
+        <nav class="nav">
+          <button class="nav-item active">Overview</button>
+          <button class="nav-item">Sources</button>
+          <button class="nav-item">Speed Test</button>
+          <button class="nav-item">Deploy</button>
+          <button class="nav-item">History</button>
+        </nav>
+        <div class="sidebar-footer">
+          <div class="sidebar-pill">Cloudflare Pages</div>
+          <div class="sidebar-pill">Xray Pipeline</div>
+        </div>
+      </aside>
+
+      <main class="main">
+        <section class="hero">
+          <div>
+            <div class="eyebrow">VPN SUBSCRIPTION AUTOMATION</div>
+            <h1>Modern local desktop control for extraction, speed test and Cloudflare deploy</h1>
+            <p>
+              管理抓包 URL、测速阈值和发布流程；运行时可查看阶段状态、指标卡片和完整日志。
+            </p>
+          </div>
+          <div class="hero-actions">
+            <button id="saveBtn" class="btn btn-secondary">保存配置</button>
+            <button id="runBtn" class="btn btn-primary">运行全流程</button>
+          </div>
+        </section>
+
+        <section class="content-grid">
+          <div class="column main-column">
+            <div class="card">
+              <div class="card-header">
+                <h2>Source Matrix</h2>
+                <span class="muted">抓包 URL 与 key</span>
+              </div>
+              <div id="sourcesGrid" class="sources-grid"></div>
+            </div>
+
+            <div class="card">
+              <div class="card-header">
+                <h2>Pipeline Settings</h2>
+                <span class="muted">测速、部署、校验</span>
+              </div>
+              <div class="form-grid">
+                <label class="field">
+                  <span>Min download MB/s</span>
+                  <input id="minSpeed" type="number" step="0.1" />
+                </label>
+                <label class="field">
+                  <span>Timeout seconds</span>
+                  <input id="timeoutSeconds" type="number" />
+                </label>
+                <label class="field">
+                  <span>Concurrency</span>
+                  <input id="concurrency" type="number" />
+                </label>
+                <label class="field field-wide">
+                  <span>Cloudflare Pages project</span>
+                  <input id="projectName" type="text" />
+                </label>
+                <label class="field field-wide">
+                  <span>Pages secret endpoint</span>
+                  <input id="pagesProjectUrl" type="text" />
+                </label>
+                <label class="field field-wide">
+                  <span>Final subscription URL</span>
+                  <input id="subscriptionUrl" type="text" />
+                </label>
+                <label class="field field-wide">
+                  <span>Speed test URLs</span>
+                  <textarea id="speedUrls" rows="4"></textarea>
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <div class="column side-column">
+            <div class="card">
+              <div class="card-header">
+                <h2>Live Metrics</h2>
+                <span class="muted">运行摘要</span>
+              </div>
+              <div id="metrics" class="metrics"></div>
+            </div>
+
+            <div class="card">
+              <div class="card-header">
+                <h2>Stage Timeline</h2>
+                <span class="muted">执行阶段</span>
+              </div>
+              <div id="stages" class="stage-list"></div>
+            </div>
+
+            <div class="card">
+              <div class="card-header">
+                <h2>Runtime Log</h2>
+                <span class="muted">stdout / stderr / events</span>
+              </div>
+              <pre id="logOutput" class="log-output"></pre>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
