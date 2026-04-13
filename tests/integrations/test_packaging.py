@@ -1,11 +1,9 @@
 from pathlib import Path
 
-from vpn_automation.integrations.packaging import build_pyinstaller_command
+from vpn_automation.integrations.packaging import build_electron_package_command
 
 
-def test_build_pyinstaller_command_targets_windowed_app() -> None:
-    command = build_pyinstaller_command(Path("/tmp/project"))
+def test_build_electron_package_command_uses_npm_package_script() -> None:
+    command = build_electron_package_command(Path("/tmp/project"))
 
-    assert command[:3] == ["python3", "-m", "PyInstaller"]
-    assert "--windowed" in command
-    assert "VPNSubscriptionAutomation" in command
+    assert command == ["npm", "run", "package:electron"]

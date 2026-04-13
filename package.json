@@ -1,0 +1,36 @@
+{
+  "name": "vpn-subscription-automation",
+  "version": "0.2.0",
+  "description": "Electron desktop app for VPN subscription automation",
+  "author": "SwimmingLiu",
+  "main": "electron/main.js",
+  "type": "module",
+  "scripts": {
+    "electron:dev": "electron .",
+    "test:electron": "node --test electron/tests/*.test.mjs",
+    "test:all": "python3 -m pytest tests -v && node --test electron/tests/*.test.mjs",
+    "package:electron": "electron-builder --mac dir"
+  },
+  "devDependencies": {
+    "electron": "^37.2.0",
+    "electron-builder": "^26.0.12",
+    "playwright": "^1.55.0"
+  },
+  "build": {
+    "appId": "com.swimmingliu.vpnautomation",
+    "productName": "VPN Subscription Automation",
+    "files": [
+      "electron/**/*"
+    ],
+    "directories": {
+      "output": "dist-electron"
+    },
+    "asar": true,
+    "mac": {
+      "target": [
+        "dir"
+      ],
+      "category": "public.app-category.developer-tools"
+    }
+  }
+}
