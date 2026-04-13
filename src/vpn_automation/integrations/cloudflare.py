@@ -67,9 +67,15 @@ class CloudflareClient:
         raise RuntimeError(f"Cloudflare Pages project not found: {project_name}")
 
     def verify_url(self, url: str, expected_fragment: str = "") -> bool:
-        response = self.session.get(url, timeout=30)
-        response.raise_for_status()
-        return expected_fragment in response.text if expected_fragment else True
+        try:
+            response = self.session.get(url, timeout=30)
+            response.raise_for_status()
+            return expected_fragment in response.text if expected_fragment else True
+        except requests.exceptions.SSLError:
+            result = run_command(["curl", "-fsSL", "--max-time", "30", url])
+            if result.returncode != 0:
+                raise RuntimeError(result.stderr or result.stdout or f"curl verification failed: {url}")
+            return expected_fragment in result.stdout if expected_fragment else True
 
 
 def deploy_pages_bundle(bundle_dir: Path, deploy: DeployConfig, api_token: str) -> dict[str, Any]:
