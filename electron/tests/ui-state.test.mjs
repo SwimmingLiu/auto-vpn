@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { buildStageModel, toMetricItems } from '../renderer/state.js';
+import { getMessages, resolveLanguage } from '../renderer/i18n.js';
 
 test('buildStageModel marks stages in configured order', () => {
   const rows = buildStageModel({ doctor: 'success', deploy: 'running' });
@@ -13,4 +14,15 @@ test('buildStageModel marks stages in configured order', () => {
 test('toMetricItems converts summary counts into cards', () => {
   const cards = toMetricItems({ raw_links: 12, postprocess_links: 5 });
   assert.deepEqual(cards[0], { label: 'RAW LINKS', value: '12' });
+});
+
+test('resolveLanguage prefers saved language over system locale', () => {
+  assert.equal(resolveLanguage('zh-CN', 'en-US'), 'zh-CN');
+  assert.equal(resolveLanguage('', 'zh-TW'), 'zh-CN');
+  assert.equal(resolveLanguage('', 'en-US'), 'en-US');
+});
+
+test('getMessages returns translated copy', () => {
+  assert.equal(getMessages('zh-CN').runButton, '运行全流程');
+  assert.equal(getMessages('en-US').runButton, 'Run full pipeline');
 });
