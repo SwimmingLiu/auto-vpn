@@ -7,6 +7,8 @@
 - **Electron**
   - 本地桌面窗口
   - UI/UX 控制台
+  - 中英文双语切换
+  - 浅色暖调（白 / 浅蓝 / 浅紫）界面
   - 配置编辑
   - 实时日志与阶段状态
 - **Python backend**
@@ -47,6 +49,8 @@ brew install xray
 cd /Users/swimmingliu/data/VPN/vpn-subscription-automation
 npm run electron:dev
 ```
+
+默认跟随系统语言，也可以在右上角手动切换中文 / English。
 
 ## Tests
 

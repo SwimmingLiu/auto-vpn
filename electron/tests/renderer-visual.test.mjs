@@ -17,13 +17,16 @@ test('renderer visual hash matches expected hero layout', async () => {
   const page = await browser.newPage({ viewport: { width: 1440, height: 960 }, deviceScaleFactor: 1 });
   const target = `${server.origin}/index.html`;
 
+  await page.addInitScript(() => {
+    window.localStorage.setItem('vpn-automation-language', 'zh-CN');
+  });
   await page.goto(target);
   await page.waitForSelector('.hero');
 
   const buffer = await page.screenshot();
   const digest = crypto.createHash('sha256').update(buffer).digest('hex');
 
-  assert.equal(digest, '2660a2a01bb03cef6f473def6f20060640b45b82ecd41c21545b35a773c9c5fa');
+  assert.equal(digest, 'a458890bd75594940beb26a73b5007da7e0140bd4b95a9d774d22c64d6130fd1');
 
   await browser.close();
   await server.close();

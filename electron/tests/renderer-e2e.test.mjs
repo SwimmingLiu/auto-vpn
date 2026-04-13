@@ -16,14 +16,26 @@ test('renderer boots in demo mode and renders source cards', async () => {
   const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
   const target = `${server.origin}/index.html`;
 
+  await page.addInitScript(() => {
+    window.localStorage.setItem('vpn-automation-language', 'zh-CN');
+  });
   await page.goto(target);
   await page.waitForSelector('.source-card');
 
   const sourceCount = await page.locator('.source-card').count();
   const title = await page.locator('.hero h1').innerText();
+  const runLabel = await page.locator('#runBtn').innerText();
 
   assert.ok(sourceCount >= 5);
-  assert.match(title, /Modern local desktop control/i);
+  assert.match(title, /本地桌面化控制/);
+  assert.equal(runLabel, '运行全流程');
+
+  await page.locator('#languageSelect').selectOption('en-US');
+  await page.waitForTimeout(100);
+  const titleEnglish = await page.locator('.hero h1').innerText();
+  const runEnglish = await page.locator('#runBtn').innerText();
+  assert.match(titleEnglish, /Control extraction/i);
+  assert.equal(runEnglish, 'Run full pipeline');
 
   await browser.close();
   await server.close();

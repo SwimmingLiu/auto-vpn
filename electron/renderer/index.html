@@ -12,35 +12,40 @@
         <div class="brand">
           <div class="brand-mark"></div>
           <div>
-            <div class="brand-title">VPN Automation</div>
-            <div class="brand-subtitle">Electron Control Center</div>
+            <div id="brandTitle" class="brand-title"></div>
+            <div id="brandSubtitle" class="brand-subtitle"></div>
           </div>
         </div>
         <nav class="nav">
-          <button class="nav-item active">Overview</button>
-          <button class="nav-item">Sources</button>
-          <button class="nav-item">Speed Test</button>
-          <button class="nav-item">Deploy</button>
-          <button class="nav-item">History</button>
+          <button id="navOverview" class="nav-item active"></button>
+          <button id="navSources" class="nav-item"></button>
+          <button id="navSpeedTest" class="nav-item"></button>
+          <button id="navDeploy" class="nav-item"></button>
+          <button id="navHistory" class="nav-item"></button>
         </nav>
         <div class="sidebar-footer">
-          <div class="sidebar-pill">Cloudflare Pages</div>
-          <div class="sidebar-pill">Xray Pipeline</div>
+          <div id="sidebarPillPages" class="sidebar-pill"></div>
+          <div id="sidebarPillPipeline" class="sidebar-pill"></div>
         </div>
       </aside>
 
       <main class="main">
         <section class="hero">
-          <div>
-            <div class="eyebrow">VPN SUBSCRIPTION AUTOMATION</div>
-            <h1>Modern local desktop control for extraction, speed test and Cloudflare deploy</h1>
-            <p>
-              管理抓包 URL、测速阈值和发布流程；运行时可查看阶段状态、指标卡片和完整日志。
-            </p>
+          <div class="hero-copy">
+            <div id="eyebrow" class="eyebrow"></div>
+            <h1 id="heroTitle"></h1>
+            <p id="heroBody"></p>
           </div>
           <div class="hero-actions">
-            <button id="saveBtn" class="btn btn-secondary">保存配置</button>
-            <button id="runBtn" class="btn btn-primary">运行全流程</button>
+            <label class="language-control">
+              <span id="languageLabel"></span>
+              <select id="languageSelect">
+                <option value="zh-CN">中文</option>
+                <option value="en-US">English</option>
+              </select>
+            </label>
+            <button id="saveBtn" class="btn btn-secondary"></button>
+            <button id="runBtn" class="btn btn-primary"></button>
           </div>
         </section>
 
@@ -48,44 +53,44 @@
           <div class="column main-column">
             <div class="card">
               <div class="card-header">
-                <h2>Source Matrix</h2>
-                <span class="muted">抓包 URL 与 key</span>
+                <h2 id="sourceMatrixTitle"></h2>
+                <span id="sourceMatrixSubtitle" class="muted"></span>
               </div>
               <div id="sourcesGrid" class="sources-grid"></div>
             </div>
 
             <div class="card">
               <div class="card-header">
-                <h2>Pipeline Settings</h2>
-                <span class="muted">测速、部署、校验</span>
+                <h2 id="pipelineTitle"></h2>
+                <span id="pipelineSubtitle" class="muted"></span>
               </div>
               <div class="form-grid">
                 <label class="field">
-                  <span>Min download MB/s</span>
+                  <span id="minSpeedLabel"></span>
                   <input id="minSpeed" type="number" step="0.1" />
                 </label>
                 <label class="field">
-                  <span>Timeout seconds</span>
+                  <span id="timeoutSecondsLabel"></span>
                   <input id="timeoutSeconds" type="number" />
                 </label>
                 <label class="field">
-                  <span>Concurrency</span>
+                  <span id="concurrencyLabel"></span>
                   <input id="concurrency" type="number" />
                 </label>
                 <label class="field field-wide">
-                  <span>Cloudflare Pages project</span>
+                  <span id="projectNameLabel"></span>
                   <input id="projectName" type="text" />
                 </label>
                 <label class="field field-wide">
-                  <span>Pages secret endpoint</span>
+                  <span id="pagesProjectUrlLabel"></span>
                   <input id="pagesProjectUrl" type="text" />
                 </label>
                 <label class="field field-wide">
-                  <span>Final subscription URL</span>
+                  <span id="subscriptionUrlLabel"></span>
                   <input id="subscriptionUrl" type="text" />
                 </label>
                 <label class="field field-wide">
-                  <span>Speed test URLs</span>
+                  <span id="speedUrlsLabel"></span>
                   <textarea id="speedUrls" rows="4"></textarea>
                 </label>
               </div>
@@ -95,24 +100,24 @@
           <div class="column side-column">
             <div class="card">
               <div class="card-header">
-                <h2>Live Metrics</h2>
-                <span class="muted">运行摘要</span>
+                <h2 id="metricsTitle"></h2>
+                <span id="metricsSubtitle" class="muted"></span>
               </div>
               <div id="metrics" class="metrics"></div>
             </div>
 
             <div class="card">
               <div class="card-header">
-                <h2>Stage Timeline</h2>
-                <span class="muted">执行阶段</span>
+                <h2 id="stagesTitle"></h2>
+                <span id="stagesSubtitle" class="muted"></span>
               </div>
               <div id="stages" class="stage-list"></div>
             </div>
 
             <div class="card">
               <div class="card-header">
-                <h2>Runtime Log</h2>
-                <span class="muted">stdout / stderr / events</span>
+                <h2 id="logsTitle"></h2>
+                <span id="logsSubtitle" class="muted"></span>
               </div>
               <pre id="logOutput" class="log-output"></pre>
             </div>

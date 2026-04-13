@@ -1,10 +1,12 @@
+import { getMessages, resolveLanguage, LANGUAGE_STORAGE_KEY, formatMessage } from './i18n.js';
 import { buildStageModel, toMetricItems } from './state.js';
 
 const state = {
   profile: null,
   unsubscribe: null,
   stageStatus: {},
-  counts: {}
+  counts: {},
+  language: 'zh-CN'
 };
 
 const demoProfile = {
@@ -29,6 +31,39 @@ const demoProfile = {
 };
 
 const elements = {
+  brandTitle: document.querySelector('#brandTitle'),
+  brandSubtitle: document.querySelector('#brandSubtitle'),
+  navOverview: document.querySelector('#navOverview'),
+  navSources: document.querySelector('#navSources'),
+  navSpeedTest: document.querySelector('#navSpeedTest'),
+  navDeploy: document.querySelector('#navDeploy'),
+  navHistory: document.querySelector('#navHistory'),
+  sidebarPillPages: document.querySelector('#sidebarPillPages'),
+  sidebarPillPipeline: document.querySelector('#sidebarPillPipeline'),
+  eyebrow: document.querySelector('#eyebrow'),
+  heroTitle: document.querySelector('#heroTitle'),
+  heroBody: document.querySelector('#heroBody'),
+  languageLabel: document.querySelector('#languageLabel'),
+  languageSelect: document.querySelector('#languageSelect'),
+  saveBtn: document.querySelector('#saveBtn'),
+  runBtn: document.querySelector('#runBtn'),
+  sourceMatrixTitle: document.querySelector('#sourceMatrixTitle'),
+  sourceMatrixSubtitle: document.querySelector('#sourceMatrixSubtitle'),
+  pipelineTitle: document.querySelector('#pipelineTitle'),
+  pipelineSubtitle: document.querySelector('#pipelineSubtitle'),
+  minSpeedLabel: document.querySelector('#minSpeedLabel'),
+  timeoutSecondsLabel: document.querySelector('#timeoutSecondsLabel'),
+  concurrencyLabel: document.querySelector('#concurrencyLabel'),
+  projectNameLabel: document.querySelector('#projectNameLabel'),
+  pagesProjectUrlLabel: document.querySelector('#pagesProjectUrlLabel'),
+  subscriptionUrlLabel: document.querySelector('#subscriptionUrlLabel'),
+  speedUrlsLabel: document.querySelector('#speedUrlsLabel'),
+  metricsTitle: document.querySelector('#metricsTitle'),
+  metricsSubtitle: document.querySelector('#metricsSubtitle'),
+  stagesTitle: document.querySelector('#stagesTitle'),
+  stagesSubtitle: document.querySelector('#stagesSubtitle'),
+  logsTitle: document.querySelector('#logsTitle'),
+  logsSubtitle: document.querySelector('#logsSubtitle'),
   sourcesGrid: document.querySelector('#sourcesGrid'),
   minSpeed: document.querySelector('#minSpeed'),
   timeoutSeconds: document.querySelector('#timeoutSeconds'),
@@ -39,30 +74,78 @@ const elements = {
   speedUrls: document.querySelector('#speedUrls'),
   metrics: document.querySelector('#metrics'),
   stages: document.querySelector('#stages'),
-  logOutput: document.querySelector('#logOutput'),
-  saveBtn: document.querySelector('#saveBtn'),
-  runBtn: document.querySelector('#runBtn')
+  logOutput: document.querySelector('#logOutput')
 };
 
 async function bootstrap() {
+  state.language = resolveLanguage(
+    localStorage.getItem(LANGUAGE_STORAGE_KEY) ?? '',
+    navigator.language
+  );
+
   if (!window.vpnAutomation) {
     state.profile = structuredClone(demoProfile);
-    renderProfile();
-    renderStages();
-    renderMetrics();
-    appendLog('[demo] running without Electron bridge');
+    renderAll();
+    bindActions();
+    appendLog(getMessages(state.language).demoMode);
     return;
   }
 
   state.profile = await window.vpnAutomation.loadProfile();
-  renderProfile();
-  renderStages();
-  renderMetrics();
+  renderAll();
   bindActions();
   state.unsubscribe = window.vpnAutomation.onPipelineEvent(handlePipelineEvent);
 }
 
+function renderAll() {
+  renderStaticCopy();
+  renderProfile();
+  renderStages();
+  renderMetrics();
+}
+
+function renderStaticCopy() {
+  const m = getMessages(state.language);
+  document.documentElement.lang = state.language;
+  document.title = m.appTitle;
+
+  elements.brandTitle.textContent = m.appTitle;
+  elements.brandSubtitle.textContent = m.brandSubtitle;
+  elements.navOverview.textContent = m.navOverview;
+  elements.navSources.textContent = m.navSources;
+  elements.navSpeedTest.textContent = m.navSpeedTest;
+  elements.navDeploy.textContent = m.navDeploy;
+  elements.navHistory.textContent = m.navHistory;
+  elements.sidebarPillPages.textContent = m.sidebarPillPages;
+  elements.sidebarPillPipeline.textContent = m.sidebarPillPipeline;
+  elements.eyebrow.textContent = m.eyebrow;
+  elements.heroTitle.textContent = m.heroTitle;
+  elements.heroBody.textContent = m.heroBody;
+  elements.languageLabel.textContent = m.languageLabel;
+  elements.languageSelect.value = state.language;
+  elements.saveBtn.textContent = m.saveButton;
+  elements.runBtn.textContent = m.runButton;
+  elements.sourceMatrixTitle.textContent = m.sourceMatrixTitle;
+  elements.sourceMatrixSubtitle.textContent = m.sourceMatrixSubtitle;
+  elements.pipelineTitle.textContent = m.pipelineTitle;
+  elements.pipelineSubtitle.textContent = m.pipelineSubtitle;
+  elements.minSpeedLabel.textContent = m.minSpeed;
+  elements.timeoutSecondsLabel.textContent = m.timeoutSeconds;
+  elements.concurrencyLabel.textContent = m.concurrency;
+  elements.projectNameLabel.textContent = m.projectName;
+  elements.pagesProjectUrlLabel.textContent = m.pagesProjectUrl;
+  elements.subscriptionUrlLabel.textContent = m.subscriptionUrl;
+  elements.speedUrlsLabel.textContent = m.speedUrls;
+  elements.metricsTitle.textContent = m.metricsTitle;
+  elements.metricsSubtitle.textContent = m.metricsSubtitle;
+  elements.stagesTitle.textContent = m.stagesTitle;
+  elements.stagesSubtitle.textContent = m.stagesSubtitle;
+  elements.logsTitle.textContent = m.logsTitle;
+  elements.logsSubtitle.textContent = m.logsSubtitle;
+}
+
 function renderProfile() {
+  const m = getMessages(state.language);
   const { sources, speed_test: speed, deploy } = state.profile;
   elements.sourcesGrid.innerHTML = '';
   Object.entries(sources).forEach(([name, source]) => {
@@ -70,15 +153,18 @@ function renderProfile() {
     card.className = 'source-card';
     card.innerHTML = `
       <div class="source-top">
-        <div class="source-name">${name}</div>
-        <button class="toggle ${source.enabled ? 'enabled' : ''}" data-source="${name}" data-role="toggle"></button>
+        <div>
+          <div class="source-name">${name}</div>
+          <div class="source-meta">${m.sourceEnabled}</div>
+        </div>
+        <button class="toggle ${source.enabled ? 'enabled' : ''}" data-source="${name}" data-role="toggle" aria-label="${m.sourceEnabled}"></button>
       </div>
       <label class="source-field">
-        <span>Capture URL</span>
+        <span>${m.sourceUrl}</span>
         <input data-source="${name}" data-key="url" value="${escapeHtml(source.url)}" />
       </label>
-      <label class="source-field" style="margin-top:12px;">
-        <span>Key</span>
+      <label class="source-field source-field-key">
+        <span>${m.sourceKey}</span>
         <input data-source="${name}" data-key="key" value="${escapeHtml(source.key)}" />
       </label>
     `;
@@ -103,22 +189,24 @@ function renderProfile() {
 }
 
 function renderStages() {
+  const m = getMessages(state.language);
   const rows = buildStageModel(state.stageStatus);
   elements.stages.innerHTML = rows.map((row) => `
     <div class="stage-row">
-      <span>${row.name}</span>
-      <span class="stage-chip ${row.status}">${row.status.toUpperCase()}</span>
+      <span>${m.stageLabels[row.name] ?? row.name}</span>
+      <span class="stage-chip ${row.status}">${m.statusLabels[row.status] ?? row.status}</span>
     </div>
   `).join('');
 }
 
 function renderMetrics() {
+  const m = getMessages(state.language);
   const cards = toMetricItems(state.counts);
   if (cards.length === 0) {
     elements.metrics.innerHTML = `
       <div class="metric-card">
-        <div class="metric-label">STATUS</div>
-        <div class="metric-value">Idle</div>
+        <div class="metric-label">${m.metricFallbackLabel}</div>
+        <div class="metric-value">${m.metricFallbackValue}</div>
       </div>
     `;
     return;
@@ -134,25 +222,40 @@ function renderMetrics() {
 function bindActions() {
   elements.saveBtn.addEventListener('click', saveProfile);
   elements.runBtn.addEventListener('click', runPipeline);
+  elements.languageSelect.addEventListener('change', handleLanguageChange);
+}
+
+function handleLanguageChange() {
+  state.language = elements.languageSelect.value;
+  localStorage.setItem(LANGUAGE_STORAGE_KEY, state.language);
+  renderAll();
 }
 
 async function saveProfile() {
   syncInputsIntoProfile();
-  await window.vpnAutomation.saveProfile(state.profile);
-  appendLog('[ui] profile saved');
+  if (window.vpnAutomation) {
+    await window.vpnAutomation.saveProfile(state.profile);
+  }
+  appendLog(getMessages(state.language).profileSaved);
 }
 
 async function runPipeline() {
+  const m = getMessages(state.language);
   elements.runBtn.disabled = true;
-  appendLog('[ui] pipeline started');
+  appendLog(m.pipelineStarted);
   state.stageStatus = {};
   state.counts = {};
   renderStages();
   renderMetrics();
   await saveProfile();
+  if (!window.vpnAutomation) {
+    elements.runBtn.disabled = false;
+    appendLog(formatMessage(m.pipelineFinished, { code: 'demo' }));
+    return;
+  }
   const result = await window.vpnAutomation.runPipeline();
   elements.runBtn.disabled = false;
-  appendLog(`[ui] pipeline finished with code ${result.code}`);
+  appendLog(formatMessage(m.pipelineFinished, { code: result.code }));
 }
 
 function handlePipelineEvent(event) {
