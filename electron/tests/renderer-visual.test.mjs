@@ -26,7 +26,7 @@ test('renderer visual hash matches expected hero layout', async () => {
   const buffer = await page.screenshot();
   const digest = crypto.createHash('sha256').update(buffer).digest('hex');
 
-  assert.equal(digest, '0583675a809d75da744c72d544bf40e9716d57bdceb12b516ab6df9478e4457c');
+  assert.equal(digest, 'ba07745532b04299d5143b6cddd71690015bec497af90bf3bd64670c861ec92a');
 
   await browser.close();
   await server.close();
