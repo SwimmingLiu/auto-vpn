@@ -147,7 +147,11 @@ def create_default_profile(project_root: Path) -> AppProfile:
             min_download_mb_s=1.0,
             timeout_seconds=20,
             concurrency=3,
-            urls=["https://speed.cloudflare.com/__down?bytes=5000000"],
+            urls=[
+                "https://speed.cloudflare.com/__down?bytes=5000000",
+                "https://proof.ovh.net/files/1Mb.dat",
+                "https://cachefly.cachefly.net/1mb.test",
+            ],
         ),
         deploy=DeployConfig(
             project_name="vmessnodes",

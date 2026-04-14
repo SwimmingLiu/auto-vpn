@@ -24,6 +24,12 @@ class SpeedTestResult:
     error: str = ""
 
 
+def aggregate_speed_measurements(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    return round(sum(values) / len(values), 3)
+
+
 def resolve_xray_binary(explicit_path: str = "") -> str:
     candidates = [
         explicit_path,
@@ -165,19 +171,31 @@ def test_vmess_link(
         probe.raise_for_status()
         latency_ms = int((time.perf_counter() - latency_started) * 1000)
 
-        url = config.urls[0]
-        speed_mb_s = _download_speed_mb_s(
-            session,
-            url,
-            proxies,
-            max_bytes=config.max_download_bytes,
-            timeout=config.timeout_seconds,
-        )
+        speed_values: list[float] = []
+        failures: list[str] = []
+        for url in config.urls:
+            try:
+                speed_values.append(
+                    _download_speed_mb_s(
+                        session,
+                        url,
+                        proxies,
+                        max_bytes=config.max_download_bytes,
+                        timeout=config.timeout_seconds,
+                    )
+                )
+            except Exception as url_exc:
+                failures.append(f"{url}: {url_exc}")
+
+        if not speed_values:
+            raise RuntimeError("; ".join(failures) or "all speed test urls failed")
+
         return SpeedTestResult(
             link=link,
             reachable=True,
-            average_download_mb_s=round(speed_mb_s, 3),
+            average_download_mb_s=aggregate_speed_measurements(speed_values),
             latency_ms=latency_ms,
+            error="; ".join(failures),
         )
     except Exception as exc:
         return SpeedTestResult(
