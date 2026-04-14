@@ -31,7 +31,7 @@ test('renderer boots in compact single-page mode, supports language switch and e
   const innerWidth = await page.evaluate(() => window.innerWidth);
 
   assert.ok(sourceCount >= 3);
-  assert.match(title, /不必全屏/);
+  assert.match(title, /一站式管理/);
   assert.equal(runLabel, '运行全流程');
   assert.ok(scrollHeight <= innerHeight + 2);
   assert.ok(scrollWidth <= innerWidth + 2);
@@ -56,7 +56,7 @@ test('renderer boots in compact single-page mode, supports language switch and e
   await page.waitForTimeout(100);
   const titleEnglish = await page.locator('.hero-panel h1').innerText();
   const runEnglish = await page.locator('#runBtn').innerText();
-  assert.match(titleEnglish, /without going fullscreen/i);
+  assert.match(titleEnglish, /Manage VPN extraction/i);
   assert.equal(runEnglish, 'Run full pipeline');
 
   await browser.close();
