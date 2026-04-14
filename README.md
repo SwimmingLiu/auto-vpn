@@ -15,7 +15,7 @@
 - **Python backend**
   - 节点抓取
   - vmess 去重
-  - Xray 连通性与下载测速
+  - Xray 连通性与多源下载测速（多网站取平均值）
   - IP 国家识别与节点命名
   - `vmess_node.js` 回填
   - JavaScript obfuscation
