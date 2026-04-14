@@ -10,31 +10,53 @@ import { chromium } from 'playwright';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-test('renderer boots in demo mode and renders source cards', async () => {
+test('renderer boots in compact single-page mode, supports language switch and expandable sections', async () => {
   const server = await startStaticServer(path.join(__dirname, '..', 'renderer'));
   const browser = await chromium.launch();
-  const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   const target = `${server.origin}/index.html`;
 
   await page.addInitScript(() => {
     window.localStorage.setItem('vpn-automation-language', 'zh-CN');
   });
   await page.goto(target);
-  await page.waitForSelector('.source-card');
+  await page.waitForSelector('.summary-card');
 
-  const sourceCount = await page.locator('.source-card').count();
-  const title = await page.locator('.hero h1').innerText();
+  const sourceCount = await page.locator('.summary-card').count();
+  const title = await page.locator('.hero-panel h1').innerText();
   const runLabel = await page.locator('#runBtn').innerText();
+  const scrollHeight = await page.evaluate(() => document.documentElement.scrollHeight);
+  const innerHeight = await page.evaluate(() => window.innerHeight);
+  const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
+  const innerWidth = await page.evaluate(() => window.innerWidth);
 
-  assert.ok(sourceCount >= 5);
-  assert.match(title, /本地桌面化控制/);
+  assert.ok(sourceCount >= 3);
+  assert.match(title, /不必全屏/);
   assert.equal(runLabel, '运行全流程');
+  assert.ok(scrollHeight <= innerHeight + 2);
+  assert.ok(scrollWidth <= innerWidth + 2);
+
+  await page.locator('[data-panel="sources"]').click();
+  await page.waitForSelector('.drawer.open');
+  assert.equal(await page.locator('.drawer.open input[data-source="leiting"][data-key="url"]').count(), 1);
+  await page.locator('#drawerClose').click();
+  await page.waitForTimeout(120);
+
+  await page.locator('[data-panel="speed"]').click();
+  await page.waitForSelector('.drawer.open');
+  await page.locator('#drawerMinSpeed').fill('2.5');
+  await page.evaluate(() => document.querySelector('#saveBtn').click());
+  await page.waitForTimeout(120);
+  const speedSummary = await page.locator('#speedSummary').innerText();
+  assert.match(speedSummary, /2\.5/);
+  await page.locator('#drawerClose').click();
+  await page.waitForTimeout(120);
 
   await page.locator('#languageSelect').selectOption('en-US');
   await page.waitForTimeout(100);
-  const titleEnglish = await page.locator('.hero h1').innerText();
+  const titleEnglish = await page.locator('.hero-panel h1').innerText();
   const runEnglish = await page.locator('#runBtn').innerText();
-  assert.match(titleEnglish, /Control extraction/i);
+  assert.match(titleEnglish, /without going fullscreen/i);
   assert.equal(runEnglish, 'Run full pipeline');
 
   await browser.close();
