@@ -21,12 +21,12 @@ test('renderer visual hash matches expected hero layout', async () => {
     window.localStorage.setItem('vpn-automation-language', 'zh-CN');
   });
   await page.goto(target);
-  await page.waitForSelector('.hero');
+  await page.waitForSelector('.hero-panel');
 
   const buffer = await page.screenshot();
   const digest = crypto.createHash('sha256').update(buffer).digest('hex');
 
-  assert.equal(digest, 'a458890bd75594940beb26a73b5007da7e0140bd4b95a9d774d22c64d6130fd1');
+  assert.equal(digest, '0583675a809d75da744c72d544bf40e9716d57bdceb12b516ab6df9478e4457c');
 
   await browser.close();
   await server.close();
