@@ -1,0 +1,7 @@
+cryptography>=45.0.0
+pillow>=11.0.0
+python-dotenv>=1.0.1
+requests>=2.32.0
+
+[dev]
+pytest>=8.0.0
