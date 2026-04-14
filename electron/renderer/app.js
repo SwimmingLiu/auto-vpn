@@ -285,29 +285,56 @@ function renderDrawer() {
 
 function handleDrawerSave() {
   const m = getMessages(state.language);
+  syncActiveDrawerIntoProfile();
+  renderAll();
+  closeDrawer();
+  appendLog(m.profileSaved);
+}
+
+function syncActiveDrawerIntoProfile() {
+  if (!state.activePanel) {
+    return;
+  }
+
   if (state.activePanel === 'sources') {
     Object.keys(state.profile.sources).forEach((name) => {
       const url = elements.drawerContent.querySelector(`input[data-source="${name}"][data-key="url"]`);
       const key = elements.drawerContent.querySelector(`input[data-source="${name}"][data-key="key"]`);
       const enabled = elements.drawerContent.querySelector(`input[data-source="${name}"][data-key="enabled"]`);
+      if (!url || !key || !enabled) {
+        return;
+      }
       state.profile.sources[name].url = url.value.trim();
       state.profile.sources[name].key = key.value.trim();
       state.profile.sources[name].enabled = enabled.checked;
     });
-  } else if (state.activePanel === 'speed') {
-    state.profile.speed_test.min_download_mb_s = Number(elements.drawerContent.querySelector('#drawerMinSpeed').value);
-    state.profile.speed_test.timeout_seconds = Number(elements.drawerContent.querySelector('#drawerTimeout').value);
-    state.profile.speed_test.concurrency = Number(elements.drawerContent.querySelector('#drawerConcurrency').value);
-    state.profile.speed_test.urls = elements.drawerContent.querySelector('#drawerSpeedUrls').value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
-  } else if (state.activePanel === 'deploy') {
-    state.profile.deploy.project_name = elements.drawerContent.querySelector('#drawerProjectName').value.trim();
-    state.profile.deploy.pages_project_url = elements.drawerContent.querySelector('#drawerPagesUrl').value.trim();
-    state.profile.deploy.subscription_url = elements.drawerContent.querySelector('#drawerSubscriptionUrl').value.trim();
+    return;
   }
 
-  renderAll();
-  closeDrawer();
-  appendLog(m.profileSaved);
+  if (state.activePanel === 'speed') {
+    const minSpeed = elements.drawerContent.querySelector('#drawerMinSpeed');
+    const timeout = elements.drawerContent.querySelector('#drawerTimeout');
+    const concurrency = elements.drawerContent.querySelector('#drawerConcurrency');
+    const speedUrls = elements.drawerContent.querySelector('#drawerSpeedUrls');
+    if (!minSpeed || !timeout || !concurrency || !speedUrls) {
+      return;
+    }
+    state.profile.speed_test.min_download_mb_s = Number(minSpeed.value);
+    state.profile.speed_test.timeout_seconds = Number(timeout.value);
+    state.profile.speed_test.concurrency = Number(concurrency.value);
+    state.profile.speed_test.urls = speedUrls.value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+    return;
+  }
+
+  const projectName = elements.drawerContent.querySelector('#drawerProjectName');
+  const pagesProjectUrl = elements.drawerContent.querySelector('#drawerPagesUrl');
+  const subscriptionUrl = elements.drawerContent.querySelector('#drawerSubscriptionUrl');
+  if (!projectName || !pagesProjectUrl || !subscriptionUrl) {
+    return;
+  }
+  state.profile.deploy.project_name = projectName.value.trim();
+  state.profile.deploy.pages_project_url = pagesProjectUrl.value.trim();
+  state.profile.deploy.subscription_url = subscriptionUrl.value.trim();
 }
 
 function handleLanguageChange() {
@@ -317,6 +344,8 @@ function handleLanguageChange() {
 }
 
 async function saveProfile() {
+  syncActiveDrawerIntoProfile();
+  renderAll();
   if (window.vpnAutomation) {
     await window.vpnAutomation.saveProfile(state.profile);
   }
@@ -325,6 +354,7 @@ async function saveProfile() {
 
 async function runPipeline() {
   const m = getMessages(state.language);
+  syncActiveDrawerIntoProfile();
   elements.runBtn.disabled = true;
   appendLog(m.pipelineStarted);
   state.stageStatus = {};

@@ -42,6 +42,16 @@ test('renderer boots in compact single-page mode, supports language switch and e
   await page.locator('#drawerClose').click();
   await page.waitForTimeout(120);
 
+  await page.locator('[data-panel="speed"]').click();
+  await page.waitForSelector('.drawer.open');
+  await page.locator('#drawerMinSpeed').fill('2.5');
+  await page.evaluate(() => document.querySelector('#saveBtn').click());
+  await page.waitForTimeout(120);
+  const speedSummary = await page.locator('#speedSummary').innerText();
+  assert.match(speedSummary, /2\.5/);
+  await page.locator('#drawerClose').click();
+  await page.waitForTimeout(120);
+
   await page.locator('#languageSelect').selectOption('en-US');
   await page.waitForTimeout(100);
   const titleEnglish = await page.locator('.hero-panel h1').innerText();
