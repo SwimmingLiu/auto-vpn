@@ -220,19 +220,19 @@ function renderDrawer() {
     elements.drawerContent.innerHTML = Object.entries(state.profile.sources).map(([name, source]) => `
       <section class="drawer-section">
         <div class="drawer-section-head">
-          <h3>${name}</h3>
+          <h3>${escapeHtml(name)}</h3>
           <label class="inline-toggle">
-            <input type="checkbox" data-source="${name}" data-key="enabled" ${source.enabled ? 'checked' : ''} />
+            <input type="checkbox" data-source="${escapeHtml(name)}" data-key="enabled" ${source.enabled ? 'checked' : ''} />
             <span>${m.enabledLabel}</span>
           </label>
         </div>
         <label class="drawer-field">
           <span>${m.sourceUrlLabel}</span>
-          <input data-source="${name}" data-key="url" value="${escapeHtml(source.url)}" />
+          <input data-source="${escapeHtml(name)}" data-key="url" value="${escapeHtml(source.url)}" />
         </label>
         <label class="drawer-field">
           <span>${m.sourceKeyLabel}</span>
-          <input data-source="${name}" data-key="key" value="${escapeHtml(source.key)}" />
+          <input data-source="${escapeHtml(name)}" data-key="key" value="${escapeHtml(source.key)}" />
         </label>
       </section>
     `).join('');
