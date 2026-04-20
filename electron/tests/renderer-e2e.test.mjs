@@ -27,6 +27,8 @@ test('renderer fits the compact dashboard contract at 960x720', async () => {
     const heroTitle = await page.locator('#heroTitle').innerText();
     const heroBody = await page.locator('#heroBody').innerText();
     const metricsTitle = await page.locator('#metricsCardTitle').innerText();
+    const sourcesSummary = await page.locator('#sourcesSummary').innerText();
+    const deploySummary = await page.locator('#deploySummary').innerText();
     const stagesVisible = await page.locator('#stages').isVisible();
     const logsVisible = await page.locator('#logOutput').isVisible();
     const scrollHeight = await page.evaluate(() => document.documentElement.scrollHeight);
@@ -43,6 +45,10 @@ test('renderer fits the compact dashboard contract at 960x720', async () => {
       heroBody,
       '在一个控制台里维护抓包源、测速阈值和发布配置，并持续查看阶段进度与日志摘要。'
     );
+    assert.doesNotMatch(sourcesSummary, /capture\.example/i);
+    assert.match(sourcesSummary, /连接 Electron 后显示真实抓包地址/);
+    assert.doesNotMatch(deploySummary, /pages\.dev|swimmingliu\.xyz/i);
+    assert.match(deploySummary, /连接 Electron 后显示真实部署地址/);
     assert.ok(scrollHeight <= innerHeight + 2);
     assert.ok(scrollWidth <= innerWidth + 2);
 
