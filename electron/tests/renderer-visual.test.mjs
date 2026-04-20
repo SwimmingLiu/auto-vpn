@@ -27,7 +27,7 @@ test('renderer visual hash matches compact dashboard layout', async () => {
     const buffer = await page.screenshot();
     const digest = crypto.createHash('sha256').update(buffer).digest('hex');
 
-    assert.equal(digest, '14ea4dd41125f67e4ec1d465011303bda8c92fe49215351a54482839cd28d2db');
+    assert.equal(digest, '59bb87d5bb5b4a254ac7633523673f3383f5c38ca71fa020bbf38d076b71ab98');
   } finally {
     await browser.close();
     await server.close();

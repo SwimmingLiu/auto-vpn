@@ -3,6 +3,7 @@ export const STAGE_ORDER = [
   'extract',
   'dedupe',
   'speedtest',
+  'availability',
   'postprocess',
   'render',
   'obfuscate',

@@ -23,7 +23,11 @@ const demoProfile = {
     min_download_mb_s: 1.0,
     timeout_seconds: 20,
     concurrency: 3,
-    urls: []
+    urls: [
+      'https://speed.cloudflare.com/__down?bytes=5000000',
+      'https://proof.ovh.net/files/1Mb.dat',
+      'https://cachefly.cachefly.net/1mb.test'
+    ]
   },
   deploy: {
     project_name: '',
@@ -166,7 +170,9 @@ function renderSummaryCards() {
       speed: state.profile.speed_test.min_download_mb_s,
       concurrency: state.profile.speed_test.concurrency
     })),
-    createSummaryLine(state.isDemo ? m.demoSpeedHint : (state.profile.speed_test.urls[0] || '—'))
+    createSummaryLine(formatMessage(m.summarySpeedSources, {
+      count: state.profile.speed_test.urls.length
+    }))
   ].join('');
 
   elements.deploySummary.innerHTML = [
@@ -182,6 +188,7 @@ function renderSummaryCards() {
   elements.metricsSummary.innerHTML = [
     createSummaryLine(formatMessage(m.summaryRawLinks, { count: state.counts.raw_links ?? 0 })),
     createSummaryLine(formatMessage(m.summarySpeedPassed, { count: state.counts.speedtest_links ?? 0 })),
+    createSummaryLine(formatMessage(m.summaryAvailabilityPassed, { count: state.counts.availability_links ?? 0 })),
     createSummaryLine(formatMessage(m.summaryVerifyState, {
       status: m.statusLabels[state.stageStatus.verify ?? 'pending'] ?? m.statusLabels.pending
     }))
@@ -192,8 +199,8 @@ function renderMetricsRibbon() {
   const m = getMessages(state.language);
   const items = [
     [m.metricRawLinks, state.counts.raw_links ?? 0],
-    [m.metricDedupedLinks, state.counts.deduped_links ?? 0],
     [m.metricSpeedLinks, state.counts.speedtest_links ?? 0],
+    [m.metricAvailabilityLinks, state.counts.availability_links ?? 0],
     [m.metricVerifyStatus, state.stageStatus.verify === 'success' ? m.verifiedValue : m.readyValue]
   ];
 
