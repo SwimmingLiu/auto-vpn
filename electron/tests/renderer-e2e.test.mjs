@@ -28,7 +28,9 @@ test('renderer fits the compact dashboard contract at 960x720', async () => {
     const heroBody = await page.locator('#heroBody').innerText();
     const metricsTitle = await page.locator('#metricsCardTitle').innerText();
     const sourcesSummary = await page.locator('#sourcesSummary').innerText();
+    const speedSummary = await page.locator('#speedSummary').innerText();
     const deploySummary = await page.locator('#deploySummary').innerText();
+    const stagesSummary = await page.locator('#stages').innerText();
     const stagesVisible = await page.locator('#stages').isVisible();
     const logsVisible = await page.locator('#logOutput').isVisible();
     const scrollHeight = await page.evaluate(() => document.documentElement.scrollHeight);
@@ -47,8 +49,11 @@ test('renderer fits the compact dashboard contract at 960x720', async () => {
     );
     assert.doesNotMatch(sourcesSummary, /capture\.example/i);
     assert.match(sourcesSummary, /连接 Electron 后显示真实抓包地址/);
+    assert.match(speedSummary, /3 个测速站点/);
+    assert.match(speedSummary, /平均下载速度过滤/);
     assert.doesNotMatch(deploySummary, /pages\.dev|swimmingliu\.xyz/i);
     assert.match(deploySummary, /连接 Electron 后显示真实部署地址/);
+    assert.match(stagesSummary, /站点验证/);
     assert.ok(scrollHeight <= innerHeight + 2);
     assert.ok(scrollWidth <= innerWidth + 2);
 
@@ -69,8 +74,8 @@ test('renderer fits the compact dashboard contract at 960x720', async () => {
     await page.locator('#drawerMinSpeed').fill('2.5');
     await page.locator('#drawerSave').click();
     await page.waitForTimeout(120);
-    const speedSummary = await page.locator('#speedSummary').innerText();
-    assert.match(speedSummary, /2\.5/);
+    const speedSummaryUpdated = await page.locator('#speedSummary').innerText();
+    assert.match(speedSummaryUpdated, /2\.5/);
 
     await page.locator('#languageSelect').selectOption('en-US');
     await page.waitForTimeout(100);
