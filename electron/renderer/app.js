@@ -48,12 +48,15 @@ const elements = {
   speedCardSubtitle: document.querySelector('#speedCardSubtitle'),
   deployCardTitle: document.querySelector('#deployCardTitle'),
   deployCardSubtitle: document.querySelector('#deployCardSubtitle'),
+  metricsCardTitle: document.querySelector('#metricsCardTitle'),
+  metricsCardSubtitle: document.querySelector('#metricsCardSubtitle'),
   sourcesExpandBtn: document.querySelector('#sourcesExpandBtn'),
   speedExpandBtn: document.querySelector('#speedExpandBtn'),
   deployExpandBtn: document.querySelector('#deployExpandBtn'),
   sourcesSummary: document.querySelector('#sourcesSummary'),
   speedSummary: document.querySelector('#speedSummary'),
   deploySummary: document.querySelector('#deploySummary'),
+  metricsSummary: document.querySelector('#metricsSummary'),
   stagesTitle: document.querySelector('#stagesTitle'),
   stagesSubtitle: document.querySelector('#stagesSubtitle'),
   stages: document.querySelector('#stages'),
@@ -128,6 +131,8 @@ function renderStaticCopy() {
   elements.speedCardSubtitle.textContent = m.speedCardSubtitle;
   elements.deployCardTitle.textContent = m.deployCardTitle;
   elements.deployCardSubtitle.textContent = m.deployCardSubtitle;
+  elements.metricsCardTitle.textContent = m.metricsCardTitle;
+  elements.metricsCardSubtitle.textContent = m.metricsCardSubtitle;
   elements.sourcesExpandBtn.textContent = m.expandButton;
   elements.speedExpandBtn.textContent = m.expandButton;
   elements.deployExpandBtn.textContent = m.expandButton;
@@ -163,6 +168,14 @@ function renderSummaryCards() {
     createSummaryLine(formatMessage(m.summaryDeploy, { project: state.profile.deploy.project_name || '—' })),
     createSummaryLine(state.profile.deploy.pages_project_url || '—'),
     createSummaryLine(state.profile.deploy.subscription_url || '—')
+  ].join('');
+
+  elements.metricsSummary.innerHTML = [
+    createSummaryLine(formatMessage(m.summaryRawLinks, { count: state.counts.raw_links ?? 0 })),
+    createSummaryLine(formatMessage(m.summarySpeedPassed, { count: state.counts.speedtest_links ?? 0 })),
+    createSummaryLine(formatMessage(m.summaryVerifyState, {
+      status: m.statusLabels[state.stageStatus.verify ?? 'pending'] ?? m.statusLabels.pending
+    }))
   ].join('');
 }
 
@@ -380,6 +393,7 @@ function handlePipelineEvent(event) {
     state.stageStatus[event.stage] = event.status;
     renderStages();
     renderMetricsRibbon();
+    renderSummaryCards();
     return;
   }
   if (event.type === 'summary') {
@@ -387,6 +401,7 @@ function handlePipelineEvent(event) {
     state.counts = event.counts;
     renderStages();
     renderMetricsRibbon();
+    renderSummaryCards();
     appendLog(`[summary] artifacts: ${event.artifact_dir}`);
   }
 }
