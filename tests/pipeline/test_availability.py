@@ -1,9 +1,17 @@
+from types import SimpleNamespace
+
+import pytest
+
 from vpn_automation.pipeline.availability import (
     AvailabilityResult,
     ProviderCheckResult,
     ProviderTarget,
+    PROVIDER_TARGETS,
+    check_link_availability_batch,
+    fetch_provider_result,
     evaluate_provider_response,
 )
+from vpn_automation.config.models import SpeedTestConfig
 from vpn_automation.pipeline.speedtest import SpeedTestResult
 
 
@@ -60,3 +68,61 @@ def test_availability_result_requires_all_providers_to_pass() -> None:
 
     assert result.all_passed is False
     assert result.link == "vmess://node"
+
+
+def test_fetch_provider_result_uses_tls_verification(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeSession:
+        def get(self, url, **kwargs):
+            captured["url"] = url
+            captured["kwargs"] = kwargs
+            return SimpleNamespace(
+                url=url,
+                status_code=200,
+                text="<html><title>ok</title><body>ok</body></html>",
+            )
+
+    result = fetch_provider_result(
+        FakeSession(),
+        {"https": "http://127.0.0.1:18080"},
+        PROVIDER_TARGETS[0],
+        20,
+    )
+
+    assert result.passed is True
+    assert captured["kwargs"]["verify"] is True
+
+
+def test_check_link_availability_batch_downgrades_runtime_errors_to_failed_node(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = SpeedTestConfig(
+        min_download_mb_s=1.0,
+        timeout_seconds=20,
+        concurrency=2,
+        urls=["https://speed.cloudflare.com/__down?bytes=5000000"],
+    )
+    good = SpeedTestResult(link="vmess://good", reachable=True, average_download_mb_s=2.0, latency_ms=50)
+    bad = SpeedTestResult(link="vmess://bad", reachable=True, average_download_mb_s=2.0, latency_ms=50)
+
+    def fake_check(speed_result, config, *, xray_path=""):
+        if speed_result.link == "vmess://bad":
+            raise RuntimeError("proxy bootstrap failed")
+        return AvailabilityResult(
+            speed_result=speed_result,
+            provider_results={
+                "gemini": ProviderCheckResult(provider="gemini", passed=True, reason="ok"),
+                "chatgpt": ProviderCheckResult(provider="chatgpt", passed=True, reason="ok"),
+                "claude": ProviderCheckResult(provider="claude", passed=True, reason="ok"),
+            },
+        )
+
+    monkeypatch.setattr("vpn_automation.pipeline.availability.check_link_availability", fake_check)
+
+    results = check_link_availability_batch([good, bad], config)
+
+    assert len(results) == 2
+    failed = next(item for item in results if item.link == "vmess://bad")
+    assert failed.all_passed is False
+    assert failed.provider_results["gemini"].reason == "runtime_error"

@@ -155,7 +155,7 @@ def fetch_provider_result(
             target.url,
             proxies=proxies,
             timeout=timeout_seconds,
-            verify=False,
+            verify=True,
             allow_redirects=True,
         )
         return evaluate_provider_response(
@@ -174,22 +174,39 @@ def fetch_provider_result(
         )
 
 
+def _build_runtime_error_result(speed_result: SpeedTestResult, reason: str) -> AvailabilityResult:
+    provider_results = {
+        target.name: ProviderCheckResult(
+            provider=target.name,
+            passed=False,
+            reason="runtime_error",
+            final_url=target.url,
+            matched_phrase=reason,
+        )
+        for target in PROVIDER_TARGETS
+    }
+    return AvailabilityResult(speed_result=speed_result, provider_results=provider_results)
+
+
 def check_link_availability(
     speed_result: SpeedTestResult,
     config: SpeedTestConfig,
     *,
     xray_path: str = "",
 ) -> AvailabilityResult:
-    with open_proxy_runtime(
-        speed_result.link,
-        startup_wait_seconds=config.startup_wait_seconds,
-        xray_path=xray_path,
-    ) as runtime:
-        provider_results = {
-            target.name: fetch_provider_result(runtime.session, runtime.proxies, target, config.timeout_seconds)
-            for target in PROVIDER_TARGETS
-        }
-    return AvailabilityResult(speed_result=speed_result, provider_results=provider_results)
+    try:
+        with open_proxy_runtime(
+            speed_result.link,
+            startup_wait_seconds=config.startup_wait_seconds,
+            xray_path=xray_path,
+        ) as runtime:
+            provider_results = {
+                target.name: fetch_provider_result(runtime.session, runtime.proxies, target, config.timeout_seconds)
+                for target in PROVIDER_TARGETS
+            }
+        return AvailabilityResult(speed_result=speed_result, provider_results=provider_results)
+    except Exception as exc:
+        return _build_runtime_error_result(speed_result, str(exc))
 
 
 def check_link_availability_batch(
@@ -210,7 +227,11 @@ def check_link_availability_batch(
         }
         for completed_index, future in enumerate(as_completed(future_map), start=1):
             index = future_map[future]
-            availability = future.result()
+            speed_result = results[index]
+            try:
+                availability = future.result()
+            except Exception as exc:
+                availability = _build_runtime_error_result(speed_result, str(exc))
             collected[index] = availability
             if progress_callback:
                 statuses = " ".join(

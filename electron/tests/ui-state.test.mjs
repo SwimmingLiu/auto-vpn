@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { buildStageModel, toMetricItems } from '../renderer/state.js';
+import { buildStageModel, resolveVerifyMetricValue, toMetricItems } from '../renderer/state.js';
 import { getMessages, resolveLanguage } from '../renderer/i18n.js';
 
 test('buildStageModel marks stages in configured order', () => {
@@ -16,6 +16,15 @@ test('buildStageModel marks stages in configured order', () => {
 test('toMetricItems converts summary counts into cards', () => {
   const cards = toMetricItems({ raw_links: 12, postprocess_links: 5 });
   assert.deepEqual(cards[0], { label: 'RAW LINKS', value: '12' });
+});
+
+test('resolveVerifyMetricValue preserves running and failed verify states', () => {
+  const zh = getMessages('zh-CN');
+
+  assert.equal(resolveVerifyMetricValue('pending', zh), '待运行');
+  assert.equal(resolveVerifyMetricValue('running', zh), '进行中');
+  assert.equal(resolveVerifyMetricValue('failed', zh), '失败');
+  assert.equal(resolveVerifyMetricValue('success', zh), '已验证');
 });
 
 test('resolveLanguage prefers saved language over system locale', () => {

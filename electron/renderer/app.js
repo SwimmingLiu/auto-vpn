@@ -1,5 +1,5 @@
 import { getMessages, resolveLanguage, LANGUAGE_STORAGE_KEY, formatMessage } from './i18n.js';
-import { buildStageModel } from './state.js';
+import { buildStageModel, resolveVerifyMetricValue } from './state.js';
 
 const state = {
   profile: null,
@@ -201,7 +201,7 @@ function renderMetricsRibbon() {
     [m.metricRawLinks, state.counts.raw_links ?? 0],
     [m.metricSpeedLinks, state.counts.speedtest_links ?? 0],
     [m.metricAvailabilityLinks, state.counts.availability_links ?? 0],
-    [m.metricVerifyStatus, state.stageStatus.verify === 'success' ? m.verifiedValue : m.readyValue]
+    [m.metricVerifyStatus, resolveVerifyMetricValue(state.stageStatus.verify ?? 'pending', m)]
   ];
 
   elements.metricsRibbon.innerHTML = items.map(([label, value]) => `
