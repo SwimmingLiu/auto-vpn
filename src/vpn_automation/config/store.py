@@ -1,7 +1,18 @@
 import json
 from pathlib import Path
 
-from vpn_automation.config.models import AppProfile, create_default_profile
+from vpn_automation.config.models import AppProfile, create_default_profile, resolve_repo_anchor
+
+
+def resolve_profile_path(project_root: Path) -> Path:
+    candidate_root = Path(project_root).resolve()
+    local_path = candidate_root / "state" / "profiles" / "default.json"
+    repo_root = resolve_repo_anchor(candidate_root)
+    anchor_path = repo_root / "state" / "profiles" / "default.json"
+
+    if anchor_path != local_path:
+        return anchor_path
+    return local_path
 
 
 class ProfileStore:

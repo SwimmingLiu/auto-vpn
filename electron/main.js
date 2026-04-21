@@ -11,7 +11,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 function createWindow() {
-  const win = new BrowserWindow(buildWindowOptions(path.join(__dirname, 'preload.js')));
+  const win = new BrowserWindow(buildWindowOptions(path.join(__dirname, 'preload.cjs')));
 
   const projectRoot = resolveProjectRoot();
   registerIpcHandlers({ mainWindow: win, projectRoot });

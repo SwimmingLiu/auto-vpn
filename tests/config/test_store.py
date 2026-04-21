@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from vpn_automation.config.models import AppProfile, DeployConfig, SourceConfig, SpeedTestConfig
-from vpn_automation.config.store import ProfileStore
+from vpn_automation.config.store import ProfileStore, resolve_profile_path
 
 
 def test_profile_store_round_trip(tmp_path: Path) -> None:
@@ -30,3 +30,23 @@ def test_profile_store_load_or_create_returns_default_profile(tmp_path: Path) ->
 
     assert profile.workspace.project_root == str(project_root)
     assert store.path.exists()
+
+
+def test_resolve_profile_path_prefers_repo_anchor_state_when_running_from_worktree(tmp_path: Path) -> None:
+    repo_root = tmp_path / "vpn-subscription-automation"
+    worktree_root = repo_root / ".worktrees" / "cleanup"
+    anchor_profile = repo_root / "state" / "profiles" / "default.json"
+    local_profile = worktree_root / "state" / "profiles" / "default.json"
+
+    repo_root.mkdir(parents=True)
+    worktree_root.mkdir(parents=True)
+    (repo_root / "pyproject.toml").write_text("", encoding="utf-8")
+    (repo_root / "src" / "vpn_automation").mkdir(parents=True)
+    anchor_profile.parent.mkdir(parents=True, exist_ok=True)
+    local_profile.parent.mkdir(parents=True, exist_ok=True)
+    local_profile.write_text("{}", encoding="utf-8")
+    anchor_profile.write_text("{}", encoding="utf-8")
+
+    resolved = resolve_profile_path(worktree_root)
+
+    assert resolved == anchor_profile
