@@ -1,4 +1,5 @@
-from vpn_automation.pipeline.speedtest import aggregate_speed_measurements, build_xray_runtime_config
+from vpn_automation.pipeline.proxy_runtime import build_xray_runtime_config
+from vpn_automation.pipeline.speedtest import aggregate_speed_measurements
 
 
 def test_build_xray_runtime_config_uses_http_inbound_and_vmess_outbound() -> None:

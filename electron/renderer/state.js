@@ -3,6 +3,7 @@ export const STAGE_ORDER = [
   'extract',
   'dedupe',
   'speedtest',
+  'availability',
   'postprocess',
   'render',
   'obfuscate',
@@ -15,6 +16,16 @@ export function buildStageModel(stageStatus = {}) {
     name,
     status: stageStatus[name] ?? 'pending'
   }));
+}
+
+export function resolveVerifyMetricValue(status = 'pending', messages) {
+  if (status === 'success') {
+    return messages.verifiedValue;
+  }
+  if (status === 'pending') {
+    return messages.readyValue;
+  }
+  return messages.statusLabels[status] ?? status;
 }
 
 export function toMetricItems(counts = {}) {
