@@ -1,5 +1,5 @@
 import { getMessages, resolveLanguage, LANGUAGE_STORAGE_KEY, formatMessage } from './i18n.js';
-import { buildStageModel } from './state.js';
+import { buildStageModel, resolveVerifyMetricValue } from './state.js';
 
 const state = {
   profile: null,
@@ -7,27 +7,32 @@ const state = {
   stageStatus: {},
   counts: {},
   language: 'zh-CN',
-  activePanel: ''
+  activePanel: '',
+  isDemo: false
 };
 
 const demoProfile = {
   sources: {
-    leiting: { url: 'https://capture.example/leiting', key: 'ks9KUrbWJj46AftX', enabled: true },
-    heidong: { url: 'https://capture.example/heidong', key: 'ks9KUrbWJj46AftX', enabled: true },
-    mifeng: { url: 'https://capture.example/mifeng', key: 'ks9KUrbWJj46AftX', enabled: true },
-    xuanfeng1: { url: 'https://capture.example/xuanfeng1', key: 'awdtif20190619ti', enabled: true },
-    xuanfeng2: { url: 'https://capture.example/xuanfeng2', key: 'awdtif20190619ti', enabled: true }
+    leiting: { url: '', key: '', enabled: true },
+    heidong: { url: '', key: '', enabled: true },
+    mifeng: { url: '', key: '', enabled: true },
+    xuanfeng1: { url: '', key: '', enabled: true },
+    xuanfeng2: { url: '', key: '', enabled: true }
   },
   speed_test: {
     min_download_mb_s: 1.0,
     timeout_seconds: 20,
     concurrency: 3,
-    urls: ['https://speed.cloudflare.com/__down?bytes=5000000']
+    urls: [
+      'https://speed.cloudflare.com/__down?bytes=5000000',
+      'https://proof.ovh.net/files/1Mb.dat',
+      'https://cachefly.cachefly.net/1mb.test'
+    ]
   },
   deploy: {
-    project_name: 'vmessnodes',
-    pages_project_url: 'https://vmess2clash.pages.dev',
-    subscription_url: 'https://swimmingliu.xyz/179ba8dd-3854-4747-b853-fc1868ef3937'
+    project_name: '',
+    pages_project_url: '',
+    subscription_url: ''
   }
 };
 
@@ -48,12 +53,15 @@ const elements = {
   speedCardSubtitle: document.querySelector('#speedCardSubtitle'),
   deployCardTitle: document.querySelector('#deployCardTitle'),
   deployCardSubtitle: document.querySelector('#deployCardSubtitle'),
+  metricsCardTitle: document.querySelector('#metricsCardTitle'),
+  metricsCardSubtitle: document.querySelector('#metricsCardSubtitle'),
   sourcesExpandBtn: document.querySelector('#sourcesExpandBtn'),
   speedExpandBtn: document.querySelector('#speedExpandBtn'),
   deployExpandBtn: document.querySelector('#deployExpandBtn'),
   sourcesSummary: document.querySelector('#sourcesSummary'),
   speedSummary: document.querySelector('#speedSummary'),
   deploySummary: document.querySelector('#deploySummary'),
+  metricsSummary: document.querySelector('#metricsSummary'),
   stagesTitle: document.querySelector('#stagesTitle'),
   stagesSubtitle: document.querySelector('#stagesSubtitle'),
   stages: document.querySelector('#stages'),
@@ -75,6 +83,7 @@ async function bootstrap() {
   );
 
   if (!window.vpnAutomation) {
+    state.isDemo = true;
     state.profile = structuredClone(demoProfile);
     renderAll();
     bindActions();
@@ -82,6 +91,7 @@ async function bootstrap() {
     return;
   }
 
+  state.isDemo = false;
   state.profile = await window.vpnAutomation.loadProfile();
   renderAll();
   bindActions();
@@ -128,6 +138,8 @@ function renderStaticCopy() {
   elements.speedCardSubtitle.textContent = m.speedCardSubtitle;
   elements.deployCardTitle.textContent = m.deployCardTitle;
   elements.deployCardSubtitle.textContent = m.deployCardSubtitle;
+  elements.metricsCardTitle.textContent = m.metricsCardTitle;
+  elements.metricsCardSubtitle.textContent = m.metricsCardSubtitle;
   elements.sourcesExpandBtn.textContent = m.expandButton;
   elements.speedExpandBtn.textContent = m.expandButton;
   elements.deployExpandBtn.textContent = m.expandButton;
@@ -148,7 +160,9 @@ function renderSummaryCards() {
   const enabledCount = sources.filter((item) => item.enabled).length;
   elements.sourcesSummary.innerHTML = [
     createSummaryLine(formatMessage(m.summaryEnabledSources, { count: enabledCount, total: sources.length })),
-    ...sources.slice(0, 3).map((source) => createSummaryLine(source.url || '—'))
+    ...(state.isDemo
+      ? [createSummaryLine(m.demoSourcesHint)]
+      : sources.slice(0, 3).map((source) => createSummaryLine(source.url || '—')))
   ].join('');
 
   elements.speedSummary.innerHTML = [
@@ -156,13 +170,28 @@ function renderSummaryCards() {
       speed: state.profile.speed_test.min_download_mb_s,
       concurrency: state.profile.speed_test.concurrency
     })),
-    createSummaryLine(state.profile.speed_test.urls[0] || '—')
+    createSummaryLine(formatMessage(m.summarySpeedSources, {
+      count: state.profile.speed_test.urls.length
+    }))
   ].join('');
 
   elements.deploySummary.innerHTML = [
     createSummaryLine(formatMessage(m.summaryDeploy, { project: state.profile.deploy.project_name || '—' })),
-    createSummaryLine(state.profile.deploy.pages_project_url || '—'),
-    createSummaryLine(state.profile.deploy.subscription_url || '—')
+    ...(state.isDemo
+      ? [createSummaryLine(m.demoDeployHint)]
+      : [
+          createSummaryLine(state.profile.deploy.pages_project_url || '—'),
+          createSummaryLine(state.profile.deploy.subscription_url || '—')
+        ])
+  ].join('');
+
+  elements.metricsSummary.innerHTML = [
+    createSummaryLine(formatMessage(m.summaryRawLinks, { count: state.counts.raw_links ?? 0 })),
+    createSummaryLine(formatMessage(m.summarySpeedPassed, { count: state.counts.speedtest_links ?? 0 })),
+    createSummaryLine(formatMessage(m.summaryAvailabilityPassed, { count: state.counts.availability_links ?? 0 })),
+    createSummaryLine(formatMessage(m.summaryVerifyState, {
+      status: m.statusLabels[state.stageStatus.verify ?? 'pending'] ?? m.statusLabels.pending
+    }))
   ].join('');
 }
 
@@ -170,9 +199,9 @@ function renderMetricsRibbon() {
   const m = getMessages(state.language);
   const items = [
     [m.metricRawLinks, state.counts.raw_links ?? 0],
-    [m.metricDedupedLinks, state.counts.deduped_links ?? 0],
     [m.metricSpeedLinks, state.counts.speedtest_links ?? 0],
-    [m.metricVerifyStatus, state.stageStatus.verify === 'success' ? m.verifiedValue : m.readyValue]
+    [m.metricAvailabilityLinks, state.counts.availability_links ?? 0],
+    [m.metricVerifyStatus, resolveVerifyMetricValue(state.stageStatus.verify ?? 'pending', m)]
   ];
 
   elements.metricsRibbon.innerHTML = items.map(([label, value]) => `
@@ -380,6 +409,7 @@ function handlePipelineEvent(event) {
     state.stageStatus[event.stage] = event.status;
     renderStages();
     renderMetricsRibbon();
+    renderSummaryCards();
     return;
   }
   if (event.type === 'summary') {
@@ -387,6 +417,7 @@ function handlePipelineEvent(event) {
     state.counts = event.counts;
     renderStages();
     renderMetricsRibbon();
+    renderSummaryCards();
     appendLog(`[summary] artifacts: ${event.artifact_dir}`);
   }
 }

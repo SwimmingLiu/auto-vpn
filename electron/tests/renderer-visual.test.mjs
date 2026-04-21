@@ -11,25 +11,27 @@ import { chromium } from 'playwright';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-test('renderer visual hash matches expected hero layout', async () => {
+test('renderer visual hash matches compact dashboard layout', async () => {
   const server = await startStaticServer(path.join(__dirname, '..', 'renderer'));
   const browser = await chromium.launch();
-  const page = await browser.newPage({ viewport: { width: 1440, height: 960 }, deviceScaleFactor: 1 });
-  const target = `${server.origin}/index.html`;
+  try {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 860 }, deviceScaleFactor: 1 });
+    const target = `${server.origin}/index.html`;
 
-  await page.addInitScript(() => {
-    window.localStorage.setItem('vpn-automation-language', 'zh-CN');
-  });
-  await page.goto(target);
-  await page.waitForSelector('.hero-panel');
+    await page.addInitScript(() => {
+      window.localStorage.setItem('vpn-automation-language', 'zh-CN');
+    });
+    await page.goto(target);
+    await page.waitForSelector('.dashboard-shell');
 
-  const buffer = await page.screenshot();
-  const digest = crypto.createHash('sha256').update(buffer).digest('hex');
+    const buffer = await page.screenshot();
+    const digest = crypto.createHash('sha256').update(buffer).digest('hex');
 
-  assert.equal(digest, 'ba07745532b04299d5143b6cddd71690015bec497af90bf3bd64670c861ec92a');
-
-  await browser.close();
-  await server.close();
+    assert.equal(digest, '59bb87d5bb5b4a254ac7633523673f3383f5c38ca71fa020bbf38d076b71ab98');
+  } finally {
+    await browser.close();
+    await server.close();
+  }
 });
 
 async function startStaticServer(rootDir) {
