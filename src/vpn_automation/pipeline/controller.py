@@ -1,3 +1,4 @@
+import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -14,6 +15,7 @@ from vpn_automation.integrations.node_tools import obfuscate_javascript
 from vpn_automation.pipeline.dedupe import dedupe_vmess_links
 from vpn_automation.pipeline.extract import fetch_source_links, write_vpn_api_config
 from vpn_automation.pipeline.package import build_pages_bundle
+from vpn_automation.pipeline.availability import check_link_availability_batch
 from vpn_automation.pipeline.postprocess import (
     decorate_link_with_country,
     lookup_country_code,
@@ -38,6 +40,7 @@ class PipelineController:
         *,
         extractor: Callable[..., Any] = fetch_source_links,
         speedtester: Callable[..., Any] = speedtest_links,
+        availability_checker: Callable[..., Any] = check_link_availability_batch,
         country_lookup: Callable[[str], str] = lookup_country_code,
         obfuscator: Callable[[Path, Path], Any] = obfuscate_javascript,
         deployer: Callable[[Path, Any, str], dict[str, Any]] = deploy_pages_bundle,
@@ -47,6 +50,7 @@ class PipelineController:
     ) -> None:
         self.extractor = extractor
         self.speedtester = speedtester
+        self.availability_checker = availability_checker
         self.country_lookup = country_lookup
         self.obfuscator = obfuscator
         self.deployer = deployer
@@ -60,6 +64,7 @@ class PipelineController:
             "extract",
             "dedupe",
             "speedtest",
+            "availability",
             "postprocess",
             "render",
             "obfuscate",
@@ -126,9 +131,30 @@ class PipelineController:
         summary.counts["speedtest_links"] = len(fast_links)
         log(f"[speedtest] kept {len(fast_links)} links above threshold")
 
+        set_stage("availability", "running")
+        availability_results = self.availability_checker(
+            fast_results,
+            profile.speed_test,
+            progress_callback=log,
+        )
+        available_results = [
+            item.speed_result
+            for item in availability_results
+            if item.all_passed
+        ]
+        available_links = [item.link for item in available_results]
+        self._write_lines(artifact_dir / "vpn_node_availability.txt", available_links)
+        (artifact_dir / "vpn_node_availability_report.json").write_text(
+            json.dumps([item.to_dict() for item in availability_results], ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        set_stage("availability", "success")
+        summary.counts["availability_links"] = len(available_links)
+        log(f"[availability] kept {len(available_links)} links after provider validation")
+
         set_stage("postprocess", "running")
         ranked_links: list[tuple[str, Any, str]] = []
-        for result in fast_results:
+        for result in available_results:
             country_code = self.country_lookup(parse_vmess_link(result.link)["add"])
             ranked_links.append((result.link, result, country_code))
         selected_links = select_links_by_country_limit(ranked_links, profile.filters)
