@@ -5,9 +5,10 @@ import { spawn } from 'node:child_process';
 import { ipcMain } from 'electron';
 
 import { buildBackendInvocation, parseBackendEventLine } from './lib/backend.js';
+import { resolveStateProfilePath } from './paths.js';
 
 function profilePath(projectRoot) {
-  return path.join(projectRoot, 'state', 'profiles', 'default.json');
+  return resolveStateProfilePath(projectRoot);
 }
 
 export function registerIpcHandlers({ mainWindow, projectRoot }) {
