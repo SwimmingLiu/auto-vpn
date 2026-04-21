@@ -138,7 +138,7 @@ npm run package:electron
 
 ## Notes
 
-- Electron app 通过本地 `python3 -m vpn_automation.backend` 调用后端流水线
+- Electron app 优先通过项目 `.venv` 的 Python 调用后端；若不存在，则回退到 `python3.12`，最后回退到 `python3`
 - 当前打包产物默认与项目仓库放在一起使用，以复用 sibling 目录：
   - `/Users/swimmingliu/data/VPN/vpn-catch-nodes`
   - `/Users/swimmingliu/data/VPN/cloudflarevpn/edgetunnel`

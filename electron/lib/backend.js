@@ -5,19 +5,21 @@ export function resolveBackendPython(projectRoot) {
   const candidates = [
     path.join(projectRoot, '.venv', 'bin', 'python'),
     path.join(projectRoot, '.venv', 'bin', 'python3'),
+    'python3.12',
+    'python3'
   ];
 
-  for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) {
-      return candidate;
+  return candidates.filter((candidate, index) => {
+    if (candidate.startsWith('/')) {
+      return fs.existsSync(candidate);
     }
-  }
-  return 'python3.12';
+    return candidates.indexOf(candidate) === index;
+  });
 }
 
 export function buildBackendInvocation(projectRoot, command) {
   return {
-    command: resolveBackendPython(projectRoot),
+    commands: resolveBackendPython(projectRoot),
     args: ['-m', 'vpn_automation.backend', command, '--project-root', projectRoot]
   };
 }

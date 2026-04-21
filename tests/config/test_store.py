@@ -36,12 +36,15 @@ def test_resolve_profile_path_prefers_repo_anchor_state_when_running_from_worktr
     repo_root = tmp_path / "vpn-subscription-automation"
     worktree_root = repo_root / ".worktrees" / "cleanup"
     anchor_profile = repo_root / "state" / "profiles" / "default.json"
+    local_profile = worktree_root / "state" / "profiles" / "default.json"
 
     repo_root.mkdir(parents=True)
     worktree_root.mkdir(parents=True)
     (repo_root / "pyproject.toml").write_text("", encoding="utf-8")
     (repo_root / "src" / "vpn_automation").mkdir(parents=True)
     anchor_profile.parent.mkdir(parents=True, exist_ok=True)
+    local_profile.parent.mkdir(parents=True, exist_ok=True)
+    local_profile.write_text("{}", encoding="utf-8")
     anchor_profile.write_text("{}", encoding="utf-8")
 
     resolved = resolve_profile_path(worktree_root)

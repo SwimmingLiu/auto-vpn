@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 
 import { ipcMain } from 'electron';
 
@@ -14,7 +14,7 @@ function profilePath(projectRoot) {
 export function registerIpcHandlers({ mainWindow, projectRoot }) {
   ipcMain.handle('profile:load', async () => {
     const invocation = buildBackendInvocation(projectRoot, 'profile');
-    const output = await runCommand(invocation.command, invocation.args, projectRoot);
+    const output = await runCommand(invocation.commands, invocation.args, projectRoot);
     return JSON.parse(output.stdout);
   });
 
@@ -27,7 +27,8 @@ export function registerIpcHandlers({ mainWindow, projectRoot }) {
 
   ipcMain.handle('pipeline:run', async () => {
     const invocation = buildBackendInvocation(projectRoot, 'run');
-    const child = spawn(invocation.command, invocation.args, {
+    const command = selectBackendCommand(invocation.commands);
+    const child = spawn(command, invocation.args, {
       cwd: projectRoot,
       env: {
         ...process.env,
@@ -60,8 +61,9 @@ export function registerIpcHandlers({ mainWindow, projectRoot }) {
   });
 }
 
-function runCommand(command, args, cwd) {
+function runCommand(commands, args, cwd) {
   return new Promise((resolve, reject) => {
+    const command = selectBackendCommand(commands);
     const child = spawn(command, args, {
       cwd,
       env: {
@@ -87,4 +89,21 @@ function runCommand(command, args, cwd) {
       resolve({ stdout, stderr, code });
     });
   });
+}
+
+function selectBackendCommand(commands) {
+  for (const command of commands) {
+    if (command.startsWith('/')) {
+      if (fs.existsSync(command)) {
+        return command;
+      }
+      continue;
+    }
+
+    const probe = spawnSync(command, ['-c', 'pass'], { stdio: 'ignore' });
+    if (!probe.error) {
+      return command;
+    }
+  }
+  throw new Error(`No runnable backend python found in candidates: ${commands.join(', ')}`);
 }

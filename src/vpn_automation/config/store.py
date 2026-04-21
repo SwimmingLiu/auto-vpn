@@ -10,10 +10,6 @@ def resolve_profile_path(project_root: Path) -> Path:
     repo_root = resolve_repo_anchor(candidate_root)
     anchor_path = repo_root / "state" / "profiles" / "default.json"
 
-    if local_path.exists():
-        return local_path
-    if anchor_path.exists():
-        return anchor_path
     if anchor_path != local_path:
         return anchor_path
     return local_path

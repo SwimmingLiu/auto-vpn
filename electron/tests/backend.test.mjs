@@ -9,7 +9,7 @@ import { findProjectRoot, resolveProjectRoot, resolveStateProfilePath } from '..
 
 test('buildBackendInvocation returns python module command', () => {
   const invocation = buildBackendInvocation('/repo', 'run');
-  assert.equal(invocation.command, 'python3.12');
+  assert.deepEqual(invocation.commands, ['python3.12', 'python3']);
   assert.deepEqual(invocation.args, ['-m', 'vpn_automation.backend', 'run', '--project-root', '/repo']);
 });
 
@@ -49,9 +49,12 @@ test('resolveStateProfilePath prefers the repo-anchor state file for worktrees',
   const repoRoot = path.join(root, 'vpn-subscription-automation');
   const worktreeRoot = path.join(repoRoot, '.worktrees', 'cleanup');
   const anchorProfile = path.join(repoRoot, 'state', 'profiles', 'default.json');
+  const localProfile = path.join(worktreeRoot, 'state', 'profiles', 'default.json');
 
   fs.mkdirSync(worktreeRoot, { recursive: true });
+  fs.mkdirSync(path.dirname(localProfile), { recursive: true });
   fs.mkdirSync(path.dirname(anchorProfile), { recursive: true });
+  fs.writeFileSync(localProfile, '{"sources":"local"}', 'utf-8');
   fs.writeFileSync(anchorProfile, '{}', 'utf-8');
 
   assert.equal(resolveStateProfilePath(worktreeRoot), anchorProfile);
@@ -64,5 +67,5 @@ test('resolveBackendPython prefers a project virtualenv when present', () => {
   fs.mkdirSync(path.dirname(venvPython), { recursive: true });
   fs.writeFileSync(venvPython, '', 'utf-8');
 
-  assert.equal(resolveBackendPython(root), venvPython);
+  assert.deepEqual(resolveBackendPython(root), [venvPython, 'python3.12', 'python3']);
 });

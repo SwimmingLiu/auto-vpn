@@ -58,12 +58,5 @@ export function resolveStateProfilePath(projectRoot) {
 
   const repoRoot = parts.slice(0, worktreeIndex).join(path.sep) || path.sep;
   const anchorPath = path.join(repoRoot, 'state', 'profiles', 'default.json');
-
-  if (fs.existsSync(localPath)) {
-    return localPath;
-  }
-  if (fs.existsSync(anchorPath)) {
-    return anchorPath;
-  }
   return anchorPath;
 }
