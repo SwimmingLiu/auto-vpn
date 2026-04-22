@@ -12,6 +12,16 @@ function profilePath(projectRoot) {
 }
 
 export function registerIpcHandlers({ mainWindow, projectRoot }) {
+  let activePipelineChild = null;
+  let stopRequested = false;
+  let stopTimer = null;
+
+  function emit(payload) {
+    if (!mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('pipeline:event', payload);
+    }
+  }
+
   ipcMain.handle('profile:load', async () => {
     const invocation = buildBackendInvocation(projectRoot, 'profile');
     const output = await runCommand(invocation.commands, invocation.args, projectRoot);
@@ -26,6 +36,10 @@ export function registerIpcHandlers({ mainWindow, projectRoot }) {
   });
 
   ipcMain.handle('pipeline:run', async () => {
+    if (activePipelineChild) {
+      return { ok: false, code: null, signal: null, stopped: false, error: 'already_running' };
+    }
+
     const invocation = buildBackendInvocation(projectRoot, 'run');
     const command = selectBackendCommand(invocation.commands);
     const child = spawn(command, invocation.args, {
@@ -35,6 +49,8 @@ export function registerIpcHandlers({ mainWindow, projectRoot }) {
         PYTHONPATH: path.join(projectRoot, 'src')
       }
     });
+    activePipelineChild = child;
+    stopRequested = false;
 
     child.stdout.setEncoding('utf-8');
     child.stderr.setEncoding('utf-8');
@@ -43,7 +59,7 @@ export function registerIpcHandlers({ mainWindow, projectRoot }) {
       for (const line of chunk.split(/\r?\n/)) {
         const event = parseBackendEventLine(line);
         if (event) {
-          mainWindow.webContents.send('pipeline:event', event);
+          emit(event);
         }
       }
     });
@@ -51,13 +67,66 @@ export function registerIpcHandlers({ mainWindow, projectRoot }) {
     child.stderr.on('data', (chunk) => {
       const message = String(chunk).trim();
       if (message) {
-        mainWindow.webContents.send('pipeline:event', { type: 'log', message });
+        emit({ type: 'log', message });
       }
     });
 
     return new Promise((resolve) => {
-      child.on('close', (code) => resolve({ ok: code === 0, code }));
+      child.on('error', (error) => {
+        if (stopTimer) {
+          clearTimeout(stopTimer);
+          stopTimer = null;
+        }
+        activePipelineChild = null;
+        resolve({
+          ok: false,
+          code: null,
+          signal: null,
+          stopped: stopRequested,
+          error: error.message
+        });
+      });
+
+      child.on('close', (code, signal) => {
+        if (stopTimer) {
+          clearTimeout(stopTimer);
+          stopTimer = null;
+        }
+        activePipelineChild = null;
+        const stopped = stopRequested || signal === 'SIGTERM' || signal === 'SIGKILL';
+        resolve({
+          ok: code === 0 && !stopped,
+          code,
+          signal,
+          stopped
+        });
+      });
     });
+  });
+
+  ipcMain.handle('pipeline:stop', async () => {
+    if (!activePipelineChild) {
+      return { ok: false, requested: false };
+    }
+
+    stopRequested = true;
+    const child = activePipelineChild;
+    const signaled = child.kill('SIGTERM');
+
+    if (!signaled) {
+      return { ok: false, requested: true };
+    }
+
+    if (stopTimer) {
+      clearTimeout(stopTimer);
+    }
+    stopTimer = setTimeout(() => {
+      if (activePipelineChild === child && !child.killed) {
+        child.kill('SIGKILL');
+      }
+    }, 4000);
+
+    return { ok: true, requested: true };
   });
 }
 
