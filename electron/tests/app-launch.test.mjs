@@ -14,25 +14,26 @@ test('electron app exposes preload bridge and renders the real saved profile', a
 
   try {
     const page = await app.firstWindow();
-    await page.waitForSelector('#sourcesSummary .summary-line');
-    await page.locator('[data-panel="sources"]').click();
-    await page.waitForSelector('.drawer.open input[data-key="url"]');
+    await page.waitForSelector('#pageContent');
+    await page.locator('#navConfig').click();
+    await page.waitForSelector('#configPrimarySource');
 
     const hasBridge = await page.evaluate(() => Boolean(window.vpnAutomation));
-    const sourcesSummary = await page.locator('#sourcesSummary').innerText();
-    const logs = await page.locator('#logOutput').innerText();
-    const urlInputs = page.locator('.drawer.open input[data-key="url"]');
-    const keyInputs = page.locator('.drawer.open input[data-key="key"]');
+    const hasStopBridge = await page.evaluate(() => typeof window.vpnAutomation?.stopPipeline === 'function');
+    const pageTitle = await page.locator('#pageTitle').innerText();
+    const stopVisible = await page.locator('#stopBtn').isVisible();
+    const sourceInputs = page.locator('input[data-source][data-key="url"]');
+    const primaryValue = await page.locator('#configPrimarySource').inputValue();
 
     assert.equal(hasBridge, true);
-    assert.match(sourcesSummary, /https:\/\/www\./);
-    assert.doesNotMatch(logs, /\[demo\]/i);
-    assert.equal(await urlInputs.count(), 5);
-    assert.equal(await keyInputs.count(), 5);
+    assert.equal(hasStopBridge, true);
+    assert.equal(stopVisible, true);
+    assert.equal(pageTitle, '配置管理');
+    assert.equal(await sourceInputs.count(), 5);
+    assert.notEqual(primaryValue.trim(), '');
 
     for (let index = 0; index < 5; index += 1) {
-      assert.notEqual((await urlInputs.nth(index).inputValue()).trim(), '');
-      assert.notEqual((await keyInputs.nth(index).inputValue()).trim(), '');
+      assert.notEqual((await sourceInputs.nth(index).inputValue()).trim(), '');
     }
   } finally {
     await app.close();
