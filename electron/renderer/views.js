@@ -319,11 +319,15 @@ function buildArtifactsPage(vm, messages, language) {
                   <span>${escapeHtml(pick(language, '输出目录', 'Output directory'))}</span>
                   <strong class="mono">${escapeHtml(vm.artifactDir || messages.notAvailableValue)}</strong>
                 </div>
-              </div>
-              <div class="page-actions">
-                <button class="btn btn-secondary" data-copy-text="${escapeHtml(vm.profile.deploy.subscription_url)}" type="button">${escapeHtml(pick(language, '复制订阅地址', 'Copy subscription URL'))}</button>
-                <button class="btn btn-primary" data-action="open-artifacts" type="button">${escapeHtml(messages.openArtifactsButton)}</button>
-              </div>
+	              </div>
+	              <div class="page-actions">
+	                ${
+	                  vm.profile.deploy.subscription_url
+	                    ? `<button class="btn btn-secondary" data-copy-text="${escapeHtml(vm.profile.deploy.subscription_url)}" type="button">${escapeHtml(pick(language, '复制订阅地址', 'Copy subscription URL'))}</button>`
+	                    : ''
+	                }
+	                <button class="btn btn-primary" data-action="open-artifacts" type="button">${escapeHtml(messages.openArtifactsButton)}</button>
+	              </div>
             `
             : `
               <div class="empty-state">
@@ -475,6 +479,11 @@ function resolveCurrentTaskLabel(stageRows, messages) {
   const running = stageRows.find((row) => row.status === 'running');
   if (running) {
     return messages.stageLabels[running.name] ?? running.name;
+  }
+
+  const failed = stageRows.find((row) => row.status === 'failed');
+  if (failed) {
+    return `${messages.stageLabels[failed.name] ?? failed.name} / ${messages.statusLabels.failed}`;
   }
 
   const completed = stageRows.filter((row) => row.status === 'success');

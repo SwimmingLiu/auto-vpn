@@ -33,6 +33,12 @@ test('resolveVerifyMetricValue preserves running and failed verify states', () =
   assert.equal(resolveVerifyMetricValue('success', zh), '已验证');
 });
 
+test('runtime-aligned copy still exposes failed stage wording for sidebar summaries', () => {
+  const zh = getMessages('zh-CN');
+  assert.equal(zh.statusLabels.failed, '失败');
+  assert.equal(zh.stageLabels.speedtest, '节点测速');
+});
+
 test('resolveRunControlState exposes run and stop availability for each run state', () => {
   assert.deepEqual(resolveRunControlState('idle'), {
     isBusy: false,

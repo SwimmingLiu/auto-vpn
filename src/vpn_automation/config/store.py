@@ -40,12 +40,16 @@ def _is_blank_profile(profile: AppProfile) -> bool:
         source.url.strip() or source.key.strip()
         for source in profile.sources.values()
     )
+    deploy_fields = (
+        "project_name",
+        "subscription_url",
+        "pages_project_url",
+        "secret_query",
+        "account_id",
+    )
     has_deploy_values = any(
-        [
-            profile.deploy.project_name.strip(),
-            profile.deploy.subscription_url.strip(),
-            profile.deploy.pages_project_url.strip(),
-        ]
+        str(getattr(profile.deploy, field_name, "")).strip()
+        for field_name in deploy_fields
     )
     return not has_source_values and not has_deploy_values
 
