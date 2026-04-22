@@ -10,7 +10,8 @@ def test_profile_to_form_state_exposes_source_and_deploy_fields(tmp_path: Path) 
     state = profile_to_form_state(profile)
 
     assert "source.leiting.url" in state
-    assert state["deploy.project_name"] == "vmessnodes"
+    assert state["deploy.project_name"] == ""
+    assert state["deploy.subscription_url"] == ""
 
 
 def test_apply_form_state_to_profile_updates_threshold_and_url(tmp_path: Path) -> None:

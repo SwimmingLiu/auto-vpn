@@ -59,6 +59,7 @@ class WorkspaceConfig:
     state_root: str
     env_file: str
     build_root: str
+    profile_path: str = ""
 
 
 def _default_workspace() -> WorkspaceConfig:
@@ -111,35 +112,15 @@ def resolve_repo_anchor(candidate: Path) -> Path:
             return path
     return current
 
-
-def _load_existing_sources(config_path: Path) -> dict[str, SourceConfig]:
-    source_map = {
-        name: SourceConfig(url="", key="", enabled=True)
-        for name in DEFAULT_SOURCE_ORDER
-    }
-    if not config_path.exists():
-        return source_map
-
-    payload = json.loads(config_path.read_text(encoding="utf-8"))
-    for name in DEFAULT_SOURCE_ORDER:
-        if name not in payload:
-            continue
-        source_map[name] = SourceConfig(
-            url=str(payload[name].get("url", "")),
-            key=str(payload[name].get("key", "")),
-            enabled=True,
-            use_random_area=name != "xuanfeng1",
-        )
-    return source_map
-
-
 def create_default_profile(project_root: Path) -> AppProfile:
     project_root = resolve_repo_anchor(project_root)
     workspace_root = project_root.parent
     vpn_catch_nodes_root = workspace_root / "vpn-catch-nodes"
     edgetunnel_root = workspace_root / "cloudflarevpn" / "edgetunnel"
-
-    sources = _load_existing_sources(vpn_catch_nodes_root / "config" / "vpn_api.json")
+    sources = {
+        name: SourceConfig(url="", key="", enabled=True)
+        for name in DEFAULT_SOURCE_ORDER
+    }
 
     return AppProfile(
         sources=sources,
@@ -147,15 +128,14 @@ def create_default_profile(project_root: Path) -> AppProfile:
             min_download_mb_s=1.0,
             timeout_seconds=20,
             concurrency=3,
-            urls=[
-                "https://speed.cloudflare.com/__down?bytes=5000000",
-                "https://proof.ovh.net/files/1Mb.dat",
-                "https://cachefly.cachefly.net/1mb.test",
-            ],
+            urls=[],
         ),
         deploy=DeployConfig(
-            project_name="vmessnodes",
-            subscription_url="https://swimmingliu.xyz/179ba8dd-3854-4747-b853-fc1868ef3937",
+            project_name="",
+            subscription_url="",
+            pages_project_url="",
+            secret_query="",
+            account_id="",
         ),
         workspace=WorkspaceConfig(
             project_root=str(project_root),
@@ -166,5 +146,6 @@ def create_default_profile(project_root: Path) -> AppProfile:
             state_root=str(project_root / "state"),
             env_file=str(project_root / ".env"),
             build_root=str(project_root / "build"),
+            profile_path="",
         ),
     )

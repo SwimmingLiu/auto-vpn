@@ -64,13 +64,13 @@ test('getMessages returns translated copy', () => {
   assert.equal(getMessages('en-US').runButton, 'Run now');
 });
 
-test('PAGE_ORDER exposes the full multipage workspace', () => {
-  assert.equal(PAGE_ORDER.length, 11);
-  assert.deepEqual(PAGE_ORDER.slice(0, 4), ['dashboard', 'config', 'runs', 'history']);
+test('PAGE_ORDER exposes only the runtime-aligned pages', () => {
+  assert.equal(PAGE_ORDER.length, 6);
+  assert.deepEqual(PAGE_ORDER.slice(0, 4), ['dashboard', 'config', 'run', 'artifacts']);
   assert.equal(PAGE_ORDER.at(-1), 'about');
 });
 
-test('getMessages exposes the multipage workspace copy for the redesigned renderer', () => {
+test('getMessages exposes runtime-aligned copy instead of mockup-only pages', () => {
   const zh = getMessages('zh-CN');
   const en = getMessages('en-US');
 
@@ -80,25 +80,26 @@ test('getMessages exposes the multipage workspace copy for the redesigned render
   );
   assert.equal(zh.pageTitles.dashboard, '仪表盘总览');
   assert.equal(zh.pageTitles.config, '配置管理');
+  assert.equal(zh.pageTitles.artifacts, '产物与订阅');
   assert.equal(zh.stopButton, '停止运行');
-  assert.equal(zh.stageLabels.availability, '站点验证');
+  assert.equal(zh.emptyStates.noRunData, '暂无运行数据');
   assert.equal(
     zh.pageSubtitles.dashboard,
-    '统一查看节点抓取、测速、部署与实时日志的桌面工作台'
+    '围绕真实能力展示配置、运行、日志与产物状态'
   );
   assert.equal(
     en.brandSubtitle,
     'Capture nodes, filter by speed, process payloads, package outputs, and deploy to Cloudflare Pages from one desktop tool.'
   );
   assert.equal(en.pageTitles.dashboard, 'Dashboard');
-  assert.equal(en.pageTitles.deploy, 'Deployment Settings');
+  assert.equal(en.pageTitles.artifacts, 'Artifacts');
   assert.equal(en.runButton, 'Run now');
   assert.equal(en.stopButton, 'Stop run');
-  assert.equal(en.stageLabels.availability, 'Availability');
+  assert.equal(en.emptyStates.noRunData, 'No run data yet');
   assert.equal(
     en.pageSubtitles.dashboard,
-    'A unified workspace for capture, filtering, deployment, and live runtime logs'
+    'Show configuration, run state, logs, and artifacts around the real backend capabilities'
   );
-  assert.doesNotMatch(zh.pageSubtitles.dashboard, /紧凑|抽屉/);
-  assert.doesNotMatch(en.pageSubtitles.dashboard, /drawer|compact/i);
+  assert.equal(zh.nav.history, undefined);
+  assert.equal(en.nav.monitor, undefined);
 });

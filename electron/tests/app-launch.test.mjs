@@ -17,6 +17,10 @@ test('electron app exposes preload bridge and renders the real saved profile', a
     await page.waitForSelector('#pageContent');
     await page.locator('#navConfig').click();
     await page.waitForSelector('#configPrimarySource');
+    await page.waitForFunction(() => {
+      const input = document.querySelector('#configPrimarySource');
+      return Boolean(input && input.value.trim().length > 0);
+    });
 
     const hasBridge = await page.evaluate(() => Boolean(window.vpnAutomation));
     const hasStopBridge = await page.evaluate(() => typeof window.vpnAutomation?.stopPipeline === 'function');

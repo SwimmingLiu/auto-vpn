@@ -24,7 +24,8 @@ def test_create_default_profile_populates_workspace_and_defaults(tmp_path: Path)
     profile = create_default_profile(project_root)
 
     assert profile.workspace.project_root == str(project_root)
-    assert profile.deploy.project_name == "vmessnodes"
+    assert profile.deploy.project_name == ""
+    assert profile.deploy.subscription_url == ""
     assert profile.sources["leiting"].enabled is True
 
 
