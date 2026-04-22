@@ -6,18 +6,43 @@
     <title>VPN Subscription Automation</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
-  <body>
-    <div class="app-frame">
-      <div class="app-shell">
-        <header class="topbar">
-          <div class="brand">
-            <div class="brand-mark"></div>
-            <div>
-              <div id="appTitle" class="brand-title"></div>
-              <div id="brandSubtitle" class="brand-subtitle"></div>
-            </div>
+  <body data-page="dashboard">
+    <div class="workspace-shell">
+      <aside class="sidebar">
+        <div class="sidebar-brand">
+          <div class="brand-mark">VA</div>
+          <div class="brand-copy">
+            <div id="sidebarTitle" class="sidebar-title"></div>
+            <div id="sidebarVersion" class="sidebar-version"></div>
           </div>
+        </div>
+
+        <nav id="sidebarNav" class="sidebar-nav"></nav>
+
+        <section class="status-card">
+          <div class="status-card-head">
+            <h2 id="sidebarStatusTitle"></h2>
+            <span id="sidebarStatusBadge" class="badge neutral"></span>
+          </div>
+          <div id="sidebarStatusBody" class="status-card-body"></div>
+        </section>
+      </aside>
+
+      <div class="main-shell">
+        <header class="topbar">
+          <div class="topbar-heading">
+            <div class="page-title-row">
+              <h1 id="pageTitle"></h1>
+              <span id="runStateBadge" class="badge neutral"></span>
+            </div>
+            <p id="pageSubtitle"></p>
+          </div>
+
+          <div id="shortcutStrip" class="shortcut-strip"></div>
+
           <div class="topbar-actions">
+            <button id="projectBtn" class="btn btn-secondary"></button>
+            <button id="topSettingsBtn" class="btn btn-secondary"></button>
             <label class="language-control">
               <span id="languageLabel"></span>
               <select id="languageSelect">
@@ -26,103 +51,14 @@
               </select>
             </label>
             <button id="saveBtn" class="btn btn-secondary"></button>
+            <button id="stopBtn" class="btn btn-danger"></button>
             <button id="runBtn" class="btn btn-primary"></button>
           </div>
         </header>
 
-        <main class="dashboard-shell">
-          <section class="overview-panel">
-            <div class="overview-copy">
-              <div id="eyebrow" class="eyebrow"></div>
-              <h1 id="heroTitle"></h1>
-              <p id="heroBody"></p>
-            </div>
-            <div id="metricsRibbon" class="metrics-ribbon"></div>
-          </section>
-
-          <section class="workspace-grid">
-            <div class="summary-column">
-              <div class="summary-grid">
-                <article class="summary-card" data-card="sources">
-                  <div class="summary-card-top">
-                    <div>
-                      <h2 id="sourcesCardTitle"></h2>
-                      <p id="sourcesCardSubtitle" class="summary-muted"></p>
-                    </div>
-                    <button class="ghost-btn" data-panel="sources" id="sourcesExpandBtn"></button>
-                  </div>
-                  <div id="sourcesSummary" class="summary-body"></div>
-                </article>
-
-                <article class="summary-card" data-card="speed">
-                  <div class="summary-card-top">
-                    <div>
-                      <h2 id="speedCardTitle"></h2>
-                      <p id="speedCardSubtitle" class="summary-muted"></p>
-                    </div>
-                    <button class="ghost-btn" data-panel="speed" id="speedExpandBtn"></button>
-                  </div>
-                  <div id="speedSummary" class="summary-body"></div>
-                </article>
-
-                <article class="summary-card" data-card="deploy">
-                  <div class="summary-card-top">
-                    <div>
-                      <h2 id="deployCardTitle"></h2>
-                      <p id="deployCardSubtitle" class="summary-muted"></p>
-                    </div>
-                    <button class="ghost-btn" data-panel="deploy" id="deployExpandBtn"></button>
-                  </div>
-                  <div id="deploySummary" class="summary-body"></div>
-                </article>
-
-                <article class="summary-card" data-card="metrics">
-                  <div class="summary-card-top">
-                    <div>
-                      <h2 id="metricsCardTitle"></h2>
-                      <p id="metricsCardSubtitle" class="summary-muted"></p>
-                    </div>
-                  </div>
-                  <div id="metricsSummary" class="summary-body"></div>
-                </article>
-              </div>
-            </div>
-
-            <aside class="status-column">
-              <section class="panel-card">
-                <div class="panel-head">
-                  <h2 id="stagesTitle"></h2>
-                  <span id="stagesSubtitle" class="panel-muted"></span>
-                </div>
-                <div id="stages" class="stage-list"></div>
-              </section>
-
-              <section class="panel-card logs-card">
-                <div class="panel-head">
-                  <h2 id="logsTitle"></h2>
-                  <span id="logsSubtitle" class="panel-muted"></span>
-                </div>
-                <pre id="logOutput" class="log-output"></pre>
-              </section>
-            </aside>
-          </section>
-        </main>
+        <main id="pageContent" class="page-content"></main>
       </div>
     </div>
-
-    <div id="drawerBackdrop" class="drawer-backdrop"></div>
-    <aside id="drawer" class="drawer">
-      <div class="drawer-head">
-        <div>
-          <h2 id="drawerTitle"></h2>
-        </div>
-        <button id="drawerClose" class="ghost-btn danger-btn"></button>
-      </div>
-      <div id="drawerContent" class="drawer-content"></div>
-      <div class="drawer-actions">
-        <button id="drawerSave" class="btn btn-primary"></button>
-      </div>
-    </aside>
 
     <script type="module" src="./app.js"></script>
   </body>

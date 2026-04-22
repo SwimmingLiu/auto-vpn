@@ -10,88 +10,72 @@ import { chromium } from 'playwright';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-test('renderer fits the compact dashboard contract at 960x720', async () => {
+const PAGE_CASES = [
+  ['#navDashboard', 'dashboard', '仪表盘总览', '#dashboardOverview'],
+  ['#navConfig', 'config', '配置管理', '#configPrimarySource'],
+  ['#navRuns', 'runs', '运行任务', '#runsLogOutput'],
+  ['#navHistory', 'history', '任务历史', '#historyTable'],
+  ['#navNodes', 'nodes', '节点管理', '#nodeTable'],
+  ['#navSubscriptions', 'subscriptions', '订阅地址', '#subscriptionCards'],
+  ['#navLogs', 'logs', '日志中心', '#logCenterTable'],
+  ['#navDeploy', 'deploy', '部署设置', '#deployPlatformCard'],
+  ['#navMonitor', 'monitor', '系统监控', '#monitorCpuCard'],
+  ['#navSettings', 'settings', '设置', '#settingsLanguage'],
+  ['#navAbout', 'about', '关于', '#aboutArchitecture']
+];
+
+test('renderer exposes the full design-mockup workspace and supports page navigation', async () => {
   const server = await startStaticServer(path.join(__dirname, '..', 'renderer'));
   const browser = await chromium.launch();
   try {
-    const page = await browser.newPage({ viewport: { width: 960, height: 720 } });
+    const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
     const target = `${server.origin}/index.html`;
 
     await page.addInitScript(() => {
+      const fixedNow = 1716363045000;
+      Date.now = () => fixedNow;
       window.localStorage.setItem('vpn-automation-language', 'zh-CN');
     });
     await page.goto(target);
-    await page.waitForSelector('.dashboard-shell');
+    await page.waitForSelector('.workspace-shell');
 
-    const summaryCards = await page.locator('.summary-card').count();
-    const heroTitle = await page.locator('#heroTitle').innerText();
-    const heroBody = await page.locator('#heroBody').innerText();
-    const metricsTitle = await page.locator('#metricsCardTitle').innerText();
-    const sourcesSummary = await page.locator('#sourcesSummary').innerText();
-    const speedSummary = await page.locator('#speedSummary').innerText();
-    const deploySummary = await page.locator('#deploySummary').innerText();
-    const stagesSummary = await page.locator('#stages').innerText();
-    const stagesVisible = await page.locator('#stages').isVisible();
-    const logsVisible = await page.locator('#logOutput').isVisible();
-    const scrollHeight = await page.evaluate(() => document.documentElement.scrollHeight);
-    const innerHeight = await page.evaluate(() => window.innerHeight);
-    const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
-    const innerWidth = await page.evaluate(() => window.innerWidth);
+    assert.equal(await page.locator('.sidebar-nav .nav-item').count(), 11);
+    assert.equal(await page.locator('.shortcut-action').count(), 4);
+    assert.ok(await page.locator('#runBtn').isVisible());
+    assert.ok(await page.locator('#stopBtn').isVisible());
+    assert.equal(await page.locator('#pageTitle').innerText(), '仪表盘总览');
+    assert.match(await page.locator('#pageSubtitle').innerText(), /节点抓取|测速|部署/);
 
-    assert.equal(summaryCards, 4);
-    assert.equal(heroTitle, '紧凑查看节点抓取、测速、部署与运行状态');
-    assert.equal(metricsTitle, '运行指标');
-    assert.ok(stagesVisible);
-    assert.ok(logsVisible);
-    assert.equal(
-      heroBody,
-      '在一个控制台里维护抓包源、测速阈值和发布配置，并持续查看阶段进度与日志摘要。'
-    );
-    assert.doesNotMatch(sourcesSummary, /capture\.example/i);
-    assert.match(sourcesSummary, /连接 Electron 后显示真实抓包地址/);
-    assert.match(speedSummary, /3 个测速站点/);
-    assert.match(speedSummary, /平均下载速度过滤/);
-    assert.doesNotMatch(deploySummary, /pages\.dev|swimmingliu\.xyz/i);
-    assert.match(deploySummary, /连接 Electron 后显示真实部署地址/);
-    assert.match(stagesSummary, /站点验证/);
-    assert.ok(scrollHeight <= innerHeight + 2);
-    assert.ok(scrollWidth <= innerWidth + 2);
+    for (const [navSelector, pageKey, pageTitle, readySelector] of PAGE_CASES) {
+      await page.locator(navSelector).click();
+      await page.waitForSelector(`${readySelector}`);
 
-    await page.locator('[data-panel="sources"]').click();
-    await page.waitForSelector('.drawer.open');
-    await page.waitForTimeout(260);
-    const drawerBox = await page.locator('.drawer.open').boundingBox();
-    assert.ok(drawerBox.width <= 360);
-    assert.ok(drawerBox.x >= 0);
-    assert.ok(drawerBox.x + drawerBox.width <= innerWidth);
+      assert.equal(await page.locator('body').getAttribute('data-page'), pageKey);
+      assert.equal(await page.locator('#pageTitle').innerText(), pageTitle);
+      assert.ok(await page.locator(readySelector).isVisible());
+    }
 
-    await page.locator('#drawerClose').click();
-    await page.waitForTimeout(120);
+    await page.locator('#shortcutDeploy').click();
+    await page.waitForSelector('#deployPlatformCard');
+    assert.equal(await page.locator('body').getAttribute('data-page'), 'deploy');
 
-    await page.locator('[data-panel="speed"]').click();
-    await page.waitForSelector('.drawer.open');
-    await page.waitForTimeout(260);
-    await page.locator('#drawerMinSpeed').fill('2.5');
-    await page.locator('#drawerSave').click();
-    await page.waitForTimeout(120);
-    const speedSummaryUpdated = await page.locator('#speedSummary').innerText();
-    assert.match(speedSummaryUpdated, /2\.5/);
+    await page.locator('#shortcutCapture').click();
+    await page.waitForSelector('#configPrimarySource');
+    assert.equal(await page.locator('body').getAttribute('data-page'), 'config');
 
+    await page.locator('#navDashboard').click();
+    await page.waitForSelector('#dashboardOverview');
     await page.locator('#languageSelect').selectOption('en-US');
     await page.waitForTimeout(100);
-    const titleEnglish = await page.locator('#heroTitle').innerText();
-    const bodyEnglish = await page.locator('#heroBody').innerText();
-    const metricsEnglish = await page.locator('#metricsCardTitle').innerText();
 
-    assert.equal(
-      titleEnglish,
-      'Track capture, speed tests, deployment and runtime health in one compact view'
-    );
-    assert.equal(
-      bodyEnglish,
-      'Maintain sources, thresholds and publish settings in one console while keeping stage progress and log summaries visible.'
-    );
-    assert.equal(metricsEnglish, 'Run Metrics');
+    assert.equal(await page.locator('#pageTitle').innerText(), 'Dashboard');
+    assert.equal(await page.locator('#runBtn').innerText(), 'Run now');
+    assert.equal(await page.locator('#stopBtn').innerText(), 'Stop run');
+    assert.match(await page.locator('#dashboardOverview').innerText(), /workspace|deployment|logs/i);
+
+    const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
+    const innerWidth = await page.evaluate(() => window.innerWidth);
+    assert.ok(scrollWidth <= innerWidth + 2);
   } finally {
     await browser.close();
     await server.close();
