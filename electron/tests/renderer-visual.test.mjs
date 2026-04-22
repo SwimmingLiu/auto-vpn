@@ -12,34 +12,24 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const EXPECTED_DIGESTS = {
-  dashboard: '54b7bd2c2a6c291c79629ea115f56086c7f5595874fbe87e830a93992e33aed4',
-  config: '68055da12dc344175c4cda8cdee4553425e9269110ad8d7cb2d5cb113069c599',
-  runs: '0ddd7fa766c305b3afd3e9c1194d3dca1d91453d0c06b6eb5c638c100586a0d4',
-  history: '574811aa93934ef64552aad7318fa13d055a0fbb2ad13f23b72e292f02eb6b77',
-  nodes: 'c5ef2cd0ac79819fa201c0d0af88b1598f46ca4c848380cf7c65e68efe014da6',
-  subscriptions: '5aa9eb1f232e3a65a3c23f1ff112f222512d9844ab4cff762f39447458d25edd',
-  logs: 'e3ac2e0cd93b65a9dfe3a72dffe42ba23dca7534609f3774af47db33cd7fbcc1',
-  deploy: '3da5fed081b5f17d2b56f18f2c2eb3145e3ba656876b0fa0f443e8fffc631d58',
-  monitor: 'b66b23562f394dcb673a4a1f2cfff0282dfc8bb57038cf11620f3ef8ea5b3963',
-  settings: '322bac73649ca1163a9abc351a8a3910cef6d1e98deeb0c67147fc05c6457d71',
-  about: '5565bdcb014f04927b49016860d0995f555a5d47e4a1d10d1a7f3607dcddaa65'
+  dashboard: 'f370bc7ed8d530876847d3f83b90879f703203fb56ea6bcbf04c15074272720a',
+  config: '2eafa2e4bbe6bf81a847bd4f1b1fa0847c1b5234426cb663d6deca6eac7f8262',
+  run: '63cf524f577aa808b2902f280c8a9543e3870cd3ef7e9ff01317315e98d458be',
+  artifacts: 'f481ce2f0874374d374843f71e1ac8a7f49759e37623c361e470a35773758e68',
+  logs: 'f622ea1af1f6acc605b60d840667ba5f6ea817b0193ab7cba7ea375b55501b30',
+  about: 'b1529931e5b61ae84f686adb964c758c8769ffcdd91626b022e1cd219360f8e6'
 };
 
 const VISUAL_CASES = [
   ['dashboard', '#navDashboard', '#dashboardOverview'],
   ['config', '#navConfig', '#configPrimarySource'],
-  ['runs', '#navRuns', '#runsLogOutput'],
-  ['history', '#navHistory', '#historyTable'],
-  ['nodes', '#navNodes', '#nodeTable'],
-  ['subscriptions', '#navSubscriptions', '#subscriptionCards'],
+  ['run', '#navRun', '#runLogOutput'],
+  ['artifacts', '#navArtifacts', '#artifactsPanel'],
   ['logs', '#navLogs', '#logCenterTable'],
-  ['deploy', '#navDeploy', '#deployPlatformCard'],
-  ['monitor', '#navMonitor', '#monitorCpuCard'],
-  ['settings', '#navSettings', '#settingsLanguage'],
   ['about', '#navAbout', '#aboutArchitecture']
 ];
 
-test('renderer visual hashes match the full mockup-driven workspace', async () => {
+test('renderer visual hashes match the runtime-aligned empty-state workspace', async () => {
   const server = await startStaticServer(path.join(__dirname, '..', 'renderer'));
   const browser = await chromium.launch();
   try {

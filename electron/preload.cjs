@@ -5,6 +5,8 @@ contextBridge.exposeInMainWorld('vpnAutomation', {
   saveProfile: (payload) => ipcRenderer.invoke('profile:save', payload),
   runPipeline: () => ipcRenderer.invoke('pipeline:run'),
   stopPipeline: () => ipcRenderer.invoke('pipeline:stop'),
+  openPath: (targetPath) => ipcRenderer.invoke('shell:open-path', targetPath),
+  exportLogs: (content) => ipcRenderer.invoke('logs:export', content),
   onPipelineEvent: (callback) => {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on('pipeline:event', listener);
