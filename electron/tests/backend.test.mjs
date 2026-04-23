@@ -5,7 +5,12 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { buildBackendInvocation, parseBackendEventLine, resolveBackendPython } from '../lib/backend.js';
-import { findProjectRoot, resolveProjectRoot, resolveStateProfilePath } from '../paths.js';
+import {
+  findProjectRoot,
+  resolveBundledProfilePath,
+  resolveProjectRoot,
+  resolveStateProfilePath
+} from '../paths.js';
 
 test('buildBackendInvocation returns python module command', () => {
   const invocation = buildBackendInvocation('/repo', 'run');
@@ -63,6 +68,17 @@ test('resolveStateProfilePath prefers the repo-anchor state file for worktrees',
   fs.writeFileSync(anchorProfile, '[sources]\n', 'utf-8');
 
   assert.equal(resolveStateProfilePath(worktreeRoot), anchorProfile);
+});
+
+test('resolveStateProfilePath switches to userData when packaged', () => {
+  assert.equal(
+    resolveStateProfilePath('/repo', { isPackaged: true, userDataPath: '/Users/demo/Library/Application Support/VPN' }),
+    '/Users/demo/Library/Application Support/VPN/state/profile.toml'
+  );
+});
+
+test('resolveBundledProfilePath points at the packaged runtime seed file', () => {
+  assert.equal(resolveBundledProfilePath('/repo'), '/repo/electron/runtime/bundled-profile.toml');
 });
 
 test('resolveBackendPython prefers a project virtualenv when present', () => {

@@ -2,11 +2,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 
-import { ipcMain } from 'electron';
+import { ipcMain, shell } from 'electron';
 
 import { buildBackendInvocation, parseBackendEventLine } from './lib/backend.js';
+import { resolveStateProfilePath } from './paths.js';
 
-export function registerIpcHandlers({ mainWindow, projectRoot }) {
+function profilePath(projectRoot, runtimeProfilePath) {
+  return runtimeProfilePath || resolveStateProfilePath(projectRoot);
+}
+
+export function registerIpcHandlers({ mainWindow, projectRoot, runtimeProfilePath = '', bundledProfilePath = '' }) {
   let activePipelineChild = null;
   let stopRequested = false;
   let stopTimer = null;
@@ -19,14 +24,45 @@ export function registerIpcHandlers({ mainWindow, projectRoot }) {
 
   ipcMain.handle('profile:load', async () => {
     const invocation = buildBackendInvocation(projectRoot, 'profile');
-    const output = await runCommand(invocation.commands, invocation.args, projectRoot);
+    const output = await runCommand(
+      invocation.commands,
+      invocation.args,
+      projectRoot,
+      runtimeProfilePath,
+      bundledProfilePath
+    );
     return JSON.parse(output.stdout);
   });
 
   ipcMain.handle('profile:save', async (_event, payload) => {
     const invocation = buildBackendInvocation(projectRoot, 'profile-save');
-    await runCommand(invocation.commands, invocation.args, projectRoot, JSON.stringify(payload));
+    await runCommand(
+      invocation.commands,
+      invocation.args,
+      projectRoot,
+      runtimeProfilePath,
+      bundledProfilePath,
+      JSON.stringify(payload)
+    );
     return { ok: true };
+  });
+
+  ipcMain.handle('shell:open-path', async (_event, targetPath) => {
+    const normalized = String(targetPath ?? '').trim();
+    if (!normalized) {
+      return { ok: false, error: 'empty_path' };
+    }
+    const error = await shell.openPath(normalized);
+    return { ok: !error, error };
+  });
+
+  ipcMain.handle('logs:export', async (_event, content) => {
+    const baseProfilePath = profilePath(projectRoot, runtimeProfilePath);
+    const logsRoot = path.join(path.dirname(path.dirname(baseProfilePath)), 'logs');
+    fs.mkdirSync(logsRoot, { recursive: true });
+    const outputPath = path.join(logsRoot, `session-${Date.now()}.log`);
+    fs.writeFileSync(outputPath, String(content ?? ''), 'utf-8');
+    return { ok: true, path: outputPath };
   });
 
   ipcMain.handle('pipeline:run', async () => {
@@ -38,10 +74,7 @@ export function registerIpcHandlers({ mainWindow, projectRoot }) {
     const command = selectBackendCommand(invocation.commands);
     const child = spawn(command, invocation.args, {
       cwd: projectRoot,
-      env: {
-        ...process.env,
-        PYTHONPATH: path.join(projectRoot, 'src')
-      }
+      env: buildBackendEnv(projectRoot, runtimeProfilePath, bundledProfilePath)
     });
     activePipelineChild = child;
     stopRequested = false;
@@ -124,15 +157,12 @@ export function registerIpcHandlers({ mainWindow, projectRoot }) {
   });
 }
 
-function runCommand(commands, args, cwd, input = '') {
+function runCommand(commands, args, cwd, runtimeProfilePath = '', bundledProfilePath = '', input = '') {
   return new Promise((resolve, reject) => {
     const command = selectBackendCommand(commands);
     const child = spawn(command, args, {
       cwd,
-      env: {
-        ...process.env,
-        PYTHONPATH: path.join(cwd, 'src')
-      }
+      env: buildBackendEnv(cwd, runtimeProfilePath, bundledProfilePath)
     });
 
     let stdout = '';
@@ -157,6 +187,15 @@ function runCommand(commands, args, cwd, input = '') {
       resolve({ stdout, stderr, code });
     });
   });
+}
+
+function buildBackendEnv(projectRoot, runtimeProfilePath = '', bundledProfilePath = '') {
+  return {
+    ...process.env,
+    PYTHONPATH: path.join(projectRoot, 'src'),
+    VPN_AUTOMATION_PROFILE_PATH: runtimeProfilePath,
+    VPN_AUTOMATION_BUNDLED_PROFILE_PATH: bundledProfilePath
+  };
 }
 
 function selectBackendCommand(commands) {

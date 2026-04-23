@@ -11,6 +11,7 @@ def test_profile_to_form_state_exposes_source_and_deploy_fields(tmp_path: Path) 
 
     assert "source.leiting.url" in state
     assert state["deploy.project_name"] == "vmessnodes"
+    assert state["deploy.subscription_url"] == "https://swimmingliu.xyz/179ba8dd-3854-4747-b853-fc1868ef3937"
 
 
 def test_apply_form_state_to_profile_updates_threshold_and_url(tmp_path: Path) -> None:

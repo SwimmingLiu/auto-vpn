@@ -461,6 +461,10 @@ textarea:focus {
   gap: 16px;
 }
 
+.runtime-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .dashboard-grid {
   grid-template-columns: minmax(0, 1.15fr) minmax(300px, 0.85fr);
 }
@@ -630,6 +634,13 @@ textarea:focus {
 .field span {
   color: var(--text-soft);
   font-size: 13px;
+}
+
+.field textarea {
+  min-height: 120px;
+  padding-top: 12px;
+  padding-bottom: 12px;
+  resize: vertical;
 }
 
 .inline-metrics {
@@ -1240,6 +1251,49 @@ textarea:focus {
   white-space: pre-wrap;
 }
 
+.empty-state {
+  display: grid;
+  gap: 10px;
+  min-height: 180px;
+  align-content: center;
+  justify-items: start;
+  padding: 18px;
+  border-radius: 18px;
+  border: 1px dashed var(--border-strong);
+  background: linear-gradient(180deg, rgba(91, 92, 226, 0.04) 0%, rgba(91, 92, 226, 0.01) 100%);
+}
+
+.empty-state.compact {
+  min-height: 0;
+}
+
+.empty-state strong {
+  font-size: 18px;
+  letter-spacing: -0.02em;
+}
+
+.empty-state p {
+  margin: 0;
+  color: var(--text-soft);
+  line-height: 1.6;
+}
+
+.run-stage-list {
+  display: grid;
+  gap: 12px;
+}
+
+.run-stage-row {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background: var(--surface-soft);
+}
+
 .chart-bars {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
@@ -1274,6 +1328,7 @@ textarea:focus {
   }
 
   .dashboard-grid,
+  .runtime-grid,
   .runs-grid,
   .history-grid,
   .logs-grid,
@@ -1354,6 +1409,7 @@ textarea:focus {
   }
 
   .dashboard-grid,
+  .runtime-grid,
   .runs-grid,
   .history-grid,
   .logs-grid,

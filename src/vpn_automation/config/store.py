@@ -1,3 +1,5 @@
+import os
+import shutil
 import tomllib
 from pathlib import Path
 
@@ -7,6 +9,10 @@ from vpn_automation.config.models import AppProfile, create_default_profile, res
 
 
 def resolve_profile_path(project_root: Path) -> Path:
+    profile_override = os.environ.get("VPN_AUTOMATION_PROFILE_PATH", "").strip()
+    if profile_override:
+        return Path(profile_override).expanduser().resolve()
+
     candidate_root = Path(project_root).resolve()
     local_path = candidate_root / "state" / "profile.toml"
     repo_root = resolve_repo_anchor(candidate_root)
@@ -15,6 +21,19 @@ def resolve_profile_path(project_root: Path) -> Path:
     if anchor_path != local_path:
         return anchor_path
     return local_path
+
+
+def resolve_seed_profile_path(project_root: Path) -> Path | None:
+    bundled_override = os.environ.get("VPN_AUTOMATION_BUNDLED_PROFILE_PATH", "").strip()
+    if bundled_override:
+        candidate = Path(bundled_override).expanduser().resolve()
+        return candidate if candidate.exists() else None
+
+    candidate_root = Path(project_root).resolve()
+    packaged_seed = candidate_root / "electron" / "runtime" / "bundled-profile.toml"
+    if packaged_seed.exists():
+        return packaged_seed
+    return None
 
 
 def _render_profile_toml(profile: AppProfile) -> str:
@@ -69,6 +88,29 @@ def _render_profile_toml(profile: AppProfile) -> str:
     return doc.as_string()
 
 
+def _load_profile_data(path: Path) -> dict:
+    return tomllib.loads(path.read_text(encoding="utf-8"))
+
+
+def _is_blank_profile(profile: AppProfile) -> bool:
+    has_source_values = any(
+        source.url.strip() or source.key.strip()
+        for source in profile.sources.values()
+    )
+    deploy_fields = (
+        "project_name",
+        "subscription_url",
+        "pages_project_url",
+        "secret_query",
+        "account_id",
+    )
+    has_deploy_values = any(
+        str(getattr(profile.deploy, field_name, "")).strip()
+        for field_name in deploy_fields
+    )
+    return not has_source_values and not has_deploy_values
+
+
 class ProfileStore:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -78,11 +120,20 @@ class ProfileStore:
         self.path.write_text(_render_profile_toml(profile), encoding="utf-8")
 
     def load(self) -> AppProfile:
-        data = tomllib.loads(self.path.read_text(encoding="utf-8"))
+        data = _load_profile_data(self.path)
         return AppProfile.from_dict(data)
 
     def load_or_create(self, project_root: Path) -> AppProfile:
+        seed_profile = resolve_seed_profile_path(project_root)
         if self.path.exists():
+            profile = self.load()
+            if seed_profile and _is_blank_profile(profile):
+                shutil.copy2(seed_profile, self.path)
+                return self.load()
+            return profile
+        if seed_profile:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(seed_profile, self.path)
             return self.load()
         profile = create_default_profile(project_root)
         self.save(profile)
