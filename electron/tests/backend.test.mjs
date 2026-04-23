@@ -72,6 +72,24 @@ test('resolveStateProfilePath switches to userData when packaged', () => {
   );
 });
 
+test('resolveStateProfilePath prefers env override before worktree inference', () => {
+  const original = process.env.VPN_AUTOMATION_PROFILE_PATH;
+  process.env.VPN_AUTOMATION_PROFILE_PATH = '/tmp/override-profile.json';
+
+  try {
+    assert.equal(
+      resolveStateProfilePath('/repo/.worktrees/feature-x'),
+      '/tmp/override-profile.json'
+    );
+  } finally {
+    if (original === undefined) {
+      delete process.env.VPN_AUTOMATION_PROFILE_PATH;
+    } else {
+      process.env.VPN_AUTOMATION_PROFILE_PATH = original;
+    }
+  }
+});
+
 test('resolveBundledProfilePath points at the packaged runtime seed file', () => {
   assert.equal(resolveBundledProfilePath('/repo'), '/repo/electron/runtime/bundled-profile.json');
 });

@@ -47,6 +47,11 @@ export function resolveProjectRoot(explicitRoot = '') {
 }
 
 export function resolveStateProfilePath(projectRoot, options = {}) {
+  const profileOverride = process.env.VPN_AUTOMATION_PROFILE_PATH?.trim();
+  if (profileOverride) {
+    return path.resolve(profileOverride);
+  }
+
   const { isPackaged = false, userDataPath = '' } = options;
   if (isPackaged && userDataPath) {
     return path.join(userDataPath, 'state', 'profiles', 'default.json');
