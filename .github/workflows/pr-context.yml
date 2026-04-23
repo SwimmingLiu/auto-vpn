@@ -1,0 +1,76 @@
+name: PR Context
+
+on:
+  pull_request:
+    types:
+      - opened
+      - edited
+      - reopened
+      - synchronize
+
+permissions:
+  contents: read
+
+jobs:
+  validate-pr-body:
+    name: Validate pull request context
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Validate required PR sections
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          import sys
+
+          required_sections = [
+              "Goal",
+              "Feature / requirement mapping",
+              "What changed",
+              "Security / risk review",
+              "Edge cases checked",
+              "Verification evidence",
+          ]
+
+          raw_body = os.environ.get("PR_BODY") or ""
+          normalized = raw_body.replace("\r\n", "\n")
+          normalized = re.sub(r"<!--.*?-->", "", normalized, flags=re.S)
+
+          placeholder_values = {
+              "",
+              "tbd",
+              "todo",
+              "n/a",
+              "na",
+              "none",
+              "same as title",
+              "same as pr title",
+          }
+
+          errors = []
+          for section in required_sections:
+              pattern = re.compile(
+                  rf"^## {re.escape(section)}\s*\n(.*?)(?=^## |\Z)",
+                  flags=re.M | re.S,
+              )
+              match = pattern.search(normalized)
+              if not match:
+                  errors.append(f"missing section: {section}")
+                  continue
+
+              content = match.group(1).strip()
+              compact = re.sub(r"\s+", " ", content).strip().lower()
+              if compact in placeholder_values:
+                  errors.append(f"empty section: {section}")
+                  continue
+
+          if errors:
+              print("Pull request body is missing required review context:")
+              for item in errors:
+                  print(f"- {item}")
+              sys.exit(1)
+          PY
+

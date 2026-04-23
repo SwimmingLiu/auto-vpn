@@ -14,6 +14,10 @@ test('electron app exposes preload bridge and renders the real saved profile', a
 
   try {
     const page = await app.firstWindow();
+    await page.addInitScript(() => {
+      window.localStorage.setItem('vpn-automation-language', 'zh-CN');
+    });
+    await page.reload();
     await page.waitForSelector('#pageContent');
     await page.locator('#navConfig').click();
     await page.waitForSelector('#configPrimarySource');

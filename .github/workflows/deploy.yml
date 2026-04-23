@@ -1,0 +1,102 @@
+name: Deploy Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      xray_version:
+        description: Xray-core release tag to install
+        required: true
+        default: v26.4.17
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Run backend deployment pipeline
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    env:
+      PROFILE_PATH: state/profiles/default.json
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: "npm"
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev]'
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Install xray
+        env:
+          XRAY_VERSION: ${{ inputs.xray_version }}
+        run: |
+          curl -fsSL -o /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-64.zip"
+          python - <<'PY'
+          import zipfile
+
+          with zipfile.ZipFile("/tmp/xray.zip") as archive:
+              archive.extractall("/tmp/xray")
+          PY
+          mkdir -p "$HOME/.local/bin"
+          install /tmp/xray/xray "$HOME/.local/bin/xray"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Materialize runtime profile
+        env:
+          VPN_AUTOMATION_PROFILE_JSON: ${{ secrets.VPN_AUTOMATION_PROFILE_JSON }}
+        run: |
+          if [ -z "${VPN_AUTOMATION_PROFILE_JSON}" ]; then
+            echo "::error::Missing VPN_AUTOMATION_PROFILE_JSON secret"
+            exit 1
+          fi
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          raw = os.environ["VPN_AUTOMATION_PROFILE_JSON"]
+          workspace = os.environ["GITHUB_WORKSPACE"]
+          payload = json.loads(raw)
+          rendered = json.loads(json.dumps(payload).replace("__GITHUB_WORKSPACE__", workspace))
+          target = Path(os.environ["PROFILE_PATH"])
+          target.parent.mkdir(parents=True, exist_ok=True)
+          target.write_text(json.dumps(rendered, ensure_ascii=False, indent=2), encoding="utf-8")
+          PY
+
+      - name: Run backend deployment pipeline
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [ -z "${CLOUDFLARE_API_TOKEN}" ]; then
+            echo "::error::Missing CLOUDFLARE_API_TOKEN secret"
+            exit 1
+          fi
+          python -m vpn_automation.backend run --project-root "$GITHUB_WORKSPACE"
+
+      - name: Upload deployment artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-artifacts
+          path: artifacts/**
+          if-no-files-found: error
+          retention-days: 14
+

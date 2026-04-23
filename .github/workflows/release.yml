@@ -1,0 +1,44 @@
+name: Release Package
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  package-electron:
+    name: Package Electron app
+    runs-on: macos-14
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: "npm"
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Build macOS package
+        run: npm run package:electron
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vpn-subscription-automation-macos
+          path: dist-electron/**
+          if-no-files-found: error
+          retention-days: 14
+
