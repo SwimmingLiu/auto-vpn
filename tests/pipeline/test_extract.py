@@ -1,3 +1,5 @@
+import pytest
+
 from pathlib import Path
 
 from vpn_automation.config.models import SourceConfig
@@ -5,6 +7,7 @@ from vpn_automation.pipeline.extract import (
     build_runtime_source_url,
     build_source_script_path,
     extract_links_from_plaintext,
+    fetch_source_links,
 )
 from vpn_automation.pipeline.vmess import parse_vmess_link
 
@@ -53,3 +56,117 @@ def test_extract_links_from_plaintext_converts_v2ray_json_to_vmess() -> None:
     assert str(payload["port"]) == "443"
     assert payload["net"] == "ws"
     assert payload["path"] == "/ws"
+
+
+def test_fetch_source_links_uses_upstream_proxy_for_every_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = SourceConfig(
+        url="https://example.com/api?t=123",
+        key="abcdabcdabcdabcd",
+        max_iterations=2,
+        min_iterations=0,
+        plateau_limit=99,
+    )
+    calls: list[dict] = []
+
+    class FakeResponse:
+        text = "cipher"
+
+        def raise_for_status(self) -> None:
+            return None
+
+    def fake_get(self, url: str, timeout: int, verify: bool, proxies=None):
+        calls.append({"url": url, "proxies": proxies})
+        return FakeResponse()
+
+    monkeypatch.setattr("vpn_automation.pipeline.extract.requests.Session.get", fake_get)
+    monkeypatch.setattr("vpn_automation.pipeline.extract.decrypt_payload", lambda text, key: "plaintext")
+    monkeypatch.setattr(
+        "vpn_automation.pipeline.extract.extract_links_from_plaintext",
+        lambda source_name, plaintext: [f"vmess://{len(calls)}"],
+    )
+    monkeypatch.setattr(
+        "vpn_automation.pipeline.extract.resolve_upstream_proxy_url",
+        lambda: "http://127.0.0.1:7897",
+    )
+
+    result = fetch_source_links("leiting", source)
+
+    assert result.links == ["vmess://1", "vmess://2"]
+    assert all(
+        call["proxies"] == {
+            "http": "http://127.0.0.1:7897",
+            "https": "http://127.0.0.1:7897",
+        }
+        for call in calls
+    )
+
+
+def test_fetch_source_links_emits_checkpoint_callbacks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = SourceConfig(
+        url="https://example.com/api?t=123",
+        key="abcdabcdabcdabcd",
+        max_iterations=2,
+        min_iterations=0,
+        plateau_limit=99,
+    )
+    progress_events: list[dict] = []
+    raw_links: list[tuple[str, str]] = []
+
+    class FakeResponse:
+        text = "cipher"
+
+        def raise_for_status(self) -> None:
+            return None
+
+    def fake_get(self, url: str, timeout: int, verify: bool, proxies=None):
+        return FakeResponse()
+
+    extracted = iter([["vmess://first"], ["vmess://second"]])
+
+    monkeypatch.setattr("vpn_automation.pipeline.extract.requests.Session.get", fake_get)
+    monkeypatch.setattr("vpn_automation.pipeline.extract.decrypt_payload", lambda text, key: "plaintext")
+    monkeypatch.setattr(
+        "vpn_automation.pipeline.extract.extract_links_from_plaintext",
+        lambda source_name, plaintext: next(extracted),
+    )
+    monkeypatch.setattr(
+        "vpn_automation.pipeline.extract.resolve_upstream_proxy_url",
+        lambda: "",
+    )
+
+    result = fetch_source_links(
+        "leiting",
+        source,
+        progress_state_callback=lambda **payload: progress_events.append(payload),
+        raw_link_callback=lambda source_name, link: raw_links.append((source_name, link)),
+    )
+
+    assert result.links == ["vmess://first", "vmess://second"]
+    assert progress_events == [
+        {
+            "source_name": "leiting",
+            "iteration": 1,
+            "max_iterations": 2,
+            "new_links": 1,
+            "raw_links": 1,
+            "successful_iterations": 1,
+            "failed_iterations": 0,
+        },
+        {
+            "source_name": "leiting",
+            "iteration": 2,
+            "max_iterations": 2,
+            "new_links": 1,
+            "raw_links": 2,
+            "successful_iterations": 2,
+            "failed_iterations": 0,
+        },
+    ]
+    assert raw_links == [
+        ("leiting", "vmess://first"),
+        ("leiting", "vmess://second"),
+    ]

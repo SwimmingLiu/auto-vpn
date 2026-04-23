@@ -11,6 +11,7 @@ import requests
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from vpn_automation.config.models import SourceConfig
+from vpn_automation.config.runtime import resolve_upstream_proxy_url
 from vpn_automation.pipeline.vmess import generate_vmess_link, transform_node_id
 
 
@@ -96,9 +97,17 @@ def fetch_source_links(
     source: SourceConfig,
     *,
     progress_callback: Callable[[str], None] | None = None,
+    progress_state_callback: Callable[..., None] | None = None,
+    raw_link_callback: Callable[[str, str], None] | None = None,
 ) -> ExtractedSourceResult:
     session = requests.Session()
     session.trust_env = False
+    upstream_proxy = resolve_upstream_proxy_url()
+    request_proxies = (
+        {"http": upstream_proxy, "https": upstream_proxy}
+        if upstream_proxy
+        else None
+    )
 
     links: list[str] = []
     plateau = 0
@@ -107,7 +116,7 @@ def fetch_source_links(
 
     for iteration in range(source.max_iterations):
         url = build_runtime_source_url(source, iteration=iteration)
-        response = session.get(url, timeout=20, verify=False)
+        response = session.get(url, timeout=20, verify=False, proxies=request_proxies)
         response.raise_for_status()
         plaintext = decrypt_payload(response.text.strip(), source.key)
         extracted = extract_links_from_plaintext(source_name, plaintext)
@@ -119,7 +128,19 @@ def fetch_source_links(
             seen.add(link)
             links.append(link)
             new_items += 1
+            if raw_link_callback:
+                raw_link_callback(source_name, link)
         plateau = plateau + 1 if new_items == 0 else 0
+        if progress_state_callback:
+            progress_state_callback(
+                source_name=source_name,
+                iteration=iteration + 1,
+                max_iterations=source.max_iterations,
+                new_links=new_items,
+                raw_links=len(links),
+                successful_iterations=successes,
+                failed_iterations=0,
+            )
         if progress_callback:
             progress_callback(
                 f"[extract] {source_name} iter={iteration + 1}/{source.max_iterations} new={new_items} total={len(links)}"

@@ -1,4 +1,5 @@
 import json
+import inspect
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -27,6 +28,7 @@ from vpn_automation.pipeline.postprocess import (
     select_links_by_country_limit,
 )
 from vpn_automation.pipeline.render import replace_main_data
+from vpn_automation.pipeline.run_store import RunStore
 from vpn_automation.pipeline.speedtest import speedtest_links
 from vpn_automation.pipeline.vmess import parse_vmess_link
 
@@ -93,6 +95,8 @@ class PipelineController:
         stage_status = {name: "pending" for name in self.stage_names()}
         runtime_root = self.runtime_root_resolver(Path(__file__))
         artifact_dir = self._create_artifact_dir(runtime_root)
+        run_store = RunStore(artifact_dir / "run.db")
+        run_store.initialize(artifact_dir=str(artifact_dir))
         summary = PipelineSummary(artifact_dir=str(artifact_dir), stage_status=stage_status)
 
         def log(message: str) -> None:
@@ -101,6 +105,7 @@ class PipelineController:
 
         def set_stage(name: str, status: str) -> None:
             stage_status[name] = status
+            run_store.record_stage_event(name, status)
             if stage_callback:
                 stage_callback(name, status)
 
@@ -114,7 +119,7 @@ class PipelineController:
         log("[doctor] runtime environment loaded")
 
         set_stage("extract", "running")
-        raw_links = self._run_extract(profile, artifact_dir, log)
+        raw_links = self._run_extract(profile, artifact_dir, log, run_store)
         set_stage("extract", "success")
         summary.counts["raw_links"] = len(raw_links)
 
@@ -136,6 +141,14 @@ class PipelineController:
             for result in speedtest_results
             if result.reachable and result.average_download_mb_s >= profile.speed_test.min_download_mb_s
         ]
+        for result in speedtest_results:
+            run_store.record_speedtest_result(
+                link=result.link,
+                reachable=result.reachable,
+                latency_ms=result.latency_ms,
+                average_download_mb_s=result.average_download_mb_s,
+                error=getattr(result, "error", "") or "",
+            )
         fast_results.sort(key=lambda item: item.average_download_mb_s, reverse=True)
         fast_links = [result.link for result in fast_results]
         self._write_lines(artifact_dir / "vpn_node_speedtest.txt", fast_links)
@@ -154,6 +167,14 @@ class PipelineController:
             for item in availability_results
             if item.all_passed
         ]
+        for item in availability_results:
+            for provider_name, provider_result in item.provider_results.items():
+                run_store.record_availability_result(
+                    link=item.speed_result.link,
+                    provider=provider_name,
+                    passed=provider_result.passed,
+                    reason=provider_result.reason,
+                )
         available_links = [item.link for item in available_results]
         self._write_lines(artifact_dir / "vpn_node_availability.txt", available_links)
         (artifact_dir / "vpn_node_availability_report.json").write_text(
@@ -174,6 +195,12 @@ class PipelineController:
         decorated_links = [
             decorate_link_with_country(link, selected_country[link]) for link in selected_links
         ]
+        for link in selected_links:
+            run_store.record_final_link(
+                stage_name="postprocess",
+                link=link,
+                country_code=selected_country[link],
+            )
         self._write_lines(artifact_dir / "vpn_node_emoji.txt", decorated_links)
         set_stage("postprocess", "success")
         summary.counts["postprocess_links"] = len(decorated_links)
@@ -218,6 +245,7 @@ class PipelineController:
         profile: AppProfile,
         artifact_dir: Path,
         log: Callable[[str], None],
+        run_store: RunStore,
     ) -> list[str]:
         config_payload = {
             name: {"url": source.url, "key": source.key}
@@ -230,13 +258,41 @@ class PipelineController:
         for source_name, source in profile.sources.items():
             if not source.enabled or not source.url or not source.key:
                 continue
-            extracted = self.extractor(source_name, source, progress_callback=log)
+            extracted = self._call_extractor(
+                source_name,
+                source,
+                log,
+                run_store,
+            )
             if hasattr(extracted, "links"):
-                raw_links.extend(extracted.links)
+                new_links = list(extracted.links)
             else:
-                raw_links.extend(extracted)
+                new_links = list(extracted)
+            for link in new_links:
+                run_store.record_raw_link(source_name, link)
+            raw_links.extend(new_links)
         self._write_lines(artifact_dir / "vpn_node_raw.txt", raw_links)
         return raw_links
+
+    def _call_extractor(
+        self,
+        source_name: str,
+        source: Any,
+        log: Callable[[str], None],
+        run_store: RunStore,
+    ) -> Any:
+        kwargs: dict[str, Any] = {"progress_callback": log}
+        signature = inspect.signature(self.extractor)
+        parameters = signature.parameters
+        accepts_kwargs = any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters.values()
+        )
+        if accepts_kwargs or "progress_state_callback" in parameters:
+            kwargs["progress_state_callback"] = lambda **payload: run_store.record_source_progress(**payload)
+        if accepts_kwargs or "raw_link_callback" in parameters:
+            kwargs["raw_link_callback"] = run_store.record_raw_link
+        return self.extractor(source_name, source, **kwargs)
 
     def _render_template(self, runtime_root: Path, artifact_dir: Path, links: list[str]) -> Path:
         template_path = self.template_path_resolver(runtime_root)
