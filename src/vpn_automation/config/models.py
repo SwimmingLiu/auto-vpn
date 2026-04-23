@@ -1,5 +1,5 @@
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 
@@ -18,8 +18,11 @@ class SourceConfig:
     key: str
     enabled: bool = True
     max_iterations: int = 40
+    min_iterations: int = 0
     plateau_limit: int = 8
     use_random_area: bool = True
+    failure_limit: int = 3
+    max_runtime_seconds: int = 0
 
 
 @dataclass
@@ -31,6 +34,7 @@ class SpeedTestConfig:
     probe_url: str = "https://www.gstatic.com/generate_204"
     max_download_bytes: int = 5_000_000
     startup_wait_seconds: float = 1.0
+    max_download_candidates: int = 0
 
 
 @dataclass
@@ -89,12 +93,17 @@ class AppProfile:
     @classmethod
     def from_dict(cls, data: dict) -> "AppProfile":
         return cls(
-            sources={name: SourceConfig(**value) for name, value in data["sources"].items()},
-            speed_test=SpeedTestConfig(**data["speed_test"]),
-            deploy=DeployConfig(**data["deploy"]),
-            workspace=WorkspaceConfig(**data["workspace"]),
-            filters=FilterConfig(**data.get("filters", {})),
+            sources={name: _coerce_dataclass(SourceConfig, value) for name, value in data["sources"].items()},
+            speed_test=_coerce_dataclass(SpeedTestConfig, data["speed_test"]),
+            deploy=_coerce_dataclass(DeployConfig, data["deploy"]),
+            workspace=_coerce_dataclass(WorkspaceConfig, data["workspace"]),
+            filters=_coerce_dataclass(FilterConfig, data.get("filters", {})),
         )
+
+
+def _coerce_dataclass(dataclass_type, payload: dict):
+    allowed = {item.name for item in fields(dataclass_type)}
+    return dataclass_type(**{key: value for key, value in payload.items() if key in allowed})
 
 
 def resolve_repo_anchor(candidate: Path) -> Path:

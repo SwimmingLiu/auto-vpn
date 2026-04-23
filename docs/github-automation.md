@@ -30,6 +30,10 @@ This combination is intentional:
 1. Enable automatic GitHub Copilot code review for the repository in GitHub settings.
 2. Keep the PR template sections intact so the `PR Context` workflow can enforce them.
 3. Keep Dependabot enabled so Actions, npm, and pip dependencies continue to update automatically.
+4. Enable repository variable `ENABLE_DEPENDENCY_REVIEW=true` after GitHub dependency review is available for this repository.
+5. Enable repository variable `ENABLE_CODEQL=true` after GitHub code scanning / CodeQL is enabled for this repository.
+
+The dependency-review and CodeQL workflows are intentionally gated by repository variables so pull requests do not fail before the corresponding GitHub security features are enabled in repository settings.
 
 ## Secrets for `Deploy Pipeline`
 
@@ -128,4 +132,3 @@ The deploy workflow expects these repository secrets:
   }
 }
 ```
-

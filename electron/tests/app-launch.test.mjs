@@ -14,10 +14,6 @@ test('electron app exposes preload bridge and renders the real saved profile', a
 
   try {
     const page = await app.firstWindow();
-    await page.addInitScript(() => {
-      window.localStorage.setItem('vpn-automation-language', 'zh-CN');
-    });
-    await page.reload();
     await page.waitForSelector('#pageContent');
     await page.locator('#navConfig').click();
     await page.waitForSelector('#configPrimarySource');
@@ -28,6 +24,7 @@ test('electron app exposes preload bridge and renders the real saved profile', a
 
     const hasBridge = await page.evaluate(() => Boolean(window.vpnAutomation));
     const hasStopBridge = await page.evaluate(() => typeof window.vpnAutomation?.stopPipeline === 'function');
+    const activeLanguage = await page.locator('#languageSelect').inputValue();
     const pageTitle = await page.locator('#pageTitle').innerText();
     const stopVisible = await page.locator('#stopBtn').isVisible();
     const sourceInputs = page.locator('input[data-source][data-key="url"]');
@@ -36,7 +33,7 @@ test('electron app exposes preload bridge and renders the real saved profile', a
     assert.equal(hasBridge, true);
     assert.equal(hasStopBridge, true);
     assert.equal(stopVisible, true);
-    assert.equal(pageTitle, '配置管理');
+    assert.equal(pageTitle, activeLanguage === 'zh-CN' ? '配置管理' : 'Configuration');
     assert.equal(await sourceInputs.count(), 5);
     assert.notEqual(primaryValue.trim(), '');
 

@@ -28,6 +28,77 @@ def test_profile_store_round_trip(tmp_path: Path) -> None:
     assert loaded.deploy.project_name == "vmessnodes"
 
 
+def test_profile_store_load_ignores_unknown_runtime_profile_fields(tmp_path: Path) -> None:
+    runtime_profile = tmp_path / "state" / "profiles" / "default.json"
+    runtime_profile.parent.mkdir(parents=True, exist_ok=True)
+    runtime_profile.write_text(
+        """
+{
+  "sources": {
+    "leiting": {
+      "url": "https://seed.example",
+      "key": "seed-key",
+      "enabled": true,
+      "max_iterations": 100000,
+      "min_iterations": 10000,
+      "plateau_limit": 8,
+      "use_random_area": true,
+      "failure_limit": 3,
+      "max_runtime_seconds": 0
+    }
+  },
+  "speed_test": {
+    "min_download_mb_s": 0.5,
+    "timeout_seconds": 20,
+    "concurrency": 3,
+    "urls": [
+      "https://speed.cloudflare.com/__down?bytes=5000000"
+    ],
+    "probe_url": "https://www.gstatic.com/generate_204",
+    "max_download_bytes": 5000000,
+    "startup_wait_seconds": 1.0,
+    "max_download_candidates": 50
+  },
+  "deploy": {
+    "project_name": "vmessnodes",
+    "subscription_url": "https://example.com/subscription",
+    "pages_project_url": "https://example.pages.dev",
+    "secret_query": "secret=1",
+    "account_id": "account-id",
+    "use_wrangler": true,
+    "unexpected_flag": true
+  },
+  "workspace": {
+    "project_root": "/repo",
+    "workspace_root": "/repo-parent",
+    "vpn_catch_nodes_root": "/repo-parent/vpn-catch-nodes",
+    "edgetunnel_root": "/repo-parent/cloudflarevpn/edgetunnel",
+    "artifacts_root": "/repo/artifacts",
+    "state_root": "/repo/state",
+    "env_file": "/repo/.env",
+    "build_root": "/repo/build",
+    "profile_path": "/repo/state/profiles/default.json",
+    "unused_field": "ignored"
+  },
+  "filters": {
+    "excluded_country_codes": ["CN"],
+    "per_country_limit": {"HK": 5, "TW": 5}
+  }
+}
+        """.strip(),
+        encoding="utf-8",
+    )
+    store = ProfileStore(runtime_profile)
+
+    loaded = store.load()
+
+    assert loaded.sources["leiting"].url == "https://seed.example"
+    assert loaded.sources["leiting"].max_iterations == 100000
+    assert loaded.speed_test.min_download_mb_s == 0.5
+    assert loaded.deploy.project_name == "vmessnodes"
+    assert loaded.workspace.profile_path == str(runtime_profile)
+
+
 def test_profile_store_load_or_create_returns_default_profile(tmp_path: Path) -> None:
     project_root = tmp_path / "vpn-subscription-automation"
     store = ProfileStore(project_root / "state" / "profiles" / "default.json")
