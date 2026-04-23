@@ -1,6 +1,7 @@
 import json
 import inspect
 from dataclasses import dataclass, field
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -91,12 +92,17 @@ class PipelineController:
         *,
         log_callback: Callable[[str], None] | None = None,
         stage_callback: Callable[[str, str], None] | None = None,
+        resume_from: Path | None = None,
     ) -> PipelineSummary:
         stage_status = {name: "pending" for name in self.stage_names()}
         runtime_root = self.runtime_root_resolver(Path(__file__))
-        artifact_dir = self._create_artifact_dir(runtime_root)
-        run_store = RunStore(artifact_dir / "run.db")
-        run_store.initialize(artifact_dir=str(artifact_dir))
+        if resume_from:
+            artifact_dir = resume_from
+            run_store = RunStore(artifact_dir / "run.db")
+        else:
+            artifact_dir = self._create_artifact_dir(runtime_root)
+            run_store = RunStore(artifact_dir / "run.db")
+            run_store.initialize(artifact_dir=str(artifact_dir))
         summary = PipelineSummary(artifact_dir=str(artifact_dir), stage_status=stage_status)
 
         def log(message: str) -> None:
@@ -119,7 +125,7 @@ class PipelineController:
         log("[doctor] runtime environment loaded")
 
         set_stage("extract", "running")
-        raw_links = self._run_extract(profile, artifact_dir, log, run_store)
+        raw_links = self._run_extract(profile, artifact_dir, log, run_store, resume=bool(resume_from))
         set_stage("extract", "success")
         summary.counts["raw_links"] = len(raw_links)
 
@@ -246,6 +252,8 @@ class PipelineController:
         artifact_dir: Path,
         log: Callable[[str], None],
         run_store: RunStore,
+        *,
+        resume: bool = False,
     ) -> list[str]:
         config_payload = {
             name: {"url": source.url, "key": source.key}
@@ -258,9 +266,18 @@ class PipelineController:
         for source_name, source in profile.sources.items():
             if not source.enabled or not source.url or not source.key:
                 continue
+            source_to_run = deepcopy(source)
+            if resume:
+                resume_state = run_store.fetch_source_resume_state(source_name)
+                for link in resume_state["raw_links"]:
+                    if link not in raw_links:
+                        raw_links.append(link)
+                source_to_run.resume_from_iteration = int(resume_state["iteration"]) + 1
+            else:
+                source_to_run.resume_from_iteration = 1
             extracted = self._call_extractor(
                 source_name,
-                source,
+                source_to_run,
                 log,
                 run_store,
             )
@@ -292,6 +309,8 @@ class PipelineController:
             kwargs["progress_state_callback"] = lambda **payload: run_store.record_source_progress(**payload)
         if accepts_kwargs or "raw_link_callback" in parameters:
             kwargs["raw_link_callback"] = run_store.record_raw_link
+        if accepts_kwargs or "attempt_callback" in parameters:
+            kwargs["attempt_callback"] = lambda **payload: run_store.record_extract_attempt(**payload)
         return self.extractor(source_name, source, **kwargs)
 
     def _render_template(self, runtime_root: Path, artifact_dir: Path, links: list[str]) -> Path:

@@ -71,6 +71,7 @@ print(f"Latest artifact dir: {artifact_dir if artifact_dir else 'N/A'}")
 
 stage_status = {name: "pending" for name in stage_order}
 source_progress = {}
+recent_attempts = []
 counts = {
     "raw": 0,
     "speedtest": 0,
@@ -104,6 +105,16 @@ if db_path and db_path.exists():
         counts["speedtest"] = connection.execute("SELECT COUNT(*) FROM speedtest_results").fetchone()[0]
         counts["availability"] = connection.execute("SELECT COUNT(*) FROM availability_results").fetchone()[0]
         counts["final"] = connection.execute("SELECT COUNT(*) FROM final_links").fetchone()[0]
+        for row in connection.execute(
+            """
+            SELECT source_name, iteration, success, error_type, error_message,
+                   returned_links, new_links, total_links
+            FROM extract_attempts
+            ORDER BY rowid DESC
+            LIMIT 10
+            """
+        ):
+            recent_attempts.append(row)
 
 print()
 print("Stage status:")
@@ -128,6 +139,20 @@ print(f"  raw={counts['raw']}")
 print(f"  speedtest={counts['speedtest']}")
 print(f"  availability={counts['availability']}")
 print(f"  final={counts['final']}")
+
+print()
+print("Recent extract attempts:")
+if recent_attempts:
+    for source_name, iteration, success, error_type, error_message, returned_links, new_links, total_links in reversed(recent_attempts):
+        if success:
+            print(
+                f"  {source_name} iter={iteration} ok "
+                f"returned={returned_links} new={new_links} total={total_links}"
+            )
+        else:
+            print(f"  {source_name} iter={iteration} fail {error_type}: {error_message}")
+else:
+    print("  no data")
 PY
 
   if [[ "$once" -eq 1 ]]; then

@@ -170,3 +170,73 @@ def test_fetch_source_links_emits_checkpoint_callbacks(
         ("leiting", "vmess://first"),
         ("leiting", "vmess://second"),
     ]
+
+
+def test_fetch_source_links_records_each_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = SourceConfig(
+        url="https://example.com/api?t=123",
+        key="abcdabcdabcdabcd",
+        max_iterations=2,
+        min_iterations=0,
+        plateau_limit=99,
+    )
+    attempts: list[dict] = []
+
+    class FakeResponse:
+        text = "cipher"
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            return None
+
+    extracted = iter([["vmess://first"], []])
+
+    def fake_get(self, url: str, timeout: int, verify: bool, proxies=None):
+        return FakeResponse()
+
+    monkeypatch.setattr("vpn_automation.pipeline.extract.requests.Session.get", fake_get)
+    monkeypatch.setattr("vpn_automation.pipeline.extract.decrypt_payload", lambda text, key: "plaintext")
+    monkeypatch.setattr(
+        "vpn_automation.pipeline.extract.extract_links_from_plaintext",
+        lambda source_name, plaintext: next(extracted),
+    )
+    monkeypatch.setattr("vpn_automation.pipeline.extract.resolve_upstream_proxy_url", lambda: "http://127.0.0.1:7897")
+
+    result = fetch_source_links(
+        "leiting",
+        source,
+        attempt_callback=lambda **payload: attempts.append(payload),
+    )
+
+    assert result.links == ["vmess://first"]
+    assert len(attempts) == 2
+    assert attempts[0] == {
+        "source_name": "leiting",
+        "iteration": 1,
+        "url": attempts[0]["url"],
+        "used_proxy": True,
+        "success": True,
+        "http_status": 200,
+        "error_type": "",
+        "error_message": "",
+        "returned_links": 1,
+        "new_links": 1,
+        "total_links": 1,
+    }
+    assert attempts[0]["url"].startswith("https://example.com/api?t=")
+    assert attempts[1] == {
+        "source_name": "leiting",
+        "iteration": 2,
+        "url": attempts[1]["url"],
+        "used_proxy": True,
+        "success": True,
+        "http_status": 200,
+        "error_type": "",
+        "error_message": "",
+        "returned_links": 0,
+        "new_links": 0,
+        "total_links": 1,
+    }
+    assert attempts[1]["url"].startswith("https://example.com/api?t=")
