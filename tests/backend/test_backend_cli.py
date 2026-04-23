@@ -4,6 +4,7 @@ from pathlib import Path
 from vpn_automation.backend import build_event, ensure_profile_json, save_profile_payload
 from vpn_automation.config.models import AppProfile, DeployConfig, SourceConfig, SpeedTestConfig
 from vpn_automation.config.store import ProfileStore
+from vpn_automation.pipeline.run_store import RunStore
 
 
 def test_build_event_emits_json_line() -> None:
@@ -59,3 +60,26 @@ def test_ensure_profile_json_prefers_env_profile_path(tmp_path: Path, monkeypatc
 
     assert payload["deploy"]["project_name"] == "env-profile"
     assert payload["sources"]["leiting"]["url"] == "https://env.example"
+
+
+def test_find_resume_run_db_prefers_latest_incomplete_artifact(tmp_path: Path) -> None:
+    from vpn_automation.backend import find_resume_run_db
+
+    project_root = tmp_path / "vpn-subscription-automation"
+    artifacts_root = project_root / "artifacts"
+    first_dir = artifacts_root / "20260423-010101"
+    second_dir = artifacts_root / "20260423-020202"
+    first_dir.mkdir(parents=True)
+    second_dir.mkdir(parents=True)
+
+    first = RunStore(first_dir / "run.db")
+    first.initialize(artifact_dir=str(first_dir))
+    first.record_stage_event("verify", "success")
+
+    second = RunStore(second_dir / "run.db")
+    second.initialize(artifact_dir=str(second_dir))
+    second.record_stage_event("extract", "running")
+
+    resolved = find_resume_run_db(project_root)
+
+    assert resolved == second_dir / "run.db"

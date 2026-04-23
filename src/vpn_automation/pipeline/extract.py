@@ -9,6 +9,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 import requests
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from requests import RequestException
 
 from vpn_automation.config.models import SourceConfig
 from vpn_automation.config.runtime import resolve_upstream_proxy_url
@@ -99,6 +100,7 @@ def fetch_source_links(
     progress_callback: Callable[[str], None] | None = None,
     progress_state_callback: Callable[..., None] | None = None,
     raw_link_callback: Callable[[str, str], None] | None = None,
+    attempt_callback: Callable[..., None] | None = None,
 ) -> ExtractedSourceResult:
     session = requests.Session()
     session.trust_env = False
@@ -114,12 +116,31 @@ def fetch_source_links(
     successes = 0
     seen = set()
 
-    for iteration in range(source.max_iterations):
+    start_iteration = int(getattr(source, "resume_from_iteration", 1))
+    for iteration in range(start_iteration - 1, source.max_iterations):
         url = build_runtime_source_url(source, iteration=iteration)
-        response = session.get(url, timeout=20, verify=False, proxies=request_proxies)
-        response.raise_for_status()
-        plaintext = decrypt_payload(response.text.strip(), source.key)
-        extracted = extract_links_from_plaintext(source_name, plaintext)
+        response = None
+        try:
+            response = session.get(url, timeout=20, verify=False, proxies=request_proxies)
+            response.raise_for_status()
+            plaintext = decrypt_payload(response.text.strip(), source.key)
+            extracted = extract_links_from_plaintext(source_name, plaintext)
+        except Exception as exc:
+            if attempt_callback:
+                attempt_callback(
+                    source_name=source_name,
+                    iteration=iteration + 1,
+                    url=url,
+                    used_proxy=bool(request_proxies),
+                    success=False,
+                    http_status=int(getattr(response, "status_code", 0) or 0),
+                    error_type=exc.__class__.__name__,
+                    error_message=str(exc),
+                    returned_links=0,
+                    new_links=0,
+                    total_links=len(links),
+                )
+            raise
         successes += 1
         new_items = 0
         for link in extracted:
@@ -140,6 +161,20 @@ def fetch_source_links(
                 raw_links=len(links),
                 successful_iterations=successes,
                 failed_iterations=0,
+            )
+        if attempt_callback:
+            attempt_callback(
+                source_name=source_name,
+                iteration=iteration + 1,
+                url=url,
+                used_proxy=bool(request_proxies),
+                success=True,
+                http_status=int(getattr(response, "status_code", 200)),
+                error_type="",
+                error_message="",
+                returned_links=len(extracted),
+                new_links=new_items,
+                total_links=len(links),
             )
         if progress_callback:
             progress_callback(

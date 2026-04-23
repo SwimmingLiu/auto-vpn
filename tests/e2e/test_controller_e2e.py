@@ -4,6 +4,7 @@ from pathlib import Path
 from vpn_automation.config.models import create_default_profile
 from vpn_automation.pipeline.availability import AvailabilityResult, ProviderCheckResult
 from vpn_automation.pipeline.controller import PipelineController
+from vpn_automation.pipeline.run_store import RunStore
 from vpn_automation.pipeline.speedtest import SpeedTestResult
 
 
@@ -120,3 +121,74 @@ def test_pipeline_controller_filters_links_when_any_provider_fails(tmp_path: Pat
 
     assert summary.counts["speedtest_links"] == 1
     assert summary.counts["availability_links"] == 0
+
+
+def test_pipeline_controller_resume_continues_extract_from_saved_iteration(tmp_path: Path) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    template_root = project_root / "templates"
+    artifact_dir = project_root / "artifacts" / "20260423-030303"
+    template_root.mkdir(parents=True)
+    artifact_dir.mkdir(parents=True)
+    (template_root / "vmess_node.js").write_text("const MainData = `old`;", encoding="utf-8")
+
+    profile = create_default_profile(project_root)
+    profile.sources = {
+        "leiting": profile.sources["leiting"],
+    }
+    profile.sources["leiting"].url = "https://example.com/api"
+    profile.sources["leiting"].key = "abcdabcdabcdabcd"
+    profile.sources["leiting"].max_iterations = 5
+    vmess_seed = "vmess://eyJhZGQiOiIxLjEuMS4xIiwiYWlkIjoiNjQiLCJob3N0Ijoid3d3Lmdvb2dsZS5jb20iLCJpZCI6IjQxODA0OGFmLWEyOTMtNGI5OS05YjBjLTk4Y2EzNTgwZGQyNCIsIm5ldCI6IndzIiwicGF0aCI6IlwvZm9vdGVycyIsInBvcnQiOjQ0MywicHMiOjQzMSwidGxzIjoidGxzIiwidHlwZSI6ImR0bHMiLCJ2IjoiMiJ9"
+    vmess_resumed = "vmess://eyJhZGQiOiIyLjIuMi4yIiwiYWlkIjoiNjQiLCJob3N0Ijoid3d3Lmdvb2dsZS5jb20iLCJpZCI6IjQxODA0OGFmLWEyOTMtNGI5OS05YjBjLTk4Y2EzNTgwZGQyNSIsIm5ldCI6IndzIiwicGF0aCI6IlwvYmFyIiwicG9ydCI6NDQzLCJwcyI6NDMyLCJ0bHMiOiJ0bHMiLCJ0eXBlIjoiZHRscyIsInYiOiIyIn0="
+
+    run_store = RunStore(artifact_dir / "run.db")
+    run_store.initialize(artifact_dir=str(artifact_dir))
+    run_store.record_stage_event("doctor", "success")
+    run_store.record_stage_event("extract", "running")
+    run_store.record_source_progress(
+        source_name="leiting",
+        iteration=3,
+        max_iterations=5,
+        new_links=0,
+        raw_links=1,
+        successful_iterations=3,
+        failed_iterations=0,
+    )
+    run_store.record_raw_link("leiting", vmess_seed)
+
+    calls: list[int] = []
+
+    def extractor(source_name, source, progress_callback=None, progress_state_callback=None, raw_link_callback=None, attempt_callback=None):
+        calls.append(source.resume_from_iteration)
+        if raw_link_callback:
+            raw_link_callback(source_name, vmess_resumed)
+        if progress_state_callback:
+            progress_state_callback(
+                source_name=source_name,
+                iteration=4,
+                max_iterations=5,
+                new_links=1,
+                raw_links=2,
+                successful_iterations=4,
+                failed_iterations=0,
+            )
+        return [vmess_resumed]
+
+    controller = build_controller(
+        project_root,
+        extractor=extractor,
+        speedtester=lambda links, config, xray_path="", progress_callback=None: [
+            SpeedTestResult(link=links[0], reachable=True, average_download_mb_s=3.2, latency_ms=120)
+        ],
+        availability_checker=lambda results, config, xray_path="", progress_callback=None: [],
+        country_lookup=lambda host: "US",
+        obfuscator=lambda input_path, output_path: output_path.write_text("obfuscated", encoding="utf-8"),
+        deployer=lambda bundle_dir, deploy_config, api_token: {"returncode": 0, "stdout": "ok", "stderr": ""},
+        verifier=lambda deploy_config, api_token: {"secret_ok": True, "subscription_ok": True},
+        env_loader=lambda _candidate: {"CLOUDFLARE_API_TOKEN": "token"},
+    )
+
+    resumed = controller.run(profile, resume_from=artifact_dir)
+
+    assert calls == [4]
+    assert resumed.counts["raw_links"] == 2

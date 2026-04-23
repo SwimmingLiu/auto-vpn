@@ -9,7 +9,7 @@ def test_monitor_run_once_reads_latest_sqlite_checkpoint(tmp_path: Path) -> None
     repo_root = tmp_path / "vpn-subscription-automation"
     artifact_dir = repo_root / "artifacts" / "20260423-010101"
     script_path = Path(
-        "/Users/swimmingliu/data/VPN/vpn-subscription-automation/.worktrees/sqlite-checkpoints-proxy/scripts/monitor_run.sh"
+        "/Users/swimmingliu/data/VPN/vpn-subscription-automation/.worktrees/sqlite-resume-monitor/scripts/monitor_run.sh"
     )
 
     artifact_dir.mkdir(parents=True)
@@ -45,6 +45,32 @@ def test_monitor_run_once_reads_latest_sqlite_checkpoint(tmp_path: Path) -> None
         link="vmess://first",
         country_code="US",
     )
+    store.record_extract_attempt(
+        source_name="leiting",
+        iteration=12,
+        url="https://example.com/api?t=12",
+        used_proxy=True,
+        success=True,
+        http_status=200,
+        error_type="",
+        error_message="",
+        returned_links=1,
+        new_links=1,
+        total_links=2,
+    )
+    store.record_extract_attempt(
+        source_name="heidong",
+        iteration=13,
+        url="https://example.com/api?t=13",
+        used_proxy=True,
+        success=False,
+        http_status=0,
+        error_type="SSLError",
+        error_message="boom",
+        returned_links=0,
+        new_links=0,
+        total_links=2,
+    )
 
     result = subprocess.run(
         [str(script_path), "--once", str(repo_root)],
@@ -64,3 +90,6 @@ def test_monitor_run_once_reads_latest_sqlite_checkpoint(tmp_path: Path) -> None
     assert "speedtest=1" in result.stdout
     assert "availability=1" in result.stdout
     assert "final=1" in result.stdout
+    assert "Recent extract attempts:" in result.stdout
+    assert "leiting iter=12 ok returned=1 new=1 total=2" in result.stdout
+    assert "heidong iter=13 fail SSLError: boom" in result.stdout
