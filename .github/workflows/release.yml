@@ -11,7 +11,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   package-electron:
@@ -34,11 +34,26 @@ jobs:
       - name: Build macOS package
         run: npm run package:electron
 
+      - name: Zip macOS app
+        run: ditto -c -k --keepParent "dist-electron/mac-arm64/VPN Subscription Automation.app" "dist-electron/VPN Subscription Automation-mac-arm64.zip"
+
       - name: Upload package artifact
         uses: actions/upload-artifact@v4
         with:
           name: vpn-subscription-automation-macos
-          path: dist-electron/**
+          path: dist-electron/VPN Subscription Automation-mac-arm64.zip
           if-no-files-found: error
           retention-days: 14
 
+      - name: Publish GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" "dist-electron/VPN Subscription Automation-mac-arm64.zip" --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" "dist-electron/VPN Subscription Automation-mac-arm64.zip" \
+              --title "${GITHUB_REF_NAME}" \
+              --notes "Automated release package for VPN Subscription Automation."
+          fi

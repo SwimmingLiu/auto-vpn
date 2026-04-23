@@ -136,7 +136,7 @@ This repository now includes:
 - manual deploy workflow driven by repository secrets
 - Copilot review context files and a pull-request context gate
 
-See `/Users/swimmingliu/data/VPN/vpn-subscription-automation/docs/github-automation.md` for the maintainer setup and deploy secret format.
+See [`docs/github-automation.md`](docs/github-automation.md) for the maintainer setup and deploy secret format.
 
 ## Package the Electron desktop app
 

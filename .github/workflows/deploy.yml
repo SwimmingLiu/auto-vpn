@@ -3,6 +3,13 @@ name: Deploy Pipeline
 on:
   workflow_dispatch:
     inputs:
+      environment:
+        description: Target GitHub environment
+        required: true
+        default: production
+        type: choice
+        options:
+          - production
       xray_version:
         description: Xray-core release tag to install
         required: true
@@ -17,6 +24,10 @@ jobs:
     name: Run backend deployment pipeline
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    environment: ${{ inputs.environment }}
+    concurrency:
+      group: deploy-${{ inputs.environment }}
+      cancel-in-progress: false
 
     env:
       PROFILE_PATH: state/profiles/default.json
@@ -45,20 +56,29 @@ jobs:
       - name: Install Node dependencies
         run: npm ci
 
+      - name: Download xray release assets
+        env:
+          XRAY_VERSION: ${{ inputs.xray_version }}
+        run: |
+          if ! printf '%s' "$XRAY_VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Invalid xray_version input. Expected format: vMAJOR.MINOR.PATCH"
+            exit 1
+          fi
+          curl -fsSL -o /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-64.zip"
+          curl -fsSL -o /tmp/xray.zip.dgst "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-64.zip.dgst"
+          mkdir -p "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
       - name: Install xray
         env:
           XRAY_VERSION: ${{ inputs.xray_version }}
         run: |
-          curl -fsSL -o /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-64.zip"
-          python - <<'PY'
-          import zipfile
-
-          with zipfile.ZipFile("/tmp/xray.zip") as archive:
-              archive.extractall("/tmp/xray")
-          PY
-          mkdir -p "$HOME/.local/bin"
-          install /tmp/xray/xray "$HOME/.local/bin/xray"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          python scripts/ci/install_xray.py \
+            --version "${XRAY_VERSION}" \
+            --archive-path /tmp/xray.zip \
+            --digest-path /tmp/xray.zip.dgst \
+            --extract-root /tmp/xray \
+            --install-dir "$HOME/.local/bin"
 
       - name: Materialize runtime profile
         env:
@@ -99,4 +119,3 @@ jobs:
           path: artifacts/**
           if-no-files-found: error
           retention-days: 14
-

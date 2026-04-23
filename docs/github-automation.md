@@ -8,6 +8,7 @@ This repository now ships repository-level automation for CI, release packaging,
 - `Dependency Review`: blocks high-severity dependency changes on pull requests
 - `CodeQL`: runs GitHub code scanning for JavaScript / Python
 - `Release Package`: builds the macOS Electron package and uploads the artifact
+- `Release Package`: builds the macOS Electron package, uploads the artifact, and publishes a GitHub Release asset for tag builds
 - `Deploy Pipeline`: manually runs the backend pipeline in GitHub Actions
 - `PR Context`: rejects pull requests that omit required review context
 
@@ -32,8 +33,10 @@ This combination is intentional:
 3. Keep Dependabot enabled so Actions, npm, and pip dependencies continue to update automatically.
 4. Enable repository variable `ENABLE_DEPENDENCY_REVIEW=true` after GitHub dependency review is available for this repository.
 5. Enable repository variable `ENABLE_CODEQL=true` after GitHub code scanning / CodeQL is enabled for this repository.
+6. Create a GitHub environment such as `production` for the deploy workflow and attach the production secrets there when you want approval-gated deployment.
 
 The dependency-review and CodeQL workflows are intentionally gated by repository variables so pull requests do not fail before the corresponding GitHub security features are enabled in repository settings.
+The deploy workflow is environment-aware and serializes deployment per target environment.
 
 ## Secrets for `Deploy Pipeline`
 
@@ -42,7 +45,7 @@ The deploy workflow expects these repository secrets:
 - `CLOUDFLARE_API_TOKEN`
 - `VPN_AUTOMATION_PROFILE_JSON`
 
-`VPN_AUTOMATION_PROFILE_JSON` should be a full `AppProfile` JSON payload. Use `__GITHUB_WORKSPACE__` as a placeholder for the checked-out repository root. The workflow rewrites it to the actual runner path before execution.
+`VPN_AUTOMATION_PROFILE_JSON` should be a full `AppProfile` JSON payload. Use `__GITHUB_WORKSPACE__` as a placeholder for the checked-out repository root. The workflow rewrites it to the actual runner path before execution. The `deploy.secret_query` value must match what the deployed Worker expects; the historical default in this codebase uses `serect_key=...`, so do not assume the parameter name is always `secret_key`.
 
 ### Example `VPN_AUTOMATION_PROFILE_JSON`
 
