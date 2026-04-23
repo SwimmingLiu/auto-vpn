@@ -8,6 +8,6 @@ test('resolveLiveProfilePath prefers the repo-anchor state file for worktrees', 
 
   assert.equal(
     resolveLiveProfilePath(projectRoot),
-    '/Users/demo/vpn-subscription-automation/state/profiles/default.json'
+    '/Users/demo/vpn-subscription-automation/state/profile.toml'
   );
 });

@@ -17,15 +17,15 @@ export function resolveRepoAnchor(projectRoot) {
 }
 
 export function resolveLiveProfilePath(projectRoot) {
-  return path.join(resolveRepoAnchor(projectRoot), 'state', 'profiles', 'default.json');
+  return path.join(resolveRepoAnchor(projectRoot), 'state', 'profile.toml');
 }
 
 export function resolveRuntimePaths(projectRoot) {
   const runtimeDir = path.join(projectRoot, 'electron', 'runtime');
   return {
     runtimeDir,
-    defaultSeedPath: path.join(runtimeDir, 'default-profile.json'),
-    bundledSeedPath: path.join(runtimeDir, 'bundled-profile.json'),
+    defaultSeedPath: path.join(runtimeDir, 'default-profile.toml'),
+    bundledSeedPath: path.join(runtimeDir, 'bundled-profile.toml'),
     liveProfilePath: resolveLiveProfilePath(projectRoot)
   };
 }

@@ -1,9 +1,10 @@
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
-from vpn_automation.config.models import resolve_repo_anchor
+from vpn_automation.config.models import AppProfile, resolve_repo_anchor
 from vpn_automation.config.store import ProfileStore, resolve_profile_path
 from vpn_automation.pipeline.controller import PipelineController
 
@@ -16,6 +17,11 @@ def ensure_profile_json(project_root: Path) -> str:
     store = ProfileStore(resolve_profile_path(project_root))
     profile = store.load_or_create(project_root)
     return json.dumps(profile.to_dict(), ensure_ascii=False)
+
+
+def save_profile_payload(project_root: Path, payload: dict[str, Any]) -> None:
+    store = ProfileStore(resolve_profile_path(project_root))
+    store.save(AppProfile.from_dict(payload))
 
 
 def run_pipeline(project_root: Path) -> int:
@@ -52,6 +58,9 @@ def main(argv: list[str] | None = None) -> int:
     profile_parser = subparsers.add_parser("profile")
     profile_parser.add_argument("--project-root", default="")
 
+    profile_save_parser = subparsers.add_parser("profile-save")
+    profile_save_parser.add_argument("--project-root", default="")
+
     run_parser = subparsers.add_parser("run")
     run_parser.add_argument("--project-root", default="")
 
@@ -61,6 +70,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "profile":
         print(ensure_profile_json(project_root))
+        return 0
+    if args.command == "profile-save":
+        payload = json.load(sys.stdin)
+        save_profile_payload(project_root, payload)
         return 0
     if args.command == "run":
         return run_pipeline(project_root)

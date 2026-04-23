@@ -51,17 +51,19 @@
 
 ## Canonical Runtime Profile
 
-桌面端当前以这份文件作为**最高优先级主配置**：
+桌面端当前只使用这份文件作为**唯一运行时主配置**：
 
-- `/Users/swimmingliu/data/VPN/vpn-subscription-automation/state/profiles/default.json`
+- `/Users/swimmingliu/data/VPN/vpn-subscription-automation/state/profile.toml`
 
 说明：
 
-- 如果这份文件存在，Electron / backend 优先读取它
-- 当应用从 `.worktrees/` 或打包后的 `.app` 启动时，也会优先回退到这份主配置
+- 配置文件格式为 TOML，可直接手工编辑
+- Electron / backend 都通过 Python backend 读写这份 TOML
+- 当应用从 `.worktrees/` 启动时，配置仍锚定到主仓库 `state/profile.toml`
 - `state/` 目录属于**本地运行时配置**，当前被 `.gitignore` 忽略，不进入 git
+- 旧路径 `state/profiles/default.json` 已废弃，不再参与运行
 
-这意味着你现在手工更新的 5 个抓包源 URL / key，应当成为桌面端实际读取到的配置来源。
+你现在需要手工维护的配置，都应当写在这份 TOML 文件里。
 
 ## Repository Layout
 
@@ -139,7 +141,9 @@ npm run package:electron
 ## Notes
 
 - Electron app 优先通过项目 `.venv` 的 Python 调用后端；若不存在，则回退到 `python3.12`，最后回退到 `python3`
-- 当前打包产物默认与项目仓库放在一起使用，以复用 sibling 目录：
-  - `/Users/swimmingliu/data/VPN/vpn-catch-nodes`
-  - `/Users/swimmingliu/data/VPN/cloudflarevpn/edgetunnel`
+- pipeline 模板资源已内置在当前仓库：
+  - `/Users/swimmingliu/data/VPN/vpn-subscription-automation/templates/vmess_node.js`
+- 运行时不再依赖 sibling 目录：
+  - `vpn-catch-nodes`
+  - `cloudflarevpn/edgetunnel`
 - 如果后续要做完全独立分发，需要额外把 Python runtime、依赖和仓库资源一起封装

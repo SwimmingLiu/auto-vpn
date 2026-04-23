@@ -1,4 +1,3 @@
-import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -17,9 +16,12 @@ class SourceConfig:
     url: str
     key: str
     enabled: bool = True
-    max_iterations: int = 40
+    max_iterations: int = 100_000
+    min_iterations: int = 0
     plateau_limit: int = 8
     use_random_area: bool = True
+    failure_limit: int = 3
+    max_runtime_seconds: float = 0.0
 
 
 @dataclass
@@ -31,6 +33,7 @@ class SpeedTestConfig:
     probe_url: str = "https://www.gstatic.com/generate_204"
     max_download_bytes: int = 5_000_000
     startup_wait_seconds: float = 1.0
+    max_download_candidates: int = 50
 
 
 @dataclass
@@ -46,33 +49,7 @@ class DeployConfig:
 @dataclass
 class FilterConfig:
     excluded_country_codes: list[str] = field(default_factory=lambda: ["CN"])
-    per_country_limit: dict[str, int] = field(default_factory=lambda: {"HK": 5, "TW": 5})
-
-
-@dataclass
-class WorkspaceConfig:
-    project_root: str
-    workspace_root: str
-    vpn_catch_nodes_root: str
-    edgetunnel_root: str
-    artifacts_root: str
-    state_root: str
-    env_file: str
-    build_root: str
-    profile_path: str = ""
-
-
-def _default_workspace() -> WorkspaceConfig:
-    return WorkspaceConfig(
-        project_root="",
-        workspace_root="",
-        vpn_catch_nodes_root="",
-        edgetunnel_root="",
-        artifacts_root="",
-        state_root="",
-        env_file="",
-        build_root="",
-    )
+    per_country_limit: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -80,7 +57,6 @@ class AppProfile:
     sources: dict[str, SourceConfig]
     speed_test: SpeedTestConfig
     deploy: DeployConfig
-    workspace: WorkspaceConfig = field(default_factory=_default_workspace)
     filters: FilterConfig = field(default_factory=FilterConfig)
 
     def to_dict(self) -> dict:
@@ -92,7 +68,6 @@ class AppProfile:
             sources={name: SourceConfig(**value) for name, value in data["sources"].items()},
             speed_test=SpeedTestConfig(**data["speed_test"]),
             deploy=DeployConfig(**data["deploy"]),
-            workspace=WorkspaceConfig(**data["workspace"]),
             filters=FilterConfig(**data.get("filters", {})),
         )
 
@@ -112,40 +87,51 @@ def resolve_repo_anchor(candidate: Path) -> Path:
             return path
     return current
 
-def create_default_profile(project_root: Path) -> AppProfile:
-    project_root = resolve_repo_anchor(project_root)
-    workspace_root = project_root.parent
-    vpn_catch_nodes_root = workspace_root / "vpn-catch-nodes"
-    edgetunnel_root = workspace_root / "cloudflarevpn" / "edgetunnel"
-    sources = {
-        name: SourceConfig(url="", key="", enabled=True)
+
+def _default_source_config(source_name: str) -> SourceConfig:
+    source_defaults = {
+        "leiting": SourceConfig(url="", key="", enabled=True, min_iterations=10_000),
+        "heidong": SourceConfig(url="", key="", enabled=True, min_iterations=15_000),
+        "mifeng": SourceConfig(url="", key="", enabled=True, min_iterations=20_000),
+        "xuanfeng1": SourceConfig(
+            url="",
+            key="",
+            enabled=True,
+            min_iterations=10_000,
+            use_random_area=False,
+        ),
+        "xuanfeng2": SourceConfig(url="", key="", enabled=True, min_iterations=25_000),
+    }
+    return source_defaults[source_name]
+
+
+def default_sources() -> dict[str, SourceConfig]:
+    return {
+        name: _default_source_config(name)
         for name in DEFAULT_SOURCE_ORDER
     }
 
+
+def create_default_profile(project_root: Path) -> AppProfile:
+    _ = project_root
+
     return AppProfile(
-        sources=sources,
+        sources=default_sources(),
         speed_test=SpeedTestConfig(
-            min_download_mb_s=1.0,
+            min_download_mb_s=0.5,
             timeout_seconds=20,
             concurrency=3,
-            urls=[],
+            urls=[
+                "https://speed.cloudflare.com/__down?bytes=5000000",
+                "https://proof.ovh.net/files/10Mb.dat",
+                "https://cachefly.cachefly.net/10mb.test",
+            ],
+            max_download_bytes=5_000_000,
+            startup_wait_seconds=1.0,
+            max_download_candidates=50,
         ),
         deploy=DeployConfig(
-            project_name="",
-            subscription_url="",
-            pages_project_url="",
-            secret_query="",
-            account_id="",
-        ),
-        workspace=WorkspaceConfig(
-            project_root=str(project_root),
-            workspace_root=str(workspace_root),
-            vpn_catch_nodes_root=str(vpn_catch_nodes_root),
-            edgetunnel_root=str(edgetunnel_root),
-            artifacts_root=str(project_root / "artifacts"),
-            state_root=str(project_root / "state"),
-            env_file=str(project_root / ".env"),
-            build_root=str(project_root / "build"),
-            profile_path="",
+            project_name="vmessnodes",
+            subscription_url="https://swimmingliu.xyz/179ba8dd-3854-4747-b853-fc1868ef3937",
         ),
     )

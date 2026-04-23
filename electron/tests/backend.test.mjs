@@ -18,6 +18,11 @@ test('buildBackendInvocation returns python module command', () => {
   assert.deepEqual(invocation.args, ['-m', 'vpn_automation.backend', 'run', '--project-root', '/repo']);
 });
 
+test('buildBackendInvocation supports profile-save command routing', () => {
+  const invocation = buildBackendInvocation('/repo', 'profile-save');
+  assert.deepEqual(invocation.args, ['-m', 'vpn_automation.backend', 'profile-save', '--project-root', '/repo']);
+});
+
 test('parseBackendEventLine decodes backend json line', () => {
   const event = parseBackendEventLine('{"type":"log","message":"hello"}');
   assert.equal(event.type, 'log');
@@ -53,14 +58,14 @@ test('resolveStateProfilePath prefers the repo-anchor state file for worktrees',
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vpn-state-root-'));
   const repoRoot = path.join(root, 'vpn-subscription-automation');
   const worktreeRoot = path.join(repoRoot, '.worktrees', 'cleanup');
-  const anchorProfile = path.join(repoRoot, 'state', 'profiles', 'default.json');
-  const localProfile = path.join(worktreeRoot, 'state', 'profiles', 'default.json');
+  const anchorProfile = path.join(repoRoot, 'state', 'profile.toml');
+  const localProfile = path.join(worktreeRoot, 'state', 'profile.toml');
 
   fs.mkdirSync(worktreeRoot, { recursive: true });
   fs.mkdirSync(path.dirname(localProfile), { recursive: true });
   fs.mkdirSync(path.dirname(anchorProfile), { recursive: true });
-  fs.writeFileSync(localProfile, '{"sources":"local"}', 'utf-8');
-  fs.writeFileSync(anchorProfile, '{}', 'utf-8');
+  fs.writeFileSync(localProfile, '[sources]\n', 'utf-8');
+  fs.writeFileSync(anchorProfile, '[sources]\n', 'utf-8');
 
   assert.equal(resolveStateProfilePath(worktreeRoot), anchorProfile);
 });
@@ -68,12 +73,12 @@ test('resolveStateProfilePath prefers the repo-anchor state file for worktrees',
 test('resolveStateProfilePath switches to userData when packaged', () => {
   assert.equal(
     resolveStateProfilePath('/repo', { isPackaged: true, userDataPath: '/Users/demo/Library/Application Support/VPN' }),
-    '/Users/demo/Library/Application Support/VPN/state/profiles/default.json'
+    '/Users/demo/Library/Application Support/VPN/state/profile.toml'
   );
 });
 
 test('resolveBundledProfilePath points at the packaged runtime seed file', () => {
-  assert.equal(resolveBundledProfilePath('/repo'), '/repo/electron/runtime/bundled-profile.json');
+  assert.equal(resolveBundledProfilePath('/repo'), '/repo/electron/runtime/bundled-profile.toml');
 });
 
 test('resolveBackendPython prefers a project virtualenv when present', () => {
