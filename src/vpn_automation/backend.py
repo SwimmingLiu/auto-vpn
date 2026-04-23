@@ -5,7 +5,6 @@ from typing import Any
 
 from vpn_automation.config.models import resolve_repo_anchor
 from vpn_automation.config.store import ProfileStore, resolve_profile_path
-from vpn_automation.pipeline.controller import PipelineController
 
 
 def build_event(event_type: str, payload: dict[str, Any]) -> str:
@@ -19,6 +18,8 @@ def ensure_profile_json(project_root: Path) -> str:
 
 
 def run_pipeline(project_root: Path) -> int:
+    from vpn_automation.pipeline.controller import PipelineController
+
     store = ProfileStore(resolve_profile_path(project_root))
     profile = store.load_or_create(project_root)
     controller = PipelineController()
