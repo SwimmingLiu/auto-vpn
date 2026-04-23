@@ -17,6 +17,8 @@ If a task changes files in this repository, including coding, refactoring, confi
    - Any completed task that changes behavior should include end-to-end verification plus a pixel-level / visual check, not only code-level tests.
 2. Open a GitHub PR.
 3. Request `@Copilot` review.
+   - When using GitHub CLI, request it with `gh pr edit <pr> --add-reviewer "@copilot"`.
+   - Do not use bare `copilot` as the reviewer login; GitHub CLI expects the literal `@copilot` token for Copilot review requests.
 4. Apply review feedback and update the code.
 5. If any file changes again after review, repeat the workflow:
    - rerun the browser-based H5 front-end test round first
