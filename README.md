@@ -137,6 +137,7 @@ This repository now includes:
 - Copilot review context files and a pull-request context gate
 
 See [`docs/github-automation.md`](docs/github-automation.md) for the maintainer setup and deploy secret format.
+That document now also contains the final GitHub variables / environments / secrets checklist for making the release and deploy workflows production-ready.
 
 ## Package the Electron desktop app
 
