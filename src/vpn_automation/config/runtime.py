@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from dotenv import dotenv_values
@@ -37,3 +38,10 @@ def resolve_artifacts_root(candidate: Path) -> Path:
 
 def resolve_template_file(candidate: Path) -> Path:
     return resolve_runtime_root(candidate) / "templates" / "vmess_node.js"
+
+
+def resolve_upstream_proxy_url() -> str:
+    value = os.environ.get("VPN_AUTOMATION_UPSTREAM_PROXY", "http://127.0.0.1:7897").strip()
+    if value.lower() in {"", "off", "none", "false", "0"}:
+        return ""
+    return value

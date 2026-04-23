@@ -53,6 +53,7 @@ def test_create_default_profile_starts_with_editable_defaults(tmp_path: Path) ->
 
     assert profile.sources["leiting"].url == ""
     assert profile.sources["leiting"].key == ""
+    assert all(source.max_iterations == 5000 for source in profile.sources.values())
     assert profile.deploy.project_name == "vmessnodes"
     assert profile.deploy.subscription_url == "https://swimmingliu.xyz/179ba8dd-3854-4747-b853-fc1868ef3937"
     assert len(profile.speed_test.urls) == 3

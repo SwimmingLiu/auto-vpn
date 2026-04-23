@@ -16,7 +16,7 @@ class SourceConfig:
     url: str
     key: str
     enabled: bool = True
-    max_iterations: int = 100_000
+    max_iterations: int = 5_000
     min_iterations: int = 0
     plateau_limit: int = 8
     use_random_area: bool = True
@@ -90,17 +90,18 @@ def resolve_repo_anchor(candidate: Path) -> Path:
 
 def _default_source_config(source_name: str) -> SourceConfig:
     source_defaults = {
-        "leiting": SourceConfig(url="", key="", enabled=True, min_iterations=10_000),
-        "heidong": SourceConfig(url="", key="", enabled=True, min_iterations=15_000),
-        "mifeng": SourceConfig(url="", key="", enabled=True, min_iterations=20_000),
+        "leiting": SourceConfig(url="", key="", enabled=True, max_iterations=5_000, min_iterations=10_000),
+        "heidong": SourceConfig(url="", key="", enabled=True, max_iterations=5_000, min_iterations=15_000),
+        "mifeng": SourceConfig(url="", key="", enabled=True, max_iterations=5_000, min_iterations=20_000),
         "xuanfeng1": SourceConfig(
             url="",
             key="",
             enabled=True,
+            max_iterations=5_000,
             min_iterations=10_000,
             use_random_area=False,
         ),
-        "xuanfeng2": SourceConfig(url="", key="", enabled=True, min_iterations=25_000),
+        "xuanfeng2": SourceConfig(url="", key="", enabled=True, max_iterations=5_000, min_iterations=25_000),
     }
     return source_defaults[source_name]
 

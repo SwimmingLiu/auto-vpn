@@ -65,6 +65,8 @@
 
 你现在需要手工维护的配置，都应当写在这份 TOML 文件里。
 
+当前为了缩短真实抓取时长，默认 source 配置里的 `max_iterations` 已临时统一降到 `5000`。
+
 ## Repository Layout
 
 ```text
@@ -143,6 +145,11 @@ npm run package:electron
 - Electron app 优先通过项目 `.venv` 的 Python 调用后端；若不存在，则回退到 `python3.12`，最后回退到 `python3`
 - pipeline 模板资源已内置在当前仓库：
   - `/Users/swimmingliu/data/VPN/vpn-subscription-automation/templates/vmess_node.js`
+- 每次 pipeline 运行会在 artifact 目录下生成：
+  - `/Users/swimmingliu/data/VPN/vpn-subscription-automation/artifacts/<run>/run.db`
+- 可用以下脚本读取最新 SQLite checkpoint：
+  - `/Users/swimmingliu/data/VPN/vpn-subscription-automation/scripts/monitor_run.sh`
+- 当设置 `VPN_AUTOMATION_UPSTREAM_PROXY` 时，所有启用的 source 抓取请求都会统一走这个代理
 - 运行时不再依赖 sibling 目录：
   - `vpn-catch-nodes`
   - `cloudflarevpn/edgetunnel`
