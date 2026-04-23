@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -58,4 +59,3 @@ jobs:
 
       - name: Run Electron tests
         run: xvfb-run -a npm run test:electron
-
