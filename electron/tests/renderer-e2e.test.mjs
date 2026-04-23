@@ -13,18 +13,13 @@ const __dirname = path.dirname(__filename);
 const PAGE_CASES = [
   ['#navDashboard', 'dashboard', '仪表盘总览', '#dashboardOverview'],
   ['#navConfig', 'config', '配置管理', '#configPrimarySource'],
-  ['#navRuns', 'runs', '运行任务', '#runsLogOutput'],
-  ['#navHistory', 'history', '任务历史', '#historyTable'],
-  ['#navNodes', 'nodes', '节点管理', '#nodeTable'],
-  ['#navSubscriptions', 'subscriptions', '订阅地址', '#subscriptionCards'],
+  ['#navRun', 'run', '运行任务', '#runLogOutput'],
+  ['#navArtifacts', 'artifacts', '产物与订阅', '#artifactsPanel'],
   ['#navLogs', 'logs', '日志中心', '#logCenterTable'],
-  ['#navDeploy', 'deploy', '部署设置', '#deployPlatformCard'],
-  ['#navMonitor', 'monitor', '系统监控', '#monitorCpuCard'],
-  ['#navSettings', 'settings', '设置', '#settingsLanguage'],
   ['#navAbout', 'about', '关于', '#aboutArchitecture']
 ];
 
-test('renderer exposes the full design-mockup workspace and supports page navigation', async () => {
+test('renderer exposes only runtime-aligned pages and honest empty states', async () => {
   const server = await startStaticServer(path.join(__dirname, '..', 'renderer'));
   const browser = await chromium.launch();
   try {
@@ -39,12 +34,16 @@ test('renderer exposes the full design-mockup workspace and supports page naviga
     await page.goto(target);
     await page.waitForSelector('.workspace-shell');
 
-    assert.equal(await page.locator('.sidebar-nav .nav-item').count(), 11);
+    assert.equal(await page.locator('.sidebar-nav .nav-item').count(), 6);
     assert.equal(await page.locator('.shortcut-action').count(), 4);
     assert.ok(await page.locator('#runBtn').isVisible());
     assert.ok(await page.locator('#stopBtn').isVisible());
     assert.equal(await page.locator('#pageTitle').innerText(), '仪表盘总览');
-    assert.match(await page.locator('#pageSubtitle').innerText(), /节点抓取|测速|部署/);
+    assert.match(await page.locator('#pageSubtitle').innerText(), /真实功能|运行|配置|日志/);
+    assert.match(await page.locator('#dashboardEmptyState').innerText(), /暂无运行数据|尚未运行/);
+    assert.equal(await page.locator('button:has-text("暂停")').count(), 0);
+    assert.equal(await page.locator('button:has-text("继续")').count(), 0);
+    assert.equal(await page.locator('button:has-text("终止")').count(), 0);
 
     for (const [navSelector, pageKey, pageTitle, readySelector] of PAGE_CASES) {
       await page.locator(navSelector).click();
@@ -55,11 +54,11 @@ test('renderer exposes the full design-mockup workspace and supports page naviga
       assert.ok(await page.locator(readySelector).isVisible());
     }
 
-    await page.locator('#shortcutDeploy').click();
-    await page.waitForSelector('#deployPlatformCard');
-    assert.equal(await page.locator('body').getAttribute('data-page'), 'deploy');
+    await page.locator('#shortcutArtifacts').click();
+    await page.waitForSelector('#artifactsPanel');
+    assert.equal(await page.locator('body').getAttribute('data-page'), 'artifacts');
 
-    await page.locator('#shortcutCapture').click();
+    await page.locator('#shortcutConfig').click();
     await page.waitForSelector('#configPrimarySource');
     assert.equal(await page.locator('body').getAttribute('data-page'), 'config');
 
@@ -71,7 +70,7 @@ test('renderer exposes the full design-mockup workspace and supports page naviga
     assert.equal(await page.locator('#pageTitle').innerText(), 'Dashboard');
     assert.equal(await page.locator('#runBtn').innerText(), 'Run now');
     assert.equal(await page.locator('#stopBtn').innerText(), 'Stop run');
-    assert.match(await page.locator('#dashboardOverview').innerText(), /workspace|deployment|logs/i);
+    assert.match(await page.locator('#dashboardEmptyState').innerText(), /No run data|Not started/i);
 
     const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
     const innerWidth = await page.evaluate(() => window.innerWidth);

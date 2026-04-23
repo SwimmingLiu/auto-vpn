@@ -10,67 +10,46 @@ import {
 
 const demoProfile = {
   sources: {
-    leiting: {
-      url: 'https://capture-1.vpn.example/api/v1/client/subscribe',
-      key: 'lt-demo-key',
-      enabled: true
-    },
-    heidong: {
-      url: 'https://capture-2.vpn.example/api/v1/client/nodes',
-      key: 'hd-demo-key',
-      enabled: true
-    },
-    mifeng: {
-      url: 'https://capture-3.vpn.example/api/v1/client/subscribe',
-      key: 'mf-demo-key',
-      enabled: true
-    },
-    xuanfeng1: {
-      url: 'https://capture-4.vpn.example/api/v1/client/subscribe',
-      key: 'xf1-demo-key',
-      enabled: true
-    },
-    xuanfeng2: {
-      url: 'https://capture-5.vpn.example/api/v1/client/subscribe',
-      key: 'xf2-demo-key',
-      enabled: false
-    }
+    leiting: { url: '', key: '', enabled: true },
+    heidong: { url: '', key: '', enabled: true },
+    mifeng: { url: '', key: '', enabled: true },
+    xuanfeng1: { url: '', key: '', enabled: true },
+    xuanfeng2: { url: '', key: '', enabled: true }
   },
   speed_test: {
     min_download_mb_s: 1.0,
     timeout_seconds: 20,
     concurrency: 3,
-    urls: [
-      'https://speed-1.vpn.example/1mb.dat',
-      'https://speed-2.vpn.example/1mb.dat',
-      'https://speed-3.vpn.example/1mb.dat'
-    ]
+    urls: []
   },
   deploy: {
-    project_name: 'vpn-auto',
-    pages_project_url: 'https://vpn-auto.pages.dev',
-    subscription_url: 'https://vpn.example.top/179ba8dd-3854-4747-b853-fc1868ef3937'
+    project_name: '',
+    pages_project_url: '',
+    subscription_url: ''
+  },
+  workspace: {
+    project_root: '',
+    artifacts_root: '',
+    state_root: '',
+    profile_path: ''
   }
 };
 
 const state = {
   profile: null,
+  savedProfile: null,
   unsubscribe: null,
   stageStatus: {},
   counts: {},
   language: 'zh-CN',
   activePage: 'dashboard',
-  subtabs: {
-    config: 'sources',
-    logs: 'runtime',
-    deploy: 'platform',
-    settings: 'general'
-  },
   isDemo: false,
   runState: 'idle',
   runResult: 'idle',
   logEntries: [],
-  lastUpdateAt: null
+  lastUpdateAt: null,
+  artifactDir: '',
+  deployment: null
 };
 
 const elements = {
@@ -106,14 +85,16 @@ async function bootstrap() {
   if (!window.vpnAutomation) {
     state.isDemo = true;
     state.profile = structuredClone(demoProfile);
+    state.savedProfile = structuredClone(demoProfile);
     touchUpdate();
     renderAll();
-    appendLog(getMessages(state.language).demoMode);
     return;
   }
 
   state.isDemo = false;
-  state.profile = await window.vpnAutomation.loadProfile();
+  const loadedProfile = await window.vpnAutomation.loadProfile();
+  state.profile = loadedProfile;
+  state.savedProfile = structuredClone(loadedProfile);
   touchUpdate();
   renderAll();
   state.unsubscribe = window.vpnAutomation.onPipelineEvent(handlePipelineEvent);
@@ -123,10 +104,7 @@ function bindActions() {
   elements.saveBtn.addEventListener('click', () => saveProfile());
   elements.runBtn.addEventListener('click', runPipeline);
   elements.stopBtn.addEventListener('click', stopPipeline);
-  elements.languageSelect.addEventListener('change', () => {
-    updateLanguage(elements.languageSelect.value);
-  });
-
+  elements.languageSelect.addEventListener('change', () => updateLanguage(elements.languageSelect.value));
   document.addEventListener('click', handleDocumentClick);
   document.addEventListener('input', handleDocumentInput);
   document.addEventListener('change', handleDocumentInput);
@@ -140,13 +118,7 @@ function renderAll() {
   document.body.dataset.page = state.activePage;
 
   renderChrome(messages, viewModel);
-  elements.pageContent.innerHTML = buildPageMarkup(
-    state.activePage,
-    viewModel,
-    messages,
-    state.language,
-    state.subtabs
-  );
+  elements.pageContent.innerHTML = buildPageMarkup(state.activePage, viewModel, messages, state.language);
 }
 
 function renderChrome(messages, viewModel) {
@@ -170,8 +142,8 @@ function renderChrome(messages, viewModel) {
   elements.runStateBadge.textContent = messages.runStateLabels[state.runState] ?? messages.runStateLabels.idle;
   elements.runStateBadge.className = `badge ${runTone()}`;
   elements.sidebarNav.innerHTML = buildSidebarNav(messages, state.activePage);
-  elements.shortcutStrip.innerHTML = buildShortcutStrip(messages);
-  elements.sidebarStatusBody.innerHTML = buildSidebarStatus(viewModel, messages, state, state.language);
+  elements.shortcutStrip.innerHTML = buildShortcutStrip(messages, viewModel);
+  elements.sidebarStatusBody.innerHTML = buildSidebarStatus(viewModel, messages);
 }
 
 function resolveRunButtonLabel(messages) {
@@ -194,7 +166,7 @@ function runTone() {
   return 'neutral';
 }
 
-function handleDocumentClick(event) {
+async function handleDocumentClick(event) {
   const navButton = event.target.closest('[data-page-target]');
   if (navButton) {
     state.activePage = navButton.dataset.pageTarget;
@@ -202,50 +174,37 @@ function handleDocumentClick(event) {
     return;
   }
 
-  const shortcut = event.target.closest('[data-shortcut-target]');
-  if (shortcut) {
-    state.activePage = shortcut.dataset.shortcutTarget;
-    if (shortcut.dataset.shortcutTab) {
-      state.subtabs[state.activePage] = shortcut.dataset.shortcutTab;
-    }
-    renderAll();
-    return;
-  }
-
-  const subtab = event.target.closest('[data-subtab-page]');
-  if (subtab) {
-    state.subtabs[subtab.dataset.subtabPage] = subtab.dataset.subtab;
-    renderAll();
-    return;
-  }
-
   if (event.target.closest('#projectBtn')) {
-    state.activePage = 'subscriptions';
-    renderAll();
+    await openPath(state.profile?.workspace?.project_root ?? '');
     return;
   }
 
   if (event.target.closest('#topSettingsBtn')) {
-    state.activePage = 'settings';
+    state.activePage = 'config';
     renderAll();
+    return;
+  }
+
+  const actionButton = event.target.closest('[data-action]');
+  if (actionButton) {
+    await performAction(actionButton.dataset.action);
     return;
   }
 
   const copyButton = event.target.closest('[data-copy-text]');
   if (copyButton) {
-    copyText(copyButton.dataset.copyText);
+    await copyText(copyButton.dataset.copyText);
   }
 }
 
 function handleDocumentInput(event) {
   const target = event.target;
-
-  if (target.id === 'settingsLanguage') {
-    updateLanguage(target.value);
+  if (!state.profile) {
     return;
   }
 
-  if (!state.profile) {
+  if (target.id === 'languageSelect') {
+    updateLanguage(target.value);
     return;
   }
 
@@ -257,6 +216,55 @@ function handleDocumentInput(event) {
     }
     state.profile.sources[sourceName][key] =
       target.type === 'checkbox' ? target.checked : target.value.trim();
+    return;
+  }
+
+  if (target.matches('[data-section][data-key]')) {
+    const section = target.dataset.section;
+    const key = target.dataset.key;
+    if (!state.profile[section]) {
+      return;
+    }
+
+    if (section === 'speed_test' && key === 'urls') {
+      state.profile.speed_test.urls = target.value
+        .split(/\r?\n/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+      return;
+    }
+
+    if (target.type === 'number') {
+      state.profile[section][key] = Number(target.value);
+      return;
+    }
+
+    state.profile[section][key] = target.value.trim();
+  }
+}
+
+async function performAction(action) {
+  switch (action) {
+    case 'save-profile':
+      await saveProfile();
+      return;
+    case 'reset-profile':
+      resetProfile();
+      return;
+    case 'run-pipeline':
+      await runPipeline();
+      return;
+    case 'stop-pipeline':
+      await stopPipeline();
+      return;
+    case 'open-artifacts':
+      await openPath(state.artifactDir || state.profile?.workspace?.artifacts_root || '');
+      return;
+    case 'export-logs':
+      await exportLogs();
+      return;
+    default:
+      return;
   }
 }
 
@@ -291,11 +299,19 @@ async function saveProfile({ silent = false } = {}) {
   if (window.vpnAutomation) {
     await window.vpnAutomation.saveProfile(state.profile);
   }
+  state.savedProfile = structuredClone(state.profile);
   touchUpdate();
   renderAll();
   if (!silent) {
     appendLog(getMessages(state.language).profileSaved);
   }
+}
+
+function resetProfile() {
+  state.profile = structuredClone(state.savedProfile ?? demoProfile);
+  touchUpdate();
+  renderAll();
+  appendLog(getMessages(state.language).profileReset);
 }
 
 async function runPipeline() {
@@ -309,6 +325,8 @@ async function runPipeline() {
   state.stageStatus = {};
   state.counts = {};
   state.logEntries = [];
+  state.artifactDir = '';
+  state.deployment = null;
   touchUpdate();
   renderAll();
   appendLog(messages.pipelineStarted);
@@ -402,10 +420,53 @@ function handlePipelineEvent(event) {
   if (event.type === 'summary') {
     state.stageStatus = event.stage_status;
     state.counts = event.counts;
+    state.artifactDir = event.artifact_dir ?? '';
+    state.deployment = event.deployment ?? null;
     touchUpdate();
     renderAll();
     appendLog(`[summary] artifacts: ${event.artifact_dir}`);
   }
+}
+
+async function openPath(targetPath) {
+  const normalized = String(targetPath ?? '').trim();
+  if (!normalized) {
+    return;
+  }
+
+  if (window.vpnAutomation?.openPath) {
+    const result = await window.vpnAutomation.openPath(normalized);
+    if (result?.ok) {
+      appendLog(formatMessage(getMessages(state.language).openedPathMessage, { value: normalized }));
+    }
+    return;
+  }
+
+  appendLog(formatMessage(getMessages(state.language).openedPathMessage, { value: normalized }));
+}
+
+async function exportLogs() {
+  if (!state.logEntries.length) {
+    return;
+  }
+
+  const payload = state.logEntries.join('\n');
+  if (window.vpnAutomation?.exportLogs) {
+    const result = await window.vpnAutomation.exportLogs(payload);
+    if (result?.path) {
+      appendLog(formatMessage(getMessages(state.language).exportedLogsMessage, { value: result.path }));
+      return;
+    }
+  }
+
+  const blob = new Blob([payload], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = 'vpn-automation-session.log';
+  anchor.click();
+  URL.revokeObjectURL(url);
+  appendLog(formatMessage(getMessages(state.language).exportedLogsMessage, { value: anchor.download }));
 }
 
 function appendLog(message) {

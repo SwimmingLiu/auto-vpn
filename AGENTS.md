@@ -11,6 +11,7 @@ Do not treat those reference directories as the active implementation target unl
 If a task changes files in this repository, including coding, refactoring, configuration updates, documentation edits, or packaging-related changes, follow this default workflow:
 
 1. Run unit tests, e2e tests, and pixel-level / visual regression tests.
+   - Before Electron-specific verification, first test the `electron/renderer` UI as a plain browser-based H5 front end in Codex/Playwright, then do one manual test round on that browser-rendered UI.
    - Any UI/UX change must be verified with Playwright or Computer Use before the task is considered done.
    - After every UI/UX edit, or after any task change that affects behavior, immediately rerun Playwright or Computer Use end-to-end verification plus a pixel-level / visual check before continuing.
    - Any completed task that changes behavior should include end-to-end verification plus a pixel-level / visual check, not only code-level tests.
@@ -18,6 +19,8 @@ If a task changes files in this repository, including coding, refactoring, confi
 3. Request `@Copilot` review.
 4. Apply review feedback and update the code.
 5. If any file changes again after review, repeat the workflow:
+   - rerun the browser-based H5 front-end test round first
+   - rerun one manual browser test round
    - rerun unit tests
    - rerun e2e tests
    - rerun pixel-level / visual regression tests

@@ -14,14 +14,9 @@ export const STAGE_ORDER = [
 export const PAGE_ORDER = [
   'dashboard',
   'config',
-  'runs',
-  'history',
-  'nodes',
-  'subscriptions',
+  'run',
+  'artifacts',
   'logs',
-  'deploy',
-  'monitor',
-  'settings',
   'about'
 ];
 
