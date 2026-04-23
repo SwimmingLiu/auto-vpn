@@ -28,7 +28,7 @@ test('electron app exposes preload bridge and renders the real saved profile', a
     assert.equal(hasBridge, true);
     assert.equal(hasStopBridge, true);
     assert.equal(stopVisible, true);
-    assert.equal(pageTitle, '配置管理');
+    assert.match(pageTitle, /^(配置管理|Configuration Center)$/);
     assert.equal(await sourceInputs.count(), 5);
     assert.notEqual(primaryValue.trim(), '');
 

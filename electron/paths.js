@@ -48,7 +48,7 @@ export function resolveProjectRoot(explicitRoot = '') {
 
 export function resolveStateProfilePath(projectRoot) {
   const localRoot = path.resolve(projectRoot);
-  const localPath = path.join(localRoot, 'state', 'profiles', 'default.json');
+  const localPath = path.join(localRoot, 'state', 'profile.toml');
   const parts = localRoot.split(path.sep);
   const worktreeIndex = parts.indexOf('.worktrees');
 
@@ -57,6 +57,6 @@ export function resolveStateProfilePath(projectRoot) {
   }
 
   const repoRoot = parts.slice(0, worktreeIndex).join(path.sep) || path.sep;
-  const anchorPath = path.join(repoRoot, 'state', 'profiles', 'default.json');
+  const anchorPath = path.join(repoRoot, 'state', 'profile.toml');
   return anchorPath;
 }

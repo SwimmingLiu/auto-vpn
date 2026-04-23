@@ -5,7 +5,12 @@ from pathlib import Path
 from typing import Any, Callable
 
 from vpn_automation.config.models import AppProfile
-from vpn_automation.config.runtime import load_runtime_env
+from vpn_automation.config.runtime import (
+    load_runtime_env,
+    resolve_artifacts_root,
+    resolve_runtime_root,
+    resolve_template_file,
+)
 from vpn_automation.integrations.cloudflare import (
     CloudflareClient,
     build_secret_url,
@@ -46,6 +51,9 @@ class PipelineController:
         deployer: Callable[[Path, Any, str], dict[str, Any]] = deploy_pages_bundle,
         verifier: Callable[[Any, str], dict[str, bool]] | None = None,
         env_loader: Callable[[Path], dict[str, str]] = load_runtime_env,
+        runtime_root_resolver: Callable[[Path], Path] = resolve_runtime_root,
+        artifacts_root_resolver: Callable[[Path], Path] = resolve_artifacts_root,
+        template_path_resolver: Callable[[Path], Path] = resolve_template_file,
         now_factory: Callable[[], datetime] = datetime.now,
     ) -> None:
         self.extractor = extractor
@@ -56,6 +64,9 @@ class PipelineController:
         self.deployer = deployer
         self.verifier = verifier or self._default_verify
         self.env_loader = env_loader
+        self.runtime_root_resolver = runtime_root_resolver
+        self.artifacts_root_resolver = artifacts_root_resolver
+        self.template_path_resolver = template_path_resolver
         self.now_factory = now_factory
 
     def stage_names(self) -> list[str]:
@@ -80,7 +91,8 @@ class PipelineController:
         stage_callback: Callable[[str, str], None] | None = None,
     ) -> PipelineSummary:
         stage_status = {name: "pending" for name in self.stage_names()}
-        artifact_dir = self._create_artifact_dir(profile)
+        runtime_root = self.runtime_root_resolver(Path(__file__))
+        artifact_dir = self._create_artifact_dir(runtime_root)
         summary = PipelineSummary(artifact_dir=str(artifact_dir), stage_status=stage_status)
 
         def log(message: str) -> None:
@@ -92,7 +104,7 @@ class PipelineController:
             if stage_callback:
                 stage_callback(name, status)
 
-        env = self.env_loader(Path(profile.workspace.project_root or __file__))
+        env = self.env_loader(runtime_root)
         api_token = env.get("CLOUDFLARE_API_TOKEN", "")
 
         set_stage("doctor", "running")
@@ -167,7 +179,7 @@ class PipelineController:
         summary.counts["postprocess_links"] = len(decorated_links)
 
         set_stage("render", "running")
-        rendered_path = self._render_template(profile, artifact_dir, decorated_links)
+        rendered_path = self._render_template(runtime_root, artifact_dir, decorated_links)
         set_stage("render", "success")
 
         set_stage("obfuscate", "running")
@@ -194,8 +206,8 @@ class PipelineController:
 
         return summary
 
-    def _create_artifact_dir(self, profile: AppProfile) -> Path:
-        root = Path(profile.workspace.artifacts_root)
+    def _create_artifact_dir(self, runtime_root: Path) -> Path:
+        root = self.artifacts_root_resolver(runtime_root)
         root.mkdir(parents=True, exist_ok=True)
         artifact_dir = root / self.now_factory().strftime("%Y%m%d-%H%M%S")
         artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -226,8 +238,8 @@ class PipelineController:
         self._write_lines(artifact_dir / "vpn_node_raw.txt", raw_links)
         return raw_links
 
-    def _render_template(self, profile: AppProfile, artifact_dir: Path, links: list[str]) -> Path:
-        template_path = Path(profile.workspace.edgetunnel_root) / "vmess_node.js"
+    def _render_template(self, runtime_root: Path, artifact_dir: Path, links: list[str]) -> Path:
+        template_path = self.template_path_resolver(runtime_root)
         rendered = replace_main_data(template_path.read_text(encoding="utf-8"), links)
         rendered_path = artifact_dir / "vmess_node.js"
         rendered_path.write_text(rendered, encoding="utf-8")

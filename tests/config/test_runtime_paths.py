@@ -17,13 +17,13 @@ def test_resolve_repo_anchor_prefers_main_repo_root_for_worktrees(tmp_path: Path
     assert resolved == root
 
 
-def test_create_default_profile_populates_workspace_and_defaults(tmp_path: Path) -> None:
+def test_create_default_profile_omits_workspace_and_keeps_defaults(tmp_path: Path) -> None:
     project_root = tmp_path / "vpn-subscription-automation"
     project_root.mkdir(parents=True)
 
     profile = create_default_profile(project_root)
 
-    assert profile.workspace.project_root == str(project_root)
+    assert "workspace" not in profile.to_dict()
     assert profile.deploy.project_name == "vmessnodes"
     assert profile.sources["leiting"].enabled is True
 

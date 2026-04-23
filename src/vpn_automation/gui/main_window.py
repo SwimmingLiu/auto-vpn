@@ -8,6 +8,7 @@ from tkinter import filedialog, messagebox, ttk
 from PIL import ImageTk
 
 from vpn_automation.app import build_app_metadata
+from vpn_automation.config.runtime import resolve_artifacts_root
 from vpn_automation.config.store import ProfileStore
 from vpn_automation.integrations.packaging import package_application
 from vpn_automation.gui.preview import render_status_preview
@@ -276,7 +277,7 @@ class AutomationMainWindow:
         self.log_text.see(tk.END)
 
     def open_artifacts_folder(self) -> None:
-        target = self.last_artifact_dir or self.profile.workspace.artifacts_root
+        target = self.last_artifact_dir or str(resolve_artifacts_root(self.project_root))
         if not target:
             return
         subprocess.Popen(["open", target])

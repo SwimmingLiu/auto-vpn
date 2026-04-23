@@ -5,11 +5,6 @@ import { spawn, spawnSync } from 'node:child_process';
 import { ipcMain } from 'electron';
 
 import { buildBackendInvocation, parseBackendEventLine } from './lib/backend.js';
-import { resolveStateProfilePath } from './paths.js';
-
-function profilePath(projectRoot) {
-  return resolveStateProfilePath(projectRoot);
-}
 
 export function registerIpcHandlers({ mainWindow, projectRoot }) {
   let activePipelineChild = null;
@@ -29,9 +24,8 @@ export function registerIpcHandlers({ mainWindow, projectRoot }) {
   });
 
   ipcMain.handle('profile:save', async (_event, payload) => {
-    const target = profilePath(projectRoot);
-    fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.writeFileSync(target, JSON.stringify(payload, null, 2), 'utf-8');
+    const invocation = buildBackendInvocation(projectRoot, 'profile-save');
+    await runCommand(invocation.commands, invocation.args, projectRoot, JSON.stringify(payload));
     return { ok: true };
   });
 
@@ -130,7 +124,7 @@ export function registerIpcHandlers({ mainWindow, projectRoot }) {
   });
 }
 
-function runCommand(commands, args, cwd) {
+function runCommand(commands, args, cwd, input = '') {
   return new Promise((resolve, reject) => {
     const command = selectBackendCommand(commands);
     const child = spawn(command, args, {
@@ -149,6 +143,11 @@ function runCommand(commands, args, cwd) {
     child.stderr.on('data', (chunk) => {
       stderr += String(chunk);
     });
+    if (input) {
+      child.stdin.end(input);
+    } else {
+      child.stdin.end();
+    }
     child.on('error', reject);
     child.on('close', (code) => {
       if (code !== 0) {

@@ -15,28 +15,32 @@ def test_profile_store_round_trip(tmp_path: Path) -> None:
         ),
         deploy=DeployConfig(project_name="vmessnodes", subscription_url="https://swimmingliu.xyz/test"),
     )
-    store = ProfileStore(tmp_path / "default.json")
+    store = ProfileStore(tmp_path / "profile.toml")
     store.save(profile)
     loaded = store.load()
+    payload = store.path.read_text(encoding="utf-8")
     assert loaded.sources["leiting"].url == "https://a.example"
     assert loaded.deploy.project_name == "vmessnodes"
+    assert "[sources.leiting]" in payload
 
 
 def test_profile_store_load_or_create_returns_default_profile(tmp_path: Path) -> None:
     project_root = tmp_path / "vpn-subscription-automation"
-    store = ProfileStore(project_root / "state" / "profiles" / "default.json")
+    store = ProfileStore(project_root / "state" / "profile.toml")
 
     profile = store.load_or_create(project_root)
 
-    assert profile.workspace.project_root == str(project_root)
+    assert "workspace" not in profile.to_dict()
+    assert store.path.name == "profile.toml"
+    assert profile.sources["leiting"].enabled is True
     assert store.path.exists()
 
 
 def test_resolve_profile_path_prefers_repo_anchor_state_when_running_from_worktree(tmp_path: Path) -> None:
     repo_root = tmp_path / "vpn-subscription-automation"
     worktree_root = repo_root / ".worktrees" / "cleanup"
-    anchor_profile = repo_root / "state" / "profiles" / "default.json"
-    local_profile = worktree_root / "state" / "profiles" / "default.json"
+    anchor_profile = repo_root / "state" / "profile.toml"
+    local_profile = worktree_root / "state" / "profile.toml"
 
     repo_root.mkdir(parents=True)
     worktree_root.mkdir(parents=True)
