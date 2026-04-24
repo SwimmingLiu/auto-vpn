@@ -20,7 +20,7 @@ const PAGE_CASES = [
   ['#navLogs', 'logs', '日志中心', '#logCenterTable'],
   ['#navDeploy', 'deploy', '部署设置', '#deployPlatformCard'],
   ['#navMonitor', 'monitor', '系统监控', '#monitorCpuCard'],
-  ['#navSettings', 'settings', '设置', '#settingsLanguage'],
+  ['#navSettings', 'settings', '设置', '#settings-theme'],
   ['#navAbout', 'about', '关于', '#aboutArchitecture']
 ];
 
@@ -63,15 +63,59 @@ test('renderer exposes the full design-mockup workspace and supports page naviga
     await page.waitForSelector('#configPrimarySource');
     assert.equal(await page.locator('body').getAttribute('data-page'), 'config');
 
+    assert.equal(await page.locator('#languageSelect').count(), 0);
+    assert.equal(await page.locator('#settingsLanguage').count(), 0);
+
+    const englishMarkup = await page.evaluate(async () => {
+      const views = await import('./views.js');
+      const i18n = await import('./i18n.js');
+
+      const viewModel = views.buildViewModel(
+        {
+          profile: null,
+          unsubscribe: null,
+          stageStatus: {},
+          counts: {},
+          language: 'en-US',
+          activePage: 'dashboard',
+          subtabs: {
+            config: 'sources',
+            logs: 'runtime',
+            deploy: 'platform',
+            settings: 'general'
+          },
+          isDemo: false,
+          runState: 'idle',
+          runResult: 'idle',
+          logEntries: [],
+          lastUpdateAt: null
+        },
+        i18n.getMessages('en-US'),
+        'en-US'
+      );
+
+      return views.buildPageMarkup(
+        'dashboard',
+        viewModel,
+        i18n.getMessages('en-US'),
+        'en-US',
+        {}
+      );
+    });
+
+    await page.setContent(englishMarkup);
+    assert.equal(await page.locator('text=English').count(), 0);
+    assert.equal(await page.locator('text=Local first').count(), 0);
+    assert.equal(await page.locator('text=Platform').count(), 0);
+    assert.equal(await page.locator('text=General').count(), 0);
+    assert.equal(await page.locator('text=Pipeline overview').count(), 0);
+
     await page.locator('#navDashboard').click();
     await page.waitForSelector('#dashboardOverview');
-    await page.locator('#languageSelect').selectOption('en-US');
-    await page.waitForTimeout(100);
-
-    assert.equal(await page.locator('#pageTitle').innerText(), 'Dashboard');
-    assert.equal(await page.locator('#runBtn').innerText(), 'Run now');
-    assert.equal(await page.locator('#stopBtn').innerText(), 'Stop run');
-    assert.match(await page.locator('#dashboardOverview').innerText(), /workspace|deployment|logs/i);
+    assert.equal(await page.locator('#pageTitle').innerText(), '仪表盘总览');
+    assert.equal(await page.locator('#runBtn').innerText(), '立即运行');
+    assert.equal(await page.locator('#stopBtn').innerText(), '停止运行');
+    assert.match(await page.locator('#dashboardOverview').innerText(), /节点抓取|测速|部署/);
 
     const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
     const innerWidth = await page.evaluate(() => window.innerWidth);

@@ -21,7 +21,8 @@ test('buildStageModel marks stages in configured order', () => {
 
 test('toMetricItems converts summary counts into cards', () => {
   const cards = toMetricItems({ raw_links: 12, postprocess_links: 5 });
-  assert.deepEqual(cards[0], { label: 'RAW LINKS', value: '12' });
+  assert.deepEqual(cards[0], { label: '原始节点数', value: '12' });
+  assert.deepEqual(cards[1], { label: '后处理节点数', value: '5' });
 });
 
 test('resolveVerifyMetricValue preserves running and failed verify states', () => {
@@ -53,15 +54,45 @@ test('resolveRunControlState exposes run and stop availability for each run stat
   });
 });
 
-test('resolveLanguage prefers saved language over system locale', () => {
+test('resolveLanguage ignores saved and system language and always returns zh-CN', () => {
+  assert.equal(resolveLanguage(), 'zh-CN');
   assert.equal(resolveLanguage('zh-CN', 'en-US'), 'zh-CN');
+  assert.equal(resolveLanguage('en-US', 'en-US'), 'zh-CN');
   assert.equal(resolveLanguage('', 'zh-TW'), 'zh-CN');
-  assert.equal(resolveLanguage('', 'en-US'), 'en-US');
+});
+
+test('getMessages and summary cards expose Chinese-only copy', () => {
+  assert.equal(getMessages().runButton, '立即运行');
+  assert.equal(getMessages('en-US').pageTitles.deploy, '部署设置');
+  assert.equal(
+    getMessages('en-US').pageSubtitles.dashboard,
+    '统一查看节点抓取、测速、部署与实时日志的桌面工作台'
+  );
+
+  const cards = toMetricItems({
+    raw_links: 12,
+    postprocess_links: 5,
+    speedtest_links: 3,
+    availability_links: 2
+  });
+
+  assert.deepEqual(cards[0], { label: '原始节点数', value: '12' });
+  assert.deepEqual(cards[1], { label: '后处理节点数', value: '5' });
 });
 
 test('getMessages returns translated copy', () => {
   assert.equal(getMessages('zh-CN').runButton, '立即运行');
-  assert.equal(getMessages('en-US').runButton, 'Run now');
+  assert.equal(getMessages('en-US').runButton, '立即运行');
+});
+
+test('renderer copy is Chinese-only and hides language switching copy', () => {
+  const messages = getMessages('en-US');
+
+  assert.equal(messages.locale, 'zh-CN');
+  assert.equal(messages.pageTitles.dashboard, '仪表盘总览');
+  assert.equal(messages.runButton, '立即运行');
+  assert.equal(messages.stopButton, '停止运行');
+  assert.equal(messages.languageLabel, '');
 });
 
 test('PAGE_ORDER exposes the full multipage workspace', () => {
@@ -72,7 +103,6 @@ test('PAGE_ORDER exposes the full multipage workspace', () => {
 
 test('getMessages exposes the multipage workspace copy for the redesigned renderer', () => {
   const zh = getMessages('zh-CN');
-  const en = getMessages('en-US');
 
   assert.equal(
     zh.brandSubtitle,
@@ -86,19 +116,5 @@ test('getMessages exposes the multipage workspace copy for the redesigned render
     zh.pageSubtitles.dashboard,
     '统一查看节点抓取、测速、部署与实时日志的桌面工作台'
   );
-  assert.equal(
-    en.brandSubtitle,
-    'Capture nodes, filter by speed, process payloads, package outputs, and deploy to Cloudflare Pages from one desktop tool.'
-  );
-  assert.equal(en.pageTitles.dashboard, 'Dashboard');
-  assert.equal(en.pageTitles.deploy, 'Deployment Settings');
-  assert.equal(en.runButton, 'Run now');
-  assert.equal(en.stopButton, 'Stop run');
-  assert.equal(en.stageLabels.availability, 'Availability');
-  assert.equal(
-    en.pageSubtitles.dashboard,
-    'A unified workspace for capture, filtering, deployment, and live runtime logs'
-  );
   assert.doesNotMatch(zh.pageSubtitles.dashboard, /紧凑|抽屉/);
-  assert.doesNotMatch(en.pageSubtitles.dashboard, /drawer|compact/i);
 });
