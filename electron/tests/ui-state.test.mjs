@@ -20,9 +20,16 @@ test('buildStageModel marks stages in configured order', () => {
 });
 
 test('toMetricItems maps summary counts to Chinese labels', () => {
-  const cards = toMetricItems({ raw_links: 12, postprocess_links: 5 });
+  const cards = toMetricItems({
+    raw_links: 12,
+    postprocess_links: 5,
+    speedtest_links: 3,
+    availability_links: 2
+  });
   assert.deepEqual(cards[0], { label: '原始节点数', value: '12' });
   assert.deepEqual(cards[1], { label: '后处理节点数', value: '5' });
+  assert.deepEqual(cards[2], { label: '测速通过节点', value: '3' });
+  assert.deepEqual(cards[3], { label: '可用节点数', value: '2' });
 });
 
 test('resolveVerifyMetricValue preserves running and failed verify states', () => {

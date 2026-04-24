@@ -1,4 +1,4 @@
-import { getMessages, resolveLanguage, LANGUAGE_STORAGE_KEY, formatMessage } from './i18n.js';
+import { getMessages, formatMessage } from './i18n.js';
 import { resolveRunControlState } from './state.js';
 import {
   buildPageMarkup,
@@ -25,12 +25,12 @@ const demoProfile = {
       key: 'mf-demo-key',
       enabled: true
     },
-    xuanfeng1: {
+    'xuanfeng-area': {
       url: 'https://capture-4.vpn.example/api/v1/client/subscribe',
       key: 'xf1-demo-key',
       enabled: true
     },
-    xuanfeng2: {
+    'xuanfeng-all-area': {
       url: 'https://capture-5.vpn.example/api/v1/client/subscribe',
       key: 'xf2-demo-key',
       enabled: false
@@ -82,8 +82,6 @@ const elements = {
   sidebarStatusBody: document.querySelector('#sidebarStatusBody'),
   pageTitle: document.querySelector('#pageTitle'),
   pageSubtitle: document.querySelector('#pageSubtitle'),
-  languageLabel: document.querySelector('#languageLabel'),
-  languageSelect: document.querySelector('#languageSelect'),
   projectBtn: document.querySelector('#projectBtn'),
   topSettingsBtn: document.querySelector('#topSettingsBtn'),
   saveBtn: document.querySelector('#saveBtn'),
@@ -95,11 +93,7 @@ const elements = {
 };
 
 async function bootstrap() {
-  state.language = resolveLanguage(
-    localStorage.getItem(LANGUAGE_STORAGE_KEY) ?? '',
-    navigator.language
-  );
-
+  state.language = 'zh-CN';
   renderAll();
   bindActions();
 
@@ -123,10 +117,6 @@ function bindActions() {
   elements.saveBtn.addEventListener('click', () => saveProfile());
   elements.runBtn.addEventListener('click', runPipeline);
   elements.stopBtn.addEventListener('click', stopPipeline);
-  elements.languageSelect.addEventListener('change', () => {
-    updateLanguage(elements.languageSelect.value);
-  });
-
   document.addEventListener('click', handleDocumentClick);
   document.addEventListener('input', handleDocumentInput);
   document.addEventListener('change', handleDocumentInput);
@@ -155,8 +145,6 @@ function renderChrome(messages, viewModel) {
   elements.sidebarVersion.textContent = messages.sidebarVersion;
   elements.pageTitle.textContent = messages.pageTitles[state.activePage];
   elements.pageSubtitle.textContent = messages.pageSubtitles[state.activePage];
-  elements.languageLabel.textContent = messages.languageLabel;
-  elements.languageSelect.value = state.language;
   elements.projectBtn.textContent = messages.projectButton;
   elements.topSettingsBtn.textContent = messages.settingsButton;
   elements.saveBtn.textContent = messages.saveButton;
@@ -240,11 +228,6 @@ function handleDocumentClick(event) {
 function handleDocumentInput(event) {
   const target = event.target;
 
-  if (target.id === 'settingsLanguage') {
-    updateLanguage(target.value);
-    return;
-  }
-
   if (!state.profile) {
     return;
   }
@@ -256,8 +239,41 @@ function handleDocumentInput(event) {
       return;
     }
     state.profile.sources[sourceName][key] =
-      target.type === 'checkbox' ? target.checked : target.value.trim();
+      target.type === 'checkbox' ? target.checked : coerceProfileValue(target.value.trim(), state.profile.sources[sourceName][key]);
+    renderAll();
+    return;
   }
+
+  if (target.matches('[data-profile-path]')) {
+    setProfilePath(target.dataset.profilePath, target.value.trim());
+    renderAll();
+  }
+}
+
+function setProfilePath(path, value) {
+  const segments = String(path ?? '').split('.').filter(Boolean);
+  if (!segments.length || !state.profile) {
+    return;
+  }
+
+  let cursor = state.profile;
+  for (const segment of segments.slice(0, -1)) {
+    if (!cursor[segment]) {
+      return;
+    }
+    cursor = cursor[segment];
+  }
+
+  const key = segments.at(-1);
+  cursor[key] = coerceProfileValue(value, cursor[key]);
+}
+
+function coerceProfileValue(value, currentValue) {
+  if (typeof currentValue === 'number') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : currentValue;
+  }
+  return value;
 }
 
 async function copyText(value) {
@@ -275,12 +291,6 @@ async function copyText(value) {
   }
 
   appendLog(formatMessage(getMessages(state.language).copiedMessage, { value: text }));
-}
-
-function updateLanguage(language) {
-  state.language = language;
-  localStorage.setItem(LANGUAGE_STORAGE_KEY, state.language);
-  renderAll();
 }
 
 async function saveProfile({ silent = false } = {}) {
