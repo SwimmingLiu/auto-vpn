@@ -17,12 +17,12 @@ const FALLBACK_PROFILE = {
       key: 'mf-demo-key',
       enabled: true
     },
-    xuanfeng1: {
+    'xuanfeng-area': {
       url: 'https://capture-4.vpn.example/api/v1/client/subscribe',
       key: 'xf1-demo-key',
       enabled: true
     },
-    xuanfeng2: {
+    'xuanfeng-all-area': {
       url: 'https://capture-5.vpn.example/api/v1/client/subscribe',
       key: 'xf2-demo-key',
       enabled: false
@@ -60,34 +60,34 @@ const NAV_ICONS = {
 };
 
 const CONFIG_TABS = [
-  ['sources', '抓包 API 配置', 'Capture APIs'],
-  ['speed', '测速配置', 'Speed settings'],
-  ['rules', '节点处理规则', 'Node rules'],
-  ['package', '加密策略', 'Packaging'],
-  ['paths', '本地路径设置', 'Local paths'],
-  ['pages', 'Cloudflare Pages 配置', 'Pages config']
+  ['sources', '抓包 API 配置'],
+  ['speed', '测速配置'],
+  ['rules', '节点处理规则'],
+  ['package', '加密策略'],
+  ['paths', '本地路径设置'],
+  ['pages', 'Cloudflare Pages 配置']
 ];
 
 const LOG_TABS = [
-  ['runtime', '运行日志', 'Runtime'],
-  ['deploy', '部署日志', 'Deploy'],
-  ['system', '系统日志', 'System'],
-  ['error', '错误日志', 'Errors']
+  ['runtime', '运行日志'],
+  ['deploy', '部署日志'],
+  ['system', '系统日志'],
+  ['error', '错误日志']
 ];
 
 const DEPLOY_TABS = [
-  ['platform', '部署平台', 'Platform'],
-  ['actions', 'GitHub Actions', 'GitHub Actions'],
-  ['advanced', '高级选项', 'Advanced']
+  ['platform', '部署平台'],
+  ['actions', 'GitHub Actions'],
+  ['advanced', '高级选项']
 ];
 
 const SETTINGS_TABS = [
-  ['general', '通用设置', 'General'],
-  ['appearance', '界面设置', 'Appearance'],
-  ['mail', '邮件配置', 'Mail'],
-  ['logs', '日志设置', 'Logs'],
-  ['notifications', '通知设置', 'Notifications'],
-  ['about', '关于设置', 'About']
+  ['general', '通用设置'],
+  ['appearance', '界面设置'],
+  ['mail', '邮件配置'],
+  ['logs', '日志设置'],
+  ['notifications', '通知设置'],
+  ['about', '关于设置']
 ];
 
 export function buildViewModel(state, messages, language) {
@@ -117,7 +117,7 @@ export function buildViewModel(state, messages, language) {
     stageRows,
     overviewSteps,
     subscriptionCards,
-    lastUpdated: formatDate(state.lastUpdateAt, language) || pick(language, '2024-05-30 15:30:45', '2024-05-30 15:30:45'),
+    lastUpdated: formatDate(state.lastUpdateAt) || '2024-05-30 15:30:45',
     runDuration: state.runState === 'running' ? '00:12:34' : '00:10:20',
     runProgress: state.runState === 'running' ? 62 : 100,
     outputFiles: buildOutputFiles(language),
@@ -136,7 +136,7 @@ export function buildViewModel(state, messages, language) {
       region: ['全部', '美国', '新加坡', '日本', '中国香港', '德国'],
       protocol: ['全部', 'VLESS', 'VMESS', 'Trojan'],
       availability: ['全部', '在线', '降级'],
-      mode: ['全部', pick(language, '本地优先', 'Local first'), pick(language, 'GitHub Actions 备用', 'GitHub backup')]
+      mode: ['全部', '本地优先', 'GitHub Actions 备用']
     }
   };
 }
@@ -245,7 +245,7 @@ function buildDashboardPage(vm, messages, language) {
     <div id="dashboardOverview" class="page-grid dashboard-grid">
       <article class="panel flow-panel">
         <div class="panel-headline">
-          <h3>${escapeHtml(pick(language, '流程总览', 'Pipeline overview'))}</h3>
+          <h3>${escapeHtml( '流程总览')}</h3>
           ${renderBadge(messages.runStateLabels.idle, 'success')}
         </div>
         <div class="flow-steps">
@@ -261,7 +261,7 @@ function buildDashboardPage(vm, messages, language) {
 
       <article class="panel slim-panel">
         <div class="panel-headline">
-          <h3>${escapeHtml(pick(language, '任务状态', 'Task state'))}</h3>
+          <h3>${escapeHtml( '任务状态')}</h3>
           ${renderBadge(messages.runStateLabels.idle, 'success')}
         </div>
         <div class="key-value-list">
@@ -276,8 +276,8 @@ function buildDashboardPage(vm, messages, language) {
 
       <article class="panel">
         <div class="panel-headline">
-          <h3>${escapeHtml(pick(language, '核心配置', 'Core configuration'))}</h3>
-          <span class="panel-subcopy">${escapeHtml(pick(language, '抓包、测速与部署输入', 'Capture, speed, and deploy inputs'))}</span>
+          <h3>${escapeHtml( '核心配置')}</h3>
+          <span class="panel-subcopy">${escapeHtml( '抓包、测速与部署输入')}</span>
         </div>
         <div class="compact-form-grid">
           ${Object.entries(vm.profile.sources).slice(0, 5).map(([name, source]) => `
@@ -288,11 +288,11 @@ function buildDashboardPage(vm, messages, language) {
           `).join('')}
           <div class="inline-metrics">
             <div class="mini-stat">
-              <span>${escapeHtml(pick(language, '测速阈值', 'Speed threshold'))}</span>
+              <span>${escapeHtml( '测速阈值')}</span>
               <strong>${escapeHtml(`${vm.profile.speed_test.min_download_mb_s} MB/s`)}</strong>
             </div>
             <div class="mini-stat">
-              <span>${escapeHtml(pick(language, '并发线程数', 'Workers'))}</span>
+              <span>${escapeHtml( '并发线程数')}</span>
               <strong>${escapeHtml(String(vm.profile.speed_test.concurrency))}</strong>
             </div>
           </div>
@@ -301,8 +301,8 @@ function buildDashboardPage(vm, messages, language) {
 
       <article class="panel">
         <div class="panel-headline">
-          <h3>${escapeHtml(pick(language, '运行统计', 'Run metrics'))}</h3>
-          <span class="panel-subcopy">${escapeHtml(pick(language, '原始节点、筛选结果与订阅概览', 'Raw nodes, filtered nodes, and subscription summary'))}</span>
+          <h3>${escapeHtml( '运行统计')}</h3>
+          <span class="panel-subcopy">${escapeHtml( '原始节点、筛选结果与订阅概览')}</span>
         </div>
         <div class="metric-grid">
           ${vm.metrics.map((metric) => `
@@ -315,19 +315,19 @@ function buildDashboardPage(vm, messages, language) {
         </div>
         <div class="subscription-inline">
           <div>
-            <span class="panel-subcopy">${escapeHtml(pick(language, '主订阅地址', 'Primary subscription'))}</span>
+            <span class="panel-subcopy">${escapeHtml( '主订阅地址')}</span>
             <strong class="mono">${escapeHtml(vm.subscriptionCards[0].url)}</strong>
           </div>
           <button class="btn btn-primary small" data-copy-text="${escapeHtml(vm.subscriptionCards[0].url)}" type="button">
-            ${escapeHtml(pick(language, '复制全部', 'Copy all'))}
+            ${escapeHtml( '复制全部')}
           </button>
         </div>
       </article>
 
       <article class="panel terminal-panel">
         <div class="panel-headline">
-          <h3>${escapeHtml(pick(language, '实时日志', 'Live logs'))}</h3>
-          <button class="btn btn-secondary small" type="button" data-page-target="logs">${escapeHtml(pick(language, '查看更多', 'View more'))}</button>
+          <h3>${escapeHtml( '实时日志')}</h3>
+          <button class="btn btn-secondary small" type="button" data-page-target="logs">${escapeHtml( '查看更多')}</button>
         </div>
         <div class="log-stack">
           ${vm.displayLogs.slice(-10).map((line) => `<div>${escapeHtml(line)}</div>`).join('')}
@@ -336,19 +336,19 @@ function buildDashboardPage(vm, messages, language) {
 
       <article class="panel action-panel">
         <div class="panel-headline">
-          <h3>${escapeHtml(pick(language, '快捷操作', 'Quick actions'))}</h3>
+          <h3>${escapeHtml( '快捷操作')}</h3>
         </div>
         <div class="action-grid">
-          <button class="btn btn-primary ghost-fill" data-page-target="runs" type="button">${escapeHtml(pick(language, '立即运行一次', 'Run once'))}</button>
-          <button class="btn btn-secondary" data-page-target="history" type="button">${escapeHtml(pick(language, '查看历史任务', 'Open history'))}</button>
-          <button class="btn btn-danger" type="button">${escapeHtml(pick(language, '停止任务', 'Stop task'))}</button>
-          <button class="btn btn-secondary" data-page-target="deploy" type="button">${escapeHtml(pick(language, '打开输出目录', 'Open output'))}</button>
+          <button class="btn btn-primary ghost-fill" data-page-target="runs" type="button">${escapeHtml( '立即运行一次')}</button>
+          <button class="btn btn-secondary" data-page-target="history" type="button">${escapeHtml( '查看历史任务')}</button>
+          <button class="btn btn-danger" type="button">${escapeHtml( '停止任务')}</button>
+          <button class="btn btn-secondary" data-page-target="deploy" type="button">${escapeHtml( '打开输出目录')}</button>
         </div>
       </article>
 
       <article class="panel">
         <div class="panel-headline">
-          <h3>${escapeHtml(pick(language, '节点分布（TOP 10 国家/地区）', 'Node distribution (top 10 regions)'))}</h3>
+          <h3>${escapeHtml( '节点分布（TOP 10 国家/地区）')}</h3>
         </div>
         <div class="country-grid">
           ${vm.distribution.map((item) => `
@@ -374,10 +374,10 @@ function buildConfigPage(vm, messages, language, activeTab) {
         ${renderSubtabs('config', CONFIG_TABS, activeTab, language)}
         <div class="form-grid two-columns">
           <div class="form-column">
-            <h3>${escapeHtml(pick(language, '抓包 API 配置', 'Capture API configuration'))}</h3>
+            <h3>${escapeHtml( '抓包 API 配置')}</h3>
             ${sources.map(([name, source], index) => `
               <label class="field">
-                <span>${escapeHtml(index === 0 ? pick(language, '主抓包 API URL（必填）', 'Primary capture API URL') : `${pick(language, '备用 API URL', 'Backup API URL')} ${index}`)}</span>
+                <span>${escapeHtml(index === 0 ?  '主抓包 API URL（必填）' : `${ '备用 API URL'} ${index}`)}</span>
                 <input
                   ${index === 0 ? 'id="configPrimarySource"' : ''}
                   data-source="${escapeHtml(name)}"
@@ -388,45 +388,45 @@ function buildConfigPage(vm, messages, language, activeTab) {
             `).join('')}
 
             <div class="notice-card">
-              <strong>${escapeHtml(pick(language, '配置说明', 'Configuration note'))}</strong>
-              <p>${escapeHtml(pick(language, '以上 API 地址用于自动获取订阅链接与节点列表，系统按顺序尝试这些地址，失败时自动切换到下一个可用地址。', 'These API endpoints are used to fetch subscriptions and nodes automatically. The system retries them in order and falls back when one fails.'))}</p>
+              <strong>${escapeHtml( '配置说明')}</strong>
+              <p>${escapeHtml( '以上 API 地址用于自动获取订阅链接与节点列表，系统按顺序尝试这些地址，失败时自动切换到下一个可用地址。')}</p>
             </div>
 
             <div class="page-actions">
-              <button class="btn btn-secondary" type="button">${escapeHtml(pick(language, '恢复默认', 'Reset'))}</button>
-              <button class="btn btn-primary" type="button">${escapeHtml(pick(language, '保存并应用', 'Save and apply'))}</button>
+              <button class="btn btn-secondary" type="button">${escapeHtml( '恢复默认')}</button>
+              <button class="btn btn-primary" type="button">${escapeHtml( '保存并应用')}</button>
             </div>
           </div>
 
           <div class="form-column">
             <div class="panel inset-panel">
-              <h3>${escapeHtml(pick(language, '请求设置', 'Request settings'))}</h3>
+              <h3>${escapeHtml( '请求设置')}</h3>
               <div class="field-grid">
-                ${renderBoundField(pick(language, '请求超时时间', 'Request timeout'), 'number', vm.profile.speed_test.timeout_seconds + 10, 'request-timeout')}
-                ${renderBoundField(pick(language, '重试次数', 'Retry count'), 'number', 3, 'request-retry')}
-                ${renderBoundField(pick(language, '请求间隔', 'Retry interval'), 'number', 2, 'request-interval')}
+                ${renderBoundField( '抓取超时时间', 'number', primary.max_runtime_seconds ?? 60, 'request-timeout', { source: sources[0][0], key: 'max_runtime_seconds' })}
+                ${renderBoundField( '失败上限', 'number', primary.failure_limit ?? 3, 'request-retry', { source: sources[0][0], key: 'failure_limit' })}
+                ${renderBoundField( '平台稳定阈值', 'number', primary.plateau_limit ?? 8, 'request-interval', { source: sources[0][0], key: 'plateau_limit' })}
               </div>
-              ${renderStaticToggle(pick(language, '启用 SSL 验证', 'Enable SSL verification'), true)}
-              ${renderStaticToggle(pick(language, '自动重试失败请求', 'Retry failed requests'), true)}
+              ${renderBoundToggle( '启用主抓包源', primary.enabled, { source: sources[0][0], key: 'enabled' })}
+              ${renderBoundToggle( '随机区域抓取', primary.use_random_area, { source: sources[0][0], key: 'use_random_area' })}
             </div>
 
             <div class="panel inset-panel">
-              <h3>${escapeHtml(pick(language, '测试结果', 'Connection result'))}</h3>
+              <h3>${escapeHtml( '测试结果')}</h3>
               <div class="result-summary">
                 <div>
-                  <strong>${escapeHtml(primary.enabled ? pick(language, '连接成功', 'Connected') : pick(language, '已禁用', 'Disabled'))}</strong>
-                  <span>${escapeHtml(pick(language, '返回节点：1,268', 'Returned nodes: 1,268'))}</span>
+                  <strong>${escapeHtml(primary.enabled ?  '连接成功' :  '已禁用')}</strong>
+                  <span>${escapeHtml( '返回节点：1,268')}</span>
                 </div>
                 <div class="sparkline-wrap">${renderSparkline([20, 18, 19, 21, 20, 24, 22, 26, 23, 25, 21, 24], '#57c87a')}</div>
               </div>
             </div>
 
             <div class="panel inset-panel">
-              <h3>${escapeHtml(pick(language, '配置说明', 'Why this page matters'))}</h3>
+              <h3>${escapeHtml( '配置说明')}</h3>
               <ul class="bullet-list">
-                <li>${escapeHtml(pick(language, '主抓包 API 用于自动获取订阅链接，是抓取数据的主要数据源。', 'The primary capture API is the main source for generated subscriptions.'))}</li>
-                <li>${escapeHtml(pick(language, '系统按顺序尝试这些 API 地址，主地址失败后自动切换到备用地址。', 'The app retries endpoints in order and falls back automatically.'))}</li>
-                <li>${escapeHtml(pick(language, '所有配置仅保存在本地，不会上传任何服务器。', 'All configuration stays local and is never uploaded externally.'))}</li>
+                <li>${escapeHtml( '主抓包 API 用于自动获取订阅链接，是抓取数据的主要数据源。')}</li>
+                <li>${escapeHtml( '系统按顺序尝试这些 API 地址，主地址失败后自动切换到备用地址。')}</li>
+                <li>${escapeHtml( '所有配置仅保存在本地，不会上传任何服务器。')}</li>
               </ul>
             </div>
           </div>
@@ -441,14 +441,14 @@ function buildRunsPage(vm, messages, language) {
     <div class="page-grid runs-grid">
       <article class="panel">
         <div class="panel-headline">
-          <h3>${escapeHtml(pick(language, '当前运行任务', 'Current run'))}</h3>
-          ${renderBadge(pick(language, '执行中', 'Running'), 'accent')}
+          <h3>${escapeHtml( '当前运行任务')}</h3>
+          ${renderBadge( '执行中', 'accent')}
         </div>
         <div class="run-hero">
           <div class="run-icon">RN</div>
           <div>
-            <strong>${escapeHtml(pick(language, '全流程自动化部署', 'Full pipeline deployment'))}</strong>
-            <div class="run-meta">${escapeHtml(`#20240520-151811 · ${pick(language, '本地优先 / GitHub Actions 备用', 'Local first / GitHub backup')}`)}</div>
+            <strong>${escapeHtml( '全流程自动化部署')}</strong>
+            <div class="run-meta">${escapeHtml(`#20240520-151811 · ${ '本地优先 / GitHub Actions 备用'}`)}</div>
           </div>
         </div>
         <div class="progress-track"><div class="progress-fill" style="width:${vm.runProgress}%"></div></div>
@@ -457,7 +457,7 @@ function buildRunsPage(vm, messages, language) {
             <div class="timeline-row">
               <span class="timeline-index ${step.status}">${index + 1}</span>
               <span class="timeline-copy">${escapeHtml(step.title)}</span>
-              ${renderBadge(step.status === 'success' ? pick(language, '已完成', 'Done') : step.status === 'running' ? pick(language, '进行中', 'Running') : pick(language, '等待中', 'Queued'), step.status === 'success' ? 'success' : step.status === 'running' ? 'warning' : 'neutral')}
+              ${renderBadge(step.status === 'success' ?  '已完成' : step.status === 'running' ?  '进行中' :  '等待中', step.status === 'success' ? 'success' : step.status === 'running' ? 'warning' : 'neutral')}
             </div>
           `).join('')}
         </div>
@@ -465,34 +465,34 @@ function buildRunsPage(vm, messages, language) {
 
       <article class="panel terminal-panel">
         <div class="panel-headline">
-          <h3>${escapeHtml(pick(language, '实时执行日志', 'Realtime execution log'))}</h3>
+          <h3>${escapeHtml( '实时执行日志')}</h3>
         </div>
         <pre id="runsLogOutput" class="terminal-output">${escapeHtml(vm.displayLogs.join('\n'))}</pre>
         <div class="action-grid four">
-          <button class="btn btn-secondary" type="button">${escapeHtml(pick(language, '暂停', 'Pause'))}</button>
-          <button class="btn btn-secondary" type="button">${escapeHtml(pick(language, '继续', 'Resume'))}</button>
-          <button class="btn btn-danger" type="button">${escapeHtml(pick(language, '终止', 'Terminate'))}</button>
-          <button class="btn btn-secondary" type="button">${escapeHtml(pick(language, '打开完整日志', 'Open full log'))}</button>
+          <button class="btn btn-secondary" type="button">${escapeHtml( '暂停')}</button>
+          <button class="btn btn-secondary" type="button">${escapeHtml( '继续')}</button>
+          <button class="btn btn-danger" type="button">${escapeHtml( '终止')}</button>
+          <button class="btn btn-secondary" type="button">${escapeHtml( '打开完整日志')}</button>
         </div>
       </article>
 
       <article class="panel">
         <div class="panel-headline">
-          <h3>${escapeHtml(pick(language, '执行控制', 'Execution control'))}</h3>
+          <h3>${escapeHtml( '执行控制')}</h3>
         </div>
         <div class="radio-stack">
-          <label class="radio-row"><input type="radio" checked />${escapeHtml(pick(language, '本地优先（推荐）', 'Local first (recommended)'))}</label>
-          <label class="radio-row"><input type="radio" />${escapeHtml(pick(language, 'GitHub Actions 备用', 'GitHub Actions backup'))}</label>
+          <label class="radio-row"><input type="radio" checked />${escapeHtml( '本地优先（推荐）')}</label>
+          <label class="radio-row"><input type="radio" />${escapeHtml( 'GitHub Actions 备用')}</label>
         </div>
-        ${renderStaticToggle(pick(language, '完成后自动部署', 'Deploy when finished'), true)}
-        ${renderStaticToggle(pick(language, '部署成功后通知', 'Notify on success'), true)}
-        ${renderStaticToggle(pick(language, '失败时自动重试', 'Retry on failure'), true)}
-        ${renderStaticToggle(pick(language, '仅在节点变更时部署', 'Deploy only on changes'), false)}
+        ${renderStaticToggle( '完成后自动部署', true)}
+        ${renderStaticToggle( '部署成功后通知', true)}
+        ${renderStaticToggle( '失败时自动重试', true)}
+        ${renderStaticToggle( '仅在节点变更时部署', false)}
       </article>
 
       <article class="panel">
         <div class="panel-headline">
-          <h3>${escapeHtml(pick(language, '任务统计', 'Task statistics'))}</h3>
+          <h3>${escapeHtml( '任务统计')}</h3>
         </div>
         <div class="metric-grid compact">
           ${vm.metrics.slice(0, 4).map((metric) => `
@@ -506,7 +506,7 @@ function buildRunsPage(vm, messages, language) {
 
       <article class="panel wide-panel">
         <div class="panel-headline">
-          <h3>${escapeHtml(pick(language, '输出文件', 'Output files'))}</h3>
+          <h3>${escapeHtml( '输出文件')}</h3>
         </div>
         <div class="file-list">
           ${vm.outputFiles.map((file) => `
@@ -527,35 +527,35 @@ function buildHistoryPage(vm, messages, language) {
     <div class="page-grid history-grid">
       <article class="panel wide-panel">
         <div class="toolbar-row">
-          <input class="toolbar-input" value="${escapeHtml(pick(language, '2024-05-13 → 2024-05-20', '2024-05-13 → 2024-05-20'))}" readonly />
-          <select><option>${escapeHtml(pick(language, '全部', 'All'))}</option></select>
-          <select><option>${escapeHtml(pick(language, '全部', 'All'))}</option></select>
-          <input class="toolbar-input" value="${escapeHtml(pick(language, '搜索任务编号、订阅地址或备注', 'Search task id, URL, or notes'))}" readonly />
-          <button class="btn btn-secondary small" type="button">${escapeHtml(pick(language, '导出', 'Export'))}</button>
+          <input class="toolbar-input" value="${escapeHtml( '2024-05-13 → 2024-05-20')}" readonly />
+          <select><option>${escapeHtml( '全部')}</option></select>
+          <select><option>${escapeHtml( '全部')}</option></select>
+          <input class="toolbar-input" value="${escapeHtml( '搜索任务编号、订阅地址或备注')}" readonly />
+          <button class="btn btn-secondary small" type="button">${escapeHtml( '导出')}</button>
         </div>
         <div class="metric-grid">
-          <div class="metric-card accent"><span>${escapeHtml(pick(language, '总任务数', 'Total runs'))}</span><strong>32</strong><small>${escapeHtml(pick(language, '个任务', 'runs'))}</small></div>
-          <div class="metric-card success"><span>${escapeHtml(pick(language, '成功率', 'Success rate'))}</span><strong>87.5%</strong><small>${escapeHtml(pick(language, '28 成功 / 4 失败', '28 success / 4 failed'))}</small></div>
-          <div class="metric-card warning"><span>${escapeHtml(pick(language, '平均耗时', 'Average duration'))}</span><strong>10m 24s</strong><small>${escapeHtml(pick(language, '平均执行时间', 'Average execution time'))}</small></div>
-          <div class="metric-card accent"><span>${escapeHtml(pick(language, '平均下载速度', 'Average download'))}</span><strong>7.68 MB/s</strong><small>${escapeHtml(pick(language, '全局平均速度', 'Global average'))}</small></div>
+          <div class="metric-card accent"><span>${escapeHtml( '总任务数')}</span><strong>32</strong><small>${escapeHtml( '个任务')}</small></div>
+          <div class="metric-card success"><span>${escapeHtml( '成功率')}</span><strong>87.5%</strong><small>${escapeHtml( '28 成功 / 4 失败')}</small></div>
+          <div class="metric-card warning"><span>${escapeHtml( '平均耗时')}</span><strong>10m 24s</strong><small>${escapeHtml( '平均执行时间')}</small></div>
+          <div class="metric-card accent"><span>${escapeHtml( '平均下载速度')}</span><strong>7.68 MB/s</strong><small>${escapeHtml( '全局平均速度')}</small></div>
         </div>
       </article>
 
       <article class="panel wide-panel">
         <div class="panel-headline">
-          <h3>${escapeHtml(pick(language, '任务列表', 'Task list'))}</h3>
+          <h3>${escapeHtml( '任务列表')}</h3>
         </div>
         <div id="historyTable" class="table-wrap">
           <table class="data-table">
             <thead>
               <tr>
-                <th>${escapeHtml(pick(language, '任务编号', 'Task ID'))}</th>
-                <th>${escapeHtml(pick(language, '开始时间', 'Started'))}</th>
-                <th>${escapeHtml(pick(language, '执行模式', 'Mode'))}</th>
-                <th>${escapeHtml(pick(language, '状态', 'Status'))}</th>
-                <th>${escapeHtml(pick(language, '节点数', 'Nodes'))}</th>
-                <th>${escapeHtml(pick(language, '平均速度', 'Avg speed'))}</th>
-                <th>${escapeHtml(pick(language, '部署结果', 'Deployment'))}</th>
+                <th>${escapeHtml( '任务编号')}</th>
+                <th>${escapeHtml( '开始时间')}</th>
+                <th>${escapeHtml( '执行模式')}</th>
+                <th>${escapeHtml( '状态')}</th>
+                <th>${escapeHtml( '节点数')}</th>
+                <th>${escapeHtml( '平均速度')}</th>
+                <th>${escapeHtml( '部署结果')}</th>
               </tr>
             </thead>
             <tbody>
@@ -577,18 +577,18 @@ function buildHistoryPage(vm, messages, language) {
 
       <article class="panel slim-panel">
         <div class="panel-headline">
-          <h3>${escapeHtml(pick(language, '任务详情', 'Task details'))}</h3>
-          ${renderBadge(pick(language, '成功', 'Success'), 'success')}
+          <h3>${escapeHtml( '任务详情')}</h3>
+          ${renderBadge( '成功', 'success')}
         </div>
         <div class="key-value-list">
           ${[
-            [pick(language, '状态', 'Status'), pick(language, '成功', 'Success')],
-            [pick(language, '执行模式', 'Mode'), pick(language, '本地优先', 'Local first')],
-            [pick(language, '开始时间', 'Started'), '2024-05-20 15:18:11'],
-            [pick(language, '结束时间', 'Finished'), '2024-05-20 15:28:31'],
-            [pick(language, '节点总数', 'Nodes'), '1,268'],
-            [pick(language, '可用节点', 'Available'), '256'],
-            [pick(language, '平均速度', 'Avg speed'), '8.72 MB/s']
+            [ '状态',  '成功'],
+            [ '执行模式',  '本地优先'],
+            [ '开始时间', '2024-05-20 15:18:11'],
+            [ '结束时间', '2024-05-20 15:28:31'],
+            [ '节点总数', '1,268'],
+            [ '可用节点', '256'],
+            [ '平均速度', '8.72 MB/s']
           ].map(([label, value]) => `
             <div class="key-value-row">
               <span>${escapeHtml(label)}</span>
@@ -600,7 +600,7 @@ function buildHistoryPage(vm, messages, language) {
 
       <article class="panel">
         <div class="panel-headline">
-          <h3>${escapeHtml(pick(language, '最近 7 次任务节点数', 'Recent node counts'))}</h3>
+          <h3>${escapeHtml( '最近 7 次任务节点数')}</h3>
         </div>
         <div class="chart-bars">
           ${[1268, 1104, 1268, 856, 1052, 980, 1231].map((value) => `
@@ -614,7 +614,7 @@ function buildHistoryPage(vm, messages, language) {
 
       <article class="panel">
         <div class="panel-headline">
-          <h3>${escapeHtml(pick(language, '最近任务平均速度趋势', 'Recent speed trend'))}</h3>
+          <h3>${escapeHtml( '最近任务平均速度趋势')}</h3>
         </div>
         <div class="sparkline-large">${renderSparkline([8.72, 7.25, 6.8, 5.13, 7.01, 6.35, 7.88], '#5b5ce2')}</div>
       </article>
@@ -629,23 +629,23 @@ function buildNodesPage(vm, messages, language) {
     <div class="page-grid nodes-grid">
       <article class="panel wide-panel">
         <div class="toolbar-row">
-          <input class="toolbar-input" value="${escapeHtml(pick(language, '搜索节点名称、地址或备注...', 'Search node name, address, or notes...'))}" readonly />
-          <select><option>${escapeHtml(pick(language, '全部', 'All'))}</option></select>
-          <select><option>${escapeHtml(pick(language, '全部', 'All'))}</option></select>
-          <select><option>${escapeHtml(pick(language, '全部', 'All'))}</option></select>
-          <button class="btn btn-secondary small" type="button">${escapeHtml(pick(language, '刷新', 'Refresh'))}</button>
+          <input class="toolbar-input" value="${escapeHtml( '搜索节点名称、地址或备注...')}" readonly />
+          <select><option>${escapeHtml( '全部')}</option></select>
+          <select><option>${escapeHtml( '全部')}</option></select>
+          <select><option>${escapeHtml( '全部')}</option></select>
+          <button class="btn btn-secondary small" type="button">${escapeHtml( '刷新')}</button>
         </div>
         <div id="nodeTable" class="table-wrap">
           <table class="data-table">
             <thead>
               <tr>
-                <th>${escapeHtml(pick(language, '节点名称', 'Node'))}</th>
-                <th>${escapeHtml(pick(language, '延迟', 'Latency'))}</th>
-                <th>${escapeHtml(pick(language, '协议', 'Protocol'))}</th>
-                <th>${escapeHtml(pick(language, '地区', 'Region'))}</th>
-                <th>${escapeHtml(pick(language, '可用性', 'Availability'))}</th>
-                <th>${escapeHtml(pick(language, '下载速度', 'Download'))}</th>
-                <th>${escapeHtml(pick(language, '线路', 'Route'))}</th>
+                <th>${escapeHtml( '节点名称')}</th>
+                <th>${escapeHtml( '延迟')}</th>
+                <th>${escapeHtml( '协议')}</th>
+                <th>${escapeHtml( '地区')}</th>
+                <th>${escapeHtml( '可用性')}</th>
+                <th>${escapeHtml( '下载速度')}</th>
+                <th>${escapeHtml( '线路')}</th>
               </tr>
             </thead>
             <tbody>
@@ -667,18 +667,18 @@ function buildNodesPage(vm, messages, language) {
 
       <article class="panel slim-panel">
         <div class="panel-headline">
-          <h3>${escapeHtml(pick(language, '节点详情', 'Node details'))}</h3>
+          <h3>${escapeHtml( '节点详情')}</h3>
         </div>
         <div class="key-value-list">
           ${[
-            [pick(language, '节点地址', 'Host'), selected.name],
-            [pick(language, '协议', 'Protocol'), selected.protocol],
-            [pick(language, '地区', 'Region'), selected.region],
-            [pick(language, '状态', 'Status'), pick(language, '在线', 'Online')],
-            [pick(language, '延迟', 'Latency'), selected.latency],
-            [pick(language, '下载速度', 'Download'), selected.speed],
-            [pick(language, '运营商', 'Provider'), 'StarHub'],
-            [pick(language, 'IP 地址', 'IP address'), '203.116.50.23']
+            [ '节点地址', selected.name],
+            [ '协议', selected.protocol],
+            [ '地区', selected.region],
+            [ '状态',  '在线'],
+            [ '延迟', selected.latency],
+            [ '下载速度', selected.speed],
+            [ '运营商', 'StarHub'],
+            [ 'IP 地址', '203.116.50.23']
           ].map(([label, value]) => `
             <div class="key-value-row">
               <span>${escapeHtml(label)}</span>
@@ -687,8 +687,8 @@ function buildNodesPage(vm, messages, language) {
           `).join('')}
         </div>
         <div class="page-actions stacked">
-          <button class="btn btn-primary" type="button">${escapeHtml(pick(language, '应用到订阅', 'Apply to subscription'))}</button>
-          <button class="btn btn-secondary" type="button">${escapeHtml(pick(language, '保存配置', 'Save selection'))}</button>
+          <button class="btn btn-primary" type="button">${escapeHtml( '应用到订阅')}</button>
+          <button class="btn btn-secondary" type="button">${escapeHtml( '保存配置')}</button>
         </div>
       </article>
     </div>
@@ -714,7 +714,7 @@ function buildSubscriptionsPage(vm, messages, language) {
           `).join('')}
         </div>
         <div class="page-actions">
-          <button class="btn btn-primary" type="button">${escapeHtml(pick(language, '刷新订阅地址', 'Refresh subscriptions'))}</button>
+          <button class="btn btn-primary" type="button">${escapeHtml( '刷新订阅地址')}</button>
         </div>
       </article>
 
@@ -722,12 +722,12 @@ function buildSubscriptionsPage(vm, messages, language) {
         <div class="qr-block">${renderQrPlaceholder()}</div>
         <div class="key-value-list">
           ${[
-            [pick(language, '创建时间', 'Created'), '2024-05-30 15:10:11'],
-            [pick(language, '最后更新时间', 'Updated'), vm.lastUpdated],
-            [pick(language, '节点总数', 'Nodes'), String(vm.counts.postprocess_links)],
-            [pick(language, '平均延迟', 'Avg latency'), '32 ms'],
-            [pick(language, '平均下载速度', 'Avg speed'), '87.2 Mbps'],
-            [pick(language, '平均可用率', 'Availability'), '99.6%']
+            [ '创建时间', '2024-05-30 15:10:11'],
+            [ '最后更新时间', vm.lastUpdated],
+            [ '节点总数', String(vm.counts.postprocess_links)],
+            [ '平均延迟', '32 ms'],
+            [ '平均下载速度', '87.2 Mbps'],
+            [ '平均可用率', '99.6%']
           ].map(([label, value]) => `
             <div class="key-value-row">
               <span>${escapeHtml(label)}</span>
@@ -739,17 +739,17 @@ function buildSubscriptionsPage(vm, messages, language) {
 
       <article class="panel slim-panel">
         <div class="panel-headline">
-          <h3>${escapeHtml(pick(language, '使用说明', 'Usage'))}</h3>
+          <h3>${escapeHtml( '使用说明')}</h3>
         </div>
         <ol class="number-list">
-          <li>${escapeHtml(pick(language, '复制任意订阅链接并导入对应客户端。', 'Copy any subscription link into your target client.'))}</li>
-          <li>${escapeHtml(pick(language, '定期刷新订阅以获取最新节点和测速结果。', 'Refresh the subscription regularly to pull the latest nodes and speed results.'))}</li>
-          <li>${escapeHtml(pick(language, '若客户端不兼容，可切换其他格式地址。', 'Switch to another format when a client needs a different profile type.'))}</li>
+          <li>${escapeHtml( '复制任意订阅链接并导入对应客户端。')}</li>
+          <li>${escapeHtml( '定期刷新订阅以获取最新节点和测速结果。')}</li>
+          <li>${escapeHtml( '若客户端不兼容，可切换其他格式地址。')}</li>
         </ol>
         <div class="action-grid">
-          <button class="btn btn-secondary" data-copy-text="${escapeHtml(vm.subscriptionCards[0].url)}" type="button">${escapeHtml(pick(language, '复制链接', 'Copy link'))}</button>
-          <button class="btn btn-secondary" type="button">${escapeHtml(pick(language, '二维码分享', 'QR share'))}</button>
-          <button class="btn btn-secondary" type="button">${escapeHtml(pick(language, '打开订阅', 'Open URL'))}</button>
+          <button class="btn btn-secondary" data-copy-text="${escapeHtml(vm.subscriptionCards[0].url)}" type="button">${escapeHtml( '复制链接')}</button>
+          <button class="btn btn-secondary" type="button">${escapeHtml( '二维码分享')}</button>
+          <button class="btn btn-secondary" type="button">${escapeHtml( '打开订阅')}</button>
         </div>
       </article>
     </div>
@@ -762,23 +762,23 @@ function buildLogsPage(vm, messages, language, activeTab) {
       <article class="panel wide-panel">
         ${renderSubtabs('logs', LOG_TABS, activeTab, language)}
         <div class="toolbar-row">
-          <input class="toolbar-input" value="${escapeHtml(pick(language, '2024-06-30 → 2024-06-30', '2024-06-30 → 2024-06-30'))}" readonly />
-          <select><option>${escapeHtml(pick(language, '全部', 'All'))}</option></select>
-          <select><option>${escapeHtml(pick(language, '全部', 'All'))}</option></select>
-          <input class="toolbar-input" value="${escapeHtml(pick(language, '搜索日志内容、任务或来源', 'Search log content, task, or source'))}" readonly />
-          <button class="btn btn-primary small" type="button">${escapeHtml(pick(language, '查询', 'Query'))}</button>
+          <input class="toolbar-input" value="${escapeHtml( '2024-06-30 → 2024-06-30')}" readonly />
+          <select><option>${escapeHtml( '全部')}</option></select>
+          <select><option>${escapeHtml( '全部')}</option></select>
+          <input class="toolbar-input" value="${escapeHtml( '搜索日志内容、任务或来源')}" readonly />
+          <button class="btn btn-primary small" type="button">${escapeHtml( '查询')}</button>
         </div>
         <div class="metric-grid">
-          <div class="metric-card accent"><span>${escapeHtml(pick(language, '今日新增日志', 'New logs today'))}</span><strong>1,248</strong><small>${escapeHtml(pick(language, '较昨日 18.6% ↑', '+18.6% vs yesterday'))}</small></div>
-          <div class="metric-card danger"><span>${escapeHtml(pick(language, '错误日志', 'Errors'))}</span><strong>13</strong><small>${escapeHtml(pick(language, '较昨日 -7.1% ↓', '-7.1% vs yesterday'))}</small></div>
-          <div class="metric-card warning"><span>${escapeHtml(pick(language, '警告日志', 'Warnings'))}</span><strong>28</strong><small>${escapeHtml(pick(language, '较昨日 +27.3% ↑', '+27.3% vs yesterday'))}</small></div>
-          <div class="metric-card success"><span>${escapeHtml(pick(language, '成功任务', 'Successful tasks'))}</span><strong>1,206</strong><small>${escapeHtml(pick(language, '较昨日 +22.8% ↑', '+22.8% vs yesterday'))}</small></div>
+          <div class="metric-card accent"><span>${escapeHtml( '今日新增日志')}</span><strong>1,248</strong><small>${escapeHtml( '较昨日 18.6% ↑')}</small></div>
+          <div class="metric-card danger"><span>${escapeHtml( '错误日志')}</span><strong>13</strong><small>${escapeHtml( '较昨日 -7.1% ↓')}</small></div>
+          <div class="metric-card warning"><span>${escapeHtml( '警告日志')}</span><strong>28</strong><small>${escapeHtml( '较昨日 +27.3% ↑')}</small></div>
+          <div class="metric-card success"><span>${escapeHtml( '成功任务')}</span><strong>1,206</strong><small>${escapeHtml( '较昨日 +22.8% ↑')}</small></div>
         </div>
       </article>
 
       <article class="panel">
         <div class="panel-headline">
-          <h3>${escapeHtml(pick(language, '最近告警', 'Recent alerts'))}</h3>
+          <h3>${escapeHtml( '最近告警')}</h3>
         </div>
         <div class="alert-list">
           ${vm.alerts.map((alert) => `
@@ -796,13 +796,13 @@ function buildLogsPage(vm, messages, language, activeTab) {
           <table class="data-table">
             <thead>
               <tr>
-                <th>${escapeHtml(pick(language, '时间', 'Time'))}</th>
-                <th>${escapeHtml(pick(language, '级别', 'Level'))}</th>
-                <th>${escapeHtml(pick(language, '模块', 'Module'))}</th>
-                <th>${escapeHtml(pick(language, '任务', 'Task'))}</th>
-                <th>${escapeHtml(pick(language, '详情摘要', 'Summary'))}</th>
-                <th>${escapeHtml(pick(language, '状态', 'State'))}</th>
-                <th>${escapeHtml(pick(language, '来源', 'Source'))}</th>
+                <th>${escapeHtml( '时间')}</th>
+                <th>${escapeHtml( '级别')}</th>
+                <th>${escapeHtml( '模块')}</th>
+                <th>${escapeHtml( '任务')}</th>
+                <th>${escapeHtml( '详情摘要')}</th>
+                <th>${escapeHtml( '状态')}</th>
+                <th>${escapeHtml( '来源')}</th>
               </tr>
             </thead>
             <tbody>
@@ -824,16 +824,16 @@ function buildLogsPage(vm, messages, language, activeTab) {
 
       <article class="panel slim-panel">
         <div class="panel-headline">
-          <h3>${escapeHtml(pick(language, '日志详情', 'Log details'))}</h3>
+          <h3>${escapeHtml( '日志详情')}</h3>
         </div>
         <div class="key-value-list">
           ${[
-            [pick(language, '时间', 'Time'), '2024-06-30 15:30:45'],
-            [pick(language, '级别', 'Level'), 'INFO'],
-            [pick(language, '模块', 'Module'), pick(language, '部署', 'Deploy')],
-            [pick(language, '任务', 'Task'), 'Cloudflare Pages'],
-            [pick(language, '状态', 'Status'), pick(language, '成功', 'Success')],
-            [pick(language, '来源', 'Source'), 'pages-api']
+            [ '时间', '2024-06-30 15:30:45'],
+            [ '级别', 'INFO'],
+            [ '模块',  '部署'],
+            [ '任务', 'Cloudflare Pages'],
+            [ '状态',  '成功'],
+            [ '来源', 'pages-api']
           ].map(([label, value]) => `
             <div class="key-value-row">
               <span>${escapeHtml(label)}</span>
@@ -859,33 +859,34 @@ function buildDeployPage(vm, messages, language, activeTab) {
         ${renderSubtabs('deploy', DEPLOY_TABS, activeTab, language)}
         <div class="form-grid two-columns">
           <div class="form-column">
-            <h3>${escapeHtml(pick(language, '部署平台', 'Deployment platform'))}</h3>
-            ${renderBoundField(pick(language, '选择平台', 'Platform'), 'text', 'Cloudflare Pages', 'deploy-platform')}
-            ${renderBoundField(pick(language, 'Cloudflare 账户', 'Cloudflare account'), 'text', 'swimmingliu@example.com', 'deploy-account')}
-            ${renderBoundField(pick(language, '项目名称', 'Project name'), 'text', vm.profile.deploy.project_name, 'deploy-project')}
-            ${renderBoundField(pick(language, '构建命令', 'Build command'), 'text', 'npm run build', 'deploy-build')}
-            ${renderBoundField(pick(language, '构建输出目录', 'Output directory'), 'text', 'dist', 'deploy-output')}
-            ${renderStaticToggle(pick(language, '自动部署', 'Auto deploy'), true)}
+            <h3>${escapeHtml( '部署平台')}</h3>
+            ${renderBoundField( '选择平台', 'text', 'Cloudflare Pages', 'deploy-platform')}
+            ${renderBoundField( 'Cloudflare 账户', 'text', 'swimmingliu@example.com', 'deploy-account')}
+            ${renderProfileField( '项目名称', 'text', vm.profile.deploy.project_name, 'deploy-project', 'deploy.project_name')}
+            ${renderBoundField( '构建命令', 'text', 'npm run build', 'deploy-build')}
+            ${renderBoundField( '构建输出目录', 'text', 'dist', 'deploy-output')}
+            ${renderStaticToggle( '自动部署', true)}
           </div>
           <div class="form-column">
-            <h3>${escapeHtml(pick(language, '部署配置', 'Deployment configuration'))}</h3>
-            ${renderBoundField(pick(language, '部署分支', 'Branch'), 'text', 'main', 'deploy-branch')}
-            ${renderBoundField(pick(language, '构建环境', 'Environment'), 'text', pick(language, '生产环境', 'Production'), 'deploy-env')}
-            ${renderBoundField(pick(language, '部署区域', 'Region'), 'text', pick(language, '自动（最近区域）', 'Auto (closest region)'), 'deploy-region')}
-            ${renderBoundField(pick(language, '部署超时', 'Timeout'), 'number', 10, 'deploy-timeout')}
+            <h3>${escapeHtml( '部署配置')}</h3>
+            ${renderBoundField( '部署分支', 'text', 'main', 'deploy-branch')}
+            ${renderBoundField( '构建环境', 'text',  '生产环境', 'deploy-env')}
+            ${renderBoundField( '部署区域', 'text',  '自动（最近区域）', 'deploy-region')}
+            ${renderProfileField( 'Pages 项目地址', 'text', vm.profile.deploy.pages_project_url, 'deploy-pages-url', 'deploy.pages_project_url')}
+            ${renderProfileField( '订阅地址', 'text', vm.profile.deploy.subscription_url, 'deploy-subscription-url', 'deploy.subscription_url')}
             <div class="action-grid">
-              <button class="btn btn-primary" type="button">${escapeHtml(pick(language, '立即部署', 'Deploy now'))}</button>
-              <button class="btn btn-secondary" type="button">${escapeHtml(pick(language, '清除缓存', 'Clear cache'))}</button>
-              <button class="btn btn-secondary" type="button">${escapeHtml(pick(language, '上传部署', 'Upload build'))}</button>
+              <button class="btn btn-primary" type="button">${escapeHtml( '立即部署')}</button>
+              <button class="btn btn-secondary" type="button">${escapeHtml( '清除缓存')}</button>
+              <button class="btn btn-secondary" type="button">${escapeHtml( '上传部署')}</button>
             </div>
             <div class="table-wrap compact-table">
               <table class="data-table">
                 <thead>
                   <tr>
-                    <th>${escapeHtml(pick(language, '状态', 'Status'))}</th>
-                    <th>${escapeHtml(pick(language, '时间', 'Time'))}</th>
-                    <th>${escapeHtml(pick(language, '版本', 'Version'))}</th>
-                    <th>${escapeHtml(pick(language, '部署信息', 'Details'))}</th>
+                    <th>${escapeHtml( '状态')}</th>
+                    <th>${escapeHtml( '时间')}</th>
+                    <th>${escapeHtml( '版本')}</th>
+                    <th>${escapeHtml( '部署信息')}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -923,27 +924,27 @@ function buildMonitorPage(vm, messages, language) {
 
       <article class="panel">
         <div class="panel-headline">
-          <h3>${escapeHtml(pick(language, '告警统计', 'Alert statistics'))}</h3>
+          <h3>${escapeHtml( '告警统计')}</h3>
         </div>
         <div class="metric-grid compact">
-          <div class="metric-card danger"><span>${escapeHtml(pick(language, '紧急告警', 'Critical'))}</span><strong>0</strong></div>
-          <div class="metric-card warning"><span>${escapeHtml(pick(language, '重要告警', 'Important'))}</span><strong>0</strong></div>
-          <div class="metric-card accent"><span>${escapeHtml(pick(language, '一般告警', 'General'))}</span><strong>5</strong></div>
+          <div class="metric-card danger"><span>${escapeHtml( '紧急告警')}</span><strong>0</strong></div>
+          <div class="metric-card warning"><span>${escapeHtml( '重要告警')}</span><strong>0</strong></div>
+          <div class="metric-card accent"><span>${escapeHtml( '一般告警')}</span><strong>5</strong></div>
         </div>
       </article>
 
       <article class="panel">
         <div class="panel-headline">
-          <h3>${escapeHtml(pick(language, '资源排行（TOP 5）', 'Top resources'))}</h3>
+          <h3>${escapeHtml( '资源排行（TOP 5）')}</h3>
         </div>
         <div class="table-wrap compact-table">
           <table class="data-table">
             <thead>
               <tr>
-                <th>${escapeHtml(pick(language, '进程名称', 'Process'))}</th>
+                <th>${escapeHtml( '进程名称')}</th>
                 <th>CPU</th>
-                <th>${escapeHtml(pick(language, '内存', 'Memory'))}</th>
-                <th>${escapeHtml(pick(language, '网络', 'Network'))}</th>
+                <th>${escapeHtml( '内存')}</th>
+                <th>${escapeHtml( '网络')}</th>
               </tr>
             </thead>
             <tbody>
@@ -962,16 +963,16 @@ function buildMonitorPage(vm, messages, language) {
 
       <article class="panel">
         <div class="panel-headline">
-          <h3>${escapeHtml(pick(language, '系统信息', 'System info'))}</h3>
+          <h3>${escapeHtml( '系统信息')}</h3>
         </div>
         <div class="key-value-list">
           ${[
             ['OS', 'Ubuntu 22.04.4 LTS'],
             ['Kernel', '5.15.0-101-generic'],
             ['CPU', '4 vCPU'],
-            [pick(language, '内存', 'Memory'), '16 GB'],
-            [pick(language, '磁盘', 'Disk'), '192 GB'],
-            [pick(language, '负载平均', 'Load avg'), '0.45, 0.32, 0.28']
+            [ '内存', '16 GB'],
+            [ '磁盘', '192 GB'],
+            [ '负载平均', '0.45, 0.32, 0.28']
           ].map(([label, value]) => `
             <div class="key-value-row">
               <span>${escapeHtml(label)}</span>
@@ -991,35 +992,28 @@ function buildSettingsPage(vm, messages, language, activeTab) {
         ${renderSubtabs('settings', SETTINGS_TABS, activeTab, language)}
         <div class="form-grid two-columns">
           <div class="form-column">
-            <label class="field">
-              <span>${escapeHtml(pick(language, '语言', 'Language'))}</span>
-              <select id="settingsLanguage">
-                <option value="zh-CN"${language === 'zh-CN' ? ' selected' : ''}>${escapeHtml(pick(language, '简体中文', 'Simplified Chinese'))}</option>
-                <option value="en-US"${language === 'en-US' ? ' selected' : ''}>English</option>
-              </select>
-            </label>
-            ${renderBoundField(pick(language, '主题', 'Theme'), 'text', pick(language, '浅色（跟随系统）', 'Light (system)'), 'settings-theme')}
-            ${renderBoundField(pick(language, '时区', 'Timezone'), 'text', 'Asia/Shanghai', 'settings-timezone')}
-            ${renderBoundField(pick(language, '默认首页', 'Default page'), 'text', messages.pageTitles.dashboard, 'settings-home')}
-            ${renderBoundField(pick(language, '日志保留天数', 'Log retention'), 'text', pick(language, '30 天', '30 days'), 'settings-retention')}
-            ${renderStaticToggle(pick(language, '自动保存配置', 'Auto-save configuration'), true)}
-            ${renderStaticToggle(pick(language, '启用启动自检', 'Run startup checks'), true)}
-            ${renderStaticToggle(pick(language, '启用异常告警', 'Enable anomaly alerts'), true)}
+            ${renderBoundField( '主题', 'text',  '浅色（跟随系统）', 'settings-theme')}
+            ${renderBoundField( '时区', 'text', 'Asia/Shanghai', 'settings-timezone')}
+            ${renderBoundField( '默认首页', 'text', messages.pageTitles.dashboard, 'settings-home')}
+            ${renderBoundField( '日志保留天数', 'text',  '30 天', 'settings-retention')}
+            ${renderStaticToggle( '自动保存配置', true)}
+            ${renderStaticToggle( '启用启动自检', true)}
+            ${renderStaticToggle( '启用异常告警', true)}
           </div>
           <div class="form-column">
-            ${renderBoundField(pick(language, 'API 请求超时', 'API timeout'), 'number', 30, 'settings-api-timeout')}
-            ${renderBoundField(pick(language, '最大并发任务', 'Max concurrent tasks'), 'number', 5, 'settings-max-task')}
-            ${renderBoundField(pick(language, '自动刷新间隔', 'Refresh interval'), 'text', pick(language, '10 秒', '10 seconds'), 'settings-refresh')}
-            ${renderBoundField(pick(language, '节点测速线程数', 'Speed-test threads'), 'number', 8, 'settings-threads')}
-            ${renderBoundField(pick(language, '订阅同步策略', 'Sync strategy'), 'text', pick(language, '智能模式', 'Smart mode'), 'settings-sync')}
-            ${renderStaticToggle(pick(language, '启用调试模式', 'Enable debug mode'), false)}
-            ${renderStaticToggle(pick(language, '允许匿名统计', 'Allow anonymous analytics'), false)}
-            ${renderStaticToggle(pick(language, '配置变更审计', 'Audit configuration changes'), true)}
+            ${renderProfileField( '测速超时时间', 'number', vm.profile.speed_test.timeout_seconds, 'settings-api-timeout', 'speed_test.timeout_seconds')}
+            ${renderProfileField( '测速并发数', 'number', vm.profile.speed_test.concurrency, 'settings-max-task', 'speed_test.concurrency')}
+            ${renderBoundField( '自动刷新间隔', 'text',  '10 秒', 'settings-refresh')}
+            ${renderProfileField( '最低下载速度 MB/s', 'number', vm.profile.speed_test.min_download_mb_s, 'settings-threads', 'speed_test.min_download_mb_s')}
+            ${renderBoundField( '订阅同步策略', 'text',  '智能模式', 'settings-sync')}
+            ${renderStaticToggle( '启用调试模式', false)}
+            ${renderStaticToggle( '允许匿名统计', false)}
+            ${renderStaticToggle( '配置变更审计', true)}
           </div>
         </div>
         <div class="page-actions">
-          <button class="btn btn-secondary" type="button">${escapeHtml(pick(language, '恢复默认', 'Reset'))}</button>
-          <button class="btn btn-primary" type="button">${escapeHtml(pick(language, '保存设置', 'Save settings'))}</button>
+          <button class="btn btn-secondary" type="button">${escapeHtml( '恢复默认')}</button>
+          <button class="btn btn-primary" type="button">${escapeHtml( '保存设置')}</button>
         </div>
       </article>
     </div>
@@ -1032,13 +1026,13 @@ function buildAboutPage(vm, messages, language) {
       <article class="panel">
         <div class="about-logo">VA</div>
         <h3>${escapeHtml(messages.sidebarTitle)}</h3>
-        <p class="panel-subcopy">${escapeHtml(pick(language, 'Cloudflare VPN 订阅自动化部署工具', 'Cloudflare VPN subscription automation desktop tool'))}</p>
+        <p class="panel-subcopy">${escapeHtml( 'Cloudflare VPN 订阅自动化部署工具')}</p>
         <div class="key-value-list">
           ${[
-            [pick(language, '项目官网', 'Project'), 'https://github.com/example/vpn-auto'],
-            [pick(language, '使用文档', 'Docs'), 'https://docs.example.com/vpn-auto'],
-            [pick(language, '问题反馈', 'Issues'), 'https://github.com/example/vpn-auto/issues'],
-            [pick(language, '联系邮箱', 'Support'), 'support@example.com']
+            [ '项目官网', 'https://github.com/example/vpn-auto'],
+            [ '使用文档', 'https://docs.example.com/vpn-auto'],
+            [ '问题反馈', 'https://github.com/example/vpn-auto/issues'],
+            [ '联系邮箱', 'support@example.com']
           ].map(([label, value]) => `
             <div class="key-value-row">
               <span>${escapeHtml(label)}</span>
@@ -1050,7 +1044,7 @@ function buildAboutPage(vm, messages, language) {
 
       <article class="panel wide-panel" id="aboutArchitecture">
         <div class="panel-headline">
-          <h3>${escapeHtml(pick(language, '系统架构', 'Architecture'))}</h3>
+          <h3>${escapeHtml( '系统架构')}</h3>
         </div>
         <div class="architecture-diagram">
           ${vm.architectureBlocks.map((row) => `
@@ -1068,7 +1062,7 @@ function buildAboutPage(vm, messages, language) {
 
       <article class="panel slim-panel">
         <div class="panel-headline">
-          <h3>${escapeHtml(pick(language, '更新日志', 'Release notes'))}</h3>
+          <h3>${escapeHtml( '更新日志')}</h3>
         </div>
         <div class="release-list">
           ${vm.updateLog.map((release) => `
@@ -1085,7 +1079,7 @@ function buildAboutPage(vm, messages, language) {
 
       <article class="panel slim-panel">
         <div class="panel-headline">
-          <h3>${escapeHtml(pick(language, '致谢', 'Thanks'))}</h3>
+          <h3>${escapeHtml( '致谢')}</h3>
         </div>
         <ul class="bullet-list">
           ${[
@@ -1101,28 +1095,58 @@ function buildAboutPage(vm, messages, language) {
   `;
 }
 
-function renderSubtabs(group, tabs, activeTab, language) {
+function renderSubtabs(group, tabs, activeTab) {
   return `
     <div class="subtab-row">
-      ${tabs.map(([value, zhLabel, enLabel]) => `
+      ${tabs.map(([value, label]) => `
         <button
           class="subtab ${activeTab === value ? 'active' : ''}"
           data-subtab-page="${group}"
           data-subtab="${value}"
           type="button"
         >
-          ${escapeHtml(pick(language, zhLabel, enLabel))}
+          ${escapeHtml(label)}
         </button>
       `).join('')}
     </div>
   `;
 }
 
-function renderBoundField(label, type, value, id) {
+function renderBoundField(label, type, value, id, binding = null) {
+  const bindingAttrs = binding
+    ? ` data-source="${escapeHtml(binding.source)}" data-key="${escapeHtml(binding.key)}"`
+    : '';
   return `
     <label class="field">
       <span>${escapeHtml(label)}</span>
-      <input id="${id}" type="${type}" value="${escapeHtml(value)}" readonly />
+      <input id="${id}" type="${type}" value="${escapeHtml(value)}"${bindingAttrs}${binding ? '' : ' readonly'} />
+    </label>
+  `;
+}
+
+function renderProfileField(label, type, value, id, path) {
+  return `
+    <label class="field">
+      <span>${escapeHtml(label)}</span>
+      <input id="${id}" type="${type}" value="${escapeHtml(value)}" data-profile-path="${escapeHtml(path)}" />
+    </label>
+  `;
+}
+
+function renderBoundToggle(label, checked, binding) {
+  return `
+    <label class="toggle-row">
+      <span>${escapeHtml(label)}</span>
+      <input
+        class="sr-only"
+        type="checkbox"
+        data-source="${escapeHtml(binding.source)}"
+        data-key="${escapeHtml(binding.key)}"
+        ${checked ? 'checked' : ''}
+      />
+      <span class="toggle-pill ${checked ? 'checked' : ''}">
+        <span class="toggle-knob"></span>
+      </span>
     </label>
   `;
 }
@@ -1189,13 +1213,13 @@ function normalizeStageRows(stageStatus, runState) {
 
 function buildOverviewSteps(stageRows, language) {
   const mapping = [
-    ['doctor', pick(language, '抓包配置', 'Setup'), pick(language, '获取 API 配置', 'Capture API settings')],
-    ['extract', pick(language, '提取节点', 'Extract'), pick(language, '运行提取脚本', 'Fetch nodes')],
-    ['speedtest', pick(language, '节点测速', 'Speed test'), pick(language, '去重 & 速度测试', 'Dedupe and speed tests')],
-    ['postprocess', pick(language, '节点处理', 'Post-process'), pick(language, 'IP 归属地 & Emoji', 'GeoIP and metadata')],
-    ['obfuscate', pick(language, '加密处理', 'Encrypt'), pick(language, '本地 / Actions 加密', 'Encrypt outputs')],
-    ['deploy', pick(language, '打包部署', 'Deploy'), pick(language, 'Cloudflare Pages', 'Cloudflare Pages')],
-    ['verify', pick(language, '验证完成', 'Verify'), pick(language, '订阅可用', 'Subscription verified')]
+    ['doctor',  '抓包配置',  '获取 API 配置'],
+    ['extract',  '提取节点',  '运行提取脚本'],
+    ['speedtest',  '节点测速',  '去重 & 速度测试'],
+    ['postprocess',  '节点处理',  'IP 归属地 & Emoji'],
+    ['obfuscate',  '加密处理',  '本地 / Actions 加密'],
+    ['deploy',  '打包部署',  'Cloudflare Pages'],
+    ['verify',  '验证完成',  '订阅可用']
   ];
 
   return mapping.map(([stage, title, detail]) => ({
@@ -1207,33 +1231,33 @@ function buildOverviewSteps(stageRows, language) {
 
 function buildStatusItems(state, messages, language) {
   return [
-    { label: pick(language, '状态', 'State'), value: messages.runStateLabels[state.runState] ?? messages.runStateLabels.idle },
-    { label: pick(language, '模式', 'Mode'), value: state.isDemo ? messages.demoRunMode : messages.manualRunMode },
-    { label: pick(language, 'Cloudflare API', 'Cloudflare API'), value: pick(language, '已连接', 'Connected') },
-    { label: pick(language, '最后更新', 'Last update'), value: formatDate(state.lastUpdateAt, language) || pick(language, '2024-05-30 15:30:45', '2024-05-30 15:30:45') }
+    { label:  '状态', value: messages.runStateLabels[state.runState] ?? messages.runStateLabels.idle },
+    { label:  '模式', value: state.isDemo ? messages.demoRunMode : messages.manualRunMode },
+    { label:  'Cloudflare API', value:  '已连接' },
+    { label:  '最后更新', value: formatDate(state.lastUpdateAt, language) ||  '2024-05-30 15:30:45' }
   ];
 }
 
 function buildTaskStateItems(state, counts, language) {
   return [
-    [pick(language, '当前任务', 'Task'), pick(language, '全流程自动化运行', 'Full pipeline automation')],
-    [pick(language, '开始时间', 'Started'), '2024-05-20 15:18:11'],
-    [pick(language, '已运行时间', 'Elapsed'), '00:12:34'],
-    [pick(language, '下一次运行', 'Next run'), '2024-05-20 16:00:00'],
-    [pick(language, '运行模式', 'Mode'), pick(language, '定时任务（每小时）', 'Scheduled (hourly)')],
-    [pick(language, '部署目标', 'Deployment'), 'Cloudflare Pages'],
-    [pick(language, '节点统计', 'Nodes'), `${counts.raw_links} / ${counts.postprocess_links}`]
+    [ '当前任务',  '全流程自动化运行'],
+    [ '开始时间', '2024-05-20 15:18:11'],
+    [ '已运行时间', '00:12:34'],
+    [ '下一次运行', '2024-05-20 16:00:00'],
+    [ '运行模式',  '定时任务（每小时）'],
+    [ '部署目标', 'Cloudflare Pages'],
+    [ '节点统计', `${counts.raw_links} / ${counts.postprocess_links}`]
   ].map(([label, value]) => ({ label, value }));
 }
 
 function buildDashboardMetrics(counts, language) {
   return [
-    { label: pick(language, '抓取节点总数', 'Captured nodes'), value: String(counts.raw_links), detail: pick(language, '较上次 +12.5%', '+12.5% vs last run'), tone: 'accent' },
-    { label: pick(language, '去重后节点数', 'After dedupe'), value: String(counts.postprocess_links), detail: pick(language, '较上次 +8.2%', '+8.2% vs last run'), tone: 'success' },
-    { label: pick(language, '测速通过节点', 'Speed passed'), value: String(counts.speedtest_links), detail: pick(language, '较上次 +15.3%', '+15.3% vs last run'), tone: 'accent' },
-    { label: pick(language, '当前可用节点', 'Available now'), value: String(counts.availability_links), detail: pick(language, '三站验证通过', 'Passed availability checks'), tone: 'success' },
-    { label: pick(language, '平均下载速度', 'Average download'), value: '8.72 MB/s', detail: pick(language, 'Cloudflare Speedtest', 'Cloudflare Speedtest'), tone: 'warning' },
-    { label: pick(language, '最后成功部署', 'Last successful deploy'), value: '2024-05-20 15:28:31', detail: pick(language, 'Cloudflare Pages', 'Cloudflare Pages'), tone: 'accent' }
+    { label:  '抓取节点总数', value: String(counts.raw_links), detail:  '较上次 +12.5%', tone: 'accent' },
+    { label:  '去重后节点数', value: String(counts.postprocess_links), detail:  '较上次 +8.2%', tone: 'success' },
+    { label:  '测速通过节点', value: String(counts.speedtest_links), detail:  '较上次 +15.3%', tone: 'accent' },
+    { label:  '当前可用节点', value: String(counts.availability_links), detail:  '三站验证通过', tone: 'success' },
+    { label:  '平均下载速度', value: '8.72 MB/s', detail:  'Cloudflare Speedtest', tone: 'warning' },
+    { label:  '最后成功部署', value: '2024-05-20 15:28:31', detail:  'Cloudflare Pages', tone: 'accent' }
   ];
 }
 
@@ -1255,13 +1279,13 @@ function buildDistribution(language) {
 function buildHistoryRows(subscriptionUrl, counts, language) {
   const shortUrl = subscriptionUrl.replace(/^https?:\/\//, '').slice(-10);
   return [
-    ['#20240520151811', '05-20 15:18', pick(language, '本地优先', 'Local first'), pick(language, '成功', 'Success'), 'success', String(counts.raw_links), '8.72 MB/s', `Cloudflare Pages / …${shortUrl}`],
-    ['#20240520140005', '05-20 14:00', pick(language, '本地优先', 'Local first'), pick(language, '成功', 'Success'), 'success', '1,104', '7.25 MB/s', 'Cloudflare Pages'],
-    ['#20240520100002', '05-20 10:00', pick(language, 'GitHub Actions 备用', 'GitHub backup'), pick(language, '成功', 'Success'), 'success', '1,268', '6.80 MB/s', 'Cloudflare Pages'],
-    ['#20240520060003', '05-20 06:00', pick(language, '本地优先', 'Local first'), pick(language, '失败', 'Failed'), 'danger', '856', '5.13 MB/s', pick(language, '部署失败', 'Deploy failed')],
-    ['#20240519220004', '05-19 22:00', pick(language, '本地优先', 'Local first'), pick(language, '成功', 'Success'), 'success', '1,052', '7.01 MB/s', 'Cloudflare Pages'],
-    ['#20240519180005', '05-19 18:00', pick(language, 'GitHub Actions 备用', 'GitHub backup'), pick(language, '成功', 'Success'), 'success', '980', '6.35 MB/s', 'Cloudflare Pages'],
-    ['#20240519140006', '05-19 14:00', pick(language, '本地优先', 'Local first'), pick(language, '成功', 'Success'), 'success', '1,231', '7.88 MB/s', 'Cloudflare Pages']
+    ['#20240520151811', '05-20 15:18',  '本地优先',  '成功', 'success', String(counts.raw_links), '8.72 MB/s', `Cloudflare Pages / …${shortUrl}`],
+    ['#20240520140005', '05-20 14:00',  '本地优先',  '成功', 'success', '1,104', '7.25 MB/s', 'Cloudflare Pages'],
+    ['#20240520100002', '05-20 10:00',  'GitHub Actions 备用',  '成功', 'success', '1,268', '6.80 MB/s', 'Cloudflare Pages'],
+    ['#20240520060003', '05-20 06:00',  '本地优先',  '失败', 'danger', '856', '5.13 MB/s',  '部署失败'],
+    ['#20240519220004', '05-19 22:00',  '本地优先',  '成功', 'success', '1,052', '7.01 MB/s', 'Cloudflare Pages'],
+    ['#20240519180005', '05-19 18:00',  'GitHub Actions 备用',  '成功', 'success', '980', '6.35 MB/s', 'Cloudflare Pages'],
+    ['#20240519140006', '05-19 14:00',  '本地优先',  '成功', 'success', '1,231', '7.88 MB/s', 'Cloudflare Pages']
   ].map(([id, started, mode, status, statusClass, nodes, speed, deploy]) => ({
     id,
     started,
@@ -1276,14 +1300,14 @@ function buildHistoryRows(subscriptionUrl, counts, language) {
 
 function buildNodeRows(language) {
   return [
-    ['us.example.com', '18 ms', 'VLESS', pick(language, '美国', 'US'), '100%', '158.4 Mbps', pick(language, '线路 A', 'Route A'), false],
-    ['sg.example.com', '32 ms', 'VLESS', pick(language, '新加坡', 'Singapore'), '100%', '92.1 Mbps', pick(language, '线路 A', 'Route A'), true],
-    ['jp.example.com', '45 ms', 'VLESS', pick(language, '日本', 'Japan'), '100%', '76.8 Mbps', pick(language, '线路 B', 'Route B'), false],
-    ['hk.example.com', '28 ms', 'VLESS', pick(language, '中国香港', 'Hong Kong'), '100%', '134.7 Mbps', pick(language, '线路 A', 'Route A'), false],
-    ['de.example.com', '86 ms', 'VLESS', pick(language, '德国', 'Germany'), '99%', '64.3 Mbps', pick(language, '线路 C', 'Route C'), false],
-    ['uk.example.com', '72 ms', 'VLESS', pick(language, '英国', 'UK'), '100%', '58.9 Mbps', pick(language, '线路 C', 'Route C'), false],
-    ['fr.example.com', '94 ms', 'VLESS', pick(language, '法国', 'France'), '98%', '42.6 Mbps', pick(language, '线路 D', 'Route D'), false],
-    ['au.example.com', '61 ms', 'VLESS', pick(language, '澳大利亚', 'Australia'), '100%', '68.2 Mbps', pick(language, '线路 B', 'Route B'), false]
+    ['us.example.com', '18 ms', 'VLESS',  '美国', '100%', '158.4 Mbps',  '线路 A', false],
+    ['sg.example.com', '32 ms', 'VLESS',  '新加坡', '100%', '92.1 Mbps',  '线路 A', true],
+    ['jp.example.com', '45 ms', 'VLESS',  '日本', '100%', '76.8 Mbps',  '线路 B', false],
+    ['hk.example.com', '28 ms', 'VLESS',  '中国香港', '100%', '134.7 Mbps',  '线路 A', false],
+    ['de.example.com', '86 ms', 'VLESS',  '德国', '99%', '64.3 Mbps',  '线路 C', false],
+    ['uk.example.com', '72 ms', 'VLESS',  '英国', '100%', '58.9 Mbps',  '线路 C', false],
+    ['fr.example.com', '94 ms', 'VLESS',  '法国', '98%', '42.6 Mbps',  '线路 D', false],
+    ['au.example.com', '61 ms', 'VLESS',  '澳大利亚', '100%', '68.2 Mbps',  '线路 B', false]
   ].map(([name, latency, protocol, region, availability, speed, route, selected]) => ({
     name,
     latency,
@@ -1298,10 +1322,10 @@ function buildNodeRows(language) {
 
 function buildSubscriptionCards(baseUrl, language) {
   return [
-    ['Clash', baseUrl, pick(language, '正常', 'Healthy'), 'success'],
-    ['Clash Meta', `${baseUrl}?type=meta`, pick(language, '已启用', 'Enabled'), 'success'],
-    ['Sing-box', `${baseUrl}?type=singbox`, pick(language, '正常', 'Healthy'), 'success'],
-    ['Surge', `${baseUrl}?type=surge`, pick(language, '已启用', 'Enabled'), 'success']
+    ['Clash', baseUrl,  '正常', 'success'],
+    ['Clash Meta', `${baseUrl}?type=meta`,  '已启用', 'success'],
+    ['Sing-box', `${baseUrl}?type=singbox`,  '正常', 'success'],
+    ['Surge', `${baseUrl}?type=surge`,  '已启用', 'success']
   ].map(([title, url, state, stateClass]) => ({ title, url, state, stateClass }));
 }
 
@@ -1310,50 +1334,50 @@ function buildLogRows(displayLogs, language) {
     time: `15:${String(30 - index).padStart(2, '0')}:45`,
     level: index === 2 ? 'WARN' : index === 4 ? 'ERROR' : 'INFO',
     levelClass: index === 2 ? 'warning' : index === 4 ? 'danger' : 'success',
-    module: pick(language, '部署', 'Deploy'),
-    task: pick(language, 'Cloudflare Pages 部署', 'Cloudflare Pages deploy'),
+    module:  '部署',
+    task:  'Cloudflare Pages 部署',
     summary: line,
-    state: index === 4 ? pick(language, '失败', 'Failed') : pick(language, '成功', 'Success'),
+    state: index === 4 ?  '失败' :  '成功',
     source: index === 4 ? 'github-actions' : 'pages-api'
   }));
 }
 
 function buildOutputFiles(language) {
   return [
-    ['vpn_node.txt', pick(language, '已生成', 'Generated'), 'success', '15:18:20'],
-    ['vpn_node_speedtest.txt', pick(language, '等待中', 'Queued'), 'neutral', '--:--:--'],
-    ['vpn_node_emoji.txt', pick(language, '等待中', 'Queued'), 'neutral', '--:--:--'],
-    ['vmess_node.js', pick(language, '等待中', 'Queued'), 'neutral', '--:--:--'],
-    ['vmess_node_worker.js', pick(language, '等待中', 'Queued'), 'neutral', '--:--:--'],
-    ['_workers.zip', pick(language, '等待中', 'Queued'), 'neutral', '--:--:--']
+    ['vpn_node.txt',  '已生成', 'success', '15:18:20'],
+    ['vpn_node_speedtest.txt',  '等待中', 'neutral', '--:--:--'],
+    ['vpn_node_emoji.txt',  '等待中', 'neutral', '--:--:--'],
+    ['vmess_node.js',  '等待中', 'neutral', '--:--:--'],
+    ['vmess_node_worker.js',  '等待中', 'neutral', '--:--:--'],
+    ['_workers.zip',  '等待中', 'neutral', '--:--:--']
   ].map(([name, state, stateClass, time]) => ({ name, state, stateClass, time }));
 }
 
 function buildSystemStats(language) {
   return [
     {
-      title: pick(language, 'CPU 使用率', 'CPU usage'),
+      title:  'CPU 使用率',
       value: '26%',
       detail: '4 vCPU',
       color: '#2f7cff',
       points: [12, 10, 9, 8, 7, 8, 9, 12, 28, 24, 26, 25, 26]
     },
     {
-      title: pick(language, '内存使用率', 'Memory usage'),
+      title:  '内存使用率',
       value: '54%',
       detail: '8.62 GB / 16 GB',
       color: '#5b5ce2',
       points: [18, 17, 16, 15, 14, 14, 15, 16, 34, 28, 30, 29, 31]
     },
     {
-      title: pick(language, '磁盘使用率', 'Disk usage'),
+      title:  '磁盘使用率',
       value: '41%',
       detail: '80 GB / 192 GB',
       color: '#6e59ff',
       points: [22, 22, 21, 21, 22, 22, 23, 24, 32, 27, 29, 28, 30]
     },
     {
-      title: pick(language, '网络流量', 'Network throughput'),
+      title:  '网络流量',
       value: '67 KB/s',
       detail: '1.23 MB/s ↓',
       color: '#26b84d',
@@ -1364,10 +1388,10 @@ function buildSystemStats(language) {
 
 function buildAlerts(language) {
   return [
-    { level: 'ERROR', title: pick(language, 'Cloudflare Pages 部署失败', 'Cloudflare Pages deployment failed'), time: '10:30:45', tone: 'danger' },
-    { level: 'WARN', title: pick(language, '节点 162.12.14.15 延迟超阈值', 'Node 162.12.14.15 latency crossed the threshold'), time: '10:30:12', tone: 'warning' },
-    { level: 'WARN', title: pick(language, '订阅生成耗时过长（>30s）', 'Subscription generation took too long (>30s)'), time: '10:29:56', tone: 'warning' },
-    { level: 'ERROR', title: pick(language, 'GitHub Actions 执行超时', 'GitHub Actions run timed out'), time: '10:29:30', tone: 'danger' }
+    { level: 'ERROR', title:  'Cloudflare Pages 部署失败', time: '10:30:45', tone: 'danger' },
+    { level: 'WARN', title:  '节点 162.12.14.15 延迟超阈值', time: '10:30:12', tone: 'warning' },
+    { level: 'WARN', title:  '订阅生成耗时过长（>30s）', time: '10:29:56', tone: 'warning' },
+    { level: 'ERROR', title:  'GitHub Actions 执行超时', time: '10:29:30', tone: 'danger' }
   ];
 }
 
@@ -1383,9 +1407,9 @@ function buildProcessRows(language) {
 
 function buildDeployRecords(language) {
   return [
-    { status: pick(language, '成功', 'Success'), time: '2024-05-30 10:18:30', version: 'v1.2.0', detail: pick(language, '构建 32s / 部署 89s', 'Build 32s / deploy 89s') },
-    { status: pick(language, '成功', 'Success'), time: '2024-05-30 09:45:12', version: 'v1.1.9', detail: pick(language, '构建 28s / 部署 76s', 'Build 28s / deploy 76s') },
-    { status: pick(language, '失败', 'Failed'), time: '2024-05-30 09:20:05', version: 'v1.1.8', detail: pick(language, '构建失败：缺少环境变量', 'Build failed: missing environment variables') }
+    { status:  '成功', time: '2024-05-30 10:18:30', version: 'v1.2.0', detail:  '构建 32s / 部署 89s' },
+    { status:  '成功', time: '2024-05-30 09:45:12', version: 'v1.1.9', detail:  '构建 28s / 部署 76s' },
+    { status:  '失败', time: '2024-05-30 09:20:05', version: 'v1.1.8', detail:  '构建失败：缺少环境变量' }
   ];
 }
 
@@ -1395,19 +1419,19 @@ function buildUpdateLog(language) {
       version: 'v1.2.0',
       date: '2024-05-30',
       items: [
-        pick(language, '新增自动抓取节点功能', 'Added automatic capture workflow'),
-        pick(language, '优化节点去重算法', 'Improved node dedupe logic'),
-        pick(language, '支持自定义构建环境', 'Added custom build environment support'),
-        pick(language, '新增部署超时设置', 'Added deployment timeout settings')
+         '新增自动抓取节点功能',
+         '优化节点去重算法',
+         '支持自定义构建环境',
+         '新增部署超时设置'
       ]
     },
     {
       version: 'v1.1.9',
       date: '2024-05-20',
       items: [
-        pick(language, '优化测速性能', 'Optimised speed-test performance'),
-        pick(language, '新增节点延迟显示', 'Added node latency display'),
-        pick(language, '修复部分配置保存问题', 'Fixed configuration persistence issues')
+         '优化测速性能',
+         '新增节点延迟显示',
+         '修复部分配置保存问题'
       ]
     }
   ];
@@ -1416,17 +1440,17 @@ function buildUpdateLog(language) {
 function buildArchitectureBlocks(language) {
   return [
     [
-      { title: pick(language, '用户界面', 'User interface'), detail: pick(language, '桌面 GUI / 配置管理', 'Desktop GUI / config pages') }
+      { title:  '用户界面', detail:  '桌面 GUI / 配置管理' }
     ],
     [
-      { title: pick(language, '核心处理引擎', 'Core processing engine'), detail: pick(language, '订阅解析 / 节点去重 / 延迟测速 / 配置生成 / 部署管理', 'Parse / dedupe / speed-test / render / deploy') }
+      { title:  '核心处理引擎', detail:  '订阅解析 / 节点去重 / 延迟测速 / 配置生成 / 部署管理' }
     ],
     [
-      { title: pick(language, '存储层', 'Storage layer'), detail: pick(language, '本地存储 / 缓存管理', 'Local storage / cache') },
-      { title: pick(language, '部署层', 'Deployment layer'), detail: pick(language, 'Cloudflare API / Workers 部署', 'Cloudflare API / Workers deploy') }
+      { title:  '存储层', detail:  '本地存储 / 缓存管理' },
+      { title:  '部署层', detail:  'Cloudflare API / Workers 部署' }
     ],
     [
-      { title: pick(language, '客户端', 'Client'), detail: pick(language, 'VPN 连接 / 订阅消费', 'VPN clients / subscription consumers') }
+      { title:  '客户端', detail:  'VPN 连接 / 订阅消费' }
     ]
   ];
 }
@@ -1463,20 +1487,20 @@ function sampleStageStatus(runState) {
 
 function demoLogs(language) {
   return [
-    pick(language, '15:23:12 [INFO] 抓包配置验证成功', '15:23:12 [INFO] capture configuration verified'),
-    pick(language, '15:24:18 [INFO] 提取节点完成，共 1,268 个节点', '15:24:18 [INFO] extracted 1,268 nodes'),
-    pick(language, '15:25:32 [INFO] 节点测速完成，通过 256 个', '15:25:32 [INFO] speed-test passed for 256 nodes'),
-    pick(language, '15:27:15 [INFO] 加密文件生成完成', '15:27:15 [INFO] encrypted artifacts generated'),
-    pick(language, '15:28:25 [INFO] Cloudflare Pages 部署成功', '15:28:25 [INFO] Cloudflare Pages deployment succeeded')
+     '15:23:12 [INFO] 抓包配置验证成功',
+     '15:24:18 [INFO] 提取节点完成，共 1,268 个节点',
+     '15:25:32 [INFO] 节点测速完成，通过 256 个',
+     '15:27:15 [INFO] 加密文件生成完成',
+     '15:28:25 [INFO] Cloudflare Pages 部署成功'
   ];
 }
 
-function formatDate(value, language) {
+function formatDate(value) {
   if (!value) {
     return '';
   }
 
-  return new Date(value).toLocaleString(language, {
+  return new Date(value).toLocaleString('zh-CN', {
     hour12: false,
     year: 'numeric',
     month: '2-digit',
@@ -1505,10 +1529,6 @@ function resolveCurrentTaskLabel(state, messages) {
   }
 
   return messages.taskWaiting;
-}
-
-function pick(language, zh, en) {
-  return language === 'zh-CN' ? zh : en;
 }
 
 function navId(page) {

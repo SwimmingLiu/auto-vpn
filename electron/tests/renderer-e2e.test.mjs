@@ -66,6 +66,75 @@ test('renderer exposes the full design-mockup workspace and supports page naviga
     assert.equal(await page.locator('#languageSelect').count(), 0);
     assert.equal(await page.locator('#settingsLanguage').count(), 0);
 
+    const renderedMarkup = await page.evaluate(async () => {
+      const views = await import('./views.js');
+      const i18n = await import('./i18n.js');
+
+      const state = {
+        profile: null,
+        unsubscribe: null,
+        stageStatus: {},
+        counts: {},
+        language: 'en-US',
+        activePage: 'dashboard',
+        subtabs: {
+          config: 'sources',
+          logs: 'runtime',
+          deploy: 'platform',
+          settings: 'general'
+        },
+        isDemo: false,
+        runState: 'idle',
+        runResult: 'idle',
+        logEntries: [],
+        lastUpdateAt: null
+      };
+      const messages = i18n.getMessages('en-US');
+      const viewModel = views.buildViewModel(
+        state,
+        messages,
+        'en-US'
+      );
+
+      return {
+        dashboard: views.buildPageMarkup(
+          'dashboard',
+          viewModel,
+          messages,
+          'en-US',
+          {}
+        ),
+        deploy: views.buildPageMarkup(
+          'deploy',
+          viewModel,
+          messages,
+          'en-US',
+          {}
+        ),
+        settings: views.buildPageMarkup(
+          'settings',
+          viewModel,
+          messages,
+          'en-US',
+          {}
+        ),
+        logs: views.buildPageMarkup(
+          'logs',
+          viewModel,
+          messages,
+          'en-US',
+          {}
+        )
+      };
+    });
+
+    assert.equal(renderedMarkup.dashboard.includes('English'), false);
+    assert.equal(renderedMarkup.dashboard.includes('Local first'), false);
+    assert.equal(renderedMarkup.dashboard.includes('Pipeline overview'), false);
+    assert.equal(/>\s*Platform\s*</.test(renderedMarkup.deploy), false);
+    assert.equal(/>\s*General\s*</.test(renderedMarkup.settings), false);
+    assert.equal(/>\s*Warnings\s*</.test(renderedMarkup.logs), false);
+
     const englishMarkup = await page.evaluate(async () => {
       const views = await import('./views.js');
       const i18n = await import('./i18n.js');
