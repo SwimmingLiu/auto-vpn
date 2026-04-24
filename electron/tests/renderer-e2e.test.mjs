@@ -103,12 +103,11 @@ test('renderer exposes the full design-mockup workspace and supports page naviga
       );
     });
 
-    await page.setContent(englishMarkup);
-    assert.equal(await page.locator('text=English').count(), 0);
-    assert.equal(await page.locator('text=Local first').count(), 0);
-    assert.equal(await page.locator('text=Platform').count(), 0);
-    assert.equal(await page.locator('text=General').count(), 0);
-    assert.equal(await page.locator('text=Pipeline overview').count(), 0);
+    assert.equal(englishMarkup.includes('English'), false);
+    assert.equal(englishMarkup.includes('Local first'), false);
+    assert.equal(englishMarkup.includes('Platform'), false);
+    assert.equal(englishMarkup.includes('General'), false);
+    assert.equal(englishMarkup.includes('Pipeline overview'), false);
 
     await page.locator('#navDashboard').click();
     await page.waitForSelector('#dashboardOverview');

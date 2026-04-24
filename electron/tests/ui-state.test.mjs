@@ -19,7 +19,7 @@ test('buildStageModel marks stages in configured order', () => {
   assert.equal(rows.at(-1).name, 'verify');
 });
 
-test('toMetricItems converts summary counts into cards', () => {
+test('toMetricItems maps summary counts to Chinese labels', () => {
   const cards = toMetricItems({ raw_links: 12, postprocess_links: 5 });
   assert.deepEqual(cards[0], { label: '原始节点数', value: '12' });
   assert.deepEqual(cards[1], { label: '后处理节点数', value: '5' });
@@ -61,31 +61,19 @@ test('resolveLanguage ignores saved and system language and always returns zh-CN
   assert.equal(resolveLanguage('', 'zh-TW'), 'zh-CN');
 });
 
-test('getMessages and summary cards expose Chinese-only copy', () => {
+test('getMessages exposes Chinese-only copy', () => {
   assert.equal(getMessages().runButton, '立即运行');
   assert.equal(getMessages('en-US').pageTitles.deploy, '部署设置');
   assert.equal(
     getMessages('en-US').pageSubtitles.dashboard,
     '统一查看节点抓取、测速、部署与实时日志的桌面工作台'
   );
-
-  const cards = toMetricItems({
-    raw_links: 12,
-    postprocess_links: 5,
-    speedtest_links: 3,
-    availability_links: 2
-  });
-
-  assert.deepEqual(cards[0], { label: '原始节点数', value: '12' });
-  assert.deepEqual(cards[1], { label: '后处理节点数', value: '5' });
-});
-
-test('getMessages returns translated copy', () => {
-  assert.equal(getMessages('zh-CN').runButton, '立即运行');
   assert.equal(getMessages('en-US').runButton, '立即运行');
+  assert.equal(getMessages('en-US').stopButton, '停止运行');
+  assert.equal(getMessages('en-US').languageLabel, '');
 });
 
-test('renderer copy is Chinese-only and hides language switching copy', () => {
+test('getMessages suppresses language-switching copy', () => {
   const messages = getMessages('en-US');
 
   assert.equal(messages.locale, 'zh-CN');
