@@ -15,7 +15,7 @@ If a task changes files in this repository, including coding, refactoring, confi
    - After every UI/UX edit, or after any task change that affects behavior, immediately rerun Playwright or Computer Use end-to-end verification plus a pixel-level / visual check before continuing.
    - Any completed task that changes behavior should include end-to-end verification plus a pixel-level / visual check, not only code-level tests.
 2. Open a GitHub PR.
-3. Request `@Copilot` review.
+3. Use the repository's normal review flow, but do not automatically request `@Copilot` review.
 4. Apply review feedback and update the code.
 5. If any file changes again after review, repeat the workflow:
    - rerun unit tests
@@ -23,7 +23,7 @@ If a task changes files in this repository, including coding, refactoring, confi
    - rerun pixel-level / visual regression tests
    - re-run Playwright or Computer Use verification after each follow-up UI/UX change
    - do not stop after writing code; verification is required every time the UI/UX or task behavior changes
-   - update the PR and request another `@Copilot` review pass when needed
+   - update the PR and request another review pass when needed, but do not automatically request `@Copilot`
 6. Merge the PR only after the required tests pass and the review feedback is resolved.
 
 After the PR is merged, package the application into a runnable binary/app or installable package.
