@@ -17,12 +17,12 @@ const FALLBACK_PROFILE = {
       key: 'mf-demo-key',
       enabled: true
     },
-    'xuanfeng-area': {
+    xuanfeng1: {
       url: 'https://capture-4.vpn.example/api/v1/client/subscribe',
       key: 'xf1-demo-key',
       enabled: true
     },
-    'xuanfeng-all-area': {
+    xuanfeng2: {
       url: 'https://capture-5.vpn.example/api/v1/client/subscribe',
       key: 'xf2-demo-key',
       enabled: false
