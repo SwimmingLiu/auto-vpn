@@ -11,6 +11,7 @@ from vpn_automation.config.runtime import resolve_artifacts_root, resolve_runtim
 from vpn_automation.config.store import ProfileStore, resolve_profile_path
 from vpn_automation.pipeline.controller import PipelineController
 from vpn_automation.pipeline.run_store import RunStore
+from vpn_automation.pipeline.tls_warnings import suppress_insecure_request_warnings
 
 
 def build_event(event_type: str, payload: dict[str, Any]) -> str:
@@ -304,6 +305,8 @@ def resume_pipeline(
 
 
 def main(argv: list[str] | None = None) -> int:
+    suppress_insecure_request_warnings()
+
     parser = argparse.ArgumentParser(description="VPN automation backend")
     subparsers = parser.add_subparsers(dest="command", required=True)
 

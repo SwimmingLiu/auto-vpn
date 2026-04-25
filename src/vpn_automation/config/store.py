@@ -64,6 +64,8 @@ def _render_profile_toml(profile: AppProfile) -> str:
         source_table.add("min_iterations", source.min_iterations)
         source_table.add("plateau_limit", source.plateau_limit)
         source_table.add("use_random_area", source.use_random_area)
+        source_table.add("area_min", source.area_min)
+        source_table.add("area_max", source.area_max)
         source_table.add("failure_limit", source.failure_limit)
         source_table.add("max_runtime_seconds", source.max_runtime_seconds)
         sources_table.add(source_name, source_table)

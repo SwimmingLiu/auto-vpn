@@ -8,6 +8,8 @@ max_iterations = 5000
 min_iterations = 10000
 plateau_limit = 8
 use_random_area = true
+area_min = 0
+area_max = 100
 failure_limit = 3
 max_runtime_seconds = 0.0
 
@@ -19,6 +21,8 @@ max_iterations = 5000
 min_iterations = 15000
 plateau_limit = 8
 use_random_area = true
+area_min = 0
+area_max = 100
 failure_limit = 3
 max_runtime_seconds = 0.0
 
@@ -30,6 +34,8 @@ max_iterations = 5000
 min_iterations = 20000
 plateau_limit = 8
 use_random_area = true
+area_min = 0
+area_max = 100
 failure_limit = 3
 max_runtime_seconds = 0.0
 
@@ -41,6 +47,8 @@ max_iterations = 5000
 min_iterations = 10000
 plateau_limit = 8
 use_random_area = false
+area_min = 0
+area_max = 100
 failure_limit = 3
 max_runtime_seconds = 0.0
 
@@ -52,6 +60,8 @@ max_iterations = 5000
 min_iterations = 25000
 plateau_limit = 8
 use_random_area = true
+area_min = 0
+area_max = 100
 failure_limit = 3
 max_runtime_seconds = 0.0
 

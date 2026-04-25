@@ -25,14 +25,21 @@ def make_profile(project_name: str = "vmessnodes", source_url: str = "https://a.
 
 def test_profile_store_round_trip(tmp_path: Path) -> None:
     store = ProfileStore(tmp_path / "profile.toml")
-    store.save(make_profile())
+    profile = make_profile()
+    profile.sources["leiting"].area_min = 8
+    profile.sources["leiting"].area_max = 64
+    store.save(profile)
 
     loaded = store.load()
     payload = store.path.read_text(encoding="utf-8")
 
     assert loaded.sources["leiting"].url == "https://a.example"
+    assert loaded.sources["leiting"].area_min == 8
+    assert loaded.sources["leiting"].area_max == 64
     assert loaded.deploy.project_name == "vmessnodes"
     assert "[sources.leiting]" in payload
+    assert "area_min = 8" in payload
+    assert "area_max = 64" in payload
     assert "[sources.xuanfeng-area]" in payload
 
 

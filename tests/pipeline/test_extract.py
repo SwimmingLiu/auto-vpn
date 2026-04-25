@@ -35,6 +35,30 @@ def test_build_runtime_source_url_rewrites_area_for_randomized_sources() -> None
     assert "t=" in built
 
 
+def test_build_runtime_source_url_uses_configured_area_range(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = SourceConfig(
+        url="https://example.com/api?area=2&t=123",
+        key="abc",
+        use_random_area=True,
+        area_min=20,
+        area_max=30,
+    )
+    requested_range: list[tuple[int, int]] = []
+
+    def fake_randint(start: int, end: int) -> int:
+        requested_range.append((start, end))
+        return 25
+
+    monkeypatch.setattr("vpn_automation.pipeline.extract.random.randint", fake_randint)
+
+    built = build_runtime_source_url(source, iteration=1)
+
+    assert requested_range == [(20, 30)]
+    assert "area=25" in built
+
+
 def test_extract_links_from_plaintext_accepts_raw_vmess() -> None:
     vmess = "vmess://eyJhZGQiOiIxLjEuMS4xIiwiYWlkIjoiNjQiLCJob3N0Ijoid3d3Lmdvb2dsZS5jb20iLCJpZCI6IjQxODA0OGFmLWEyOTMtNGI5OS05YjBjLTk4Y2EzNTgwZGQyNCIsIm5ldCI6IndzIiwicGF0aCI6IlwvZm9vdGVycyIsInBvcnQiOjQ0MywicHMiOjQzMSwidGxzIjoidGxzIiwidHlwZSI6ImR0bHMiLCJ2IjoiMiJ9"
 

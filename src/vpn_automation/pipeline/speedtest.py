@@ -7,6 +7,9 @@ import requests
 
 from vpn_automation.config.models import SpeedTestConfig
 from vpn_automation.pipeline.proxy_runtime import open_proxy_runtime, probe_mihomo_proxy_delay
+from vpn_automation.pipeline.tls_warnings import suppress_insecure_request_warnings
+
+suppress_insecure_request_warnings()
 
 
 @dataclass

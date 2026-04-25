@@ -173,18 +173,26 @@ test('buildRegionStats counts decoded vmess rows by region prefix', () => {
   ]);
 });
 
-test('source iteration draft applies one max_iterations value to all sources', () => {
+test('source iteration draft applies one max_iterations and area range to all sources', () => {
   const sources = {
-    leiting: { url: 'https://a.example', key: 'a', enabled: true, max_iterations: 12 },
-    heidong: { url: 'https://b.example', key: 'b', enabled: true, max_iterations: 40 }
+    leiting: { url: 'https://a.example', key: 'a', enabled: true, max_iterations: 12, area_min: 10, area_max: 90 },
+    heidong: { url: 'https://b.example', key: 'b', enabled: true, max_iterations: 40, area_min: 0, area_max: 100 }
   };
   const draft = buildSourceIterationDraft(sources);
 
   assert.equal(draft.maxIterations, 12);
+  assert.equal(draft.areaMin, 10);
+  assert.equal(draft.areaMax, 90);
   draft.maxIterations = 25;
+  draft.areaMin = 20;
+  draft.areaMax = 60;
 
   assert.deepEqual(
     Object.values(applySourceIterationDraft(sources, draft)).map((source) => source.max_iterations),
     [25, 25]
+  );
+  assert.deepEqual(
+    Object.values(applySourceIterationDraft(sources, draft)).map((source) => [source.area_min, source.area_max]),
+    [[20, 60], [20, 60]]
   );
 });

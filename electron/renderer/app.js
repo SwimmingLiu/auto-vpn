@@ -3,6 +3,7 @@ import { resolveRunControlState } from './state.js';
 import {
   applySourceIterationDraft,
   buildPageMarkup,
+  buildDashboardMetricsMarkup,
   buildLogCenterMarkup,
   buildRunsCurrentStageMarkup,
   buildRunsStageProgressMarkup,
@@ -75,6 +76,7 @@ const state = {
   unsubscribe: null,
   stageStatus: {},
   counts: {},
+  sourceCounts: {},
   language: 'zh-CN',
   activePage: 'dashboard',
   subtabs: {},
@@ -361,17 +363,6 @@ function handleDocumentInput(event) {
     return;
   }
 
-  if (target.matches('[data-source-max-iterations]')) {
-    if (!state.settingsDrawer?.draft) {
-      return;
-    }
-    state.settingsDrawer.draft.maxIterations = coerceProfileValue(
-      target.value.trim(),
-      state.settingsDrawer.draft.maxIterations
-    );
-    return;
-  }
-
   if (target.matches('[data-drawer-path]')) {
     setDrawerPath(target.dataset.drawerPath, target.value.trim());
     return;
@@ -635,6 +626,7 @@ async function runPipeline() {
   state.runResult = 'running';
   state.stageStatus = {};
   state.counts = {};
+  state.sourceCounts = {};
   state.logEntries = [];
   state.artifactDir = '';
   state.outputFiles = [];
@@ -759,11 +751,37 @@ function handlePipelineEvent(event) {
   if (event.type === 'summary') {
     state.stageStatus = event.stage_status ?? {};
     state.counts = normalizeCounts(event.counts ?? {});
+    state.sourceCounts = normalizeSourceCounts(event.source_counts ?? state.sourceCounts);
     state.artifactDir = event.artifact_dir ?? '';
     touchUpdate();
     renderAll();
     appendLog(`[summary] artifacts: ${event.artifact_dir}`);
     hydrateArtifactPreview();
+    return;
+  }
+
+  if (event.type === 'extract_iteration') {
+    updateExtractMetrics(event);
+    touchUpdate();
+    renderRuntimeOnly({ chrome: true });
+    return;
+  }
+
+  if (event.type === 'speedtest_result') {
+    if (event.passed_threshold) {
+      state.counts.speedtest_links = Number(state.counts.speedtest_links ?? 0) + 1;
+    }
+    touchUpdate();
+    renderRuntimeOnly({ chrome: true });
+    return;
+  }
+
+  if (event.type === 'availability_link_result') {
+    if (event.all_passed) {
+      state.counts.availability_links = Number(state.counts.availability_links ?? 0) + 1;
+    }
+    touchUpdate();
+    renderRuntimeOnly({ chrome: true });
     return;
   }
 
@@ -782,8 +800,42 @@ function handlePipelineEvent(event) {
 function normalizeCounts(counts) {
   return {
     ...counts,
+    raw_links: Number(counts.raw_links ?? 0),
+    speedtest_links: Number(counts.speedtest_links ?? 0),
+    availability_links: Number(counts.availability_links ?? 0),
     deduped_links: counts.deduped_links ?? counts.postprocess_links ?? 0
   };
+}
+
+function normalizeSourceCounts(sourceCounts = {}) {
+  return Object.fromEntries(
+    Object.entries(sourceCounts).map(([sourceName, counts]) => [
+      sourceName,
+      {
+        ...counts,
+        raw_links: Number(counts?.raw_links ?? 0)
+      }
+    ])
+  );
+}
+
+function updateExtractMetrics(event) {
+  const sourceName = event.source_name;
+  if (!sourceName) {
+    return;
+  }
+
+  const previous = state.sourceCounts[sourceName] ?? {};
+  const rawLinks = Number(event.total_links ?? previous.raw_links ?? 0);
+  state.sourceCounts = {
+    ...state.sourceCounts,
+    [sourceName]: {
+      ...previous,
+      raw_links: rawLinks
+    }
+  };
+  state.counts.raw_links = Object.values(state.sourceCounts)
+    .reduce((total, item) => total + Number(item?.raw_links ?? 0), 0);
 }
 
 async function hydrateArtifactPreview() {
@@ -830,6 +882,11 @@ function renderActiveRuntimeSections(viewModel) {
   const currentStage = document.querySelector('#runsCurrentStage');
   if (currentStage) {
     currentStage.outerHTML = buildRunsCurrentStageMarkup(viewModel);
+  }
+
+  const dashboardMetrics = document.querySelector('#dashboardMetricsPanel');
+  if (dashboardMetrics) {
+    dashboardMetrics.outerHTML = buildDashboardMetricsMarkup(viewModel);
   }
 }
 
