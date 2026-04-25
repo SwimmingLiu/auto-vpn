@@ -3,7 +3,9 @@ import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 
 import { ipcMain, shell } from 'electron';
+import QRCode from 'qrcode';
 
+import { previewArtifactDirectory } from './lib/artifact-preview.js';
 import { buildBackendInvocation, parseBackendEventLine } from './lib/backend.js';
 import { resolveStateProfilePath } from './paths.js';
 
@@ -48,12 +50,7 @@ export function registerIpcHandlers({ mainWindow, projectRoot, runtimeProfilePat
   });
 
   ipcMain.handle('shell:open-path', async (_event, targetPath) => {
-    const normalized = String(targetPath ?? '').trim();
-    if (!normalized) {
-      return { ok: false, error: 'empty_path' };
-    }
-    const error = await shell.openPath(normalized);
-    return { ok: !error, error };
+    return openPathWithShell(String(targetPath ?? '').trim(), { strictExists: false });
   });
 
   ipcMain.handle('logs:export', async (_event, content) => {
@@ -65,16 +62,25 @@ export function registerIpcHandlers({ mainWindow, projectRoot, runtimeProfilePat
     return { ok: true, path: outputPath };
   });
 
-  ipcMain.handle('pipeline:run', async () => {
+  ipcMain.handle('pipeline:run', async (_event, options = {}) => {
     if (activePipelineChild) {
       return { ok: false, code: null, signal: null, stopped: false, error: 'already_running' };
     }
 
     const invocation = buildBackendInvocation(projectRoot, 'run');
     const command = selectBackendCommand(invocation.commands);
-    const child = spawn(command, invocation.args, {
+    const runArgs = [...invocation.args];
+    if (options?.skipDeploy) {
+      runArgs.push('--skip-deploy');
+    }
+    if (options?.skipVerify) {
+      runArgs.push('--skip-verify');
+    }
+    const child = spawn(command, runArgs, {
       cwd: projectRoot,
-      env: buildBackendEnv(projectRoot, runtimeProfilePath, bundledProfilePath)
+      env: buildBackendEnv(projectRoot, runtimeProfilePath, bundledProfilePath),
+      detached: true,
+      stdio: ['ignore', 'pipe', 'pipe']
     });
     activePipelineChild = child;
     stopRequested = false;
@@ -98,37 +104,41 @@ export function registerIpcHandlers({ mainWindow, projectRoot, runtimeProfilePat
       }
     });
 
-    return new Promise((resolve) => {
-      child.on('error', (error) => {
-        if (stopTimer) {
-          clearTimeout(stopTimer);
-          stopTimer = null;
-        }
-        activePipelineChild = null;
-        resolve({
-          ok: false,
-          code: null,
-          signal: null,
-          stopped: stopRequested,
-          error: error.message
-        });
-      });
-
-      child.on('close', (code, signal) => {
-        if (stopTimer) {
-          clearTimeout(stopTimer);
-          stopTimer = null;
-        }
-        activePipelineChild = null;
-        const stopped = stopRequested || signal === 'SIGTERM' || signal === 'SIGKILL';
-        resolve({
-          ok: code === 0 && !stopped,
-          code,
-          signal,
-          stopped
-        });
+    child.on('error', (error) => {
+      if (stopTimer) {
+        clearTimeout(stopTimer);
+        stopTimer = null;
+      }
+      activePipelineChild = null;
+      emit({
+        type: 'finished',
+        ok: false,
+        code: null,
+        signal: null,
+        stopped: stopRequested,
+        error: error.message
       });
     });
+
+    child.on('close', (code, signal) => {
+      if (stopTimer) {
+        clearTimeout(stopTimer);
+        stopTimer = null;
+      }
+      activePipelineChild = null;
+      const stopped = stopRequested || signal === 'SIGTERM' || signal === 'SIGKILL';
+      emit({
+        type: 'finished',
+        ok: code === 0 && !stopped,
+        code,
+        signal,
+        stopped
+      });
+    });
+
+    child.unref();
+
+    return { ok: true, pid: child.pid };
   });
 
   ipcMain.handle('pipeline:stop', async () => {
@@ -155,6 +165,33 @@ export function registerIpcHandlers({ mainWindow, projectRoot, runtimeProfilePat
 
     return { ok: true, requested: true };
   });
+
+  ipcMain.handle('external:open-url', async (_event, url) => {
+    const parsed = new URL(String(url ?? ''));
+    if (!['http:', 'https:'].includes(parsed.protocol)) {
+      throw new Error(`Unsupported URL protocol: ${parsed.protocol}`);
+    }
+    await shell.openExternal(parsed.toString());
+    return { ok: true };
+  });
+
+  ipcMain.handle('external:open-path', async (_event, targetPath) => {
+    return openPathWithShell(String(targetPath ?? ''), { strictExists: true });
+  });
+
+  ipcMain.handle('artifact:preview', async (_event, artifactDir) => {
+    return previewArtifactDirectory(artifactDir);
+  });
+
+  ipcMain.handle('qr:generate', async (_event, text) => ({
+    ok: true,
+    dataUrl: await QRCode.toDataURL(String(text ?? ''), {
+      errorCorrectionLevel: 'M',
+      margin: 1,
+      width: 192,
+      color: { dark: '#111826', light: '#ffffff' }
+    })
+  }));
 }
 
 function runCommand(commands, args, cwd, runtimeProfilePath = '', bundledProfilePath = '', input = '') {
@@ -162,22 +199,22 @@ function runCommand(commands, args, cwd, runtimeProfilePath = '', bundledProfile
     const command = selectBackendCommand(commands);
     const child = spawn(command, args, {
       cwd,
-      env: buildBackendEnv(cwd, runtimeProfilePath, bundledProfilePath)
+      env: buildBackendEnv(cwd, runtimeProfilePath, bundledProfilePath),
+      stdio: ['pipe', 'pipe', 'pipe']
     });
 
     let stdout = '';
     let stderr = '';
+    if (input) {
+      child.stdin.write(input);
+    }
+    child.stdin.end();
     child.stdout.on('data', (chunk) => {
       stdout += String(chunk);
     });
     child.stderr.on('data', (chunk) => {
       stderr += String(chunk);
     });
-    if (input) {
-      child.stdin.end(input);
-    } else {
-      child.stdin.end();
-    }
     child.on('error', reject);
     child.on('close', (code) => {
       if (code !== 0) {
@@ -196,6 +233,21 @@ function buildBackendEnv(projectRoot, runtimeProfilePath = '', bundledProfilePat
     VPN_AUTOMATION_PROFILE_PATH: runtimeProfilePath,
     VPN_AUTOMATION_BUNDLED_PROFILE_PATH: bundledProfilePath
   };
+}
+
+async function openPathWithShell(targetPath, { strictExists = false } = {}) {
+  const normalized = String(targetPath ?? '').trim();
+  if (!normalized) {
+    return { ok: false, error: 'empty_path' };
+  }
+
+  const resolved = path.resolve(normalized);
+  if (strictExists && !fs.existsSync(resolved)) {
+    return { ok: false, error: 'path_not_found' };
+  }
+
+  const error = await shell.openPath(resolved);
+  return error ? { ok: false, error } : { ok: true, path: resolved };
 }
 
 function selectBackendCommand(commands) {

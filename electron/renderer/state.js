@@ -13,16 +13,23 @@ export const STAGE_ORDER = [
 
 export const PAGE_ORDER = [
   'dashboard',
-  'config',
-  'run',
-  'artifacts',
+  'runs',
+  'results',
+  'subscriptions',
   'logs',
-  'about'
+  'settings'
 ];
 
 export const PAGE_INDEX = Object.fromEntries(
   PAGE_ORDER.map((name, index) => [name, String(index + 1).padStart(2, '0')])
 );
+
+const METRIC_LABELS = {
+  raw_links: '原始节点',
+  postprocess_links: '去重后',
+  speedtest_links: '测速通过节点',
+  availability_links: '最终可用'
+};
 
 export function buildStageModel(stageStatus = {}) {
   return STAGE_ORDER.map((name) => ({
@@ -67,7 +74,7 @@ export function resolveRunControlState(runState = 'idle') {
 
 export function toMetricItems(counts = {}) {
   return Object.entries(counts).map(([label, value]) => ({
-    label: label.replaceAll('_', ' ').toUpperCase(),
+    label: METRIC_LABELS[label] ?? label,
     value: String(value)
   }));
 }

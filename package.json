@@ -8,7 +8,7 @@
   "scripts": {
     "electron:dev": "electron .",
     "test:electron": "node --test electron/tests/*.test.mjs",
-    "test:all": "python3 -m pytest tests -v && node --test electron/tests/*.test.mjs",
+    "test:all": "./scripts/run_pytest.sh tests -v && node --test electron/tests/*.test.mjs",
     "package:electron": "node electron/build/package.mjs"
   },
   "devDependencies": {
@@ -34,5 +34,8 @@
       ],
       "category": "public.app-category.developer-tools"
     }
+  },
+  "dependencies": {
+    "qrcode": "^1.5.4"
   }
 }

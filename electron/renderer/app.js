@@ -1,37 +1,71 @@
-import { getMessages, resolveLanguage, LANGUAGE_STORAGE_KEY, formatMessage } from './i18n.js';
+import { getMessages, formatMessage } from './i18n.js';
 import { resolveRunControlState } from './state.js';
 import {
+  applySourceIterationDraft,
   buildPageMarkup,
-  buildShortcutStrip,
+  buildLogCenterMarkup,
+  buildRunsCurrentStageMarkup,
+  buildRunsStageProgressMarkup,
+  buildSourceIterationDraft,
   buildSidebarNav,
-  buildSidebarStatus,
-  buildViewModel
+  buildViewModel,
+  buildTopbarActions,
+  classifyLogEntry,
+  filterLogEntries
 } from './views.js';
 
 const demoProfile = {
   sources: {
-    leiting: { url: '', key: '', enabled: true },
-    heidong: { url: '', key: '', enabled: true },
-    mifeng: { url: '', key: '', enabled: true },
-    xuanfeng1: { url: '', key: '', enabled: true },
-    xuanfeng2: { url: '', key: '', enabled: true }
+    leiting: {
+      url: 'https://capture-1.vpn.example/api/v1/client/subscribe',
+      key: 'lt-demo-key',
+      enabled: true
+    },
+    heidong: {
+      url: 'https://capture-2.vpn.example/api/v1/client/nodes',
+      key: 'hd-demo-key',
+      enabled: true
+    },
+    mifeng: {
+      url: 'https://capture-3.vpn.example/api/v1/client/subscribe',
+      key: 'mf-demo-key',
+      enabled: true
+    },
+    'xuanfeng-area': {
+      url: 'https://capture-4.vpn.example/api/v1/client/subscribe',
+      key: 'xf1-demo-key',
+      enabled: true
+    },
+    'xuanfeng-all-area': {
+      url: 'https://capture-5.vpn.example/api/v1/client/subscribe',
+      key: 'xf2-demo-key',
+      enabled: false
+    }
   },
   speed_test: {
     min_download_mb_s: 1.0,
     timeout_seconds: 20,
     concurrency: 3,
-    urls: []
+    urls: [
+      'https://speed-1.vpn.example/1mb.dat',
+      'https://speed-2.vpn.example/1mb.dat',
+      'https://speed-3.vpn.example/1mb.dat'
+    ]
   },
   deploy: {
-    project_name: '',
-    pages_project_url: '',
-    subscription_url: ''
+    project_name: 'vpn-auto',
+    pages_project_url: 'https://vpn-auto.pages.dev',
+    subscription_url: 'https://vpn.example.top/179ba8dd-3854-4747-b853-fc1868ef3937'
+  },
+  paths: {
+    project_root: '/Users/user/vpn-sub',
+    artifacts_root: '/Users/user/vpn-sub/artifacts'
   },
   workspace: {
-    project_root: '',
-    artifacts_root: '',
-    state_root: '',
-    profile_path: ''
+    project_root: '/Users/user/vpn-sub',
+    artifacts_root: '/Users/user/vpn-sub/artifacts',
+    state_root: '/Users/user/vpn-sub/state',
+    profile_path: '/Users/user/vpn-sub/state/profile.toml'
   }
 };
 
@@ -43,42 +77,36 @@ const state = {
   counts: {},
   language: 'zh-CN',
   activePage: 'dashboard',
+  subtabs: {},
+  subscriptionFormat: 'Clash',
+  logFilter: '全部',
+  settingsDrawer: null,
   isDemo: false,
   runState: 'idle',
   runResult: 'idle',
   logEntries: [],
-  lastUpdateAt: null,
   artifactDir: '',
-  deployment: null
+  outputFiles: [],
+  nodeRows: [],
+  qrDataUrl: '',
+  runStartedAt: null,
+  lastUpdateAt: null,
+  modalTransform: ''
 };
 
 const elements = {
   sidebarTitle: document.querySelector('#sidebarTitle'),
   sidebarVersion: document.querySelector('#sidebarVersion'),
   sidebarNav: document.querySelector('#sidebarNav'),
-  sidebarStatusTitle: document.querySelector('#sidebarStatusTitle'),
-  sidebarStatusBadge: document.querySelector('#sidebarStatusBadge'),
-  sidebarStatusBody: document.querySelector('#sidebarStatusBody'),
   pageTitle: document.querySelector('#pageTitle'),
   pageSubtitle: document.querySelector('#pageSubtitle'),
-  languageLabel: document.querySelector('#languageLabel'),
-  languageSelect: document.querySelector('#languageSelect'),
-  projectBtn: document.querySelector('#projectBtn'),
-  topSettingsBtn: document.querySelector('#topSettingsBtn'),
-  saveBtn: document.querySelector('#saveBtn'),
-  stopBtn: document.querySelector('#stopBtn'),
-  runBtn: document.querySelector('#runBtn'),
   runStateBadge: document.querySelector('#runStateBadge'),
-  shortcutStrip: document.querySelector('#shortcutStrip'),
+  pageActions: document.querySelector('#pageActions'),
   pageContent: document.querySelector('#pageContent')
 };
 
 async function bootstrap() {
-  state.language = resolveLanguage(
-    localStorage.getItem(LANGUAGE_STORAGE_KEY) ?? '',
-    navigator.language
-  );
-
+  state.language = 'zh-CN';
   renderAll();
   bindActions();
 
@@ -88,6 +116,7 @@ async function bootstrap() {
     state.savedProfile = structuredClone(demoProfile);
     touchUpdate();
     renderAll();
+    appendLog(getMessages(state.language).demoMode);
     return;
   }
 
@@ -96,18 +125,50 @@ async function bootstrap() {
   state.profile = loadedProfile;
   state.savedProfile = structuredClone(loadedProfile);
   touchUpdate();
+  await refreshQrCode();
   renderAll();
   state.unsubscribe = window.vpnAutomation.onPipelineEvent(handlePipelineEvent);
 }
 
 function bindActions() {
-  elements.saveBtn.addEventListener('click', () => saveProfile());
-  elements.runBtn.addEventListener('click', runPipeline);
-  elements.stopBtn.addEventListener('click', stopPipeline);
-  elements.languageSelect.addEventListener('change', () => updateLanguage(elements.languageSelect.value));
   document.addEventListener('click', handleDocumentClick);
   document.addEventListener('input', handleDocumentInput);
   document.addEventListener('change', handleDocumentInput);
+  
+  document.addEventListener('mousedown', (e) => {
+    const header = e.target.closest('.settings-drawer-head');
+    if (!header) return;
+    
+    const panel = header.closest('.settings-drawer-panel');
+    if (!panel) return;
+    
+    e.preventDefault();
+    
+    let startX = e.clientX;
+    let startY = e.clientY;
+    
+    const style = window.getComputedStyle(panel);
+    // Parse matrix to get current X/Y translate
+    const matrix = new DOMMatrixReadOnly(style.transform);
+    let currentX = matrix.m41;
+    let currentY = matrix.m42;
+    
+    const onMouseMove = (moveEvent) => {
+      const dx = moveEvent.clientX - startX;
+      const dy = moveEvent.clientY - startY;
+      const newTransform = `scale(1) translate(${currentX + dx}px, ${currentY + dy}px)`;
+      panel.style.transform = newTransform;
+      state.modalTransform = newTransform;
+    };
+    
+    const onMouseUp = () => {
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+    };
+    
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  });
 }
 
 function renderAll() {
@@ -118,7 +179,13 @@ function renderAll() {
   document.body.dataset.page = state.activePage;
 
   renderChrome(messages, viewModel);
-  elements.pageContent.innerHTML = buildPageMarkup(state.activePage, viewModel, messages, state.language);
+  elements.pageContent.innerHTML = buildPageMarkup(
+    state.activePage,
+    viewModel,
+    messages,
+    state.language,
+    state.subtabs
+  );
 }
 
 function renderChrome(messages, viewModel) {
@@ -127,23 +194,16 @@ function renderChrome(messages, viewModel) {
   elements.sidebarVersion.textContent = messages.sidebarVersion;
   elements.pageTitle.textContent = messages.pageTitles[state.activePage];
   elements.pageSubtitle.textContent = messages.pageSubtitles[state.activePage];
-  elements.languageLabel.textContent = messages.languageLabel;
-  elements.languageSelect.value = state.language;
-  elements.projectBtn.textContent = messages.projectButton;
-  elements.topSettingsBtn.textContent = messages.settingsButton;
-  elements.saveBtn.textContent = messages.saveButton;
-  elements.stopBtn.textContent = messages.stopButton;
-  elements.runBtn.textContent = resolveRunButtonLabel(messages);
-  elements.runBtn.disabled = controlState.runDisabled;
-  elements.stopBtn.disabled = controlState.stopDisabled;
-  elements.sidebarStatusTitle.textContent = messages.sidebarStatusTitle;
-  elements.sidebarStatusBadge.textContent = messages.runStateLabels[state.runState] ?? messages.runStateLabels.idle;
-  elements.sidebarStatusBadge.className = `badge ${runTone()}`;
   elements.runStateBadge.textContent = messages.runStateLabels[state.runState] ?? messages.runStateLabels.idle;
   elements.runStateBadge.className = `badge ${runTone()}`;
   elements.sidebarNav.innerHTML = buildSidebarNav(messages, state.activePage);
-  elements.shortcutStrip.innerHTML = buildShortcutStrip(messages, viewModel);
-  elements.sidebarStatusBody.innerHTML = buildSidebarStatus(viewModel, messages);
+  elements.pageActions.innerHTML = buildTopbarActions(state.activePage, viewModel, messages, {
+    runDisabled: controlState.runDisabled,
+    stopDisabled: controlState.stopDisabled,
+    runLabel: resolveRunButtonLabel(messages),
+    stopLabel: messages.stopButton,
+    saveLabel: messages.saveButton
+  });
 }
 
 function resolveRunButtonLabel(messages) {
@@ -166,7 +226,7 @@ function runTone() {
   return 'neutral';
 }
 
-async function handleDocumentClick(event) {
+function handleDocumentClick(event) {
   const navButton = event.target.closest('[data-page-target]');
   if (navButton) {
     state.activePage = navButton.dataset.pageTarget;
@@ -174,37 +234,146 @@ async function handleDocumentClick(event) {
     return;
   }
 
-  if (event.target.closest('#projectBtn')) {
-    await openPath(state.profile?.workspace?.project_root ?? '');
-    return;
-  }
-
-  if (event.target.closest('#topSettingsBtn')) {
-    state.activePage = 'config';
+  const subtab = event.target.closest('[data-subtab-page]');
+  if (subtab) {
+    state.subtabs[subtab.dataset.subtabPage] = subtab.dataset.subtab;
     renderAll();
     return;
   }
 
-  const actionButton = event.target.closest('[data-action]');
-  if (actionButton) {
-    await performAction(actionButton.dataset.action);
+  const formatButton = event.target.closest('[data-subscription-format]');
+  if (formatButton) {
+    state.subscriptionFormat = formatButton.dataset.subscriptionFormat;
+    refreshQrCode();
+    renderAll();
+    return;
+  }
+
+  const logFilterButton = event.target.closest('[data-log-filter]');
+  if (logFilterButton) {
+    state.logFilter = logFilterButton.dataset.logFilter;
+    renderAll();
     return;
   }
 
   const copyButton = event.target.closest('[data-copy-text]');
   if (copyButton) {
-    await copyText(copyButton.dataset.copyText);
+    copyText(copyButton.dataset.copyText);
+    return;
+  }
+
+  const runAction = event.target.closest('[data-run-action]');
+  if (runAction?.dataset.runAction === 'start') {
+    runPipeline();
+    return;
+  }
+  if (runAction?.dataset.runAction === 'stop') {
+    stopPipeline();
+    return;
+  }
+
+  const openUrlButton = event.target.closest('[data-open-url]');
+  if (openUrlButton) {
+    openUrl(openUrlButton.dataset.openUrl);
+    return;
+  }
+
+  const action = event.target.closest('[data-action]');
+  if (action?.dataset.action === 'open-settings') {
+    state.activePage = 'settings';
+    renderAll();
+    return;
+  }
+  if (action?.dataset.action === 'save-profile') {
+    saveProfile();
+    return;
+  }
+  if (action?.dataset.action === 'open-artifact-dir') {
+    openArtifactDir();
+    return;
+  }
+  if (action?.dataset.action === 'copy-nodes') {
+    copyText((state.nodeRows ?? []).map((row) => row.link || row.name).filter(Boolean).join('\n'));
+    return;
+  }
+  if (action?.dataset.action === 'retry-current-stage') {
+    runPipeline();
+    return;
+  }
+  if (action?.dataset.action === 'copy-log') {
+    copyText(resolveVisibleLogEntries().map((entry) => entry.line).join('\n'));
+    return;
+  }
+  if (action?.dataset.action === 'clear-log') {
+    state.logEntries = [];
+    renderAll();
+    return;
+  }
+  if (action?.dataset.action === 'open-log-file') {
+    openCurrentLogFile();
+    return;
+  }
+
+  const settingsCard = event.target.closest('[data-settings-card]');
+  if (settingsCard) {
+    openSettingsDrawer(settingsCard.dataset.settingsCard);
+    return;
+  }
+
+  if (event.target.closest('[data-drawer-dismiss="backdrop"]')) {
+    state.settingsDrawer = null;
+    renderAll();
+    return;
+  }
+
+  if (event.target.closest('[data-drawer-close="cancel"]')) {
+    state.settingsDrawer = null;
+    renderAll();
+    return;
+  }
+
+  if (event.target.closest('[data-drawer-save="save"]')) {
+    saveSettingsDrawer();
   }
 }
 
 function handleDocumentInput(event) {
   const target = event.target;
+
   if (!state.profile) {
     return;
   }
 
-  if (target.id === 'languageSelect') {
-    updateLanguage(target.value);
+  if (target.matches('[data-drawer-source][data-drawer-key]')) {
+    if (!state.settingsDrawer?.draft) {
+      return;
+    }
+    const sourceDraft = resolveDrawerSourceDraft();
+    const sourceName = target.dataset.drawerSource;
+    const key = target.dataset.drawerKey;
+    if (!sourceDraft?.[sourceName]) {
+      return;
+    }
+    sourceDraft[sourceName][key] =
+      target.type === 'checkbox'
+        ? target.checked
+        : coerceProfileValue(target.value.trim(), sourceDraft[sourceName][key]);
+    return;
+  }
+
+  if (target.matches('[data-source-max-iterations]')) {
+    if (!state.settingsDrawer?.draft) {
+      return;
+    }
+    state.settingsDrawer.draft.maxIterations = coerceProfileValue(
+      target.value.trim(),
+      state.settingsDrawer.draft.maxIterations
+    );
+    return;
+  }
+
+  if (target.matches('[data-drawer-path]')) {
+    setDrawerPath(target.dataset.drawerPath, target.value.trim());
     return;
   }
 
@@ -215,57 +384,70 @@ function handleDocumentInput(event) {
       return;
     }
     state.profile.sources[sourceName][key] =
-      target.type === 'checkbox' ? target.checked : target.value.trim();
+      target.type === 'checkbox' ? target.checked : coerceProfileValue(target.value.trim(), state.profile.sources[sourceName][key]);
+    renderAll();
     return;
   }
 
-  if (target.matches('[data-section][data-key]')) {
-    const section = target.dataset.section;
-    const key = target.dataset.key;
-    if (!state.profile[section]) {
-      return;
+  if (target.matches('[data-profile-path]')) {
+    setProfilePath(target.dataset.profilePath, target.value.trim());
+    if (target.dataset.profilePath === 'deploy.subscription_url') {
+      refreshQrCode();
     }
-
-    if (section === 'speed_test' && key === 'urls') {
-      state.profile.speed_test.urls = target.value
-        .split(/\r?\n/)
-        .map((item) => item.trim())
-        .filter(Boolean);
-      return;
-    }
-
-    if (target.type === 'number') {
-      state.profile[section][key] = Number(target.value);
-      return;
-    }
-
-    state.profile[section][key] = target.value.trim();
+    renderAll();
   }
 }
 
-async function performAction(action) {
-  switch (action) {
-    case 'save-profile':
-      await saveProfile();
-      return;
-    case 'reset-profile':
-      resetProfile();
-      return;
-    case 'run-pipeline':
-      await runPipeline();
-      return;
-    case 'stop-pipeline':
-      await stopPipeline();
-      return;
-    case 'open-artifacts':
-      await openPath(state.artifactDir || state.profile?.workspace?.artifacts_root || '');
-      return;
-    case 'export-logs':
-      await exportLogs();
-      return;
-    default:
-      return;
+function setProfilePath(path, value) {
+  if (!state.profile) {
+    return;
   }
+  setObjectPath(state.profile, path, value);
+}
+
+function setDrawerPath(path, value) {
+  if (!state.settingsDrawer?.draft) {
+    return;
+  }
+
+  const section = state.settingsDrawer.section;
+  const normalizedPath = String(path ?? '').startsWith(`${section}.`)
+    ? String(path).slice(section.length + 1)
+    : String(path ?? '');
+  setObjectPath(state.settingsDrawer.draft, normalizedPath, value);
+}
+
+function resolveDrawerSourceDraft() {
+  if (state.settingsDrawer?.section !== 'sources') {
+    return null;
+  }
+  return state.settingsDrawer.draft?.sources ?? state.settingsDrawer.draft;
+}
+
+function setObjectPath(root, path, value) {
+  const segments = String(path ?? '').split('.').filter(Boolean);
+  if (!segments.length || !root) {
+    return;
+  }
+
+  let cursor = root;
+  for (const segment of segments.slice(0, -1)) {
+    if (!cursor[segment]) {
+      return;
+    }
+    cursor = cursor[segment];
+  }
+
+  const key = segments.at(-1);
+  cursor[key] = coerceProfileValue(value, cursor[key]);
+}
+
+function coerceProfileValue(value, currentValue) {
+  if (typeof currentValue === 'number') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : currentValue;
+  }
+  return value;
 }
 
 async function copyText(value) {
@@ -285,9 +467,128 @@ async function copyText(value) {
   appendLog(formatMessage(getMessages(state.language).copiedMessage, { value: text }));
 }
 
-function updateLanguage(language) {
-  state.language = language;
-  localStorage.setItem(LANGUAGE_STORAGE_KEY, state.language);
+async function openUrl(url) {
+  const value = String(url ?? '').trim();
+  if (!value || !window.vpnAutomation?.openUrl) {
+    return;
+  }
+  try {
+    await window.vpnAutomation.openUrl(value);
+  } catch (error) {
+    appendLog(formatMessage(getMessages(state.language).openFailed, { error: error.message }));
+  }
+}
+
+async function openArtifactDir() {
+  const artifactDir = state.artifactDir || resolveProfilePaths().artifacts_root;
+  if (!artifactDir || !window.vpnAutomation?.openPath) {
+    return;
+  }
+  const result = await window.vpnAutomation.openPath(artifactDir);
+  if (!result?.ok) {
+    appendLog(formatMessage(getMessages(state.language).openFailed, { error: result?.error ?? 'unknown' }));
+    return;
+  }
+  appendLog(formatMessage(getMessages(state.language).openedPathMessage, { value: artifactDir }));
+}
+
+async function openCurrentLogFile() {
+  const artifactDir = state.artifactDir || resolveProfilePaths().artifacts_root;
+  const logPath = artifactDir ? `${artifactDir}/human.log` : '';
+  if (!logPath || !window.vpnAutomation?.openPath) {
+    appendLog(formatMessage(getMessages(state.language).openFailed, { error: 'log_file_not_found' }));
+    return;
+  }
+
+  const result = await window.vpnAutomation.openPath(logPath);
+  if (!result?.ok) {
+    appendLog(formatMessage(getMessages(state.language).openFailed, { error: result?.error ?? 'unknown' }));
+    return;
+  }
+  appendLog(formatMessage(getMessages(state.language).openedPathMessage, { value: logPath }));
+}
+
+async function refreshQrCode() {
+  const subscriptionUrl = resolveActiveSubscriptionUrl();
+  if (!subscriptionUrl || !window.vpnAutomation?.generateQr) {
+    state.qrDataUrl = '';
+    return;
+  }
+
+  try {
+    const result = await window.vpnAutomation.generateQr(subscriptionUrl);
+    state.qrDataUrl = result?.dataUrl ?? '';
+    renderAll();
+  } catch {
+    state.qrDataUrl = '';
+  }
+}
+
+function resolveActiveSubscriptionUrl() {
+  const baseUrl = state.profile?.deploy?.subscription_url ?? '';
+  if (!baseUrl) {
+    return '';
+  }
+
+  const format = state.subscriptionFormat ?? 'Clash';
+  if (format === 'Clash') {
+    return baseUrl;
+  }
+  return `${baseUrl}?format=${encodeURIComponent(format.toLowerCase().replaceAll(' ', '-'))}`;
+}
+
+function openSettingsDrawer(section) {
+  if (!state.profile) {
+    return;
+  }
+
+  const draft = buildSettingsDraft(section);
+  if (!draft) {
+    return;
+  }
+
+  state.settingsDrawer = { section, draft };
+  renderAll();
+}
+
+function buildSettingsDraft(section) {
+  if (!state.profile) {
+    return null;
+  }
+
+  if (section === 'sources') return buildSourceIterationDraft(state.profile.sources);
+  if (section === 'speed_test') return structuredClone(state.profile.speed_test);
+  if (section === 'deploy') return structuredClone(state.profile.deploy);
+  if (section === 'paths') return structuredClone(state.profile.paths);
+  if (section === 'about') return { version: getMessages(state.language).sidebarVersion };
+  return null;
+}
+
+function resolveProfilePaths(profile = state.profile) {
+  return {
+    project_root: profile?.paths?.project_root ?? profile?.workspace?.project_root ?? '',
+    artifacts_root: profile?.paths?.artifacts_root ?? profile?.workspace?.artifacts_root ?? '',
+    state_root: profile?.paths?.state_root ?? profile?.workspace?.state_root ?? '',
+    profile_path: profile?.paths?.profile_path ?? profile?.workspace?.profile_path ?? ''
+  };
+}
+
+function saveSettingsDrawer() {
+  if (!state.settingsDrawer || !state.profile) {
+    return;
+  }
+
+  const { section, draft } = state.settingsDrawer;
+  if (section !== 'about') {
+    state.profile[section] = section === 'sources'
+      ? applySourceIterationDraft(draft.sources, draft)
+      : structuredClone(draft);
+    if (section === 'deploy') {
+      refreshQrCode();
+    }
+  }
+  state.settingsDrawer = null;
+  touchUpdate();
   renderAll();
 }
 
@@ -307,11 +608,21 @@ async function saveProfile({ silent = false } = {}) {
   }
 }
 
-function resetProfile() {
-  state.profile = structuredClone(state.savedProfile ?? demoProfile);
-  touchUpdate();
-  renderAll();
-  appendLog(getMessages(state.language).profileReset);
+async function exportLogs() {
+  if (!state.logEntries.length) {
+    return;
+  }
+
+  const payload = resolveVisibleLogEntries().map((entry) => entry.line).join('\n');
+  if (window.vpnAutomation?.exportLogs) {
+    const result = await window.vpnAutomation.exportLogs(payload);
+    if (result?.path) {
+      appendLog(formatMessage(getMessages(state.language).exportedLogsMessage, { value: result.path }));
+      return;
+    }
+  }
+
+  await copyText(payload);
 }
 
 async function runPipeline() {
@@ -326,11 +637,17 @@ async function runPipeline() {
   state.counts = {};
   state.logEntries = [];
   state.artifactDir = '';
-  state.deployment = null;
+  state.outputFiles = [];
+  state.nodeRows = [];
+  state.runStartedAt = Date.now();
   touchUpdate();
   renderAll();
   appendLog(messages.pipelineStarted);
-  await saveProfile({ silent: true });
+
+  const runOptions = collectRunOptions();
+  if (runOptions.saveBeforeRun) {
+    await saveProfile({ silent: true });
+  }
 
   if (!window.vpnAutomation) {
     state.runState = 'idle';
@@ -342,15 +659,31 @@ async function runPipeline() {
   }
 
   try {
-    const result = await window.vpnAutomation.runPipeline();
-    finishRun(result);
+    const result = await window.vpnAutomation.runPipeline(runOptions);
+    if (!result?.ok) {
+      finishRun(result);
+    }
   } catch (error) {
     state.runState = 'idle';
     state.runResult = 'failed';
+    state.runStartedAt = null;
     touchUpdate();
     renderAll();
     appendLog(formatMessage(messages.pipelineFailed, { error: error.message }));
   }
+}
+
+function collectRunOptions() {
+  const optionInputs = document.querySelectorAll('[data-run-option]');
+  const options = {
+    skipDeploy: false,
+    skipVerify: false,
+    saveBeforeRun: true
+  };
+  for (const input of optionInputs) {
+    options[input.dataset.runOption] = Boolean(input.checked);
+  }
+  return options;
 }
 
 async function stopPipeline() {
@@ -377,6 +710,7 @@ async function stopPipeline() {
 function finishRun(result = {}) {
   const messages = getMessages(state.language);
   state.runState = 'idle';
+  state.runStartedAt = null;
 
   if (result.stopped) {
     state.runResult = 'stopped';
@@ -412,67 +746,95 @@ function handlePipelineEvent(event) {
 
   if (event.type === 'stage') {
     state.stageStatus[event.stage] = event.status;
+    appendLog(`[stage] ${event.stage} ${event.status}`, {
+      kind: 'stage',
+      stage: event.stage,
+      level: event.status === 'failed' ? 'error' : event.status === 'running' ? 'warning' : 'info'
+    });
     touchUpdate();
-    renderAll();
+    renderRuntimeOnly({ chrome: true });
     return;
   }
 
   if (event.type === 'summary') {
-    state.stageStatus = event.stage_status;
-    state.counts = event.counts;
+    state.stageStatus = event.stage_status ?? {};
+    state.counts = normalizeCounts(event.counts ?? {});
     state.artifactDir = event.artifact_dir ?? '';
-    state.deployment = event.deployment ?? null;
     touchUpdate();
     renderAll();
     appendLog(`[summary] artifacts: ${event.artifact_dir}`);
-  }
-}
-
-async function openPath(targetPath) {
-  const normalized = String(targetPath ?? '').trim();
-  if (!normalized) {
+    hydrateArtifactPreview();
     return;
   }
 
-  if (window.vpnAutomation?.openPath) {
-    const result = await window.vpnAutomation.openPath(normalized);
-    if (result?.ok) {
-      appendLog(formatMessage(getMessages(state.language).openedPathMessage, { value: normalized }));
-    }
+  if (event.type === 'finished') {
+    finishRun(event);
     return;
   }
 
-  appendLog(formatMessage(getMessages(state.language).openedPathMessage, { value: normalized }));
+  if (event.type === 'run_started') {
+    state.artifactDir = event.artifact_dir ?? '';
+    touchUpdate();
+    renderAll();
+  }
 }
 
-async function exportLogs() {
-  if (!state.logEntries.length) {
+function normalizeCounts(counts) {
+  return {
+    ...counts,
+    deduped_links: counts.deduped_links ?? counts.postprocess_links ?? 0
+  };
+}
+
+async function hydrateArtifactPreview() {
+  if (!state.artifactDir || !window.vpnAutomation?.previewArtifact) {
+    state.outputFiles = [];
+    state.nodeRows = [];
     return;
   }
 
-  const payload = state.logEntries.join('\n');
-  if (window.vpnAutomation?.exportLogs) {
-    const result = await window.vpnAutomation.exportLogs(payload);
-    if (result?.path) {
-      appendLog(formatMessage(getMessages(state.language).exportedLogsMessage, { value: result.path }));
-      return;
-    }
+  const result = await window.vpnAutomation.previewArtifact(state.artifactDir);
+  if (result?.ok) {
+    state.outputFiles = result.outputFiles ?? [];
+    state.nodeRows = result.nodeRows ?? [];
+    renderAll();
   }
-
-  const blob = new Blob([payload], { type: 'text/plain;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement('a');
-  anchor.href = url;
-  anchor.download = 'vpn-automation-session.log';
-  anchor.click();
-  URL.revokeObjectURL(url);
-  appendLog(formatMessage(getMessages(state.language).exportedLogsMessage, { value: anchor.download }));
 }
 
-function appendLog(message) {
-  state.logEntries.push(String(message));
+function appendLog(message, overrides = {}) {
+  state.logEntries.push(classifyLogEntry(message, overrides));
   touchUpdate();
-  renderAll();
+  renderRuntimeOnly({ chrome: false });
+}
+
+function renderRuntimeOnly({ chrome = true } = {}) {
+  const messages = getMessages(state.language);
+  const viewModel = buildViewModel(state, messages, state.language);
+  if (chrome) {
+    renderChrome(messages, viewModel);
+  }
+  renderActiveRuntimeSections(viewModel);
+}
+
+function renderActiveRuntimeSections(viewModel) {
+  const logCenter = document.querySelector('#logCenterTable');
+  if (logCenter) {
+    logCenter.innerHTML = buildLogCenterMarkup(viewModel);
+  }
+
+  const stageProgress = document.querySelector('#runsStageProgress');
+  if (stageProgress) {
+    stageProgress.outerHTML = buildRunsStageProgressMarkup(viewModel);
+  }
+
+  const currentStage = document.querySelector('#runsCurrentStage');
+  if (currentStage) {
+    currentStage.outerHTML = buildRunsCurrentStageMarkup(viewModel);
+  }
+}
+
+function resolveVisibleLogEntries() {
+  return filterLogEntries((state.logEntries ?? []).map((entry) => classifyLogEntry(entry)), state.logFilter);
 }
 
 function touchUpdate() {

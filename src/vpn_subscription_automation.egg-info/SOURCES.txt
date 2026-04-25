@@ -7,10 +7,6 @@ src/vpn_automation/config/__init__.py
 src/vpn_automation/config/models.py
 src/vpn_automation/config/runtime.py
 src/vpn_automation/config/store.py
-src/vpn_automation/gui/__init__.py
-src/vpn_automation/gui/main_window.py
-src/vpn_automation/gui/preview.py
-src/vpn_automation/gui/viewmodel.py
 src/vpn_automation/integrations/__init__.py
 src/vpn_automation/integrations/cloudflare.py
 src/vpn_automation/integrations/commands.py

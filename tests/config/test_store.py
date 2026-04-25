@@ -10,8 +10,8 @@ def make_profile(project_name: str = "vmessnodes", source_url: str = "https://a.
             "leiting": SourceConfig(url=source_url, key="k1", enabled=True),
             "heidong": SourceConfig(url="", key="", enabled=True),
             "mifeng": SourceConfig(url="", key="", enabled=True),
-            "xuanfeng1": SourceConfig(url="", key="", enabled=True, use_random_area=False),
-            "xuanfeng2": SourceConfig(url="", key="", enabled=True),
+            "xuanfeng-area": SourceConfig(url="", key="", enabled=True, use_random_area=False),
+            "xuanfeng-all-area": SourceConfig(url="", key="", enabled=True, use_random_area=True),
         },
         speed_test=SpeedTestConfig(
             min_download_mb_s=1.0,
@@ -33,6 +33,7 @@ def test_profile_store_round_trip(tmp_path: Path) -> None:
     assert loaded.sources["leiting"].url == "https://a.example"
     assert loaded.deploy.project_name == "vmessnodes"
     assert "[sources.leiting]" in payload
+    assert "[sources.xuanfeng-area]" in payload
 
 
 def test_profile_store_load_or_create_returns_default_profile(tmp_path: Path) -> None:

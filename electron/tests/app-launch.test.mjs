@@ -15,22 +15,28 @@ test('electron app exposes preload bridge and renders the real saved profile', a
   try {
     const page = await app.firstWindow();
     await page.waitForSelector('#pageContent');
-    await page.locator('#navConfig').click();
-    await page.waitForSelector('#configPrimarySource');
+    await page.locator('#navSettings').click();
+    await page.waitForSelector('[data-settings-card="sources"]');
 
     const hasBridge = await page.evaluate(() => Boolean(window.vpnAutomation));
     const hasStopBridge = await page.evaluate(() => typeof window.vpnAutomation?.stopPipeline === 'function');
+    const hasRunBridge = await page.evaluate(() => typeof window.vpnAutomation?.runPipeline === 'function');
+    const hasQrBridge = await page.evaluate(() => typeof window.vpnAutomation?.generateQr === 'function');
+    const hasOpenUrlBridge = await page.evaluate(() => typeof window.vpnAutomation?.openUrl === 'function');
+    const hasPreviewBridge = await page.evaluate(() => typeof window.vpnAutomation?.previewArtifact === 'function');
     const pageTitle = await page.locator('#pageTitle').innerText();
-    const stopVisible = await page.locator('#stopBtn').isVisible();
-    const sourceInputs = page.locator('input[data-source][data-key="url"]');
-    const primaryValue = await page.locator('#configPrimarySource').inputValue();
+    const actionText = await page.locator('#pageActions').innerText();
+    const sourceSummary = await page.locator('#settingsCardSummary-sources').innerText();
 
     assert.equal(hasBridge, true);
     assert.equal(hasStopBridge, true);
-    assert.equal(stopVisible, true);
-    assert.match(pageTitle, /^(配置管理|Configuration Center)$/);
-    assert.equal(await sourceInputs.count(), 5);
-    assert.equal(typeof primaryValue, 'string');
+    assert.equal(hasRunBridge, true);
+    assert.equal(hasQrBridge, true);
+    assert.equal(hasOpenUrlBridge, true);
+    assert.equal(hasPreviewBridge, true);
+    assert.match(actionText, /保存配置/);
+    assert.equal(pageTitle, '设置');
+    assert.notEqual(sourceSummary.trim(), '');
   } finally {
     await app.close();
   }

@@ -1,13 +1,14 @@
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 
 
 DEFAULT_SOURCE_ORDER = [
     "leiting",
     "heidong",
     "mifeng",
-    "xuanfeng1",
-    "xuanfeng2",
+    "xuanfeng-area",
+    "xuanfeng-all-area",
 ]
 
 
@@ -52,6 +53,23 @@ class FilterConfig:
     per_country_limit: dict[str, int] = field(default_factory=dict)
 
 
+def _default_workspace_compat(project_root: Path | None = None) -> SimpleNamespace:
+    if project_root is None:
+        project_root = resolve_repo_anchor(Path(__file__))
+    project_root = project_root.resolve()
+    workspace_root = project_root.parent
+    return SimpleNamespace(
+        project_root=str(project_root),
+        workspace_root=str(workspace_root),
+        vpn_catch_nodes_root=str(workspace_root / "vpn-catch-nodes"),
+        edgetunnel_root=str(workspace_root / "cloudflarevpn" / "edgetunnel"),
+        artifacts_root=str(project_root / "artifacts"),
+        state_root=str(project_root / "state"),
+        env_file=str(project_root / ".env"),
+        build_root=str(project_root / "build"),
+    )
+
+
 @dataclass
 class AppProfile:
     sources: dict[str, SourceConfig]
@@ -59,17 +77,31 @@ class AppProfile:
     deploy: DeployConfig
     filters: FilterConfig = field(default_factory=FilterConfig)
 
+    def __post_init__(self) -> None:
+        self._workspace_compat = _default_workspace_compat()
+
+    @property
+    def workspace(self) -> SimpleNamespace:
+        return self._workspace_compat
+
+    def set_workspace_compat(self, project_root: Path) -> None:
+        self._workspace_compat = _default_workspace_compat(project_root)
+
     def to_dict(self) -> dict:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: dict) -> "AppProfile":
-        return cls(
-            sources={name: SourceConfig(**value) for name, value in data["sources"].items()},
+        sources = default_sources()
+        for name, value in data.get("sources", {}).items():
+            sources[name] = _normalize_source_config(name, value)
+        profile = cls(
+            sources=sources,
             speed_test=SpeedTestConfig(**data["speed_test"]),
             deploy=DeployConfig(**data["deploy"]),
             filters=FilterConfig(**data.get("filters", {})),
         )
+        return profile
 
 
 def resolve_repo_anchor(candidate: Path) -> Path:
@@ -88,12 +120,16 @@ def resolve_repo_anchor(candidate: Path) -> Path:
     return current
 
 
+def _default_use_random_area(source_name: str) -> bool:
+    return source_name == "xuanfeng-all-area"
+
+
 def _default_source_config(source_name: str) -> SourceConfig:
     source_defaults = {
         "leiting": SourceConfig(url="", key="", enabled=True, max_iterations=5_000, min_iterations=10_000),
         "heidong": SourceConfig(url="", key="", enabled=True, max_iterations=5_000, min_iterations=15_000),
         "mifeng": SourceConfig(url="", key="", enabled=True, max_iterations=5_000, min_iterations=20_000),
-        "xuanfeng1": SourceConfig(
+        "xuanfeng-area": SourceConfig(
             url="",
             key="",
             enabled=True,
@@ -101,7 +137,14 @@ def _default_source_config(source_name: str) -> SourceConfig:
             min_iterations=10_000,
             use_random_area=False,
         ),
-        "xuanfeng2": SourceConfig(url="", key="", enabled=True, max_iterations=5_000, min_iterations=25_000),
+        "xuanfeng-all-area": SourceConfig(
+            url="",
+            key="",
+            enabled=True,
+            max_iterations=5_000,
+            min_iterations=25_000,
+            use_random_area=True,
+        ),
     }
     return source_defaults[source_name]
 
@@ -113,11 +156,48 @@ def default_sources() -> dict[str, SourceConfig]:
     }
 
 
-def create_default_profile(project_root: Path) -> AppProfile:
-    _ = project_root
+def _normalize_source_config(source_name: str, payload: dict) -> SourceConfig:
+    normalized = dict(payload)
+    defaults = _default_source_config(source_name) if source_name in DEFAULT_SOURCE_ORDER else SourceConfig(url="", key="")
+    normalized.setdefault("enabled", defaults.enabled)
+    normalized.setdefault("max_iterations", defaults.max_iterations)
+    normalized.setdefault("min_iterations", defaults.min_iterations)
+    normalized.setdefault("plateau_limit", defaults.plateau_limit)
+    normalized.setdefault("use_random_area", _default_use_random_area(source_name))
+    normalized.setdefault("failure_limit", defaults.failure_limit)
+    normalized.setdefault("max_runtime_seconds", defaults.max_runtime_seconds)
+    return SourceConfig(**normalized)
 
-    return AppProfile(
-        sources=default_sources(),
+
+def _load_existing_sources(config_path: Path) -> dict[str, SourceConfig]:
+    source_map = default_sources()
+    if not config_path.exists():
+        return source_map
+
+    import json
+
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    for name in DEFAULT_SOURCE_ORDER:
+        if name not in payload:
+            continue
+        source_map[name] = _normalize_source_config(
+            name,
+            {
+                "url": str(payload[name].get("url", "")),
+                "key": str(payload[name].get("key", "")),
+                "enabled": True,
+            },
+        )
+    return source_map
+
+
+def create_default_profile(project_root: Path) -> AppProfile:
+    project_root = resolve_repo_anchor(project_root)
+    workspace_root = project_root.parent
+    vpn_catch_nodes_root = workspace_root / "vpn-catch-nodes"
+
+    profile = AppProfile(
+        sources=_load_existing_sources(vpn_catch_nodes_root / "config" / "vpn_api.json"),
         speed_test=SpeedTestConfig(
             min_download_mb_s=0.5,
             timeout_seconds=20,
@@ -136,3 +216,5 @@ def create_default_profile(project_root: Path) -> AppProfile:
             subscription_url="https://swimmingliu.xyz/179ba8dd-3854-4747-b853-fc1868ef3937",
         ),
     )
+    profile.set_workspace_compat(project_root)
+    return profile

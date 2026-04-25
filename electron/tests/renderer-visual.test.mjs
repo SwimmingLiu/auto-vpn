@@ -12,24 +12,24 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const EXPECTED_DIGESTS = {
-  dashboard: 'f370bc7ed8d530876847d3f83b90879f703203fb56ea6bcbf04c15074272720a',
-  config: '2eafa2e4bbe6bf81a847bd4f1b1fa0847c1b5234426cb663d6deca6eac7f8262',
-  run: '63cf524f577aa808b2902f280c8a9543e3870cd3ef7e9ff01317315e98d458be',
-  artifacts: 'f481ce2f0874374d374843f71e1ac8a7f49759e37623c361e470a35773758e68',
-  logs: 'f622ea1af1f6acc605b60d840667ba5f6ea817b0193ab7cba7ea375b55501b30',
-  about: 'b1529931e5b61ae84f686adb964c758c8769ffcdd91626b022e1cd219360f8e6'
+  dashboard: '1544b7cc3badc1ca94928c7464b494ef2a1ce2f75ac729b0f7f6a78e98b722e6',
+  runs: 'baa2f15cb1a98d0dcd77a7c446fb3ab7417fea9f896fcab947b0bf3f6b24a681',
+  results: '8e1783e1f1f7b34b538c990d8dfda28548f5bace4c5d709add17da127e04c25c',
+  subscriptions: '41d42810e754e09c8f1b624a92868c5c7d563a4d2254044b3153f15f7907294d',
+  logs: 'd7f8b01e8a40ddd32f7bb6aaa57d63b67b77501ee72a7c0ea736a484efab9722',
+  settings: 'e3855e4e822e531803fdcc3bd6e3c4d86922b61ac9dbbde2db877a43a7eb2408'
 };
 
 const VISUAL_CASES = [
   ['dashboard', '#navDashboard', '#dashboardOverview'],
-  ['config', '#navConfig', '#configPrimarySource'],
-  ['run', '#navRun', '#runLogOutput'],
-  ['artifacts', '#navArtifacts', '#artifactsPanel'],
+  ['runs', '#navRuns', '#runsWorkspace'],
+  ['results', '#navResults', '#resultsWorkspace'],
+  ['subscriptions', '#navSubscriptions', '#subscriptionCards'],
   ['logs', '#navLogs', '#logCenterTable'],
-  ['about', '#navAbout', '#aboutArchitecture']
+  ['settings', '#navSettings', '#settingsWorkspace']
 ];
 
-test('renderer visual hashes match the runtime-aligned empty-state workspace', async () => {
+test('renderer visual hashes match the full mockup-driven workspace', async () => {
   const server = await startStaticServer(path.join(__dirname, '..', 'renderer'));
   const browser = await chromium.launch();
   try {

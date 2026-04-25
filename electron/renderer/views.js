@@ -1,70 +1,116 @@
-import { buildStageModel, PAGE_INDEX, PAGE_ORDER } from './state.js';
+import { buildStageModel, PAGE_INDEX, PAGE_ORDER, resolveRunControlState } from './state.js';
 
-const SOURCE_NAMES = ['leiting', 'heidong', 'mifeng', 'xuanfeng1', 'xuanfeng2'];
+const FALLBACK_PROFILE = {
+  sources: {
+    leiting: {
+      url: 'https://capture-1.vpn.example/api/v1/client/subscribe',
+      key: 'lt-demo-key',
+      enabled: true
+    },
+    heilong: {
+      url: 'https://capture-2.vpn.example/api/v1/client/nodes',
+      key: 'hl-demo-key',
+      enabled: true
+    },
+    custom: {
+      url: 'https://capture-3.vpn.example/custom.txt',
+      key: '',
+      enabled: false
+    }
+  },
+  speed_test: {
+    min_download_mb_s: 1,
+    timeout_seconds: 20,
+    concurrency: 3
+  },
+  deploy: {
+    project_name: 'vpn-auto',
+    pages_project_url: 'https://vpn-auto.pages.dev',
+    subscription_url: 'https://vpn.example.top/179ba8dd-3854-4747-b853-fc1868ef3937',
+    account_id: '',
+    token: ''
+  },
+  paths: {
+    project_root: '/Users/user/vpn-sub',
+    artifacts_root: '/Users/user/vpn-sub/artifacts'
+  }
+};
 
 const NAV_ICONS = {
-  dashboard: 'DB',
-  config: 'CF',
-  run: 'RN',
-  artifacts: 'AR',
-  logs: 'LG',
-  about: 'AB'
+  dashboard: '⌂',
+  runs: '◉',
+  results: '▣',
+  subscriptions: '♢',
+  logs: '▤',
+  settings: '⚙'
+};
+
+const PAGE_STATUS = {
+  dashboard: ['', 'neutral'],
+  runs: ['', 'neutral'],
+  results: ['', 'neutral'],
+  subscriptions: ['', 'neutral'],
+  logs: ['', 'neutral'],
+  settings: ['', 'neutral']
+};
+
+const LOG_FILTERS = ['全部', '运行日志', '错误', '按阶段'];
+const SUBSCRIPTION_FORMATS = ['Clash', 'Clash Meta', 'Sing-box', 'Surge'];
+const EMPTY_COUNTS = {
+  raw_links: 0,
+  deduped_links: 0,
+  speedtest_links: 0,
+  availability_links: 0,
+  postprocess_links: 0
 };
 
 export function buildViewModel(state, messages, language) {
-  const profile = normalizeProfile(state.profile);
+  const profile = mergeProfile(state.profile ?? FALLBACK_PROFILE);
   const counts = {
-    raw_links: Number(state.counts.raw_links ?? 0),
-    postprocess_links: Number(state.counts.postprocess_links ?? 0),
-    speedtest_links: Number(state.counts.speedtest_links ?? 0),
-    availability_links: Number(state.counts.availability_links ?? 0)
+    ...EMPTY_COUNTS,
+    ...(state.counts ?? {})
   };
-  const stageRows = buildStageModel(state.stageStatus);
-  const hasRunData =
-    Object.values(counts).some((value) => value > 0) ||
-    stageRows.some((row) => row.status !== 'pending') ||
-    state.runResult !== 'idle';
-  const hasLogs = state.logEntries.length > 0;
-  const hasSubscription = Boolean(profile.deploy.subscription_url.trim());
-  const artifactDir = state.artifactDir ?? profile.workspace.artifacts_root;
-  const hasArtifacts = Boolean(state.artifactDir || hasSubscription);
+  const subscriptionUrl = profile.deploy.subscription_url || FALLBACK_PROFILE.deploy.subscription_url;
+  const subscriptionCards = buildSubscriptionCards(subscriptionUrl);
+  const currentSubscription = subscriptionCards.find((card) => card.title === state.subscriptionFormat) ?? subscriptionCards[0];
+  const displayLogs = (state.logEntries ?? []).map((entry) => classifyLogEntry(entry));
+  const logFilter = state.logFilter ?? '全部';
+  const stageRows = normalizeStageRows(state.stageStatus, state.runState);
+  const currentStage = stageRows.find((row) => row.status === 'running') ?? stageRows.find((row) => row.status === 'success') ?? stageRows[0];
+  const artifactDir = state.artifactDir ?? '';
+  const hasResult = Boolean(artifactDir || Object.values(counts).some((value) => Number(value) > 0));
 
   return {
     profile,
     counts,
+    subscriptionUrl,
+    subscriptionFormat: state.subscriptionFormat ?? 'Clash',
+    qrDataUrl: state.qrDataUrl ?? '',
+    displayLogs,
+    logFilter,
+    logRows: buildLogRows(filterLogEntries(displayLogs, logFilter)),
+    logGroups: groupLogEntriesByStage(filterLogEntries(displayLogs, logFilter)),
     stageRows,
-    hasRunData,
-    hasLogs,
-    hasSubscription,
-    hasArtifacts,
+    currentStage,
     artifactDir,
-    deployment: state.deployment ?? {},
-    logEntries: state.logEntries,
-    lastUpdated: formatDate(state.lastUpdateAt, language) || messages.notAvailableValue,
-    shortcutActions: [
-      { id: 'shortcutConfig', page: 'config', label: messages.shortcutActions.config, tone: 'accent' },
-      { id: 'shortcutRun', page: 'run', label: messages.shortcutActions.run, tone: 'warning' },
-      { id: 'shortcutArtifacts', page: 'artifacts', label: messages.shortcutActions.artifacts, tone: 'success' },
-      { id: 'shortcutLogs', page: 'logs', label: messages.shortcutActions.logs, tone: 'accent' }
-    ],
-    metrics: [
-      [pick(language, '原始节点', 'Raw nodes'), counts.raw_links || 0],
-      [pick(language, '去重后', 'After dedupe'), counts.postprocess_links || 0],
-      [pick(language, '测速通过', 'Speed passed'), counts.speedtest_links || 0],
-      [pick(language, '可用通过', 'Availability passed'), counts.availability_links || 0]
-    ],
-    runtimeRows: [
-      [pick(language, '项目根目录', 'Project root'), profile.workspace.project_root || messages.notAvailableValue],
-      [pick(language, '产物目录', 'Artifacts root'), profile.workspace.artifacts_root || messages.notAvailableValue],
-      [pick(language, '状态目录', 'State root'), profile.workspace.state_root || messages.notAvailableValue],
-      [pick(language, '配置文件', 'Profile file'), profile.workspace.profile_path || messages.notAvailableValue]
-    ],
-    statusRows: [
-      [pick(language, '状态', 'State'), messages.runStateLabels[state.runState] ?? messages.runStateLabels.idle],
-      [pick(language, '模式', 'Mode'), state.isDemo ? messages.demoRunMode : messages.manualRunMode],
-      [pick(language, '日志', 'Logs'), String(state.logEntries.length)],
-      [pick(language, '最后更新', 'Last update'), formatDate(state.lastUpdateAt, language) || messages.notAvailableValue]
-    ]
+    hasResult,
+    lastUpdated: formatDate(state.lastUpdateAt) || '—',
+    runStartedAt: formatDate(state.runStartedAt) || '—',
+    runElapsed: state.runState === 'running' ? formatElapsed(state.runStartedAt) : '—',
+    outputFiles: state.outputFiles ?? [],
+    nodeRows: state.nodeRows ?? [],
+    regionStats: buildRegionStats(state.nodeRows ?? []),
+    subscriptionCards,
+    currentSubscription,
+    sourceRows: buildSourceRows(profile),
+    runControlState: resolveRunControlState(state.runState),
+    statusItems: buildStatusItems(state, messages),
+    currentStatusLabel: resolveCurrentStatusLabel(state, messages),
+    currentTaskLabel: resolveCurrentTaskLabel(state, messages),
+    runStateLabel: messages.runStateLabels[state.runState] ?? messages.runStateLabels.idle,
+    runStateTone: state.runState === 'running' ? 'success' : state.runState === 'stopping' ? 'warning' : 'neutral',
+    settingsDrawer: state.settingsDrawer ?? null,
+    modalTransform: state.modalTransform ?? ''
   };
 }
 
@@ -82,12 +128,33 @@ export function buildSidebarNav(messages, activePage) {
   `).join('');
 }
 
-export function buildShortcutStrip(messages, viewModel) {
-  return viewModel.shortcutActions.map((action) => `
+export function buildTopbarActions(activePage, viewModel, messages, labels) {
+  const actionSets = {
+    dashboard: [
+      `<button class="btn btn-secondary" data-action="open-settings" type="button">${escapeHtml(messages.settingsButton)}</button>`,
+      `<button class="btn btn-danger" data-run-action="stop" type="button" ${labels.stopDisabled ? 'disabled' : ''}>${escapeHtml(labels.stopLabel)}</button>`,
+      `<button class="btn btn-primary" data-run-action="start" type="button" ${labels.runDisabled ? 'disabled' : ''}>${escapeHtml(labels.runLabel)}</button>`
+    ],
+    runs: [
+    ],
+    results: [
+    ],
+    subscriptions: [
+    ],
+    logs: [],
+    settings: [
+      `<button class="btn btn-primary" data-action="save-profile" type="button">${escapeHtml(labels.saveLabel)}</button>`
+    ]
+  };
+  return (actionSets[activePage] ?? []).join('');
+}
+
+export function buildShortcutStrip(messages) {
+  return buildShortcutDescriptors(messages).map((action) => `
     <button
       id="${action.id}"
       class="shortcut-action"
-      data-page-target="${action.page}"
+      data-shortcut-target="${action.page}"
       type="button"
     >
       <span class="shortcut-accent ${action.tone}"></span>
@@ -96,492 +163,28 @@ export function buildShortcutStrip(messages, viewModel) {
   `).join('');
 }
 
-export function buildSidebarStatus(viewModel, messages) {
+export function buildSidebarStatus(viewModel, messages, state, language) {
   return `
-    ${viewModel.statusRows.map(([label, value]) => `
+    ${viewModel.statusItems.map((item) => `
       <div class="status-row">
-        <span class="status-row-label">${escapeHtml(label)}</span>
-        <strong class="status-row-value">${escapeHtml(value)}</strong>
+        <span class="status-row-label">${escapeHtml(item.label)}</span>
+        <strong class="status-row-value">${escapeHtml(item.value)}</strong>
       </div>
     `).join('')}
     <div class="status-divider"></div>
     <div class="status-footnote">
       <span>${escapeHtml(messages.currentTaskLabel)}</span>
-      <strong>${escapeHtml(resolveCurrentTaskLabel(viewModel.stageRows, messages))}</strong>
+      <strong>${escapeHtml(resolveCurrentTaskLabel(state, messages))}</strong>
     </div>
   `;
 }
 
-export function buildPageMarkup(activePage, viewModel, messages, language) {
+export function buildPageMarkup(activePage, viewModel, messages, language, subtabs = {}) {
   return `
     <section class="page-shell" data-page-shell="${activePage}">
-      <header class="page-header-card">
-        <span class="page-index-badge">${PAGE_INDEX[activePage]}</span>
-        <div class="page-header-copy">
-          <h2>${escapeHtml(messages.pageTitles[activePage])}</h2>
-          <p>${escapeHtml(messages.pageSubtitles[activePage])}</p>
-        </div>
-      </header>
-      ${buildPageInner(activePage, viewModel, messages, language)}
+      ${buildPageInner(activePage, viewModel, messages, language, subtabs)}
     </section>
   `;
-}
-
-function buildPageInner(activePage, viewModel, messages, language) {
-  switch (activePage) {
-    case 'dashboard':
-      return buildDashboardPage(viewModel, messages, language);
-    case 'config':
-      return buildConfigPage(viewModel, messages, language);
-    case 'run':
-      return buildRunPage(viewModel, messages, language);
-    case 'artifacts':
-      return buildArtifactsPage(viewModel, messages, language);
-    case 'logs':
-      return buildLogsPage(viewModel, messages, language);
-    default:
-      return buildAboutPage(viewModel, messages, language);
-  }
-}
-
-function buildDashboardPage(vm, messages, language) {
-  return `
-    <div id="dashboardOverview" class="page-grid dashboard-grid runtime-grid">
-      <article class="panel wide-panel">
-        <div class="panel-headline">
-          <h3>${escapeHtml(messages.dashboardMetricsTitle)}</h3>
-          ${renderBadge(messages.runStateLabels.idle, 'neutral')}
-        </div>
-        <div class="metric-grid compact">
-          ${vm.metrics.map(([label, value]) => `
-            <div class="metric-card accent">
-              <span>${escapeHtml(label)}</span>
-              <strong>${escapeHtml(String(value))}</strong>
-            </div>
-          `).join('')}
-        </div>
-      </article>
-
-      <article class="panel">
-        <div class="panel-headline">
-          <h3>${escapeHtml(pick(language, '快捷入口', 'Quick access'))}</h3>
-        </div>
-        <div class="action-grid">
-          <button class="btn btn-secondary" data-page-target="config" type="button">${escapeHtml(messages.shortcutActions.config)}</button>
-          <button class="btn btn-primary" data-page-target="run" type="button">${escapeHtml(messages.shortcutActions.run)}</button>
-          <button class="btn btn-secondary" data-page-target="artifacts" type="button">${escapeHtml(messages.shortcutActions.artifacts)}</button>
-          <button class="btn btn-secondary" data-page-target="logs" type="button">${escapeHtml(messages.shortcutActions.logs)}</button>
-        </div>
-      </article>
-
-      <article class="panel">
-        <div class="panel-headline">
-          <h3>${escapeHtml(pick(language, '最近运行摘要', 'Recent run summary'))}</h3>
-        </div>
-        ${
-          vm.hasRunData
-            ? `
-              <div class="key-value-list">
-                ${vm.stageRows.map((row) => `
-                  <div class="key-value-row">
-                    <span>${escapeHtml(messages.stageLabels[row.name] ?? row.name)}</span>
-                    <strong>${escapeHtml(messages.statusLabels[row.status] ?? row.status)}</strong>
-                  </div>
-                `).join('')}
-              </div>
-            `
-            : `
-              <div id="dashboardEmptyState" class="empty-state">
-                <strong>${escapeHtml(messages.emptyStates.noRunData)}</strong>
-                <p>${escapeHtml(messages.dashboardPrimaryEmptyHint)}</p>
-              </div>
-            `
-        }
-      </article>
-    </div>
-  `;
-}
-
-function buildConfigPage(vm, messages, language) {
-  const sourceRows = Object.entries(vm.profile.sources);
-  return `
-    <div class="page-grid runtime-grid">
-      <article class="panel wide-panel">
-        <div class="form-grid two-columns">
-          <section class="form-column">
-            <h3>${escapeHtml(messages.configSourcesTitle)}</h3>
-            ${sourceRows.map(([name, source], index) => `
-              <label class="field">
-                <span>${escapeHtml(index === 0 ? pick(language, '主抓包 API URL', 'Primary capture URL') : `${pick(language, '备用抓包 API URL', 'Backup capture URL')} ${index}`)}</span>
-                <input
-                  ${index === 0 ? 'id="configPrimarySource"' : ''}
-                  data-source="${escapeHtml(name)}"
-                  data-key="url"
-                  value="${escapeHtml(source.url)}"
-                />
-              </label>
-              <label class="field">
-                <span>${escapeHtml(index === 0 ? pick(language, '主抓包 KEY', 'Primary key') : `${pick(language, '备用 KEY', 'Backup key')} ${index}`)}</span>
-                <input
-                  data-source="${escapeHtml(name)}"
-                  data-key="key"
-                  value="${escapeHtml(source.key)}"
-                />
-              </label>
-            `).join('')}
-          </section>
-
-          <section class="form-column">
-            <h3>${escapeHtml(messages.configSpeedTitle)}</h3>
-            ${renderBoundField(pick(language, '最低下载速度 MB/s', 'Minimum download MB/s'), 'number', vm.profile.speed_test.min_download_mb_s, 'speed_test', 'min_download_mb_s')}
-            ${renderBoundField(pick(language, '测速超时（秒）', 'Timeout (seconds)'), 'number', vm.profile.speed_test.timeout_seconds, 'speed_test', 'timeout_seconds')}
-            ${renderBoundField(pick(language, '并发数', 'Concurrency'), 'number', vm.profile.speed_test.concurrency, 'speed_test', 'concurrency')}
-            ${renderBoundField(pick(language, '测速地址（每行一个）', 'Speed test URLs'), 'textarea', vm.profile.speed_test.urls.join('\n'), 'speed_test', 'urls')}
-          </section>
-        </div>
-      </article>
-
-      <article class="panel wide-panel">
-        <div class="form-grid two-columns">
-          <section class="form-column">
-            <h3>${escapeHtml(messages.configDeployTitle)}</h3>
-            ${renderBoundField(pick(language, 'Pages 项目名', 'Pages project name'), 'text', vm.profile.deploy.project_name, 'deploy', 'project_name')}
-            ${renderBoundField(pick(language, '订阅地址', 'Subscription URL'), 'text', vm.profile.deploy.subscription_url, 'deploy', 'subscription_url')}
-            ${renderBoundField(pick(language, 'Pages 项目 URL', 'Pages project URL'), 'text', vm.profile.deploy.pages_project_url, 'deploy', 'pages_project_url')}
-          </section>
-          <section class="form-column">
-            <div class="empty-state compact">
-              <strong>${escapeHtml(pick(language, '说明', 'Note'))}</strong>
-              <p>${escapeHtml(pick(language, '这里只保留真实可编辑的配置项，不再展示未落地的监控、历史、节点管理假页面。', 'Only real editable configuration fields remain here. Fake pages for history, monitoring, and node management are removed.'))}</p>
-            </div>
-            <div class="page-actions">
-              <button class="btn btn-secondary" data-action="reset-profile" type="button">${escapeHtml(messages.resetButton)}</button>
-              <button class="btn btn-primary" data-action="save-profile" type="button">${escapeHtml(messages.saveButton)}</button>
-            </div>
-          </section>
-        </div>
-      </article>
-    </div>
-  `;
-}
-
-function buildRunPage(vm, messages, language) {
-  return `
-    <div class="page-grid runtime-grid">
-      <article class="panel">
-        <div class="panel-headline">
-          <h3>${escapeHtml(pick(language, '阶段状态', 'Stage state'))}</h3>
-        </div>
-        <div class="run-stage-list">
-          ${vm.stageRows.map((row, index) => `
-            <div class="run-stage-row">
-              <span class="timeline-index ${row.status}">${index + 1}</span>
-              <span class="timeline-copy">${escapeHtml(messages.stageLabels[row.name] ?? row.name)}</span>
-              ${renderBadge(messages.statusLabels[row.status] ?? row.status, badgeTone(row.status))}
-            </div>
-          `).join('')}
-        </div>
-      </article>
-
-      <article class="panel terminal-panel">
-        <div class="panel-headline">
-          <h3>${escapeHtml(pick(language, '实时执行日志', 'Live run log'))}</h3>
-        </div>
-        <pre id="runLogOutput" class="terminal-output">${
-          vm.hasLogs ? escapeHtml(vm.logEntries.join('\n')) : escapeHtml(messages.emptyStates.noLogs)
-        }</pre>
-        <div class="action-grid">
-          <button class="btn btn-primary" data-action="run-pipeline" type="button">${escapeHtml(messages.runButton)}</button>
-          <button class="btn btn-danger" data-action="stop-pipeline" type="button">${escapeHtml(messages.stopButton)}</button>
-          <button class="btn btn-secondary" data-page-target="logs" type="button">${escapeHtml(messages.openLogsButton)}</button>
-        </div>
-      </article>
-    </div>
-  `;
-}
-
-function buildArtifactsPage(vm, messages, language) {
-  return `
-    <div id="artifactsPanel" class="page-grid runtime-grid">
-      <article class="panel wide-panel">
-        <div class="panel-headline">
-          <h3>${escapeHtml(pick(language, '当前订阅与产物', 'Current subscription and artifacts'))}</h3>
-        </div>
-        ${
-          vm.hasArtifacts
-            ? `
-              <div class="key-value-list">
-                <div class="key-value-row">
-                  <span>${escapeHtml(pick(language, '订阅地址', 'Subscription URL'))}</span>
-                  <strong class="mono">${escapeHtml(vm.profile.deploy.subscription_url || messages.emptyStates.noSubscription)}</strong>
-                </div>
-                <div class="key-value-row">
-                  <span>${escapeHtml(pick(language, '输出目录', 'Output directory'))}</span>
-                  <strong class="mono">${escapeHtml(vm.artifactDir || messages.notAvailableValue)}</strong>
-                </div>
-	              </div>
-	              <div class="page-actions">
-	                ${
-	                  vm.profile.deploy.subscription_url
-	                    ? `<button class="btn btn-secondary" data-copy-text="${escapeHtml(vm.profile.deploy.subscription_url)}" type="button">${escapeHtml(pick(language, '复制订阅地址', 'Copy subscription URL'))}</button>`
-	                    : ''
-	                }
-	                <button class="btn btn-primary" data-action="open-artifacts" type="button">${escapeHtml(messages.openArtifactsButton)}</button>
-	              </div>
-            `
-            : `
-              <div class="empty-state">
-                <strong>${escapeHtml(messages.emptyStates.noArtifacts)}</strong>
-                <p>${escapeHtml(pick(language, '只有在保存了部署参数并成功运行流水线后，这里才会显示真实订阅地址和产物目录。', 'This page shows real subscription data only after deploy settings are saved and the pipeline has produced artifacts.'))}</p>
-              </div>
-            `
-        }
-      </article>
-    </div>
-  `;
-}
-
-function buildLogsPage(vm, messages, language) {
-  return `
-    <div class="page-grid runtime-grid">
-      <article class="panel wide-panel">
-        <div class="panel-headline">
-          <h3>${escapeHtml(pick(language, '当前会话日志', 'Current session logs'))}</h3>
-          <button class="btn btn-secondary small" data-action="export-logs" type="button">${escapeHtml(messages.exportLogsButton)}</button>
-        </div>
-        <div id="logCenterTable" class="table-wrap">
-          ${
-            vm.hasLogs
-              ? `
-                <table class="data-table">
-                  <thead>
-                    <tr>
-                      <th>${escapeHtml(pick(language, '序号', 'No.'))}</th>
-                      <th>${escapeHtml(pick(language, '日志内容', 'Log message'))}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    ${vm.logEntries.map((line, index) => `
-                      <tr>
-                        <td>${index + 1}</td>
-                        <td>${escapeHtml(line)}</td>
-                      </tr>
-                    `).join('')}
-                  </tbody>
-                </table>
-              `
-              : `
-                <div class="empty-state">
-                  <strong>${escapeHtml(messages.emptyStates.noLogs)}</strong>
-                  <p>${escapeHtml(pick(language, '运行流水线后，这里会显示当前会话的实时日志。', 'Run the pipeline to populate the live session logs here.'))}</p>
-                </div>
-              `
-          }
-        </div>
-      </article>
-    </div>
-  `;
-}
-
-function buildAboutPage(vm, messages, language) {
-  return `
-    <div class="page-grid runtime-grid">
-      <article class="panel">
-        <div class="panel-headline">
-          <h3>${escapeHtml(messages.aboutRuntimeTitle)}</h3>
-        </div>
-        <div class="key-value-list">
-          ${vm.runtimeRows.map(([label, value]) => `
-            <div class="key-value-row">
-              <span>${escapeHtml(label)}</span>
-              <strong class="mono">${escapeHtml(value)}</strong>
-            </div>
-          `).join('')}
-        </div>
-        <div class="empty-state compact">
-          <strong>${escapeHtml(pick(language, '说明', 'Note'))}</strong>
-          <p>${escapeHtml(messages.aboutRuntimeHint)}</p>
-        </div>
-      </article>
-
-      <article id="aboutArchitecture" class="panel">
-        <div class="panel-headline">
-          <h3>${escapeHtml(pick(language, '实际运行链路', 'Runtime flow'))}</h3>
-        </div>
-        <div class="architecture-diagram">
-          <div class="architecture-row">
-            <div class="architecture-block">
-              <strong>${escapeHtml(pick(language, 'Electron 界面', 'Electron UI'))}</strong>
-              <span>${escapeHtml(pick(language, '配置、运行、日志、产物', 'Config, run, logs, artifacts'))}</span>
-            </div>
-            <div class="architecture-block">
-              <strong>${escapeHtml(pick(language, 'IPC', 'IPC'))}</strong>
-              <span>${escapeHtml(pick(language, 'load / save / run / stop', 'load / save / run / stop'))}</span>
-            </div>
-          </div>
-          <div class="architecture-row">
-            <div class="architecture-block">
-              <strong>${escapeHtml(pick(language, 'Python backend', 'Python backend'))}</strong>
-              <span>${escapeHtml(pick(language, '抓取、测速、处理、部署', 'extract, speed-test, process, deploy'))}</span>
-            </div>
-            <div class="architecture-block">
-              <strong>${escapeHtml(pick(language, '运行时 profile', 'Runtime profile'))}</strong>
-              <span>${escapeHtml(pick(language, '开发态用仓库 state，打包态用用户目录', 'repo state in dev, user directory when packaged'))}</span>
-            </div>
-          </div>
-        </div>
-      </article>
-    </div>
-  `;
-}
-
-function renderBoundField(label, type, value, section, key) {
-  if (type === 'textarea') {
-    return `
-      <label class="field">
-        <span>${escapeHtml(label)}</span>
-        <textarea data-section="${escapeHtml(section)}" data-key="${escapeHtml(key)}" rows="5">${escapeHtml(value)}</textarea>
-      </label>
-    `;
-  }
-
-  return `
-    <label class="field">
-      <span>${escapeHtml(label)}</span>
-      <input
-        type="${type}"
-        data-section="${escapeHtml(section)}"
-        data-key="${escapeHtml(key)}"
-        value="${escapeHtml(value)}"
-      />
-    </label>
-  `;
-}
-
-function renderBadge(text, tone) {
-  return `<span class="badge ${tone}">${escapeHtml(text)}</span>`;
-}
-
-function badgeTone(status) {
-  if (status === 'success') {
-    return 'success';
-  }
-  if (status === 'running') {
-    return 'warning';
-  }
-  if (status === 'failed') {
-    return 'danger';
-  }
-  return 'neutral';
-}
-
-function resolveCurrentTaskLabel(stageRows, messages) {
-  const running = stageRows.find((row) => row.status === 'running');
-  if (running) {
-    return messages.stageLabels[running.name] ?? running.name;
-  }
-
-  const failed = stageRows.find((row) => row.status === 'failed');
-  if (failed) {
-    return `${messages.stageLabels[failed.name] ?? failed.name} / ${messages.statusLabels.failed}`;
-  }
-
-  const completed = stageRows.filter((row) => row.status === 'success');
-  if (completed.length) {
-    return messages.stageLabels[completed.at(-1).name] ?? completed.at(-1).name;
-  }
-
-  return messages.taskWaiting;
-}
-
-function normalizeProfile(profile) {
-  const result = blankProfile();
-  if (!profile) {
-    return result;
-  }
-
-  for (const name of SOURCE_NAMES) {
-    if (profile.sources?.[name]) {
-      result.sources[name] = {
-        ...result.sources[name],
-        ...profile.sources[name]
-      };
-    }
-  }
-
-  result.speed_test = {
-    ...result.speed_test,
-    ...(profile.speed_test ?? {}),
-    urls: Array.isArray(profile.speed_test?.urls) ? profile.speed_test.urls : result.speed_test.urls
-  };
-
-  result.deploy = {
-    ...result.deploy,
-    ...(profile.deploy ?? {})
-  };
-
-  result.workspace = {
-    ...result.workspace,
-    ...(profile.workspace ?? {})
-  };
-
-  return result;
-}
-
-function blankProfile() {
-  return {
-    sources: Object.fromEntries(
-      SOURCE_NAMES.map((name) => [
-        name,
-        {
-          url: '',
-          key: '',
-          enabled: true
-        }
-      ])
-    ),
-    speed_test: {
-      min_download_mb_s: 1.0,
-      timeout_seconds: 20,
-      concurrency: 3,
-      urls: []
-    },
-    deploy: {
-      project_name: '',
-      subscription_url: '',
-      pages_project_url: ''
-    },
-    workspace: {
-      project_root: '',
-      artifacts_root: '',
-      state_root: '',
-      profile_path: ''
-    }
-  };
-}
-
-function formatDate(value, language) {
-  if (!value) {
-    return '';
-  }
-
-  return new Date(value).toLocaleString(language, {
-    hour12: false,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit'
-  });
-}
-
-function pick(language, zh, en) {
-  return language === 'zh-CN' ? zh : en;
-}
-
-function navId(page) {
-  return `nav${page[0].toUpperCase()}${page.slice(1)}`;
 }
 
 export function escapeHtml(value) {
@@ -590,4 +193,682 @@ export function escapeHtml(value) {
     .replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;');
+}
+
+function buildPageInner(activePage, vm, messages) {
+  switch (activePage) {
+    case 'dashboard':
+      return buildDashboardPage(vm, messages);
+    case 'runs':
+      return buildRunsPage(vm, messages);
+    case 'results':
+      return buildResultsPage(vm, messages);
+    case 'subscriptions':
+      return buildSubscriptionsPage(vm, messages);
+    case 'logs':
+      return buildLogsPage(vm, messages);
+    default:
+      return buildSettingsPage(vm, messages);
+  }
+}
+
+function buildDashboardPage(vm, messages) {
+  return `
+    <div id="dashboardOverview" class="page-grid dashboard-grid">
+      <article class="panel wide-panel status-hero-card">
+        <div>
+          <span class="panel-subcopy">当前运行状态</span>
+          <h3>${escapeHtml(vm.currentStatusLabel)}</h3>
+          <p>${vm.hasResult ? '最近一次运行已完成' : '系统就绪，等待运行'}</p>
+        </div>
+        <div class="status-orb">✓</div>
+      </article>
+
+      <article class="panel wide-panel">
+        <div class="metric-grid four">
+          ${dashboardMetrics(vm.counts).map((metric) => `
+            <div class="metric-card ${metric.tone}">
+              <span>${escapeHtml(metric.label)}</span>
+              <strong>${escapeHtml(metric.value)}</strong>
+              <small>${escapeHtml(metric.detail)}</small>
+            </div>
+          `).join('')}
+        </div>
+      </article>
+
+      <article class="panel">
+        <div class="panel-headline">
+          <h3>最近运行结果</h3>
+          ${vm.hasResult ? renderBadge('成功', 'success') : renderBadge('未开始', 'neutral')}
+        </div>
+        <div class="key-value-list">
+          <div class="key-value-row"><span>状态</span><strong>${vm.hasResult ? '成功' : '未开始'}</strong></div>
+          <div class="key-value-row"><span>Artifact 目录</span><strong class="mono">${escapeHtml(vm.artifactDir || '—')}</strong></div>
+          <div class="key-value-row"><span>更新时间</span><strong>${escapeHtml(vm.lastUpdated)}</strong></div>
+        </div>
+      </article>
+
+      <article class="panel">
+        <div class="panel-headline">
+          <h3>系统状态</h3>
+          ${renderBadge(vm.runStateLabel, vm.runStateTone)}
+        </div>
+        <div class="key-value-list">
+          ${vm.statusItems.map((item) => `
+            <div class="key-value-row">
+              <span>${escapeHtml(item.label)}</span>
+              <strong>${escapeHtml(item.value)}</strong>
+            </div>
+          `).join('')}
+          <div class="key-value-row">
+            <span>${escapeHtml(messages.currentTaskLabel)}</span>
+            <strong>${escapeHtml(vm.currentTaskLabel)}</strong>
+          </div>
+        </div>
+      </article>
+    </div>
+  `;
+}
+
+function buildRunsPage(vm, messages) {
+  const runDisabled = vm.runControlState.runDisabled ? 'disabled' : '';
+  const stopDisabled = vm.runControlState.stopDisabled ? 'disabled' : '';
+  return `
+    <div id="runsWorkspace" class="page-grid runs-grid">
+      <article class="panel wide-panel run-control-panel">
+        <button class="btn btn-primary run-big" data-run-action="start" type="button" ${runDisabled}>▶ 开始运行</button>
+        <button class="btn btn-secondary run-big" data-run-action="stop" type="button" ${stopDisabled}>■ 停止运行</button>
+        <button class="btn btn-secondary run-big" data-action="retry-current-stage" type="button" ${runDisabled}>重试当前阶段</button>
+        <div class="run-options">
+          ${[
+            ['跳过部署', 'skipDeploy', false],
+            ['跳过验证', 'skipVerify', false],
+            ['保存配置后运行', 'saveBeforeRun', true]
+          ].map(([label, key, checked]) => `
+            <label class="checkbox-chip"><input data-run-option="${escapeHtml(key)}" type="checkbox" ${checked ? 'checked' : ''} />${escapeHtml(label)}</label>
+          `).join('')}
+        </div>
+      </article>
+
+      ${buildRunsStageProgressMarkup(vm)}
+      ${buildRunsCurrentStageMarkup(vm)}
+    </div>
+  `;
+}
+
+export function buildRunsStageProgressMarkup(vm) {
+  return `
+    <article id="runsStageProgress" class="panel timeline-panel">
+      <div class="panel-headline"><h3>阶段进度</h3><span class="panel-subcopy">全流程时间线</span></div>
+      <div class="timeline">
+        ${vm.stageRows.map((stage) => `
+          <div class="timeline-row">
+            <span class="timeline-index ${stage.status}"></span>
+            <span class="timeline-copy">${escapeHtml(stage.name)}</span>
+            <span class="inline-state ${stateClass(stage.status)}">${escapeHtml(stageLabel(stage.status))}</span>
+          </div>
+        `).join('')}
+      </div>
+    </article>
+  `;
+}
+
+export function buildRunsCurrentStageMarkup(vm) {
+  return `
+    <article id="runsCurrentStage" class="panel">
+      <div class="panel-headline"><h3>当前阶段详情</h3>${renderBadge(stageLabel(vm.currentStage.status), stateClass(vm.currentStage.status))}</div>
+      <div class="key-value-list">
+        <div class="key-value-row"><span>阶段</span><strong>${escapeHtml(vm.currentStage.name)}</strong></div>
+        <div class="key-value-row"><span>状态</span><strong>${escapeHtml(stageLabel(vm.currentStage.status))}</strong></div>
+        <div class="key-value-row"><span>开始时间</span><strong>${escapeHtml(vm.runStartedAt)}</strong></div>
+        <div class="key-value-row"><span>已耗时</span><strong>${escapeHtml(vm.runElapsed)}</strong></div>
+        <div class="key-value-row"><span>当前目标</span><strong>${escapeHtml(vm.currentStage.name === 'speedtest' ? '测速通过节点' : '流水线处理')}</strong></div>
+      </div>
+      <div class="progress-track"><div class="progress-fill" style="width:35%"></div></div>
+    </article>
+  `;
+}
+
+function buildResultsPage(vm, messages) {
+  return `
+    <div id="resultsWorkspace" class="page-grid results-grid">
+      <article class="panel wide-panel artifact-card">
+        <div>
+          <span class="panel-subcopy">最终节点来源</span>
+          <strong class="mono">${escapeHtml(vm.artifactDir || '暂无')}</strong>
+        </div>
+        <div class="toolbar-right">
+          <button class="btn btn-secondary" data-action="copy-nodes" type="button">复制节点</button>
+          <button class="btn btn-secondary" data-action="open-artifact-dir" type="button">打开目录</button>
+        </div>
+      </article>
+
+      <article class="panel wide-panel">
+        <div class="panel-headline"><h3>区域统计</h3><span class="panel-subcopy">按最终节点名称中的区域码统计</span></div>
+        <div class="region-stat-grid">
+          ${vm.regionStats.length ? vm.regionStats.map((item) => `
+            <div class="region-stat-card">
+              <span>${escapeHtml(item.region)}</span>
+              <strong>${escapeHtml(item.count)}</strong>
+            </div>
+          `).join('') : '<div class="empty-state">暂无区域统计，运行完成后显示。</div>'}
+        </div>
+      </article>
+
+      <article class="panel wide-panel">
+        <div class="panel-headline"><h3>最终节点列表</h3><span class="panel-subcopy">${escapeHtml(vm.nodeRows.length)} 条</span></div>
+        <div id="resultNodePreview" class="table-wrap">
+          <table class="data-table decoded-node-table">
+            <thead><tr><th>#</th><th>节点名称</th><th>IP地址</th><th>协议</th><th>path</th></tr></thead>
+            <tbody>
+              ${vm.nodeRows.length ? vm.nodeRows.map((row, index) => `
+                <tr>
+                  <td>${index + 1}</td>
+                  <td>${escapeHtml(row.name || '—')}</td>
+                  <td>${escapeHtml(row.address || '—')}</td>
+                  <td>${escapeHtml(row.protocol || '—')}</td>
+                  <td class="mono">${escapeHtml(row.path || '—')}</td>
+                </tr>
+              `).join('') : '<tr><td colspan="5">暂无节点，运行完成后显示。</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </article>
+    </div>
+  `;
+}
+
+function buildSubscriptionsPage(vm, messages) {
+  const primaryCard = vm.currentSubscription;
+  return `
+    <div id="subscriptionCards" class="page-grid subscriptions-grid">
+      <article class="panel">
+        <div class="panel-headline"><h3>主订阅地址</h3>${renderBadge('自动生成', 'success')}</div>
+        <div class="subscription-tab-scroller">
+          ${SUBSCRIPTION_FORMATS.map((format) => `
+            <button
+              class="subtab ${vm.subscriptionFormat === format ? 'active' : ''}"
+              data-subscription-format="${escapeHtml(format)}"
+              type="button"
+            >${escapeHtml(format)}</button>
+          `).join('')}
+        </div>
+        <div class="subscription-primary mono">${escapeHtml(primaryCard.url)}</div>
+        <div class="action-grid">
+          <button class="btn btn-primary" data-copy-text="${escapeHtml(primaryCard.url)}" type="button">复制链接</button>
+          <button class="btn btn-secondary" data-open-url="${escapeHtml(primaryCard.url)}" type="button">打开订阅</button>
+        </div>
+      </article>
+
+      <article class="panel slim-panel">
+        <div class="panel-headline"><h3>订阅二维码</h3></div>
+        <div class="qr-block">${renderQr(vm.qrDataUrl)}</div>
+        <p class="panel-subcopy center-copy">扫码导入订阅</p>
+      </article>
+
+      <article class="panel wide-panel subscription-meta">
+        <div class="mini-stat"><span>最后生成时间</span><strong>${escapeHtml(vm.lastUpdated)}</strong></div>
+        <div class="mini-stat"><span>最终节点数量</span><strong>${escapeHtml(vm.counts.availability_links)} 个</strong></div>
+      </article>
+    </div>
+  `;
+}
+
+function buildLogsPage(vm, messages) {
+  return `
+    <div id="logsWorkspace" class="page-grid logs-grid">
+      <article class="panel wide-panel">
+        <div class="toolbar-row log-toolbar">
+          <div class="toolbar-left">
+            ${LOG_FILTERS.map((filter) => `
+              <button
+                class="subtab ${vm.logFilter === filter ? 'active' : ''}"
+                data-log-filter="${escapeHtml(filter)}"
+                type="button"
+              >${escapeHtml(filter)}</button>
+            `).join('')}
+          </div>
+          <div class="toolbar-right">
+            <button class="btn btn-secondary small" data-action="copy-log" type="button">复制日志</button>
+            <button class="btn btn-secondary small" data-action="clear-log" type="button">清空显示</button>
+            <button class="btn btn-primary small" data-action="open-log-file" type="button">打开日志文件</button>
+          </div>
+        </div>
+        <div id="logCenterTable" class="terminal-output log-stream">
+          ${buildLogCenterMarkup(vm)}
+        </div>
+      </article>
+    </div>
+  `;
+}
+
+export function buildLogCenterMarkup(vm) {
+  return vm.logFilter === '按阶段' ? renderLogGroups(vm.logGroups) : renderLogRows(vm.logRows);
+}
+
+function buildSettingsPage(vm, messages) {
+  return `
+    <div id="settingsWorkspace" class="page-grid settings-grid">
+      <article class="panel wide-panel settings-overview-panel">
+        <div class="panel-headline">
+          <h3>设置总览</h3>
+          <span class="panel-subcopy">点击卡片后在右侧抽屉中编辑，顶部统一保存</span>
+        </div>
+        <div class="settings-overview-grid">
+          ${buildSettingsCard('sources', '数据源配置', `已启用 ${vm.sourceRows.filter((row) => row.enabled).length} / ${vm.sourceRows.length} 个来源`, '管理抓取地址、密钥和启用状态')}
+          ${buildSettingsCard('speed_test', '测速配置', `最低 ${vm.profile.speed_test.min_download_mb_s} MB/s · 并发 ${vm.profile.speed_test.concurrency}`, '控制测速阈值、超时和并发')}
+        </div>
+      </article>
+
+      ${buildSettingsDrawer(vm)}
+    </div>
+  `;
+}
+
+function renderBoundField(label, type, value, id, binding = null) {
+  const bindingAttrs = binding
+    ? ` data-source="${escapeHtml(binding.source)}" data-key="${escapeHtml(binding.key)}"`
+    : '';
+  return `
+    <label class="field">
+      <span>${escapeHtml(label)}</span>
+      <input id="${id}" type="${type}" value="${escapeHtml(value)}"${bindingAttrs}${binding ? '' : ' readonly'} />
+    </label>
+  `;
+}
+
+function renderProfileField(label, type, value, id, path) {
+  return `
+    <label class="field">
+      <span>${escapeHtml(label)}</span>
+      <input id="${id}" type="${type}" value="${escapeHtml(value)}" data-profile-path="${escapeHtml(path)}" />
+    </label>
+  `;
+}
+
+function buildSettingsCard(section, title, summary, detail) {
+  return `
+    <button
+      class="settings-overview-card"
+      data-settings-card="${section}"
+      type="button"
+    >
+      <span class="settings-card-kicker">${escapeHtml(title)}</span>
+      <strong class="settings-card-summary" id="settingsCardSummary-${section}">${escapeHtml(summary)}</strong>
+      <span class="settings-card-detail">${escapeHtml(detail)}</span>
+    </button>
+  `;
+}
+
+function buildSettingsDrawer(vm) {
+  const drawer = vm.settingsDrawer;
+  const isOpen = Boolean(drawer);
+  const section = drawer?.section ?? '';
+  const title = {
+    sources: '数据源配置',
+    speed_test: '测速配置'
+  }[section] ?? '设置';
+
+  const style = vm.modalTransform ? `style="transform: ${escapeHtml(vm.modalTransform)};"` : '';
+
+  return `
+    <div id="settingsDrawer" class="settings-drawer-shell" data-open="${isOpen ? 'true' : 'false'}">
+      <button class="settings-drawer-backdrop" data-drawer-dismiss="backdrop" type="button" aria-label="关闭设置抽屉"></button>
+      <aside class="settings-drawer-panel" ${style}>
+        <div class="settings-drawer-head">
+          <div>
+            <span class="settings-card-kicker">编辑分组</span>
+            <h3 id="settingsDrawerTitle">${escapeHtml(title)}</h3>
+          </div>
+        </div>
+        <div class="settings-drawer-body">
+          ${isOpen ? buildSettingsDrawerBody(section, drawer.draft) : ''}
+        </div>
+        <div class="settings-drawer-actions">
+          <button class="btn btn-secondary" data-drawer-close="cancel" type="button">取消</button>
+          <button class="btn btn-primary" data-drawer-save="save" type="button">保存</button>
+        </div>
+      </aside>
+    </div>
+  `;
+}
+
+const SOURCE_NAMES = {
+  'leiting': '雷霆',
+  'heidong': '黑洞',
+  'mifeng': '蜜蜂',
+  'xuanfeng-area': '旋风部分区域',
+  'xuanfeng-all-area': '旋风全区域',
+  'heilong': '黑龙',
+  'custom': '自定义'
+};
+
+function buildSettingsDrawerBody(section, draft) {
+  if (section === 'sources') {
+    const sourceDraft = draft?.sources ?? {};
+    return `
+      <div class="source-drawer-settings">
+        ${renderDrawerField('最大迭代次数', 'number', draft?.maxIterations ?? 40, 'sources.maxIterations', true, 'data-source-max-iterations min="1"')}
+      </div>
+      <div class="table-wrap">
+        <table class="data-table settings-source-table">
+          <thead><tr><th>启用</th><th>名称</th><th>地址</th><th>密钥</th></tr></thead>
+          <tbody>
+            ${Object.entries(sourceDraft).map(([name, source]) => `
+              <tr>
+                <td><input type="checkbox" data-drawer-source="${escapeHtml(name)}" data-drawer-key="enabled" ${source.enabled ? 'checked' : ''} /></td>
+                <td><strong style="white-space:nowrap;font-size:13px">${escapeHtml(SOURCE_NAMES[name] || name)}</strong></td>
+                <td><input data-drawer-source="${escapeHtml(name)}" data-drawer-key="url" value="${escapeHtml(source.url ?? '')}" /></td>
+                <td><input data-drawer-source="${escapeHtml(name)}" data-drawer-key="key" value="${escapeHtml(source.key ?? '')}" /></td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  if (section === 'speed_test') {
+    return `
+      <div class="form-grid compact-form-grid">
+        ${renderDrawerField('最低下载速度（MB/s）', 'number', draft.min_download_mb_s, 'speed_test.min_download_mb_s', true)}
+        ${renderDrawerField('超时时间（秒）', 'number', draft.timeout_seconds, 'speed_test.timeout_seconds', true)}
+        ${renderDrawerField('并发数量', 'number', draft.concurrency, 'speed_test.concurrency', true)}
+      </div>
+    `;
+  }
+
+  return `
+    <div class="notice-card">
+      <strong>无可用配置</strong>
+      <p>该分组暂无可供编辑的内容。</p>
+    </div>
+  `;
+}
+
+function renderDrawerField(label, type, value, path, isCompact = false, extraAttrs = '') {
+  return `
+    <label class="field ${isCompact ? 'compact' : ''}">
+      <span>${escapeHtml(label)}</span>
+      <input type="${type}" value="${escapeHtml(value ?? '')}" data-drawer-path="${escapeHtml(path)}" ${extraAttrs} />
+    </label>
+  `;
+}
+
+function renderBadge(text, tone) {
+  return `<span class="badge ${tone}">${escapeHtml(text)}</span>`;
+}
+
+function renderQr(dataUrl) {
+  if (!dataUrl) {
+    return '<div class="qr-loading">二维码生成中</div>';
+  }
+  return `<img class="qr-image" alt="订阅二维码" src="${escapeHtml(dataUrl)}" />`;
+}
+
+function buildShortcutDescriptors(messages) {
+  return [
+    { id: 'shortcutRun', page: 'runs', label: messages.shortcutActions.run, tone: 'accent' },
+    { id: 'shortcutSettings', page: 'settings', label: messages.shortcutActions.settings, tone: 'warning' },
+    { id: 'shortcutResults', page: 'results', label: messages.shortcutActions.results, tone: 'success' },
+    { id: 'shortcutLogs', page: 'logs', label: messages.shortcutActions.logs, tone: 'accent' }
+  ];
+}
+
+function normalizeStageRows(stageStatus, runState) {
+  const actual = Object.keys(stageStatus ?? {}).length ? stageStatus : {};
+  return buildStageModel(actual);
+}
+
+function buildStatusItems(state, messages) {
+  return [
+    { label: '状态', value: messages.runStateLabels[state.runState] ?? messages.runStateLabels.idle },
+    { label: '模式', value: state.isDemo ? messages.demoRunMode : messages.manualRunMode },
+    { label: '最后结果', value: messages.runResultLabels[state.runResult] ?? messages.runResultLabels.idle },
+    { label: '最后更新', value: formatDate(state.lastUpdateAt) || '—' }
+  ];
+}
+
+function dashboardMetrics(counts) {
+  return [
+    { label: '原始节点', value: String(counts.raw_links), detail: '抓取输入', tone: 'accent' },
+    { label: '去重后', value: String(counts.deduped_links ?? counts.postprocess_links), detail: '去重结果', tone: 'accent' },
+    { label: '测速通过', value: String(counts.speedtest_links), detail: '速度达标', tone: 'success' },
+    { label: '最终可用', value: String(counts.availability_links), detail: '验证通过', tone: 'success' }
+  ];
+}
+
+function buildSubscriptionCards(baseUrl) {
+  return SUBSCRIPTION_FORMATS.map((title) => ({
+    title,
+    url: title === 'Clash' ? baseUrl : `${baseUrl}?format=${encodeURIComponent(title.toLowerCase().replaceAll(' ', '-'))}`
+  }));
+}
+
+function buildSourceRows(profile) {
+  return Object.entries(profile.sources).map(([name, source], index) => ({
+    name,
+    primary: index === 0,
+    enabled: Boolean(source.enabled),
+    url: source.url ?? '',
+    key: source.key ?? ''
+  }));
+}
+
+export function buildRegionStats(nodeRows = []) {
+  const counts = new Map();
+  for (const row of nodeRows) {
+    const region = inferNodeRegion(row?.name);
+    counts.set(region, (counts.get(region) ?? 0) + 1);
+  }
+  return Array.from(counts.entries()).map(([region, count]) => ({ region, count }));
+}
+
+export function buildSourceIterationDraft(sources = {}) {
+  const firstSource = Object.values(sources)[0] ?? {};
+  return {
+    sources: structuredClone(sources),
+    maxIterations: coercePositiveInteger(firstSource.max_iterations, 40)
+  };
+}
+
+export function applySourceIterationDraft(sources = {}, draft = {}) {
+  const maxIterations = coercePositiveInteger(draft.maxIterations, 40);
+  return Object.fromEntries(
+    Object.entries(sources).map(([name, source]) => [
+      name,
+      {
+        ...source,
+        max_iterations: maxIterations
+      }
+    ])
+  );
+}
+
+function inferNodeRegion(name = '') {
+  const normalized = String(name).replace(/^[^\p{L}\p{N}]+/u, '').trim();
+  const match = normalized.match(/^([A-Z]{2})(?:\b|[\s_-])/);
+  return match ? match[1] : '其他';
+}
+
+function coercePositiveInteger(value, fallback) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    return fallback;
+  }
+  return Math.trunc(parsed);
+}
+
+function buildLogRows(displayLogs) {
+  return displayLogs.slice(-40).map((entry) => ({
+    ...entry,
+    levelClass: entry.level === 'error' ? 'danger' : entry.level === 'warning' ? 'warning' : 'success'
+  }));
+}
+
+function renderLogRows(rows) {
+  if (!rows.length) {
+    return '<div class="empty-state log-empty-state">暂无可显示日志</div>';
+  }
+  return rows.map((row) => `<div class="log-line ${row.levelClass}">${escapeHtml(row.line)}</div>`).join('');
+}
+
+function renderLogGroups(groups) {
+  if (!groups.length) {
+    return '<div class="empty-state log-empty-state">暂无可显示日志</div>';
+  }
+  return groups.map((group) => `
+    <section class="log-group">
+      <div class="log-group-title">${escapeHtml(group.label)}</div>
+      ${group.rows.map((row) => `<div class="log-line ${row.levelClass}">${escapeHtml(row.line)}</div>`).join('')}
+    </section>
+  `).join('');
+}
+
+export function classifyLogEntry(rawEntry, overrides = {}) {
+  if (rawEntry && typeof rawEntry === 'object' && 'line' in rawEntry && 'level' in rawEntry) {
+    return {
+      ...rawEntry,
+      level: rawEntry.level ?? inferLogLevel(rawEntry.line),
+      stage: rawEntry.stage ?? inferLogStage(rawEntry.line),
+      kind: rawEntry.kind ?? 'log'
+    };
+  }
+
+  const line = String(rawEntry ?? '');
+  return {
+    line,
+    level: overrides.level ?? inferLogLevel(line),
+    stage: overrides.stage ?? inferLogStage(line),
+    kind: overrides.kind ?? 'log'
+  };
+}
+
+export function filterLogEntries(entries, filter = '全部') {
+  if (filter === '错误') {
+    return entries.filter((entry) => entry.level === 'error');
+  }
+  if (filter === '运行日志') {
+    return entries.filter((entry) => entry.level !== 'error');
+  }
+  return entries;
+}
+
+export function groupLogEntriesByStage(entries) {
+  const groups = new Map();
+  for (const row of buildLogRows(entries)) {
+    const label = row.stage || '其他';
+    if (!groups.has(label)) {
+      groups.set(label, { label, rows: [] });
+    }
+    groups.get(label).rows.push(row);
+  }
+  return Array.from(groups.values());
+}
+
+function inferLogLevel(line) {
+  const lower = String(line).toLowerCase();
+  if (/\[error\]|error|failed|exception|traceback|错误|失败/.test(lower)) {
+    return 'error';
+  }
+  if (/\[warn\]|warning|警告/.test(lower)) {
+    return 'warning';
+  }
+  return 'info';
+}
+
+function inferLogStage(line) {
+  const lower = String(line).toLowerCase();
+  const stages = ['doctor', 'extract', 'dedupe', 'speedtest', 'availability', 'postprocess', 'render', 'obfuscate', 'deploy', 'verify'];
+  const matches = stages.filter((stage) => lower.includes(stage));
+  return matches.at(-1) ?? '';
+}
+
+function mergeProfile(profile) {
+  const workspace = profile?.workspace ?? {};
+  const paths = profile?.paths ?? {};
+  const mergedPaths = {
+    ...FALLBACK_PROFILE.paths,
+    ...workspace,
+    ...paths
+  };
+
+  return {
+    ...FALLBACK_PROFILE,
+    ...profile,
+    sources: profile?.sources ?? FALLBACK_PROFILE.sources,
+    speed_test: { ...FALLBACK_PROFILE.speed_test, ...(profile?.speed_test ?? {}) },
+    deploy: { ...FALLBACK_PROFILE.deploy, ...(profile?.deploy ?? {}) },
+    paths: mergedPaths,
+    workspace: mergedPaths
+  };
+}
+
+function stateClass(status) {
+  if (status === 'success') return 'success';
+  if (status === 'running') return 'warning';
+  if (status === 'failed') return 'danger';
+  return 'neutral';
+}
+
+function stageLabel(status) {
+  return {
+    success: '完成',
+    running: '运行中',
+    failed: '失败',
+    pending: '等待中'
+  }[status] ?? status;
+}
+
+function resolveCurrentStatusLabel(state, messages) {
+  if (state.runResult === 'success' || state.runResult === 'demo') return '成功';
+  if (state.runResult === 'failed') return '失败';
+  if (state.runState === 'running') return '运行中';
+  return '空闲';
+}
+
+function formatDate(value) {
+  if (!value) return '';
+  return new Intl.DateTimeFormat('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  }).format(new Date(value)).replaceAll('/', '-');
+}
+
+function formatElapsed(startedAt) {
+  if (!startedAt) return '—';
+  const total = Math.max(0, Math.floor((Date.now() - Number(startedAt)) / 1000));
+  const minutes = String(Math.floor(total / 60)).padStart(2, '0');
+  const seconds = String(total % 60).padStart(2, '0');
+  return `00:${minutes}:${seconds}`;
+}
+
+function resolveCurrentTaskLabel(state, messages) {
+  const stageRows = normalizeStageRows(state.stageStatus, state.runState);
+  const running = stageRows.find((row) => row.status === 'running');
+  if (running) return messages.stageLabels[running.name] ?? running.name;
+
+  const failed = stageRows.find((row) => row.status === 'failed');
+  if (failed) {
+    return `${messages.stageLabels[failed.name] ?? failed.name} / ${messages.statusLabels.failed}`;
+  }
+
+  if (state.runState === 'stopping') return '停止中';
+
+  const completed = stageRows.filter((row) => row.status === 'success');
+  if (completed.length) {
+    const lastStage = completed.at(-1);
+    return messages.stageLabels[lastStage.name] ?? lastStage.name;
+  }
+
+  return messages.taskWaiting;
+}
+
+function navId(page) {
+  return `nav${page.slice(0, 1).toUpperCase()}${page.slice(1)}`;
 }

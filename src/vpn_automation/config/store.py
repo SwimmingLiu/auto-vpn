@@ -5,7 +5,12 @@ from pathlib import Path
 
 from tomlkit import comment, document, nl, table
 
-from vpn_automation.config.models import AppProfile, create_default_profile, resolve_repo_anchor
+from vpn_automation.config.models import (
+    AppProfile,
+    DEFAULT_SOURCE_ORDER,
+    create_default_profile,
+    resolve_repo_anchor,
+)
 
 
 def resolve_profile_path(project_root: Path) -> Path:
@@ -17,7 +22,6 @@ def resolve_profile_path(project_root: Path) -> Path:
     local_path = candidate_root / "state" / "profile.toml"
     repo_root = resolve_repo_anchor(candidate_root)
     anchor_path = repo_root / "state" / "profile.toml"
-
     if anchor_path != local_path:
         return anchor_path
     return local_path
@@ -36,6 +40,13 @@ def resolve_seed_profile_path(project_root: Path) -> Path | None:
     return None
 
 
+def _ordered_source_names(profile: AppProfile) -> list[str]:
+    return [
+        *[name for name in DEFAULT_SOURCE_ORDER if name in profile.sources],
+        *sorted(name for name in profile.sources if name not in DEFAULT_SOURCE_ORDER),
+    ]
+
+
 def _render_profile_toml(profile: AppProfile) -> str:
     doc = document()
     doc.add(comment("VPN Subscription Automation runtime profile"))
@@ -43,7 +54,8 @@ def _render_profile_toml(profile: AppProfile) -> str:
     doc.add(nl())
 
     sources_table = table()
-    for source_name, source in profile.sources.items():
+    for source_name in _ordered_source_names(profile):
+        source = profile.sources[source_name]
         source_table = table()
         source_table.add("url", source.url)
         source_table.add("key", source.key)
@@ -84,7 +96,6 @@ def _render_profile_toml(profile: AppProfile) -> str:
     filters_table.add("excluded_country_codes", profile.filters.excluded_country_codes)
     filters_table.add("per_country_limit", profile.filters.per_country_limit)
     doc.add("filters", filters_table)
-
     return doc.as_string()
 
 

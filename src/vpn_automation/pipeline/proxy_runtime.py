@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import socket
 import subprocess
@@ -8,6 +9,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
+from urllib.parse import quote
 
 import requests
 
@@ -20,20 +22,32 @@ class ProxyRuntime:
     session: requests.Session
     proxies: dict[str, str]
     config_path: Path
+    controller_url: str = ""
+    proxy_name: str = ""
 
 
-def resolve_xray_binary(explicit_path: str = "") -> str:
+PROXY_ENV_KEYS = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "NO_PROXY",
+    "no_proxy",
+)
+
+def resolve_mihomo_binary(explicit_path: str = "") -> str:
     candidates = [
         explicit_path,
-        shutil.which("xray") or "",
-        "/opt/homebrew/opt/xray/bin/xray",
-        "/opt/homebrew/bin/xray",
-        "/usr/local/bin/xray",
+        shutil.which("mihomo") or "",
+        "/opt/homebrew/bin/mihomo",
+        "/usr/local/bin/mihomo",
     ]
     for candidate in candidates:
         if candidate and Path(candidate).exists():
             return candidate
-    raise FileNotFoundError("xray binary not found")
+    raise FileNotFoundError("mihomo binary not found")
 
 
 def _find_free_port() -> int:
@@ -42,57 +56,98 @@ def _find_free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def build_xray_runtime_config(payload: dict, http_port: int, socks_port: int) -> dict:
-    security = "tls" if str(payload.get("tls", "")).lower() == "tls" else ""
-    stream_settings: dict = {
-        "network": payload.get("net", "ws"),
-        "security": security,
+def build_mihomo_runtime_config(payload: dict, mixed_port: int, controller_port: int) -> dict:
+    network = payload.get("net", "ws")
+    tls_enabled = str(payload.get("tls", "")).lower() == "tls"
+    proxy_name = "runtime-node"
+    proxy: dict[str, object] = {
+        "name": proxy_name,
+        "type": "vmess",
+        "server": payload["add"],
+        "port": int(payload["port"]),
+        "uuid": payload["id"],
+        "alterId": int(str(payload.get("aid", "0")) or 0),
+        "cipher": payload.get("scy", "auto"),
+        "udp": False,
+        "network": network,
     }
-    if payload.get("net", "ws") == "ws":
-        stream_settings["wsSettings"] = {
+    if tls_enabled:
+        proxy["tls"] = True
+        proxy["skip-cert-verify"] = True
+        proxy["servername"] = payload.get("sni") or payload.get("host") or payload.get("add")
+    if network == "ws":
+        proxy["ws-opts"] = {
             "path": payload.get("path", ""),
-            "headers": {"Host": payload.get("host", payload.get("add", ""))},
-        }
-    if security == "tls":
-        stream_settings["tlsSettings"] = {
-            "serverName": payload.get("sni") or payload.get("host") or payload.get("add"),
-            "allowInsecure": True,
+            "headers": {"Host": payload.get("host") or payload.get("add", "")},
         }
 
     return {
-        "log": {"loglevel": "warning"},
-        "inbounds": [
-            {"listen": "127.0.0.1", "port": http_port, "protocol": "http"},
+        "mixed-port": mixed_port,
+        "allow-lan": False,
+        "mode": "global",
+        "log-level": "silent",
+        "ipv6": False,
+        "external-controller": f"127.0.0.1:{controller_port}",
+        "dns": {"enable": False},
+        "proxies": [proxy],
+        "proxy-groups": [
             {
-                "listen": "127.0.0.1",
-                "port": socks_port,
-                "protocol": "socks",
-                "settings": {"auth": "noauth", "udp": False},
-            },
+                "name": "GLOBAL",
+                "type": "select",
+                "proxies": [proxy_name],
+            }
         ],
-        "outbounds": [
-            {
-                "protocol": "vmess",
-                "settings": {
-                    "vnext": [
-                        {
-                            "address": payload["add"],
-                            "port": int(payload["port"]),
-                            "users": [
-                                {
-                                    "id": payload["id"],
-                                    "alterId": int(str(payload.get("aid", "0")) or 0),
-                                    "security": payload.get("scy", "auto"),
-                                }
-                            ],
-                        }
-                    ]
-                },
-                "streamSettings": stream_settings,
-            },
-            {"protocol": "freedom", "tag": "direct"},
-        ],
+        "rules": ["MATCH,GLOBAL"],
     }
+
+
+def build_runtime_env() -> dict[str, str]:
+    env = dict(os.environ)
+    for key in PROXY_ENV_KEYS:
+        env.pop(key, None)
+    return env
+
+def select_mihomo_proxy(controller_url: str, proxy_name: str, timeout_seconds: float) -> None:
+    if not controller_url:
+        return
+    session = requests.Session()
+    session.trust_env = False
+    try:
+        response = session.put(
+            f"{controller_url}/proxies/GLOBAL",
+            json={"name": proxy_name},
+            timeout=max(timeout_seconds, 1),
+        )
+        response.raise_for_status()
+    finally:
+        session.close()
+
+
+def probe_mihomo_proxy_delay(
+    controller_url: str,
+    proxy_name: str,
+    probe_url: str,
+    timeout_seconds: int,
+) -> int:
+    session = requests.Session()
+    session.trust_env = False
+    try:
+        response = session.get(
+            f"{controller_url}/proxies/{quote(proxy_name, safe='')}/delay",
+            params={
+                "timeout": int(timeout_seconds * 1000),
+                "url": probe_url,
+            },
+            timeout=max(timeout_seconds, 1),
+        )
+        response.raise_for_status()
+        payload = response.json()
+        delay = int(payload.get("delay", -1))
+        if delay < 0:
+            raise RuntimeError(f"mihomo returned invalid delay payload: {payload}")
+        return delay
+    finally:
+        session.close()
 
 
 def _wait_for_port(port: int, timeout_seconds: float) -> None:
@@ -110,34 +165,51 @@ def open_proxy_runtime(
     link: str,
     *,
     startup_wait_seconds: float,
-    xray_path: str = "",
+    runtime_path: str = "",
 ) -> Iterator[ProxyRuntime]:
     payload = parse_vmess_link(link)
-    binary = resolve_xray_binary(xray_path)
+    binary = resolve_mihomo_binary(runtime_path)
     http_port = _find_free_port()
-    socks_port = _find_free_port()
-    runtime_config = build_xray_runtime_config(payload, http_port=http_port, socks_port=socks_port)
+    controller_port = _find_free_port()
+    proxy_name = "runtime-node"
+    runtime_config = build_mihomo_runtime_config(
+        payload,
+        mixed_port=http_port,
+        controller_port=controller_port,
+    )
+    listen_port = http_port
+    controller_url = f"http://127.0.0.1:{controller_port}"
 
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as handle:
         config_path = Path(handle.name)
         handle.write(json.dumps(runtime_config, ensure_ascii=False))
 
     process = subprocess.Popen(
-        [binary, "run", "-config", str(config_path)],
+        [binary, "-f", str(config_path)],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        env=build_runtime_env(),
     )
     session = requests.Session()
     session.trust_env = False
     proxies = {
-        "http": f"http://127.0.0.1:{http_port}",
-        "https": f"http://127.0.0.1:{http_port}",
+        "http": f"http://127.0.0.1:{listen_port}",
+        "https": f"http://127.0.0.1:{listen_port}",
     }
 
     try:
-        _wait_for_port(http_port, startup_wait_seconds + 4)
-        yield ProxyRuntime(process=process, session=session, proxies=proxies, config_path=config_path)
+        _wait_for_port(listen_port, startup_wait_seconds + 4)
+        _wait_for_port(controller_port, startup_wait_seconds + 4)
+        select_mihomo_proxy(controller_url, proxy_name, startup_wait_seconds + 4)
+        yield ProxyRuntime(
+            process=process,
+            session=session,
+            proxies=proxies,
+            config_path=config_path,
+            controller_url=controller_url,
+            proxy_name=proxy_name,
+        )
     finally:
         session.close()
         process.terminate()

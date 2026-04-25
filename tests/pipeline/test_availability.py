@@ -8,6 +8,7 @@ from vpn_automation.pipeline.availability import (
     ProviderTarget,
     PROVIDER_TARGETS,
     check_link_availability_batch,
+    check_link_availability,
     fetch_provider_result,
     evaluate_provider_response,
 )
@@ -106,7 +107,7 @@ def test_check_link_availability_batch_downgrades_runtime_errors_to_failed_node(
     good = SpeedTestResult(link="vmess://good", reachable=True, average_download_mb_s=2.0, latency_ms=50)
     bad = SpeedTestResult(link="vmess://bad", reachable=True, average_download_mb_s=2.0, latency_ms=50)
 
-    def fake_check(speed_result, config, *, xray_path=""):
+    def fake_check(speed_result, config, *, runtime_path=""):
         if speed_result.link == "vmess://bad":
             raise RuntimeError("proxy bootstrap failed")
         return AvailabilityResult(
@@ -126,3 +127,138 @@ def test_check_link_availability_batch_downgrades_runtime_errors_to_failed_node(
     failed = next(item for item in results if item.link == "vmess://bad")
     assert failed.all_passed is False
     assert failed.provider_results["gemini"].reason == "runtime_error"
+
+
+def test_check_link_availability_uses_browser_fallback_for_http_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = SpeedTestConfig(
+        min_download_mb_s=1.0,
+        timeout_seconds=20,
+        concurrency=1,
+        urls=["https://speed.cloudflare.com/__down?bytes=5000000"],
+    )
+    speed = SpeedTestResult(link="vmess://node", reachable=True, average_download_mb_s=2.0, latency_ms=50)
+
+    class DummyRuntime:
+        def __init__(self) -> None:
+            self.session = object()
+            self.proxies = {"http": "http://127.0.0.1:18080", "https": "http://127.0.0.1:18080"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    primary_results = {
+        "gemini": ProviderCheckResult(provider="gemini", passed=True, reason="ok", status_code=200, final_url="https://gemini.google.com/"),
+        "chatgpt": ProviderCheckResult(provider="chatgpt", passed=False, reason="http_error", status_code=403, final_url="https://chatgpt.com/"),
+        "claude": ProviderCheckResult(provider="claude", passed=False, reason="http_error", status_code=403, final_url="https://claude.ai/"),
+    }
+
+    def fake_fetch_provider_result(session, proxies, target, timeout_seconds):
+        return primary_results[target.name]
+
+    browser_results = {
+        "chatgpt": ProviderCheckResult(provider="chatgpt", passed=True, reason="ok", status_code=200, final_url="https://chatgpt.com/"),
+        "claude": ProviderCheckResult(provider="claude", passed=True, reason="ok", status_code=200, final_url="https://claude.ai/login"),
+    }
+
+    monkeypatch.setattr("vpn_automation.pipeline.availability.open_proxy_runtime", lambda *args, **kwargs: DummyRuntime())
+    monkeypatch.setattr("vpn_automation.pipeline.availability.fetch_provider_result", fake_fetch_provider_result)
+    monkeypatch.setattr(
+        "vpn_automation.pipeline.availability.fetch_provider_results_with_browser",
+        lambda proxies, targets, timeout_seconds, project_root='': browser_results,
+    )
+
+    result = check_link_availability(speed, config)
+
+    assert result.all_passed is True
+    assert result.provider_results["chatgpt"].passed is True
+    assert result.provider_results["claude"].passed is True
+
+
+def test_check_link_availability_uses_runtime_proxy_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = SpeedTestConfig(
+        min_download_mb_s=1.0,
+        timeout_seconds=20,
+        concurrency=1,
+        urls=["https://raw.githubusercontent.com/bulianglin/demo/main/10MB.bin"],
+    )
+    speed = SpeedTestResult(link="vmess://node", reachable=True, average_download_mb_s=2.0, latency_ms=50)
+    captured: dict[str, object] = {}
+
+    class DummyRuntime:
+        def __init__(self) -> None:
+            self.session = object()
+            self.proxies = {"http": "http://127.0.0.1:18080", "https": "http://127.0.0.1:18080"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_open_proxy_runtime(*args, **kwargs):
+        captured["startup_wait_seconds"] = kwargs.get("startup_wait_seconds")
+        return DummyRuntime()
+
+    monkeypatch.setattr("vpn_automation.pipeline.availability.open_proxy_runtime", fake_open_proxy_runtime)
+    monkeypatch.setattr(
+        "vpn_automation.pipeline.availability.fetch_provider_result",
+        lambda session, proxies, target, timeout_seconds: ProviderCheckResult(
+            provider=target.name,
+            passed=True,
+            reason="ok",
+            status_code=200,
+            final_url=target.url,
+        ),
+    )
+    monkeypatch.setattr(
+        "vpn_automation.pipeline.availability.fetch_provider_results_with_browser",
+        lambda proxies, targets, timeout_seconds, project_root='': {},
+    )
+
+    result = check_link_availability(speed, config)
+
+    assert result.all_passed is True
+    assert captured["startup_wait_seconds"] == config.startup_wait_seconds
+
+
+def test_check_link_availability_batch_emits_link_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = SpeedTestConfig(
+        min_download_mb_s=1.0,
+        timeout_seconds=20,
+        concurrency=2,
+        urls=["https://speed.cloudflare.com/__down?bytes=5000000"],
+    )
+    speed = SpeedTestResult(link="vmess://node", reachable=True, average_download_mb_s=2.0, latency_ms=50)
+    events: list[dict] = []
+
+    monkeypatch.setattr(
+        "vpn_automation.pipeline.availability.check_link_availability",
+        lambda speed_result, config, *, runtime_path="": AvailabilityResult(
+            speed_result=speed_result,
+            provider_results={
+                "gemini": ProviderCheckResult(provider="gemini", passed=True, reason="ok"),
+                "chatgpt": ProviderCheckResult(provider="chatgpt", passed=True, reason="ok"),
+                "claude": ProviderCheckResult(provider="claude", passed=True, reason="ok"),
+            },
+        ),
+    )
+
+    results = check_link_availability_batch(
+        [speed],
+        config,
+        event_callback=lambda event_type, payload: events.append({"type": event_type, **payload}),
+    )
+
+    assert len(results) == 1
+    assert [event["type"] for event in events] == ["availability_link_result"]
+    assert events[0]["all_passed"] is True
+    assert events[0]["link"] == "vmess://node"

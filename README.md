@@ -4,12 +4,12 @@
 
 ## Current Status
 
-截至 2026-04-21，当前主线已完成：
+截至 2026-04-25，当前主线已完成：
 
-- Electron 紧凑仪表盘首页
-  - 半屏优先布局
-  - 中英文切换
-  - 配置抽屉、阶段状态、日志摘要
+- Electron 六页桌面工作区
+  - 中文唯一界面
+  - 概览 / 运行 / 结果 / 订阅 / 日志 / 设置
+  - 设置抽屉、阶段状态、日志筛选、结果预览
 - Python 自动化后端
   - 节点抓取
   - vmess 去重
@@ -17,6 +17,11 @@
   - Gemini / ChatGPT / Claude 首页可用性全通过过滤
   - 国家识别、节点命名、模板渲染、JS 混淆
   - Cloudflare Pages 部署与最终校验
+- 运行时与恢复能力
+  - TOML 主配置
+  - SQLite checkpoint (`run.db`)
+  - 最近未完成运行恢复
+  - 监控脚本读取最新运行状态
 - macOS Electron 打包链路
   - 可生成 `.app`
   - 打包态与开发态共享同一份主配置文件
@@ -32,7 +37,7 @@
 
 - 本地桌面窗口
 - UI/UX 控制台
-- 紧凑仪表盘首页
+- 六页工作区
 - 配置编辑与保存
 - 实时日志与阶段状态
 - 通过 IPC 调用本地 Python backend
@@ -48,6 +53,7 @@
 - `vmess_node.js` 回填
 - JavaScript obfuscation
 - Cloudflare Pages 部署与校验
+- SQLite checkpoint / resume
 
 ## Canonical Runtime Profile
 
@@ -72,6 +78,7 @@
 ```text
 src/vpn_automation/          Python backend
 electron/                    Electron main / preload / renderer
+templates/                   内置模板资源
 tests/                       Python tests
 docs/superpowers/specs/      设计文档
 docs/superpowers/plans/      实施计划
@@ -111,7 +118,73 @@ cd /Users/swimmingliu/data/VPN/vpn-subscription-automation
 npm run electron:dev
 ```
 
-默认跟随系统语言，也可以在右上角手动切换中文 / English。
+当前 Electron UI 为中文唯一界面，不再提供中英文切换。
+
+## Run the backend pipeline manually
+
+如果这次只想验证后端真实链路，不经过 Electron，直接运行：
+
+```bash
+cd /Users/swimmingliu/data/VPN/vpn-subscription-automation
+./scripts/run_backend_pipeline.sh
+```
+
+默认行为：
+
+- 真实执行 `doctor -> extract -> dedupe -> speedtest -> availability -> postprocess -> render -> obfuscate`
+- 默认跳过 `deploy` 和 `verify`
+- 为本次运行创建独立 session 目录：
+  - `artifacts/manual-runs/<session-id>/events.jsonl`
+  - `artifacts/manual-runs/<session-id>/human.log`
+
+只看本次将执行什么但不真正启动：
+
+```bash
+cd /Users/swimmingliu/data/VPN/vpn-subscription-automation
+./scripts/run_backend_pipeline.sh --dry-run
+```
+
+如果后面要重新打开真实部署：
+
+```bash
+cd /Users/swimmingliu/data/VPN/vpn-subscription-automation
+./scripts/run_backend_pipeline.sh --with-deploy --with-verify
+```
+
+## Monitor a backend run
+
+在另一个终端里运行：
+
+```bash
+cd /Users/swimmingliu/data/VPN/vpn-subscription-automation
+./scripts/monitor_run.sh
+```
+
+只打印一次快照：
+
+```bash
+cd /Users/swimmingliu/data/VPN/vpn-subscription-automation
+./scripts/monitor_run.sh --once
+```
+
+监控输出会展示：
+
+- 每个阶段当前状态
+- 每个抓取源的 `iter/max`、当前累计节点数、最近新增节点数
+- speedtest / availability / final link 摘要
+- 最近 extract attempts
+- 卡住告警
+
+## Resume support
+
+主线当前支持：
+
+- 从最近未完成的 `run.db` 自动恢复
+- 从已有 artifact/session 继续执行 speedtest 或后续 pipeline
+
+相关运行时数据会落在：
+
+- `/Users/swimmingliu/data/VPN/vpn-subscription-automation/artifacts/<run>/run.db`
 
 ## Tests
 
@@ -119,7 +192,7 @@ npm run electron:dev
 
 ```bash
 cd /Users/swimmingliu/data/VPN/vpn-subscription-automation
-python3.12 -m pytest tests -q
+./scripts/run_pytest.sh tests -v
 ```
 
 ### Electron / renderer
@@ -127,6 +200,13 @@ python3.12 -m pytest tests -q
 ```bash
 cd /Users/swimmingliu/data/VPN/vpn-subscription-automation
 npm run test:electron
+```
+
+### Full suite
+
+```bash
+cd /Users/swimmingliu/data/VPN/vpn-subscription-automation
+npm run test:all
 ```
 
 ## Package the Electron desktop app
@@ -145,6 +225,8 @@ npm run package:electron
 - Electron app 优先通过项目 `.venv` 的 Python 调用后端；若不存在，则回退到 `python3.12`，最后回退到 `python3`
 - pipeline 模板资源已内置在当前仓库：
   - `/Users/swimmingliu/data/VPN/vpn-subscription-automation/templates/vmess_node.js`
+- packaged app 默认会从内置 seed profile 生成运行时配置：
+  - `electron/runtime/default-profile.toml`
 - 每次 pipeline 运行会在 artifact 目录下生成：
   - `/Users/swimmingliu/data/VPN/vpn-subscription-automation/artifacts/<run>/run.db`
 - 可用以下脚本读取最新 SQLite checkpoint：

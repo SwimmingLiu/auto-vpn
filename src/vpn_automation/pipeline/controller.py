@@ -1,7 +1,8 @@
-import json
 import inspect
-from dataclasses import dataclass, field
+import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -19,10 +20,10 @@ from vpn_automation.integrations.cloudflare import (
     deploy_pages_bundle,
 )
 from vpn_automation.integrations.node_tools import obfuscate_javascript
+from vpn_automation.pipeline.availability import check_link_availability_batch
 from vpn_automation.pipeline.dedupe import dedupe_vmess_links
 from vpn_automation.pipeline.extract import fetch_source_links, write_vpn_api_config
 from vpn_automation.pipeline.package import build_pages_bundle
-from vpn_automation.pipeline.availability import check_link_availability_batch
 from vpn_automation.pipeline.postprocess import (
     decorate_link_with_country,
     lookup_country_code,
@@ -39,7 +40,10 @@ class PipelineSummary:
     artifact_dir: str
     stage_status: dict[str, str]
     counts: dict[str, int] = field(default_factory=dict)
+    source_counts: dict[str, dict[str, int | str]] = field(default_factory=dict)
     deployment: dict[str, Any] = field(default_factory=dict)
+    run_status: str = "pending"
+    error: str = ""
 
 
 class PipelineController:
@@ -71,6 +75,7 @@ class PipelineController:
         self.artifacts_root_resolver = artifacts_root_resolver
         self.template_path_resolver = template_path_resolver
         self.now_factory = now_factory
+        self._last_source_counts: dict[str, dict[str, int | str]] = {}
 
     def stage_names(self) -> list[str]:
         return [
@@ -93,9 +98,13 @@ class PipelineController:
         log_callback: Callable[[str], None] | None = None,
         stage_callback: Callable[[str, str], None] | None = None,
         resume_from: Path | None = None,
+        skip_deploy: bool = False,
+        skip_verify: bool = False,
+        event_callback: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> PipelineSummary:
         stage_status = {name: "pending" for name in self.stage_names()}
-        runtime_root = self.runtime_root_resolver(Path(__file__))
+        runtime_candidate = Path(getattr(profile.workspace, "project_root", "") or __file__)
+        runtime_root = self.runtime_root_resolver(runtime_candidate)
         if resume_from:
             artifact_dir = resume_from
             run_store = RunStore(artifact_dir / "run.db")
@@ -104,140 +113,216 @@ class PipelineController:
             run_store = RunStore(artifact_dir / "run.db")
             run_store.initialize(artifact_dir=str(artifact_dir))
         summary = PipelineSummary(artifact_dir=str(artifact_dir), stage_status=stage_status)
+        current_stage = ""
 
         def log(message: str) -> None:
             if log_callback:
                 log_callback(message)
 
+        def emit_event(event_type: str, payload: dict[str, Any]) -> None:
+            if event_callback:
+                event_callback(event_type, payload)
+
         def set_stage(name: str, status: str) -> None:
+            nonlocal current_stage
             stage_status[name] = status
             run_store.record_stage_event(name, status)
+            if status == "running":
+                current_stage = name
+            elif current_stage == name and status in {"success", "failed", "skipped"}:
+                current_stage = ""
             if stage_callback:
                 stage_callback(name, status)
 
-        env = self.env_loader(runtime_root)
-        api_token = env.get("CLOUDFLARE_API_TOKEN", "")
-
-        set_stage("doctor", "running")
-        if not api_token:
-            raise RuntimeError("CLOUDFLARE_API_TOKEN is missing")
-        set_stage("doctor", "success")
-        log("[doctor] runtime environment loaded")
-
-        set_stage("extract", "running")
-        raw_links = self._run_extract(profile, artifact_dir, log, run_store, resume=bool(resume_from))
-        set_stage("extract", "success")
-        summary.counts["raw_links"] = len(raw_links)
-
-        set_stage("dedupe", "running")
-        deduped_links = dedupe_vmess_links(raw_links)
-        self._write_lines(artifact_dir / "vpn_node_deduped.txt", deduped_links)
-        set_stage("dedupe", "success")
-        summary.counts["deduped_links"] = len(deduped_links)
-        log(f"[dedupe] kept {len(deduped_links)} unique links")
-
-        set_stage("speedtest", "running")
-        speedtest_results = self.speedtester(
-            deduped_links,
-            profile.speed_test,
-            progress_callback=log,
+        effective_skip_verify = skip_verify or skip_deploy
+        emit_event(
+            "run_started",
+            {
+                "artifact_dir": summary.artifact_dir,
+                "skip_deploy": skip_deploy,
+                "skip_verify": effective_skip_verify,
+                "resume_from": str(resume_from) if resume_from else "",
+            },
         )
-        fast_results = [
-            result
-            for result in speedtest_results
-            if result.reachable and result.average_download_mb_s >= profile.speed_test.min_download_mb_s
-        ]
-        for result in speedtest_results:
-            run_store.record_speedtest_result(
-                link=result.link,
-                reachable=result.reachable,
-                latency_ms=result.latency_ms,
-                average_download_mb_s=result.average_download_mb_s,
-                error=getattr(result, "error", "") or "",
+
+        try:
+            env = self.env_loader(runtime_root)
+            api_token = env.get("CLOUDFLARE_API_TOKEN", "")
+
+            set_stage("doctor", "running")
+            if not api_token:
+                raise RuntimeError("CLOUDFLARE_API_TOKEN is missing")
+            set_stage("doctor", "success")
+            log("[doctor] runtime environment loaded")
+
+            set_stage("extract", "running")
+            raw_links = self._run_extract(
+                profile,
+                artifact_dir,
+                log,
+                run_store,
+                resume=bool(resume_from),
+                event_callback=event_callback,
             )
-        fast_results.sort(key=lambda item: item.average_download_mb_s, reverse=True)
-        fast_links = [result.link for result in fast_results]
-        self._write_lines(artifact_dir / "vpn_node_speedtest.txt", fast_links)
-        set_stage("speedtest", "success")
-        summary.counts["speedtest_links"] = len(fast_links)
-        log(f"[speedtest] kept {len(fast_links)} links above threshold")
+            set_stage("extract", "success")
+            summary.counts["raw_links"] = len(raw_links)
+            summary.source_counts = dict(self._last_source_counts)
+            self._write_pipeline_report(artifact_dir, summary)
+            if not raw_links:
+                raise RuntimeError("No links extracted from enabled sources")
 
-        set_stage("availability", "running")
-        availability_results = self.availability_checker(
-            fast_results,
-            profile.speed_test,
-            progress_callback=log,
-        )
-        available_results = [
-            item.speed_result
-            for item in availability_results
-            if item.all_passed
-        ]
-        for item in availability_results:
-            for provider_name, provider_result in item.provider_results.items():
-                run_store.record_availability_result(
-                    link=item.speed_result.link,
-                    provider=provider_name,
-                    passed=provider_result.passed,
-                    reason=provider_result.reason,
+            set_stage("dedupe", "running")
+            deduped_links = dedupe_vmess_links(raw_links)
+            self._write_lines(artifact_dir / "vpn_node_deduped.txt", deduped_links)
+            set_stage("dedupe", "success")
+            summary.counts["deduped_links"] = len(deduped_links)
+            log(f"[dedupe] kept {len(deduped_links)} unique links")
+            self._write_pipeline_report(artifact_dir, summary)
+
+            set_stage("speedtest", "running")
+            speedtest_results = self._call_worker(
+                self.speedtester,
+                deduped_links,
+                profile.speed_test,
+                progress_callback=log,
+                event_callback=event_callback,
+            )
+            fast_results = [
+                result
+                for result in speedtest_results
+                if result.reachable and result.average_download_mb_s >= profile.speed_test.min_download_mb_s
+            ]
+            for result in speedtest_results:
+                run_store.record_speedtest_result(
+                    link=result.link,
+                    reachable=result.reachable,
+                    latency_ms=result.latency_ms,
+                    average_download_mb_s=result.average_download_mb_s,
+                    error=getattr(result, "error", "") or "",
                 )
-        available_links = [item.link for item in available_results]
-        self._write_lines(artifact_dir / "vpn_node_availability.txt", available_links)
-        (artifact_dir / "vpn_node_availability_report.json").write_text(
-            json.dumps([item.to_dict() for item in availability_results], ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        set_stage("availability", "success")
-        summary.counts["availability_links"] = len(available_links)
-        log(f"[availability] kept {len(available_links)} links after provider validation")
+            fast_results.sort(key=lambda item: item.average_download_mb_s, reverse=True)
+            fast_links = [result.link for result in fast_results]
+            self._write_lines(artifact_dir / "vpn_node_speedtest.txt", fast_links)
+            set_stage("speedtest", "success")
+            summary.counts["speedtest_links"] = len(fast_links)
+            log(f"[speedtest] kept {len(fast_links)} links above threshold")
+            self._write_pipeline_report(artifact_dir, summary)
+            if not fast_links:
+                raise RuntimeError("No links passed speed test")
 
-        set_stage("postprocess", "running")
-        ranked_links: list[tuple[str, Any, str]] = []
-        for result in available_results:
-            country_code = self.country_lookup(parse_vmess_link(result.link)["add"])
-            ranked_links.append((result.link, result, country_code))
-        selected_links = select_links_by_country_limit(ranked_links, profile.filters)
-        selected_country = {link: country for link, _result, country in ranked_links}
-        decorated_links = [
-            decorate_link_with_country(link, selected_country[link]) for link in selected_links
-        ]
-        for link in selected_links:
-            run_store.record_final_link(
-                stage_name="postprocess",
-                link=link,
-                country_code=selected_country[link],
+            set_stage("availability", "running")
+            availability_results = self._call_worker(
+                self.availability_checker,
+                fast_results,
+                profile.speed_test,
+                progress_callback=log,
+                event_callback=event_callback,
             )
-        self._write_lines(artifact_dir / "vpn_node_emoji.txt", decorated_links)
-        set_stage("postprocess", "success")
-        summary.counts["postprocess_links"] = len(decorated_links)
+            available_results = [
+                item.speed_result
+                for item in availability_results
+                if item.all_passed
+            ]
+            for item in availability_results:
+                for provider_name, provider_result in item.provider_results.items():
+                    run_store.record_availability_result(
+                        link=item.speed_result.link,
+                        provider=provider_name,
+                        passed=provider_result.passed,
+                        reason=provider_result.reason,
+                    )
+            available_links = [item.link for item in available_results]
+            self._write_lines(artifact_dir / "vpn_node_availability.txt", available_links)
+            (artifact_dir / "vpn_node_availability_report.json").write_text(
+                json.dumps([item.to_dict() for item in availability_results], ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            set_stage("availability", "success")
+            summary.counts["availability_links"] = len(available_links)
+            log(f"[availability] kept {len(available_links)} links after provider validation")
+            self._write_pipeline_report(artifact_dir, summary)
+            if not available_links:
+                raise RuntimeError("No links passed availability")
 
-        set_stage("render", "running")
-        rendered_path = self._render_template(runtime_root, artifact_dir, decorated_links)
-        set_stage("render", "success")
+            set_stage("postprocess", "running")
+            ranked_links: list[tuple[str, Any, str]] = []
+            for result in available_results:
+                country_code = self.country_lookup(parse_vmess_link(result.link)["add"])
+                ranked_links.append((result.link, result, country_code))
+            selected_links = select_links_by_country_limit(ranked_links, profile.filters)
+            selected_country = {link: country for link, _result, country in ranked_links}
+            decorated_links = [
+                decorate_link_with_country(link, selected_country[link]) for link in selected_links
+            ]
+            for link in selected_links:
+                run_store.record_final_link(
+                    stage_name="postprocess",
+                    link=link,
+                    country_code=selected_country[link],
+                )
+            self._write_lines(artifact_dir / "vpn_node_emoji.txt", decorated_links)
+            set_stage("postprocess", "success")
+            summary.counts["postprocess_links"] = len(decorated_links)
+            summary.counts["final_links"] = len(decorated_links)
+            self._write_pipeline_report(artifact_dir, summary)
+            if not decorated_links:
+                raise RuntimeError("No links remained after postprocess filters")
 
-        set_stage("obfuscate", "running")
-        obfuscated_path = artifact_dir / "vmess_node_worker.js"
-        self.obfuscator(rendered_path, obfuscated_path)
-        if not obfuscated_path.exists():
-            raise RuntimeError("vmess_node_worker.js was not created by the obfuscation step")
-        set_stage("obfuscate", "success")
+            set_stage("render", "running")
+            rendered_path = self._render_template(runtime_root, artifact_dir, decorated_links, profile=profile)
+            set_stage("render", "success")
 
-        set_stage("deploy", "running")
-        bundle_dir = build_pages_bundle(obfuscated_path.read_text(encoding="utf-8"), artifact_dir / "pages_bundle")
-        deployment = self.deployer(bundle_dir, profile.deploy, api_token)
-        summary.deployment = deployment
-        if deployment.get("returncode", 1) != 0:
-            raise RuntimeError(f"Cloudflare deployment failed: {deployment}")
-        set_stage("deploy", "success")
+            set_stage("obfuscate", "running")
+            obfuscated_path = artifact_dir / "vmess_node_worker.js"
+            self.obfuscator(rendered_path, obfuscated_path)
+            if not obfuscated_path.exists():
+                raise RuntimeError("vmess_node_worker.js was not created by the obfuscation step")
+            set_stage("obfuscate", "success")
+            self._write_pipeline_report(artifact_dir, summary)
 
-        set_stage("verify", "running")
-        verification = self.verifier(profile.deploy, api_token)
-        if not (verification.get("secret_ok") and verification.get("subscription_ok")):
-            raise RuntimeError(f"Verification failed: {verification}")
-        set_stage("verify", "success")
-        summary.deployment.update(verification)
+            if skip_deploy:
+                set_stage("deploy", "skipped")
+                log("[deploy] skipped by runtime option")
+                self._write_pipeline_report(artifact_dir, summary)
+            else:
+                set_stage("deploy", "running")
+                bundle_dir = build_pages_bundle(
+                    obfuscated_path.read_text(encoding="utf-8"),
+                    artifact_dir / "pages_bundle",
+                )
+                deployment = self.deployer(bundle_dir, profile.deploy, api_token)
+                summary.deployment = deployment
+                if deployment.get("returncode", 1) != 0:
+                    raise RuntimeError(f"Cloudflare deployment failed: {deployment}")
+                set_stage("deploy", "success")
+                self._write_pipeline_report(artifact_dir, summary)
 
-        return summary
+            if effective_skip_verify:
+                set_stage("verify", "skipped")
+                if skip_deploy and not skip_verify:
+                    log("[verify] skipped because deploy stage was skipped")
+                else:
+                    log("[verify] skipped by runtime option")
+                self._write_pipeline_report(artifact_dir, summary)
+            else:
+                set_stage("verify", "running")
+                verification = self.verifier(profile.deploy, api_token)
+                if not (verification.get("secret_ok") and verification.get("subscription_ok")):
+                    raise RuntimeError(f"Verification failed: {verification}")
+                set_stage("verify", "success")
+                summary.deployment.update(verification)
+                self._write_pipeline_report(artifact_dir, summary)
+
+            summary.run_status = "success"
+            self._write_pipeline_report(artifact_dir, summary)
+            return summary
+        except Exception as exc:
+            if current_stage and stage_status.get(current_stage) == "running":
+                set_stage(current_stage, "failed")
+            summary.run_status = "failed"
+            summary.error = f"{exc.__class__.__name__}: {exc}"
+            self._write_pipeline_report(artifact_dir, summary)
+            raise
 
     def _create_artifact_dir(self, runtime_root: Path) -> Path:
         root = self.artifacts_root_resolver(runtime_root)
@@ -251,9 +336,10 @@ class PipelineController:
         profile: AppProfile,
         artifact_dir: Path,
         log: Callable[[str], None],
-        run_store: RunStore,
+        run_store: RunStore | None = None,
         *,
         resume: bool = False,
+        event_callback: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> list[str]:
         config_payload = {
             name: {"url": source.url, "key": source.key}
@@ -262,32 +348,124 @@ class PipelineController:
         runtime_config_path = artifact_dir / "vpn_api.runtime.json"
         write_vpn_api_config(runtime_config_path, config_payload)
 
-        raw_links: list[str] = []
-        for source_name, source in profile.sources.items():
-            if not source.enabled or not source.url or not source.key:
-                continue
-            source_to_run = deepcopy(source)
-            if resume:
+        enabled_sources = [
+            (source_name, deepcopy(source))
+            for source_name, source in profile.sources.items()
+            if source.enabled and source.url and source.key
+        ]
+        if not enabled_sources:
+            self._last_source_counts = {}
+            self._write_lines(artifact_dir / "vpn_node_raw.txt", [])
+            return []
+
+        results_by_source: dict[str, list[str]] = {}
+        source_counts: dict[str, dict[str, int | str]] = {}
+        resume_states: dict[str, dict[str, object]] = {}
+
+        for source_name, source in enabled_sources:
+            if run_store and resume:
                 resume_state = run_store.fetch_source_resume_state(source_name)
-                for link in resume_state["raw_links"]:
-                    if link not in raw_links:
-                        raw_links.append(link)
-                source_to_run.resume_from_iteration = int(resume_state["iteration"]) + 1
+                source.resume_from_iteration = int(resume_state["iteration"]) + 1
             else:
-                source_to_run.resume_from_iteration = 1
-            extracted = self._call_extractor(
+                resume_state = {
+                    "iteration": 0,
+                    "max_iterations": 0,
+                    "new_links": 0,
+                    "raw_links": [],
+                    "successful_iterations": 0,
+                    "failed_iterations": 0,
+                }
+                source.resume_from_iteration = 1
+            resume_states[source_name] = resume_state
+            results_by_source[source_name] = list(resume_state["raw_links"])
+
+        with ThreadPoolExecutor(max_workers=max(1, len(enabled_sources))) as executor:
+            future_map = {
+                executor.submit(
+                    self._call_extractor,
+                    source_name,
+                    source,
+                    log,
+                    run_store,
+                    resume_state=resume_states[source_name],
+                    event_callback=event_callback,
+                ): (source_name, source)
+                for source_name, source in enabled_sources
+            }
+            for future in as_completed(future_map):
+                source_name, source = future_map[future]
+                resume_state = resume_states[source_name]
+                try:
+                    extracted = future.result()
+                except Exception as exc:
+                    log(f"[extract] {source_name} failed: {exc.__class__.__name__}: {exc}")
+                    if event_callback:
+                        event_callback(
+                            "extract_source_failed",
+                            {
+                                "source_name": source_name,
+                                "error": f"{exc.__class__.__name__}: {exc}",
+                            },
+                        )
+                    source_counts[source_name] = {
+                        "raw_links": len(results_by_source[source_name]),
+                        "successful_iterations": int(resume_state["successful_iterations"]),
+                        "failed_iterations": int(resume_state["failed_iterations"]),
+                        "requested_iterations": int(source.max_iterations),
+                        "error": f"{exc.__class__.__name__}: {exc}",
+                    }
+                    continue
+
+                if hasattr(extracted, "links"):
+                    new_links = list(extracted.links)
+                    successful_iterations = int(
+                        resume_state["successful_iterations"]
+                    ) + int(getattr(extracted, "successful_iterations", 0))
+                    failed_iterations = int(
+                        resume_state["failed_iterations"]
+                    ) + int(getattr(extracted, "failed_iterations", 0))
+                    requested_iterations = int(getattr(extracted, "requested_iterations", source.max_iterations))
+                else:
+                    new_links = list(extracted)
+                    successful_iterations = int(resume_state["successful_iterations"])
+                    failed_iterations = int(resume_state["failed_iterations"])
+                    requested_iterations = int(source.max_iterations)
+
+                seen = set(results_by_source[source_name])
+                for link in new_links:
+                    if run_store:
+                        run_store.record_raw_link(source_name, link)
+                    if link in seen:
+                        continue
+                    seen.add(link)
+                    results_by_source[source_name].append(link)
+
+                if run_store:
+                    progress_state = run_store.fetch_source_resume_state(source_name)
+                    successful_iterations = int(progress_state["successful_iterations"])
+                    failed_iterations = int(progress_state["failed_iterations"])
+
+                source_counts[source_name] = {
+                    "raw_links": len(results_by_source[source_name]),
+                    "successful_iterations": successful_iterations,
+                    "failed_iterations": failed_iterations,
+                    "requested_iterations": requested_iterations,
+                }
+
+        raw_links: list[str] = []
+        for source_name, _source in enabled_sources:
+            raw_links.extend(results_by_source.get(source_name, []))
+            source_counts.setdefault(
                 source_name,
-                source_to_run,
-                log,
-                run_store,
+                {
+                    "raw_links": len(results_by_source.get(source_name, [])),
+                    "successful_iterations": int(resume_states[source_name]["successful_iterations"]),
+                    "failed_iterations": int(resume_states[source_name]["failed_iterations"]),
+                    "requested_iterations": int(_source.max_iterations),
+                },
             )
-            if hasattr(extracted, "links"):
-                new_links = list(extracted.links)
-            else:
-                new_links = list(extracted)
-            for link in new_links:
-                run_store.record_raw_link(source_name, link)
-            raw_links.extend(new_links)
+
+        self._last_source_counts = source_counts
         self._write_lines(artifact_dir / "vpn_node_raw.txt", raw_links)
         return raw_links
 
@@ -296,7 +474,10 @@ class PipelineController:
         source_name: str,
         source: Any,
         log: Callable[[str], None],
-        run_store: RunStore,
+        run_store: RunStore | None,
+        *,
+        resume_state: dict[str, object],
+        event_callback: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> Any:
         kwargs: dict[str, Any] = {"progress_callback": log}
         signature = inspect.signature(self.extractor)
@@ -305,16 +486,57 @@ class PipelineController:
             parameter.kind == inspect.Parameter.VAR_KEYWORD
             for parameter in parameters.values()
         )
-        if accepts_kwargs or "progress_state_callback" in parameters:
-            kwargs["progress_state_callback"] = lambda **payload: run_store.record_source_progress(**payload)
-        if accepts_kwargs or "raw_link_callback" in parameters:
+        if run_store and (accepts_kwargs or "progress_state_callback" in parameters):
+            base_successes = int(resume_state.get("successful_iterations", 0))
+            base_failures = int(resume_state.get("failed_iterations", 0))
+
+            def progress_state_callback(**payload: Any) -> None:
+                payload["successful_iterations"] = base_successes + int(payload.get("successful_iterations", 0))
+                payload["failed_iterations"] = base_failures + int(payload.get("failed_iterations", 0))
+                run_store.record_source_progress(**payload)
+
+            kwargs["progress_state_callback"] = progress_state_callback
+        if run_store and (accepts_kwargs or "raw_link_callback" in parameters):
             kwargs["raw_link_callback"] = run_store.record_raw_link
-        if accepts_kwargs or "attempt_callback" in parameters:
+        if run_store and (accepts_kwargs or "attempt_callback" in parameters):
             kwargs["attempt_callback"] = lambda **payload: run_store.record_extract_attempt(**payload)
+        if event_callback is not None and (accepts_kwargs or "event_callback" in parameters):
+            kwargs["event_callback"] = event_callback
         return self.extractor(source_name, source, **kwargs)
 
-    def _render_template(self, runtime_root: Path, artifact_dir: Path, links: list[str]) -> Path:
+    def _call_worker(
+        self,
+        worker: Callable[..., Any],
+        *args: Any,
+        progress_callback: Callable[[str], None] | None = None,
+        event_callback: Callable[[str, dict[str, Any]], None] | None = None,
+    ) -> Any:
+        kwargs: dict[str, Any] = {"progress_callback": progress_callback}
+        signature = inspect.signature(worker)
+        parameters = signature.parameters
+        accepts_kwargs = any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters.values()
+        )
+        if event_callback is not None and (accepts_kwargs or "event_callback" in parameters):
+            kwargs["event_callback"] = event_callback
+        return worker(*args, **kwargs)
+
+    def _render_template(
+        self,
+        runtime_root: Path,
+        artifact_dir: Path,
+        links: list[str],
+        *,
+        profile: AppProfile | None = None,
+    ) -> Path:
         template_path = self.template_path_resolver(runtime_root)
+        if not template_path.exists() and profile is not None:
+            compat_root = str(getattr(profile.workspace, "edgetunnel_root", "")).strip()
+            if compat_root:
+                fallback = Path(compat_root) / "vmess_node.js"
+                if fallback.exists():
+                    template_path = fallback
         rendered = replace_main_data(template_path.read_text(encoding="utf-8"), links)
         rendered_path = artifact_dir / "vmess_node.js"
         rendered_path.write_text(rendered, encoding="utf-8")
@@ -330,3 +552,23 @@ class PipelineController:
     def _write_lines(path: Path, lines: list[str]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("\n".join(lines), encoding="utf-8")
+
+    @staticmethod
+    def _write_pipeline_report(artifact_dir: Path, summary: PipelineSummary) -> None:
+        report_path = artifact_dir / "pipeline_report.json"
+        report_path.write_text(
+            json.dumps(
+                {
+                    "artifact_dir": summary.artifact_dir,
+                    "run_status": summary.run_status,
+                    "error": summary.error,
+                    "stage_status": summary.stage_status,
+                    "counts": summary.counts,
+                    "source_counts": summary.source_counts,
+                    "deployment": summary.deployment,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
