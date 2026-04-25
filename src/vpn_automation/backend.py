@@ -7,8 +7,10 @@ from typing import Any, Callable, Iterator
 
 from vpn_automation.backend_resume import continue_pipeline_session, resume_speedtest_session
 from vpn_automation.config.models import AppProfile, resolve_repo_anchor
+from vpn_automation.config.runtime import resolve_artifacts_root, resolve_runtime_root
 from vpn_automation.config.store import ProfileStore, resolve_profile_path
 from vpn_automation.pipeline.controller import PipelineController
+from vpn_automation.pipeline.run_store import RunStore
 
 
 def build_event(event_type: str, payload: dict[str, Any]) -> str:
@@ -46,12 +48,15 @@ def ensure_profile_json(project_root: Path) -> str:
     return json.dumps(profile.to_dict(), ensure_ascii=False)
 
 
-def save_profile_json(project_root: Path, payload: str) -> str:
+def save_profile_payload(project_root: Path, payload: dict[str, Any]) -> str:
     store = ProfileStore(resolve_profile_path(project_root))
-    profile = AppProfile.from_dict(json.loads(payload))
-    profile.workspace = store.load_or_create(project_root).workspace
+    profile = AppProfile.from_dict(payload)
     store.save(profile)
     return json.dumps(profile.to_dict(), ensure_ascii=False)
+
+
+def save_profile_json(project_root: Path, payload: str) -> str:
+    return save_profile_payload(project_root, json.loads(payload))
 
 
 @contextmanager
@@ -114,9 +119,55 @@ def load_session_paths(
     return resolved_event_log, resolved_human_log
 
 
+def find_resume_run_db(runtime_candidate: Path) -> Path | None:
+    runtime_root = resolve_runtime_root(runtime_candidate)
+    return RunStore.find_latest_incomplete_run(resolve_artifacts_root(runtime_root))
+
+
+def _emit_summary(emit: Callable[[str, dict[str, Any]], None], summary: Any) -> None:
+    emit(
+        "summary",
+        {
+            "artifact_dir": summary.artifact_dir,
+            "stage_status": summary.stage_status,
+            "counts": summary.counts,
+            "source_counts": getattr(summary, "source_counts", {}),
+            "deployment": summary.deployment,
+            "run_status": getattr(summary, "run_status", "success"),
+            "error": getattr(summary, "error", ""),
+        },
+    )
+
+
+def _run_with_streams(
+    *,
+    output_format: str,
+    event_log_path: Path | None,
+    human_log_path: Path | None,
+    runner: Callable[[Callable[[str, dict[str, Any]], None]], Any],
+) -> int:
+    with open_event_streams(
+        output_format=output_format,
+        event_log_path=event_log_path,
+        human_log_path=human_log_path,
+    ) as emit:
+        try:
+            summary = runner(emit)
+            _emit_summary(emit, summary)
+            if getattr(summary, "run_status", "success") != "success":
+                emit("run_failed", {"error": getattr(summary, "error", "run failed")})
+                return 1
+            return 0
+        except Exception as exc:
+            emit("run_failed", {"error": f"{exc.__class__.__name__}: {exc}"})
+            return 1
+
+
 def run_pipeline(
     project_root: Path,
+    runtime_candidate: Path | None = None,
     *,
+    resume_from: Path | None = None,
     skip_deploy: bool = False,
     skip_verify: bool = False,
     output_format: str = "jsonl",
@@ -126,42 +177,56 @@ def run_pipeline(
     store = ProfileStore(resolve_profile_path(project_root))
     profile = store.load_or_create(project_root)
     controller = PipelineController()
-    with open_event_streams(
-        output_format=output_format,
-        event_log_path=event_log_path,
-        human_log_path=human_log_path,
-    ) as emit:
+
+    def runner(emit: Callable[[str, dict[str, Any]], None]) -> Any:
         def log(message: str) -> None:
             emit("log", {"message": message})
 
         def stage(stage_name: str, status: str) -> None:
             emit("stage", {"stage": stage_name, "status": status})
 
-        try:
-            summary = controller.run(
-                profile,
-                log_callback=log,
-                stage_callback=stage,
-                skip_deploy=skip_deploy,
-                skip_verify=skip_verify,
-                event_callback=emit,
-            )
-            emit(
-                "summary",
-                {
-                    "artifact_dir": summary.artifact_dir,
-                    "stage_status": summary.stage_status,
-                    "counts": summary.counts,
-                    "source_counts": summary.source_counts,
-                    "deployment": summary.deployment,
-                    "run_status": getattr(summary, "run_status", "success"),
-                    "error": getattr(summary, "error", ""),
-                },
-            )
-            return 0
-        except Exception as exc:
-            emit("run_failed", {"error": f"{exc.__class__.__name__}: {exc}"})
-            return 1
+        return controller.run(
+            profile,
+            log_callback=log,
+            stage_callback=stage,
+            resume_from=resume_from,
+            skip_deploy=skip_deploy,
+            skip_verify=skip_verify,
+            event_callback=emit,
+        )
+
+    _ = runtime_candidate
+    return _run_with_streams(
+        output_format=output_format,
+        event_log_path=event_log_path,
+        human_log_path=human_log_path,
+        runner=runner,
+    )
+
+
+def run_pipeline_resume_latest(
+    project_root: Path,
+    runtime_candidate: Path,
+    *,
+    skip_deploy: bool = False,
+    skip_verify: bool = False,
+    output_format: str = "jsonl",
+    event_log_path: Path | None = None,
+    human_log_path: Path | None = None,
+) -> int:
+    resume_db = find_resume_run_db(runtime_candidate)
+    if not resume_db:
+        raise RuntimeError("No incomplete run.db found to resume")
+    return run_pipeline(
+        project_root,
+        runtime_candidate,
+        resume_from=resume_db.parent,
+        skip_deploy=skip_deploy,
+        skip_verify=skip_verify,
+        output_format=output_format,
+        event_log_path=event_log_path,
+        human_log_path=human_log_path,
+    )
 
 
 def resume_speedtest(
@@ -177,44 +242,28 @@ def resume_speedtest(
         event_log_path=event_log_path,
         human_log_path=human_log_path,
     )
-    with open_event_streams(
-        output_format=output_format,
-        event_log_path=resolved_event_log,
-        human_log_path=resolved_human_log,
-    ) as emit:
+
+    def runner(emit: Callable[[str, dict[str, Any]], None]) -> Any:
         def log(message: str) -> None:
             emit("log", {"message": message})
 
         def stage(stage_name: str, status: str) -> None:
             emit("stage", {"stage": stage_name, "status": status})
 
-        try:
-            summary = resume_speedtest_session(
-                session_dir,
-                project_root=project_root,
-                log_callback=log,
-                stage_callback=stage,
-                event_callback=emit,
-            )
-            emit(
-                "summary",
-                {
-                    "artifact_dir": summary.artifact_dir,
-                    "stage_status": summary.stage_status,
-                    "counts": summary.counts,
-                    "source_counts": summary.source_counts,
-                    "deployment": summary.deployment,
-                    "run_status": getattr(summary, "run_status", "success"),
-                    "error": getattr(summary, "error", ""),
-                },
-            )
-            if getattr(summary, "run_status", "success") != "success":
-                emit("run_failed", {"error": getattr(summary, "error", "resume failed")})
-                return 1
-            return 0
-        except Exception as exc:
-            emit("run_failed", {"error": f"{exc.__class__.__name__}: {exc}"})
-            return 1
+        return resume_speedtest_session(
+            session_dir,
+            project_root=project_root,
+            log_callback=log,
+            stage_callback=stage,
+            event_callback=emit,
+        )
+
+    return _run_with_streams(
+        output_format=output_format,
+        event_log_path=resolved_event_log,
+        human_log_path=resolved_human_log,
+        runner=runner,
+    )
 
 
 def resume_pipeline(
@@ -230,44 +279,28 @@ def resume_pipeline(
         event_log_path=event_log_path,
         human_log_path=human_log_path,
     )
-    with open_event_streams(
-        output_format=output_format,
-        event_log_path=resolved_event_log,
-        human_log_path=resolved_human_log,
-    ) as emit:
+
+    def runner(emit: Callable[[str, dict[str, Any]], None]) -> Any:
         def log(message: str) -> None:
             emit("log", {"message": message})
 
         def stage(stage_name: str, status: str) -> None:
             emit("stage", {"stage": stage_name, "status": status})
 
-        try:
-            summary = continue_pipeline_session(
-                session_dir,
-                project_root=project_root,
-                log_callback=log,
-                stage_callback=stage,
-                event_callback=emit,
-            )
-            emit(
-                "summary",
-                {
-                    "artifact_dir": summary.artifact_dir,
-                    "stage_status": summary.stage_status,
-                    "counts": summary.counts,
-                    "source_counts": summary.source_counts,
-                    "deployment": summary.deployment,
-                    "run_status": getattr(summary, "run_status", "success"),
-                    "error": getattr(summary, "error", ""),
-                },
-            )
-            if getattr(summary, "run_status", "success") != "success":
-                emit("run_failed", {"error": getattr(summary, "error", "resume pipeline failed")})
-                return 1
-            return 0
-        except Exception as exc:
-            emit("run_failed", {"error": f"{exc.__class__.__name__}: {exc}"})
-            return 1
+        return continue_pipeline_session(
+            session_dir,
+            project_root=project_root,
+            log_callback=log,
+            stage_callback=stage,
+            event_callback=emit,
+        )
+
+    return _run_with_streams(
+        output_format=output_format,
+        event_log_path=resolved_event_log,
+        human_log_path=resolved_human_log,
+        runner=runner,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -282,6 +315,7 @@ def main(argv: list[str] | None = None) -> int:
 
     run_parser = subparsers.add_parser("run")
     run_parser.add_argument("--project-root", default="")
+    run_parser.add_argument("--resume-latest", action="store_true")
     run_parser.add_argument("--skip-deploy", action="store_true")
     run_parser.add_argument("--skip-verify", action="store_true")
     run_parser.add_argument("--output", choices=("jsonl", "human"), default="jsonl")
@@ -313,8 +347,19 @@ def main(argv: list[str] | None = None) -> int:
         print(save_profile_json(project_root, sys.stdin.read()))
         return 0
     if args.command == "run":
+        if args.resume_latest:
+            return run_pipeline_resume_latest(
+                project_root,
+                candidate,
+                skip_deploy=bool(args.skip_deploy),
+                skip_verify=bool(args.skip_verify),
+                output_format=str(args.output),
+                event_log_path=Path(args.event_log).resolve() if args.event_log else None,
+                human_log_path=Path(args.human_log).resolve() if args.human_log else None,
+            )
         return run_pipeline(
             project_root,
+            candidate,
             skip_deploy=bool(args.skip_deploy),
             skip_verify=bool(args.skip_verify),
             output_format=str(args.output),

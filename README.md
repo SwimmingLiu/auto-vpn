@@ -4,19 +4,24 @@
 
 ## Current Status
 
-截至 2026-04-21，当前主线已完成：
+截至 2026-04-25，当前主线已完成：
 
-- Electron 紧凑仪表盘首页
-  - 半屏优先布局
-  - 中英文切换
-  - 配置抽屉、阶段状态、日志摘要
+- Electron 六页桌面工作区
+  - 中文唯一界面
+  - 概览 / 运行 / 结果 / 订阅 / 日志 / 设置
+  - 设置抽屉、阶段状态、日志筛选、结果预览
 - Python 自动化后端
   - 节点抓取
   - vmess 去重
-  - Mihomo 连通性与全量下载测速
+  - Xray 连通性与多测速源平均下载测速
   - Gemini / ChatGPT / Claude 首页可用性全通过过滤
   - 国家识别、节点命名、模板渲染、JS 混淆
   - Cloudflare Pages 部署与最终校验
+- 运行时与恢复能力
+  - TOML 主配置
+  - SQLite checkpoint (`run.db`)
+  - 最近未完成运行恢复
+  - 监控脚本读取最新运行状态
 - macOS Electron 打包链路
   - 可生成 `.app`
   - 打包态与开发态共享同一份主配置文件
@@ -32,7 +37,7 @@
 
 - 本地桌面窗口
 - UI/UX 控制台
-- 紧凑仪表盘首页
+- 六页工作区
 - 配置编辑与保存
 - 实时日志与阶段状态
 - 通过 IPC 调用本地 Python backend
@@ -41,33 +46,39 @@
 
 - 抓取 5 个来源的节点
 - vmess 去重
-- Mihomo 代理连通性检测
-- 基于 GitHub Raw 测速文件的全量下载测速
+- Xray 代理连通性检测
+- 多测速网站平均下载测速
 - Gemini / ChatGPT / Claude 首页地区可用性验证
 - IP 国家识别与节点命名
 - `vmess_node.js` 回填
 - JavaScript obfuscation
 - Cloudflare Pages 部署与校验
+- SQLite checkpoint / resume
 
 ## Canonical Runtime Profile
 
-桌面端当前以这份文件作为**最高优先级主配置**：
+桌面端当前只使用这份文件作为**唯一运行时主配置**：
 
 - `/Users/swimmingliu/data/VPN/vpn-subscription-automation/state/profile.toml`
 
 说明：
 
-- Electron / backend 都通过 Python 配置层读写这份 TOML 文件
-- 当应用从 `.worktrees/` 或打包后的 `.app` 启动时，也会优先回退到这份主配置
+- 配置文件格式为 TOML，可直接手工编辑
+- Electron / backend 都通过 Python backend 读写这份 TOML
+- 当应用从 `.worktrees/` 启动时，配置仍锚定到主仓库 `state/profile.toml`
 - `state/` 目录属于**本地运行时配置**，当前被 `.gitignore` 忽略，不进入 git
+- 旧路径 `state/profiles/default.json` 已废弃，不再参与运行
 
-这意味着你现在手工更新的 5 个抓包源 URL / key，应当成为桌面端实际读取到的配置来源。
+你现在需要手工维护的配置，都应当写在这份 TOML 文件里。
+
+当前为了缩短真实抓取时长，默认 source 配置里的 `max_iterations` 已临时统一降到 `5000`。
 
 ## Repository Layout
 
 ```text
 src/vpn_automation/          Python backend
 electron/                    Electron main / preload / renderer
+templates/                   内置模板资源
 tests/                       Python tests
 docs/superpowers/specs/      设计文档
 docs/superpowers/plans/      实施计划
@@ -81,7 +92,7 @@ dist-electron/               Electron 打包产物（git ignore）
 
 - Python 3.12+
 - Node.js 24+
-- `mihomo` 已安装并在 `PATH`
+- `xray` 已安装并在 `PATH`
 - `/Users/swimmingliu/data/VPN/vpn-subscription-automation/.env` 中有：
 
 ```env
@@ -97,7 +108,7 @@ source .venv/bin/activate
 pip install -e .[dev]
 npm install
 npx playwright install chromium
-brew install mihomo
+brew install xray
 ```
 
 ## Run the Electron app in development
@@ -107,7 +118,7 @@ cd /Users/swimmingliu/data/VPN/vpn-subscription-automation
 npm run electron:dev
 ```
 
-默认跟随系统语言，也可以在右上角手动切换中文 / English。
+当前 Electron UI 为中文唯一界面，不再提供中英文切换。
 
 ## Run the backend pipeline manually
 
@@ -140,7 +151,7 @@ cd /Users/swimmingliu/data/VPN/vpn-subscription-automation
 ./scripts/run_backend_pipeline.sh --with-deploy --with-verify
 ```
 
-## Monitor a manual backend run
+## Monitor a backend run
 
 在另一个终端里运行：
 
@@ -149,7 +160,7 @@ cd /Users/swimmingliu/data/VPN/vpn-subscription-automation
 ./scripts/monitor_run.sh
 ```
 
-默认监控最近一次 session。只打印一次快照：
+只打印一次快照：
 
 ```bash
 cd /Users/swimmingliu/data/VPN/vpn-subscription-automation
@@ -160,9 +171,20 @@ cd /Users/swimmingliu/data/VPN/vpn-subscription-automation
 
 - 每个阶段当前状态
 - 每个抓取源的 `iter/max`、当前累计节点数、最近新增节点数
-- 请求成功/失败、解密成功/失败计数
-- speedtest / availability 进度摘要
-- 最近日志和卡住告警
+- speedtest / availability / final link 摘要
+- 最近 extract attempts
+- 卡住告警
+
+## Resume support
+
+主线当前支持：
+
+- 从最近未完成的 `run.db` 自动恢复
+- 从已有 artifact/session 继续执行 speedtest 或后续 pipeline
+
+相关运行时数据会落在：
+
+- `/Users/swimmingliu/data/VPN/vpn-subscription-automation/artifacts/<run>/run.db`
 
 ## Tests
 
@@ -170,7 +192,7 @@ cd /Users/swimmingliu/data/VPN/vpn-subscription-automation
 
 ```bash
 cd /Users/swimmingliu/data/VPN/vpn-subscription-automation
-python3.12 -m pytest tests -q
+./scripts/run_pytest.sh tests -v
 ```
 
 ### Electron / renderer
@@ -178,6 +200,13 @@ python3.12 -m pytest tests -q
 ```bash
 cd /Users/swimmingliu/data/VPN/vpn-subscription-automation
 npm run test:electron
+```
+
+### Full suite
+
+```bash
+cd /Users/swimmingliu/data/VPN/vpn-subscription-automation
+npm run test:all
 ```
 
 ## Package the Electron desktop app
@@ -194,7 +223,16 @@ npm run package:electron
 ## Notes
 
 - Electron app 优先通过项目 `.venv` 的 Python 调用后端；若不存在，则回退到 `python3.12`，最后回退到 `python3`
-- 当前打包产物默认与项目仓库放在一起使用，以复用 sibling 目录：
-  - `/Users/swimmingliu/data/VPN/vpn-catch-nodes`
-  - `/Users/swimmingliu/data/VPN/cloudflarevpn/edgetunnel`
+- pipeline 模板资源已内置在当前仓库：
+  - `/Users/swimmingliu/data/VPN/vpn-subscription-automation/templates/vmess_node.js`
+- packaged app 默认会从内置 seed profile 生成运行时配置：
+  - `electron/runtime/default-profile.toml`
+- 每次 pipeline 运行会在 artifact 目录下生成：
+  - `/Users/swimmingliu/data/VPN/vpn-subscription-automation/artifacts/<run>/run.db`
+- 可用以下脚本读取最新 SQLite checkpoint：
+  - `/Users/swimmingliu/data/VPN/vpn-subscription-automation/scripts/monitor_run.sh`
+- 当设置 `VPN_AUTOMATION_UPSTREAM_PROXY` 时，所有启用的 source 抓取请求都会统一走这个代理
+- 运行时不再依赖 sibling 目录：
+  - `vpn-catch-nodes`
+  - `cloudflarevpn/edgetunnel`
 - 如果后续要做完全独立分发，需要额外把 Python runtime、依赖和仓库资源一起封装

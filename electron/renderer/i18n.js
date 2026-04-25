@@ -86,11 +86,18 @@ const ZH_MESSAGES = {
     success: '成功',
     failed: '失败'
   },
+  emptyStates: {
+    noRunData: '暂无运行数据',
+    noArtifacts: '尚未生成订阅地址或产物文件',
+    noLogs: '尚未采集日志',
+    noSubscription: '尚未生成订阅地址'
+  },
   readyValue: '待运行',
   verifiedValue: '已验证',
   idleValue: '空闲',
   demoMode: '[演示] 当前以浏览器演示模式运行',
   profileSaved: '[界面] 配置已保存',
+  profileReset: '[界面] 已恢复到上次保存的配置',
   pipelineStarted: '[界面] 流水线已启动',
   pipelineStopping: '[界面] 已请求停止当前流水线',
   pipelineStopped: '[界面] 流水线已停止',
@@ -98,6 +105,12 @@ const ZH_MESSAGES = {
   pipelineFailed: '[界面] 流水线失败：{error}',
   stopUnavailable: '[界面] 当前没有可停止的运行任务',
   copiedMessage: '[界面] 已复制：{value}',
+  openedPathMessage: '[界面] 已打开目录：{value}',
+  exportedLogsMessage: '[界面] 日志已导出：{value}',
+  exportLogsButton: '导出日志',
+  openArtifactsButton: '打开输出目录',
+  openLogsButton: '查看日志页',
+  resetButton: '恢复到已保存配置',
   openFailed: '[界面] 打开失败：{error}'
 };
 

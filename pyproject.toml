@@ -10,6 +10,7 @@ dependencies = [
     "cryptography>=45.0.0",
     "python-dotenv>=1.0.1",
     "requests>=2.32.0",
+    "tomlkit>=0.13.2",
 ]
 
 [project.optional-dependencies]

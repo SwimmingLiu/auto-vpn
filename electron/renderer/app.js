@@ -60,11 +60,18 @@ const demoProfile = {
   paths: {
     project_root: '/Users/user/vpn-sub',
     artifacts_root: '/Users/user/vpn-sub/artifacts'
+  },
+  workspace: {
+    project_root: '/Users/user/vpn-sub',
+    artifacts_root: '/Users/user/vpn-sub/artifacts',
+    state_root: '/Users/user/vpn-sub/state',
+    profile_path: '/Users/user/vpn-sub/state/profile.toml'
   }
 };
 
 const state = {
   profile: null,
+  savedProfile: null,
   unsubscribe: null,
   stageStatus: {},
   counts: {},
@@ -106,6 +113,7 @@ async function bootstrap() {
   if (!window.vpnAutomation) {
     state.isDemo = true;
     state.profile = structuredClone(demoProfile);
+    state.savedProfile = structuredClone(demoProfile);
     touchUpdate();
     renderAll();
     appendLog(getMessages(state.language).demoMode);
@@ -113,7 +121,10 @@ async function bootstrap() {
   }
 
   state.isDemo = false;
-  state.profile = await window.vpnAutomation.loadProfile();
+  const loadedProfile = await window.vpnAutomation.loadProfile();
+  state.profile = loadedProfile;
+  state.savedProfile = structuredClone(loadedProfile);
+  touchUpdate();
   await refreshQrCode();
   renderAll();
   state.unsubscribe = window.vpnAutomation.onPipelineEvent(handlePipelineEvent);
@@ -469,17 +480,21 @@ async function openUrl(url) {
 }
 
 async function openArtifactDir() {
-  if (!state.artifactDir || !window.vpnAutomation?.openPath) {
+  const artifactDir = state.artifactDir || resolveProfilePaths().artifacts_root;
+  if (!artifactDir || !window.vpnAutomation?.openPath) {
     return;
   }
-  const result = await window.vpnAutomation.openPath(state.artifactDir);
+  const result = await window.vpnAutomation.openPath(artifactDir);
   if (!result?.ok) {
     appendLog(formatMessage(getMessages(state.language).openFailed, { error: result?.error ?? 'unknown' }));
+    return;
   }
+  appendLog(formatMessage(getMessages(state.language).openedPathMessage, { value: artifactDir }));
 }
 
 async function openCurrentLogFile() {
-  const logPath = state.artifactDir ? `${state.artifactDir}/human.log` : '';
+  const artifactDir = state.artifactDir || resolveProfilePaths().artifacts_root;
+  const logPath = artifactDir ? `${artifactDir}/human.log` : '';
   if (!logPath || !window.vpnAutomation?.openPath) {
     appendLog(formatMessage(getMessages(state.language).openFailed, { error: 'log_file_not_found' }));
     return;
@@ -488,7 +503,9 @@ async function openCurrentLogFile() {
   const result = await window.vpnAutomation.openPath(logPath);
   if (!result?.ok) {
     appendLog(formatMessage(getMessages(state.language).openFailed, { error: result?.error ?? 'unknown' }));
+    return;
   }
+  appendLog(formatMessage(getMessages(state.language).openedPathMessage, { value: logPath }));
 }
 
 async function refreshQrCode() {
@@ -547,6 +564,15 @@ function buildSettingsDraft(section) {
   return null;
 }
 
+function resolveProfilePaths(profile = state.profile) {
+  return {
+    project_root: profile?.paths?.project_root ?? profile?.workspace?.project_root ?? '',
+    artifacts_root: profile?.paths?.artifacts_root ?? profile?.workspace?.artifacts_root ?? '',
+    state_root: profile?.paths?.state_root ?? profile?.workspace?.state_root ?? '',
+    profile_path: profile?.paths?.profile_path ?? profile?.workspace?.profile_path ?? ''
+  };
+}
+
 function saveSettingsDrawer() {
   if (!state.settingsDrawer || !state.profile) {
     return;
@@ -574,11 +600,29 @@ async function saveProfile({ silent = false } = {}) {
   if (window.vpnAutomation) {
     await window.vpnAutomation.saveProfile(state.profile);
   }
+  state.savedProfile = structuredClone(state.profile);
   touchUpdate();
   renderAll();
   if (!silent) {
     appendLog(getMessages(state.language).profileSaved);
   }
+}
+
+async function exportLogs() {
+  if (!state.logEntries.length) {
+    return;
+  }
+
+  const payload = resolveVisibleLogEntries().map((entry) => entry.line).join('\n');
+  if (window.vpnAutomation?.exportLogs) {
+    const result = await window.vpnAutomation.exportLogs(payload);
+    if (result?.path) {
+      appendLog(formatMessage(getMessages(state.language).exportedLogsMessage, { value: result.path }));
+      return;
+    }
+  }
+
+  await copyText(payload);
 }
 
 async function runPipeline() {

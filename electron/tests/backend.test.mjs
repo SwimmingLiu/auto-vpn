@@ -6,7 +6,12 @@ import path from 'node:path';
 
 import { parseVmessLinkForPreview, previewArtifactDirectory } from '../lib/artifact-preview.js';
 import { buildBackendInvocation, parseBackendEventLine, resolveBackendPython } from '../lib/backend.js';
-import { findProjectRoot, resolveProjectRoot } from '../paths.js';
+import {
+  findProjectRoot,
+  resolveBundledProfilePath,
+  resolveProjectRoot,
+  resolveStateProfilePath
+} from '../paths.js';
 
 test('qrcode package is available for real subscription QR images', async () => {
   const QRCode = await import('qrcode');
@@ -50,6 +55,33 @@ test('findProjectRoot climbs out of packaged output to repo root', () => {
 
 test('resolveProjectRoot returns explicit root unchanged', () => {
   assert.equal(resolveProjectRoot('/repo'), '/repo');
+});
+
+test('resolveStateProfilePath prefers the repo-anchor state file for worktrees', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vpn-state-root-'));
+  const repoRoot = path.join(root, 'vpn-subscription-automation');
+  const worktreeRoot = path.join(repoRoot, '.worktrees', 'cleanup');
+  const anchorProfile = path.join(repoRoot, 'state', 'profile.toml');
+  const localProfile = path.join(worktreeRoot, 'state', 'profile.toml');
+
+  fs.mkdirSync(worktreeRoot, { recursive: true });
+  fs.mkdirSync(path.dirname(localProfile), { recursive: true });
+  fs.mkdirSync(path.dirname(anchorProfile), { recursive: true });
+  fs.writeFileSync(localProfile, '[sources]\n', 'utf-8');
+  fs.writeFileSync(anchorProfile, '[sources]\n', 'utf-8');
+
+  assert.equal(resolveStateProfilePath(worktreeRoot), anchorProfile);
+});
+
+test('resolveStateProfilePath switches to userData when packaged', () => {
+  assert.equal(
+    resolveStateProfilePath('/repo', { isPackaged: true, userDataPath: '/Users/demo/Library/Application Support/VPN' }),
+    '/Users/demo/Library/Application Support/VPN/state/profile.toml'
+  );
+});
+
+test('resolveBundledProfilePath points at the packaged runtime seed file', () => {
+  assert.equal(resolveBundledProfilePath('/repo'), '/repo/electron/runtime/bundled-profile.toml');
 });
 
 test('resolveBackendPython prefers a project virtualenv when present', () => {

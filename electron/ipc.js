@@ -7,8 +7,13 @@ import QRCode from 'qrcode';
 
 import { previewArtifactDirectory } from './lib/artifact-preview.js';
 import { buildBackendInvocation, parseBackendEventLine } from './lib/backend.js';
+import { resolveStateProfilePath } from './paths.js';
 
-export function registerIpcHandlers({ mainWindow, projectRoot }) {
+function profilePath(projectRoot, runtimeProfilePath) {
+  return runtimeProfilePath || resolveStateProfilePath(projectRoot);
+}
+
+export function registerIpcHandlers({ mainWindow, projectRoot, runtimeProfilePath = '', bundledProfilePath = '' }) {
   let activePipelineChild = null;
   let stopRequested = false;
   let stopTimer = null;
@@ -21,14 +26,40 @@ export function registerIpcHandlers({ mainWindow, projectRoot }) {
 
   ipcMain.handle('profile:load', async () => {
     const invocation = buildBackendInvocation(projectRoot, 'profile');
-    const output = await runCommand(invocation.commands, invocation.args, projectRoot);
+    const output = await runCommand(
+      invocation.commands,
+      invocation.args,
+      projectRoot,
+      runtimeProfilePath,
+      bundledProfilePath
+    );
     return JSON.parse(output.stdout);
   });
 
   ipcMain.handle('profile:save', async (_event, payload) => {
     const invocation = buildBackendInvocation(projectRoot, 'profile-save');
-    await runCommand(invocation.commands, invocation.args, projectRoot, JSON.stringify(payload));
+    await runCommand(
+      invocation.commands,
+      invocation.args,
+      projectRoot,
+      runtimeProfilePath,
+      bundledProfilePath,
+      JSON.stringify(payload)
+    );
     return { ok: true };
+  });
+
+  ipcMain.handle('shell:open-path', async (_event, targetPath) => {
+    return openPathWithShell(String(targetPath ?? '').trim(), { strictExists: false });
+  });
+
+  ipcMain.handle('logs:export', async (_event, content) => {
+    const baseProfilePath = profilePath(projectRoot, runtimeProfilePath);
+    const logsRoot = path.join(path.dirname(path.dirname(baseProfilePath)), 'logs');
+    fs.mkdirSync(logsRoot, { recursive: true });
+    const outputPath = path.join(logsRoot, `session-${Date.now()}.log`);
+    fs.writeFileSync(outputPath, String(content ?? ''), 'utf-8');
+    return { ok: true, path: outputPath };
   });
 
   ipcMain.handle('pipeline:run', async (_event, options = {}) => {
@@ -47,10 +78,7 @@ export function registerIpcHandlers({ mainWindow, projectRoot }) {
     }
     const child = spawn(command, runArgs, {
       cwd: projectRoot,
-      env: {
-        ...process.env,
-        PYTHONPATH: path.join(projectRoot, 'src')
-      },
+      env: buildBackendEnv(projectRoot, runtimeProfilePath, bundledProfilePath),
       detached: true,
       stdio: ['ignore', 'pipe', 'pipe']
     });
@@ -148,12 +176,7 @@ export function registerIpcHandlers({ mainWindow, projectRoot }) {
   });
 
   ipcMain.handle('external:open-path', async (_event, targetPath) => {
-    const resolved = path.resolve(String(targetPath ?? ''));
-    if (!fs.existsSync(resolved)) {
-      return { ok: false, error: 'path_not_found' };
-    }
-    const error = await shell.openPath(resolved);
-    return error ? { ok: false, error } : { ok: true };
+    return openPathWithShell(String(targetPath ?? ''), { strictExists: true });
   });
 
   ipcMain.handle('artifact:preview', async (_event, artifactDir) => {
@@ -171,15 +194,12 @@ export function registerIpcHandlers({ mainWindow, projectRoot }) {
   }));
 }
 
-function runCommand(commands, args, cwd, input = '') {
+function runCommand(commands, args, cwd, runtimeProfilePath = '', bundledProfilePath = '', input = '') {
   return new Promise((resolve, reject) => {
     const command = selectBackendCommand(commands);
     const child = spawn(command, args, {
       cwd,
-      env: {
-        ...process.env,
-        PYTHONPATH: path.join(cwd, 'src')
-      },
+      env: buildBackendEnv(cwd, runtimeProfilePath, bundledProfilePath),
       stdio: ['pipe', 'pipe', 'pipe']
     });
 
@@ -204,6 +224,30 @@ function runCommand(commands, args, cwd, input = '') {
       resolve({ stdout, stderr, code });
     });
   });
+}
+
+function buildBackendEnv(projectRoot, runtimeProfilePath = '', bundledProfilePath = '') {
+  return {
+    ...process.env,
+    PYTHONPATH: path.join(projectRoot, 'src'),
+    VPN_AUTOMATION_PROFILE_PATH: runtimeProfilePath,
+    VPN_AUTOMATION_BUNDLED_PROFILE_PATH: bundledProfilePath
+  };
+}
+
+async function openPathWithShell(targetPath, { strictExists = false } = {}) {
+  const normalized = String(targetPath ?? '').trim();
+  if (!normalized) {
+    return { ok: false, error: 'empty_path' };
+  }
+
+  const resolved = path.resolve(normalized);
+  if (strictExists && !fs.existsSync(resolved)) {
+    return { ok: false, error: 'path_not_found' };
+  }
+
+  const error = await shell.openPath(resolved);
+  return error ? { ok: false, error } : { ok: true, path: resolved };
 }
 
 function selectBackendCommand(commands) {

@@ -43,6 +43,7 @@ while true; do
   python3 - "$sessions_dir" "$artifacts_dir" "$stuck_seconds" "$session_ref" <<'PY'
 import json
 import re
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -83,18 +84,22 @@ def resolve_session_dir() -> Path | None:
             return named
         return None
 
-    candidates = [path for path in sessions_dir.iterdir() if path.is_dir() and path.name != "latest"] if sessions_dir.exists() else []
-    if not candidates:
-        latest = sessions_dir / "latest"
-        return latest.resolve() if latest.exists() else None
-    return sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True)[0]
+    if not sessions_dir.exists():
+        return None
+    candidates = [path for path in sessions_dir.iterdir() if path.is_dir() and path.name != "latest"]
+    if candidates:
+        return sorted(candidates, key=lambda path: path.stat().st_mtime, reverse=True)[0]
+    latest = sessions_dir / "latest"
+    return latest.resolve() if latest.exists() else None
 
 
-def latest_artifact_dir() -> Path | None:
-    candidates = [path for path in artifacts_dir.iterdir() if path.is_dir() and re.fullmatch(r"\d{8}-\d{6}", path.name)]
+def latest_artifact_dir(root: Path) -> Path | None:
+    if not root.exists():
+        return None
+    candidates = [path for path in root.iterdir() if path.is_dir() and re.fullmatch(r"\d{8}-\d{6}", path.name)]
     if not candidates:
         return None
-    return sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True)[0]
+    return sorted(candidates, key=lambda path: path.stat().st_mtime, reverse=True)[0]
 
 
 session_dir = resolve_session_dir()
@@ -106,22 +111,37 @@ if session_dir:
     session_json = session_dir / "session.json"
     if session_json.exists():
         session_payload = json.loads(session_json.read_text(encoding="utf-8"))
-    event_log_path = Path(session_payload.get("event_log", "")) if session_payload.get("event_log") else session_dir / "events.jsonl"
-    artifact_dir_value = session_payload.get("artifact_dir", "")
-    artifact_dir = Path(artifact_dir_value) if artifact_dir_value else None
+    event_log_path = Path(
+        str(session_payload.get("event_log", session_dir / "events.jsonl"))
+    ).resolve()
+    artifact_value = str(session_payload.get("artifact_dir", "")).strip()
+    if artifact_value:
+        artifact_dir = Path(artifact_value).resolve()
 
 if artifact_dir is None or not artifact_dir.exists():
-    artifact_dir = latest_artifact_dir()
+    artifact_dir = latest_artifact_dir(artifacts_dir)
 
+db_path = artifact_dir / "run.db" if artifact_dir else None
+db_exists = bool(db_path and db_path.exists())
+
+print(f"Latest db: {db_path if db_exists else 'N/A'}")
 print(f"Latest session: {session_dir if session_dir else 'N/A'}")
-print(f"Artifact dir: {artifact_dir if artifact_dir else 'N/A'}")
+print(f"Latest artifact dir: {artifact_dir if artifact_dir else 'N/A'}")
 
 stage_status = {name: "pending" for name in stage_order}
 source_progress: dict[str, dict[str, int]] = {}
 source_stats: dict[str, dict[str, int]] = {}
-counts: dict[str, int] = {}
+recent_attempts: list[dict[str, object]] = []
+counts = {
+    "raw_links": 0,
+    "deduped_links": 0,
+    "speedtest_links": 0,
+    "availability_links": 0,
+    "postprocess_links": 0,
+    "final_links": 0,
+}
 source_counts: dict[str, dict[str, int | str]] = {}
-latest_increase: dict[str, int] | None = None
+latest_increase: dict[str, int | str] | None = None
 warnings: list[str] = []
 recent_logs: list[str] = []
 speedtest = {"probe_completed": 0, "probe_total": 0, "full_completed": 0, "full_total": 0, "passed": 0}
@@ -136,34 +156,119 @@ if artifact_dir:
         run_status = str(report.get("run_status", run_status))
         run_error = str(report.get("error", run_error))
         stage_status.update(report.get("stage_status", {}))
-        counts.update({k: int(v) for k, v in report.get("counts", {}).items()})
-        source_counts = report.get("source_counts", {})
+        source_counts = dict(report.get("source_counts", {}))
+        for key, value in (report.get("counts") or {}).items():
+            counts[key] = int(value)
+
+if db_exists:
+    with sqlite3.connect(db_path) as connection:
+        for stage_name, status in connection.execute(
+            "SELECT stage_name, status FROM stage_events ORDER BY rowid ASC"
+        ):
+            stage_status[str(stage_name)] = str(status)
+
+        for row in connection.execute(
+            """
+            SELECT source_name, iteration, max_iterations, new_links, raw_links,
+                   successful_iterations, failed_iterations
+            FROM source_progress
+            ORDER BY source_name ASC
+            """
+        ):
+            source_name, iteration, max_iterations, new_links, raw_links, successful_iterations, failed_iterations = row
+            source_progress[str(source_name)] = {
+                "iter": int(iteration),
+                "max": int(max_iterations),
+                "new": int(new_links),
+                "raw": int(raw_links),
+            }
+            source_counts.setdefault(
+                str(source_name),
+                {
+                    "raw_links": int(raw_links),
+                    "successful_iterations": int(successful_iterations),
+                    "failed_iterations": int(failed_iterations),
+                    "requested_iterations": int(max_iterations),
+                },
+            )
+            if int(new_links) > 0:
+                latest_increase = {
+                    "source": str(source_name),
+                    "iter": int(iteration),
+                    "max": int(max_iterations),
+                    "new": int(new_links),
+                    "raw": int(raw_links),
+                }
+
+        counts["raw_links"] = int(connection.execute("SELECT COUNT(*) FROM raw_links").fetchone()[0])
+        counts["speedtest_links"] = int(connection.execute("SELECT COUNT(*) FROM speedtest_results").fetchone()[0])
+        counts["availability_links"] = int(connection.execute("SELECT COUNT(*) FROM availability_results").fetchone()[0])
+        counts["final_links"] = int(connection.execute("SELECT COUNT(*) FROM final_links").fetchone()[0])
+        counts["postprocess_links"] = counts["final_links"]
+
+        for source_name, success_count, fail_count in connection.execute(
+            """
+            SELECT source_name,
+                   SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) AS req_ok,
+                   SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) AS req_fail
+            FROM extract_attempts
+            GROUP BY source_name
+            """
+        ):
+            source_stats[str(source_name)] = {
+                "req_ok": int(success_count or 0),
+                "req_fail": int(fail_count or 0),
+                "dec_ok": 0,
+                "dec_fail": 0,
+            }
+
+        for row in connection.execute(
+            """
+            SELECT source_name, iteration, success, error_type, error_message,
+                   returned_links, new_links, total_links
+            FROM extract_attempts
+            ORDER BY rowid DESC
+            LIMIT 10
+            """
+        ):
+            source_name, iteration, success, error_type, error_message, returned_links, new_links, total_links = row
+            recent_attempts.append(
+                {
+                    "source_name": str(source_name),
+                    "iteration": int(iteration),
+                    "success": bool(success),
+                    "error_type": str(error_type),
+                    "error_message": str(error_message),
+                    "returned_links": int(returned_links),
+                    "new_links": int(new_links),
+                    "total_links": int(total_links),
+                }
+            )
 
 if event_log_path and event_log_path.exists():
     for line in event_log_path.read_text(encoding="utf-8", errors="ignore").splitlines():
         if not line.strip():
             continue
         payload = json.loads(line)
-        event_type = payload.get("type", "")
+        event_type = str(payload.get("type", ""))
 
-        if event_type == "run_started" and not artifact_dir:
-            value = str(payload.get("artifact_dir", "")).strip()
-            if value:
-                artifact_dir = Path(value)
-        elif event_type == "stage":
+        if event_type == "run_started" and (artifact_dir is None or not artifact_dir.exists()):
+            artifact_value = str(payload.get("artifact_dir", "")).strip()
+            if artifact_value:
+                artifact_dir = Path(artifact_value)
+        elif event_type == "stage" and not db_exists:
             stage_status[str(payload.get("stage", ""))] = str(payload.get("status", "pending"))
         elif event_type == "summary":
             run_status = str(payload.get("run_status", run_status))
             run_error = str(payload.get("error", run_error))
-            counts.update({k: int(v) for k, v in (payload.get("counts") or {}).items()})
-            source_counts = payload.get("source_counts", source_counts)
-            stage_status.update(payload.get("stage_status", {}))
-            artifact_value = str(payload.get("artifact_dir", "")).strip()
-            if artifact_value:
-                artifact_dir = Path(artifact_value)
+            if not db_exists:
+                stage_status.update(payload.get("stage_status", {}))
+            source_counts.update(payload.get("source_counts", {}))
+            for key, value in (payload.get("counts") or {}).items():
+                counts[key] = int(value)
         elif event_type == "run_failed":
             run_status = "failed"
-            run_error = str(payload.get("error", ""))
+            run_error = str(payload.get("error", run_error))
         elif event_type == "log":
             recent_logs.append(str(payload.get("message", "")))
             recent_logs = recent_logs[-6:]
@@ -181,7 +286,7 @@ if event_log_path and event_log_path.exists():
                 stats["dec_ok"] += 1
             else:
                 stats["dec_fail"] += 1
-        elif event_type == "extract_iteration":
+        elif event_type == "extract_iteration" and not db_exists:
             source = str(payload.get("source_name", "unknown"))
             item = {
                 "iter": int(payload.get("iteration", 0)),
@@ -208,10 +313,31 @@ if event_log_path and event_log_path.exists():
             if payload.get("all_passed"):
                 availability["passed"] += 1
 
+if artifact_dir:
+    counts["deduped_links"] = counts["deduped_links"] or count_non_empty(artifact_dir / "vpn_node_deduped.txt")
+    counts["raw_links"] = counts["raw_links"] or count_non_empty(artifact_dir / "vpn_node_raw.txt")
+    counts["speedtest_links"] = counts["speedtest_links"] or count_non_empty(artifact_dir / "vpn_node_speedtest.txt")
+    counts["availability_links"] = counts["availability_links"] or count_non_empty(artifact_dir / "vpn_node_availability.txt")
+    final_count = count_non_empty(artifact_dir / "vpn_node_emoji.txt")
+    counts["postprocess_links"] = counts["postprocess_links"] or final_count
+    counts["final_links"] = counts["final_links"] or final_count
+
+running_stages = [stage for stage, status in stage_status.items() if status == "running"]
+freshness_target = None
+if event_log_path and event_log_path.exists():
+    freshness_target = event_log_path
+elif db_exists:
+    freshness_target = db_path
+if freshness_target and running_stages:
+    age_seconds = max(0, int(time.time() - freshness_target.stat().st_mtime))
+    if age_seconds >= stuck_seconds:
+        warnings.append(f"stage {running_stages[-1]} looks stale ({age_seconds}s since latest update)")
+
 print()
 print(f"Run status: {run_status}")
 if run_error:
     print(f"Run error: {run_error}")
+
 print()
 print("Stage status:")
 for stage in stage_order:
@@ -223,19 +349,30 @@ for source in source_order:
     if source in source_progress:
         item = source_progress[source]
         stats = source_stats.setdefault(source, {"req_ok": 0, "req_fail": 0, "dec_ok": 0, "dec_fail": 0})
+        suffix = (
+            f" req_ok={stats['req_ok']} req_fail={stats['req_fail']}"
+            f" dec_ok={stats['dec_ok']} dec_fail={stats['dec_fail']}"
+        )
         print(
-            f"  {source}: iter {item['iter']}/{item['max']} raw={item['raw']} new={item['new']} "
-            f"req_ok={stats['req_ok']} req_fail={stats['req_fail']} "
-            f"dec_ok={stats['dec_ok']} dec_fail={stats['dec_fail']}"
+            f"  {source}: iter {item['iter']}/{item['max']} raw={item['raw']} new={item['new']}{suffix}"
         )
     elif source in source_counts:
         item = source_counts[source]
         stats = source_stats.setdefault(source, {"req_ok": 0, "req_fail": 0, "dec_ok": 0, "dec_fail": 0})
-        print(
-            f"  {source}: raw={item.get('raw_links', 0)} "
-            f"req_ok={stats['req_ok']} req_fail={stats['req_fail']} "
-            f"dec_ok={stats['dec_ok']} dec_fail={stats['dec_fail']}"
-        )
+        extras = ""
+        if any(stats.values()):
+            extras = (
+                f" req_ok={stats['req_ok']} req_fail={stats['req_fail']}"
+                f" dec_ok={stats['dec_ok']} dec_fail={stats['dec_fail']}"
+            )
+        requested_iterations = int(item.get("requested_iterations", 0) or 0)
+        if requested_iterations:
+            print(
+                f"  {source}: iter {int(item.get('successful_iterations', 0))}/{requested_iterations} "
+                f"raw={int(item.get('raw_links', 0))} new={int(item.get('new_links', 0) or 0)}{extras}"
+            )
+        else:
+            print(f"  {source}: raw={int(item.get('raw_links', 0))}{extras}")
     else:
         print(f"  {source}: no data")
 
@@ -247,31 +384,14 @@ if latest_increase:
         f"raw={latest_increase['raw']} (+{latest_increase['new']})"
     )
 
-if artifact_dir:
-    counts.setdefault("raw_links", count_non_empty(artifact_dir / "vpn_node_raw.txt"))
-    counts.setdefault("deduped_links", count_non_empty(artifact_dir / "vpn_node_deduped.txt"))
-    counts.setdefault("speedtest_links", count_non_empty(artifact_dir / "vpn_node_speedtest.txt"))
-    counts.setdefault("availability_links", count_non_empty(artifact_dir / "vpn_node_availability.txt"))
-    final_count = count_non_empty(artifact_dir / "vpn_node_emoji.txt")
-    counts.setdefault("postprocess_links", final_count)
-    counts.setdefault("final_links", final_count)
-
-running_stages = [stage for stage, status in stage_status.items() if status == "running"]
-if event_log_path and event_log_path.exists() and running_stages:
-    age_seconds = max(0, int(time.time() - event_log_path.stat().st_mtime))
-    if age_seconds >= stuck_seconds:
-        warnings.append(
-            f"stage {running_stages[-1]} looks stale ({age_seconds}s since latest log update)"
-        )
-
 print()
 print("Stage counts:")
-print(f"  raw={counts.get('raw_links', 0)}")
-print(f"  deduped={counts.get('deduped_links', 0)}")
-print(f"  speedtest={counts.get('speedtest_links', 0)}")
-print(f"  availability={counts.get('availability_links', 0)}")
-print(f"  postprocess={counts.get('postprocess_links', 0)}")
-print(f"  final={counts.get('final_links', 0)}")
+print(f"  raw={counts['raw_links']}")
+print(f"  deduped={counts['deduped_links']}")
+print(f"  speedtest={counts['speedtest_links']}")
+print(f"  availability={counts['availability_links']}")
+print(f"  postprocess={counts['postprocess_links']}")
+print(f"  final={counts['final_links']}")
 
 print()
 print("Speedtest progress:")
@@ -285,6 +405,23 @@ print("Availability progress:")
 print(
     f"  checked={availability['completed']}/{availability['total']} passed={availability['passed']}"
 )
+
+print()
+print("Recent extract attempts:")
+if recent_attempts:
+    for item in reversed(recent_attempts):
+        if item["success"]:
+            print(
+                f"  {item['source_name']} iter={item['iteration']} ok "
+                f"returned={item['returned_links']} new={item['new_links']} total={item['total_links']}"
+            )
+        else:
+            print(
+                f"  {item['source_name']} iter={item['iteration']} fail "
+                f"{item['error_type']}: {item['error_message']}"
+            )
+else:
+    print("  no data")
 
 if recent_logs:
     print()

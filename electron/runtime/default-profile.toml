@@ -1,0 +1,77 @@
+# Default packaged runtime profile
+
+[sources.leiting]
+url = ""
+key = ""
+enabled = true
+max_iterations = 5000
+min_iterations = 10000
+plateau_limit = 8
+use_random_area = true
+failure_limit = 3
+max_runtime_seconds = 0.0
+
+[sources.heidong]
+url = ""
+key = ""
+enabled = true
+max_iterations = 5000
+min_iterations = 15000
+plateau_limit = 8
+use_random_area = true
+failure_limit = 3
+max_runtime_seconds = 0.0
+
+[sources.mifeng]
+url = ""
+key = ""
+enabled = true
+max_iterations = 5000
+min_iterations = 20000
+plateau_limit = 8
+use_random_area = true
+failure_limit = 3
+max_runtime_seconds = 0.0
+
+[sources.xuanfeng1]
+url = ""
+key = ""
+enabled = true
+max_iterations = 5000
+min_iterations = 10000
+plateau_limit = 8
+use_random_area = false
+failure_limit = 3
+max_runtime_seconds = 0.0
+
+[sources.xuanfeng2]
+url = ""
+key = ""
+enabled = true
+max_iterations = 5000
+min_iterations = 25000
+plateau_limit = 8
+use_random_area = true
+failure_limit = 3
+max_runtime_seconds = 0.0
+
+[speed_test]
+min_download_mb_s = 0.5
+timeout_seconds = 20
+concurrency = 3
+urls = ["https://speed.cloudflare.com/__down?bytes=5000000", "https://proof.ovh.net/files/10Mb.dat", "https://cachefly.cachefly.net/10mb.test"]
+probe_url = "https://www.gstatic.com/generate_204"
+max_download_bytes = 5000000
+startup_wait_seconds = 1.0
+max_download_candidates = 50
+
+[deploy]
+project_name = "vmessnodes"
+subscription_url = "https://swimmingliu.xyz/179ba8dd-3854-4747-b853-fc1868ef3937"
+pages_project_url = "https://vmess2clash.pages.dev"
+secret_query = "serect_key=swimmingliu"
+account_id = "e743286b4304e96ee8795d62917052aa"
+use_wrangler = true
+
+[filters]
+excluded_country_codes = ["CN"]

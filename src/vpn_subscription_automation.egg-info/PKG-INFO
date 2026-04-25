@@ -5,5 +5,6 @@ Requires-Python: >=3.12
 Requires-Dist: cryptography>=45.0.0
 Requires-Dist: python-dotenv>=1.0.1
 Requires-Dist: requests>=2.32.0
+Requires-Dist: tomlkit>=0.13.2
 Provides-Extra: dev
 Requires-Dist: pytest>=8.0.0; extra == "dev"

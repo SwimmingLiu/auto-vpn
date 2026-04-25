@@ -11,19 +11,24 @@ Do not treat those reference directories as the active implementation target unl
 If a task changes files in this repository, including coding, refactoring, configuration updates, documentation edits, or packaging-related changes, follow this default workflow:
 
 1. Run unit tests, e2e tests, and pixel-level / visual regression tests.
+   - Before Electron-specific verification, first test the `electron/renderer` UI as a plain browser-based H5 front end in Codex/Playwright, then do one manual test round on that browser-rendered UI.
    - Any UI/UX change must be verified with Playwright or Computer Use before the task is considered done.
    - After every UI/UX edit, or after any task change that affects behavior, immediately rerun Playwright or Computer Use end-to-end verification plus a pixel-level / visual check before continuing.
    - Any completed task that changes behavior should include end-to-end verification plus a pixel-level / visual check, not only code-level tests.
 2. Open a GitHub PR.
-3. Use the repository's normal review flow, but do not automatically request `@Copilot` review.
+3. Request `@Copilot` review.
+   - When using GitHub CLI, request it with `gh pr edit <pr> --add-reviewer "@copilot"`.
+   - Do not use bare `copilot` as the reviewer login; GitHub CLI expects the literal `@copilot` token for Copilot review requests.
 4. Apply review feedback and update the code.
 5. If any file changes again after review, repeat the workflow:
+   - rerun the browser-based H5 front-end test round first
+   - rerun one manual browser test round
    - rerun unit tests
    - rerun e2e tests
    - rerun pixel-level / visual regression tests
    - re-run Playwright or Computer Use verification after each follow-up UI/UX change
    - do not stop after writing code; verification is required every time the UI/UX or task behavior changes
-   - update the PR and request another review pass when needed, but do not automatically request `@Copilot`
+   - update the PR and request another `@Copilot` review pass when needed
 6. Merge the PR only after the required tests pass and the review feedback is resolved.
 
 After the PR is merged, package the application into a runnable binary/app or installable package.

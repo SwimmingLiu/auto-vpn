@@ -1,5 +1,6 @@
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 
 
 DEFAULT_SOURCE_ORDER = [
@@ -10,17 +11,18 @@ DEFAULT_SOURCE_ORDER = [
     "xuanfeng-all-area",
 ]
 
+
 @dataclass
 class SourceConfig:
     url: str
     key: str
     enabled: bool = True
-    max_iterations: int = 40
+    max_iterations: int = 5_000
     min_iterations: int = 0
     plateau_limit: int = 8
     use_random_area: bool = True
     failure_limit: int = 3
-    max_runtime_seconds: float = 60.0
+    max_runtime_seconds: float = 0.0
 
 
 @dataclass
@@ -51,28 +53,20 @@ class FilterConfig:
     per_country_limit: dict[str, int] = field(default_factory=dict)
 
 
-@dataclass
-class WorkspaceConfig:
-    project_root: str
-    workspace_root: str
-    vpn_catch_nodes_root: str
-    edgetunnel_root: str
-    artifacts_root: str
-    state_root: str
-    env_file: str
-    build_root: str
-
-
-def _default_workspace() -> WorkspaceConfig:
-    return WorkspaceConfig(
-        project_root="",
-        workspace_root="",
-        vpn_catch_nodes_root="",
-        edgetunnel_root="",
-        artifacts_root="",
-        state_root="",
-        env_file="",
-        build_root="",
+def _default_workspace_compat(project_root: Path | None = None) -> SimpleNamespace:
+    if project_root is None:
+        project_root = resolve_repo_anchor(Path(__file__))
+    project_root = project_root.resolve()
+    workspace_root = project_root.parent
+    return SimpleNamespace(
+        project_root=str(project_root),
+        workspace_root=str(workspace_root),
+        vpn_catch_nodes_root=str(workspace_root / "vpn-catch-nodes"),
+        edgetunnel_root=str(workspace_root / "cloudflarevpn" / "edgetunnel"),
+        artifacts_root=str(project_root / "artifacts"),
+        state_root=str(project_root / "state"),
+        env_file=str(project_root / ".env"),
+        build_root=str(project_root / "build"),
     )
 
 
@@ -81,21 +75,33 @@ class AppProfile:
     sources: dict[str, SourceConfig]
     speed_test: SpeedTestConfig
     deploy: DeployConfig
-    workspace: WorkspaceConfig = field(default_factory=_default_workspace)
     filters: FilterConfig = field(default_factory=FilterConfig)
+
+    def __post_init__(self) -> None:
+        self._workspace_compat = _default_workspace_compat()
+
+    @property
+    def workspace(self) -> SimpleNamespace:
+        return self._workspace_compat
+
+    def set_workspace_compat(self, project_root: Path) -> None:
+        self._workspace_compat = _default_workspace_compat(project_root)
 
     def to_dict(self) -> dict:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: dict) -> "AppProfile":
-        return cls(
-            sources={name: _normalize_source_config(name, value) for name, value in data.get("sources", {}).items()},
+        sources = default_sources()
+        for name, value in data.get("sources", {}).items():
+            sources[name] = _normalize_source_config(name, value)
+        profile = cls(
+            sources=sources,
             speed_test=SpeedTestConfig(**data["speed_test"]),
             deploy=DeployConfig(**data["deploy"]),
-            workspace=WorkspaceConfig(**data["workspace"]) if data.get("workspace") else _default_workspace(),
             filters=FilterConfig(**data.get("filters", {})),
         )
+        return profile
 
 
 def resolve_repo_anchor(candidate: Path) -> Path:
@@ -118,22 +124,53 @@ def _default_use_random_area(source_name: str) -> bool:
     return source_name == "xuanfeng-all-area"
 
 
+def _default_source_config(source_name: str) -> SourceConfig:
+    source_defaults = {
+        "leiting": SourceConfig(url="", key="", enabled=True, max_iterations=5_000, min_iterations=10_000),
+        "heidong": SourceConfig(url="", key="", enabled=True, max_iterations=5_000, min_iterations=15_000),
+        "mifeng": SourceConfig(url="", key="", enabled=True, max_iterations=5_000, min_iterations=20_000),
+        "xuanfeng-area": SourceConfig(
+            url="",
+            key="",
+            enabled=True,
+            max_iterations=5_000,
+            min_iterations=10_000,
+            use_random_area=False,
+        ),
+        "xuanfeng-all-area": SourceConfig(
+            url="",
+            key="",
+            enabled=True,
+            max_iterations=5_000,
+            min_iterations=25_000,
+            use_random_area=True,
+        ),
+    }
+    return source_defaults[source_name]
+
+
+def default_sources() -> dict[str, SourceConfig]:
+    return {
+        name: _default_source_config(name)
+        for name in DEFAULT_SOURCE_ORDER
+    }
+
+
 def _normalize_source_config(source_name: str, payload: dict) -> SourceConfig:
     normalized = dict(payload)
+    defaults = _default_source_config(source_name) if source_name in DEFAULT_SOURCE_ORDER else SourceConfig(url="", key="")
+    normalized.setdefault("enabled", defaults.enabled)
+    normalized.setdefault("max_iterations", defaults.max_iterations)
+    normalized.setdefault("min_iterations", defaults.min_iterations)
+    normalized.setdefault("plateau_limit", defaults.plateau_limit)
     normalized.setdefault("use_random_area", _default_use_random_area(source_name))
+    normalized.setdefault("failure_limit", defaults.failure_limit)
+    normalized.setdefault("max_runtime_seconds", defaults.max_runtime_seconds)
     return SourceConfig(**normalized)
 
 
 def _load_existing_sources(config_path: Path) -> dict[str, SourceConfig]:
-    source_map = {
-        name: SourceConfig(
-            url="",
-            key="",
-            enabled=True,
-            use_random_area=_default_use_random_area(name),
-        )
-        for name in DEFAULT_SOURCE_ORDER
-    }
+    source_map = default_sources()
     if not config_path.exists():
         return source_map
 
@@ -143,11 +180,13 @@ def _load_existing_sources(config_path: Path) -> dict[str, SourceConfig]:
     for name in DEFAULT_SOURCE_ORDER:
         if name not in payload:
             continue
-        source_map[name] = SourceConfig(
-            url=str(payload[name].get("url", "")),
-            key=str(payload[name].get("key", "")),
-            enabled=True,
-            use_random_area=_default_use_random_area(name),
+        source_map[name] = _normalize_source_config(
+            name,
+            {
+                "url": str(payload[name].get("url", "")),
+                "key": str(payload[name].get("key", "")),
+                "enabled": True,
+            },
         )
     return source_map
 
@@ -156,35 +195,26 @@ def create_default_profile(project_root: Path) -> AppProfile:
     project_root = resolve_repo_anchor(project_root)
     workspace_root = project_root.parent
     vpn_catch_nodes_root = workspace_root / "vpn-catch-nodes"
-    edgetunnel_root = workspace_root / "cloudflarevpn" / "edgetunnel"
 
-    sources = _load_existing_sources(vpn_catch_nodes_root / "config" / "vpn_api.json")
-
-    return AppProfile(
-        sources=sources,
+    profile = AppProfile(
+        sources=_load_existing_sources(vpn_catch_nodes_root / "config" / "vpn_api.json"),
         speed_test=SpeedTestConfig(
             min_download_mb_s=0.5,
             timeout_seconds=20,
-            concurrency=20,
+            concurrency=3,
             urls=[
-                "https://raw.githubusercontent.com/bulianglin/demo/main/10MB.bin",
+                "https://speed.cloudflare.com/__down?bytes=5000000",
+                "https://proof.ovh.net/files/10Mb.dat",
+                "https://cachefly.cachefly.net/10mb.test",
             ],
-            probe_url="http://www.gstatic.com/generate_204",
-            max_download_bytes=10_000_000,
-            max_download_candidates=0,
+            max_download_bytes=5_000_000,
+            startup_wait_seconds=1.0,
+            max_download_candidates=50,
         ),
         deploy=DeployConfig(
             project_name="vmessnodes",
             subscription_url="https://swimmingliu.xyz/179ba8dd-3854-4747-b853-fc1868ef3937",
         ),
-        workspace=WorkspaceConfig(
-            project_root=str(project_root),
-            workspace_root=str(workspace_root),
-            vpn_catch_nodes_root=str(vpn_catch_nodes_root),
-            edgetunnel_root=str(edgetunnel_root),
-            artifacts_root=str(project_root / "artifacts"),
-            state_root=str(project_root / "state"),
-            env_file=str(project_root / ".env"),
-            build_root=str(project_root / "build"),
-        ),
     )
+    profile.set_workspace_compat(project_root)
+    return profile

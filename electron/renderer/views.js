@@ -188,7 +188,7 @@ export function buildPageMarkup(activePage, viewModel, messages, language, subta
 }
 
 export function escapeHtml(value) {
-  return String(value)
+  return String(value ?? '')
     .replaceAll('&', '&amp;')
     .replaceAll('<', '&lt;')
     .replaceAll('>', '&gt;')
@@ -785,13 +785,22 @@ function inferLogStage(line) {
 }
 
 function mergeProfile(profile) {
+  const workspace = profile?.workspace ?? {};
+  const paths = profile?.paths ?? {};
+  const mergedPaths = {
+    ...FALLBACK_PROFILE.paths,
+    ...workspace,
+    ...paths
+  };
+
   return {
     ...FALLBACK_PROFILE,
     ...profile,
     sources: profile?.sources ?? FALLBACK_PROFILE.sources,
     speed_test: { ...FALLBACK_PROFILE.speed_test, ...(profile?.speed_test ?? {}) },
     deploy: { ...FALLBACK_PROFILE.deploy, ...(profile?.deploy ?? {}) },
-    paths: { ...FALLBACK_PROFILE.paths, ...(profile?.paths ?? {}) }
+    paths: mergedPaths,
+    workspace: mergedPaths
   };
 }
 
@@ -840,8 +849,23 @@ function formatElapsed(startedAt) {
 }
 
 function resolveCurrentTaskLabel(state, messages) {
-  if (state.runState === 'running') return '正在运行';
+  const stageRows = normalizeStageRows(state.stageStatus, state.runState);
+  const running = stageRows.find((row) => row.status === 'running');
+  if (running) return messages.stageLabels[running.name] ?? running.name;
+
+  const failed = stageRows.find((row) => row.status === 'failed');
+  if (failed) {
+    return `${messages.stageLabels[failed.name] ?? failed.name} / ${messages.statusLabels.failed}`;
+  }
+
   if (state.runState === 'stopping') return '停止中';
+
+  const completed = stageRows.filter((row) => row.status === 'success');
+  if (completed.length) {
+    const lastStage = completed.at(-1);
+    return messages.stageLabels[lastStage.name] ?? lastStage.name;
+  }
+
   return messages.taskWaiting;
 }
 

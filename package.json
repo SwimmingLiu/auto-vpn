@@ -9,7 +9,7 @@
     "electron:dev": "electron .",
     "test:electron": "node --test electron/tests/*.test.mjs",
     "test:all": "./scripts/run_pytest.sh tests -v && node --test electron/tests/*.test.mjs",
-    "package:electron": "electron-builder --mac dir"
+    "package:electron": "node electron/build/package.mjs"
   },
   "devDependencies": {
     "electron": "^37.2.0",
@@ -20,12 +20,14 @@
     "appId": "com.swimmingliu.vpnautomation",
     "productName": "VPN Subscription Automation",
     "files": [
-      "electron/**/*"
+      "electron/**/*",
+      "src/**/*",
+      "pyproject.toml"
     ],
     "directories": {
       "output": "dist-electron"
     },
-    "asar": true,
+    "asar": false,
     "mac": {
       "target": [
         "dir"

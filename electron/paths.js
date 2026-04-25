@@ -45,3 +45,28 @@ export function resolveProjectRoot(explicitRoot = '') {
   }
   return findProjectRoot(currentDir);
 }
+
+export function resolveStateProfilePath(projectRoot, options = {}) {
+  const { isPackaged = false, userDataPath = '' } = options;
+  if (isPackaged && userDataPath) {
+    return path.join(userDataPath, 'state', 'profile.toml');
+  }
+
+  const localRoot = path.resolve(projectRoot);
+  const localPath = path.join(localRoot, 'state', 'profile.toml');
+  const parts = localRoot.split(path.sep);
+  const worktreeIndex = parts.indexOf('.worktrees');
+
+  if (worktreeIndex === -1) {
+    return localPath;
+  }
+
+  const repoRoot = parts.slice(0, worktreeIndex).join(path.sep) || path.sep;
+  const anchorPath = path.join(repoRoot, 'state', 'profile.toml');
+  return anchorPath;
+}
+
+export function resolveBundledProfilePath(projectRoot) {
+  const localRoot = path.resolve(projectRoot);
+  return path.join(localRoot, 'electron', 'runtime', 'bundled-profile.toml');
+}

@@ -9,9 +9,10 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 import requests
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from requests import RequestException
 
-from vpn_automation.config.runtime import resolve_upstream_proxy_url
 from vpn_automation.config.models import SourceConfig
+from vpn_automation.config.runtime import resolve_upstream_proxy_url
 from vpn_automation.pipeline.vmess import generate_vmess_link, transform_node_id
 
 
@@ -107,6 +108,9 @@ def fetch_source_links(
     source: SourceConfig,
     *,
     progress_callback: Callable[[str], None] | None = None,
+    progress_state_callback: Callable[..., None] | None = None,
+    raw_link_callback: Callable[[str, str], None] | None = None,
+    attempt_callback: Callable[..., None] | None = None,
     event_callback: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> ExtractedSourceResult:
     session = requests.Session()
@@ -118,23 +122,25 @@ def fetch_source_links(
     failures = 0
     seen = set()
     started_at = time.monotonic()
+    start_iteration = max(1, int(getattr(source, "resume_from_iteration", 1)))
     upstream_proxy = resolve_upstream_proxy_url()
     upstream_proxies = (
         {"http": upstream_proxy, "https": upstream_proxy}
         if upstream_proxy
         else None
     )
+
     _emit_event(
         event_callback,
         "extract_source_started",
         source_name=source_name,
         requested_iterations=source.max_iterations,
         min_iterations=source.min_iterations,
+        resume_from_iteration=start_iteration,
     )
 
-    for iteration in range(source.max_iterations):
+    for iteration in range(start_iteration - 1, source.max_iterations):
         attempt = iteration + 1
-
         if (
             source.max_runtime_seconds > 0
             and attempt > source.min_iterations
@@ -147,6 +153,8 @@ def fetch_source_links(
             break
 
         url = build_runtime_source_url(source, iteration=iteration)
+        response = None
+        used_proxy = False
         try:
             try:
                 response = session.get(url, timeout=20, verify=False, proxies=None)
@@ -159,7 +167,7 @@ def fetch_source_links(
                     via="direct",
                     url=url,
                 )
-            except requests.RequestException:
+            except RequestException as direct_exc:
                 _emit_event(
                     event_callback,
                     "extract_request_result",
@@ -168,11 +176,12 @@ def fetch_source_links(
                     success=False,
                     via="direct",
                     url=url,
-                    error="direct_request_failed",
+                    error=f"{direct_exc.__class__.__name__}: {direct_exc}",
                     will_retry=bool(upstream_proxies),
                 )
                 if not upstream_proxies:
                     raise
+                used_proxy = True
                 if progress_callback:
                     progress_callback(
                         f"[extract] {source_name} iter={attempt}/{source.max_iterations} retry=upstream_proxy"
@@ -211,6 +220,30 @@ def fetch_source_links(
             extracted = extract_links_from_plaintext(source_name, plaintext)
         except Exception as exc:
             failures += 1
+            if attempt_callback:
+                attempt_callback(
+                    source_name=source_name,
+                    iteration=attempt,
+                    url=url,
+                    used_proxy=used_proxy,
+                    success=False,
+                    http_status=int(getattr(response, "status_code", 0) or 0),
+                    error_type=exc.__class__.__name__,
+                    error_message=str(exc),
+                    returned_links=0,
+                    new_links=0,
+                    total_links=len(links),
+                )
+            if progress_state_callback:
+                progress_state_callback(
+                    source_name=source_name,
+                    iteration=attempt,
+                    max_iterations=source.max_iterations,
+                    new_links=0,
+                    raw_links=len(links),
+                    successful_iterations=successes,
+                    failed_iterations=failures,
+                )
             if progress_callback:
                 progress_callback(
                     f"[extract] {source_name} iter={attempt}/{source.max_iterations} "
@@ -233,7 +266,34 @@ def fetch_source_links(
             seen.add(link)
             links.append(link)
             new_items += 1
+            if raw_link_callback:
+                raw_link_callback(source_name, link)
+
         plateau = plateau + 1 if new_items == 0 else 0
+        if progress_state_callback:
+            progress_state_callback(
+                source_name=source_name,
+                iteration=attempt,
+                max_iterations=source.max_iterations,
+                new_links=new_items,
+                raw_links=len(links),
+                successful_iterations=successes,
+                failed_iterations=failures,
+            )
+        if attempt_callback:
+            attempt_callback(
+                source_name=source_name,
+                iteration=attempt,
+                url=url,
+                used_proxy=used_proxy,
+                success=True,
+                http_status=int(getattr(response, "status_code", 200)),
+                error_type="",
+                error_message="",
+                returned_links=len(extracted),
+                new_links=new_items,
+                total_links=len(links),
+            )
         if progress_callback:
             progress_callback(
                 f"[extract] {source_name} iter={attempt}/{source.max_iterations} new={new_items} total={len(links)}"

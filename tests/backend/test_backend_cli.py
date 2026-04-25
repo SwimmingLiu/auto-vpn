@@ -2,8 +2,17 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-from vpn_automation.config.models import WorkspaceConfig
-from vpn_automation.backend import build_event, ensure_profile_json, resume_pipeline, run_pipeline, save_profile_json
+from vpn_automation.backend import (
+    build_event,
+    ensure_profile_json,
+    resume_pipeline,
+    run_pipeline,
+    run_pipeline_resume_latest,
+    save_profile_json,
+)
+from vpn_automation.config.models import AppProfile, DeployConfig, SourceConfig, SpeedTestConfig
+from vpn_automation.config.store import ProfileStore
+from vpn_automation.pipeline.run_store import RunStore
 
 
 def test_build_event_emits_json_line() -> None:
@@ -18,64 +27,71 @@ def test_ensure_profile_json_bootstraps_missing_profile(tmp_path: Path) -> None:
     profile_json = ensure_profile_json(project_root)
     payload = json.loads(profile_json)
     assert payload["deploy"]["project_name"] == "vmessnodes"
-    assert payload["workspace"]["project_root"] == str(project_root)
+    assert "workspace" not in payload
 
 
-def test_save_profile_json_persists_profile_via_store(tmp_path: Path, monkeypatch) -> None:
+def test_save_profile_json_persists_toml_backed_changes(tmp_path: Path) -> None:
     project_root = tmp_path / "vpn-subscription-automation"
-    captured: dict[str, object] = {}
+    payload = json.loads(ensure_profile_json(project_root))
+    payload["sources"]["leiting"]["url"] = "https://example.com/api"
+    payload["sources"]["leiting"]["key"] = "abcdabcdabcdabcd"
 
-    class FakeStore:
-        def __init__(self, path: Path) -> None:
-            self.path = path
+    saved_json = save_profile_json(project_root, json.dumps(payload, ensure_ascii=False))
 
-        def load_or_create(self, project_root: Path):
-            return SimpleNamespace(
-                workspace=WorkspaceConfig(
-                    project_root=str(project_root),
-                    workspace_root="",
-                    vpn_catch_nodes_root="",
-                    edgetunnel_root="",
-                    artifacts_root="",
-                    state_root="",
-                    env_file="",
-                    build_root="",
-                )
-            )
+    stored = (project_root / "state" / "profile.toml").read_text(encoding="utf-8")
+    assert 'url = "https://example.com/api"' in stored
+    assert 'key = "abcdabcdabcdabcd"' in stored
+    assert json.loads(saved_json)["sources"]["leiting"]["url"] == "https://example.com/api"
 
-        def save(self, profile) -> None:
-            captured["profile"] = profile
 
-    monkeypatch.setattr("vpn_automation.backend.ProfileStore", FakeStore)
-
-    payload = save_profile_json(
-        project_root,
-        json.dumps(
-            {
-                "sources": {"leiting": {"url": "https://a.example", "key": "k1", "enabled": True}},
-                "speed_test": {
-                    "min_download_mb_s": 1.0,
-                    "timeout_seconds": 20,
-                    "concurrency": 2,
-                    "urls": ["https://example.com/file"],
-                    "probe_url": "http://www.gstatic.com/generate_204",
-                    "max_download_bytes": 1000,
-                    "startup_wait_seconds": 1.0,
-                    "max_download_candidates": 0,
-                },
-                "deploy": {
-                    "project_name": "vmessnodes",
-                    "subscription_url": "https://example.com/sub",
-                },
-                "filters": {"excluded_country_codes": ["CN"], "per_country_limit": {}},
-            },
-            ensure_ascii=False,
+def test_ensure_profile_json_prefers_env_profile_path(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    profile_path = tmp_path / "runtime" / "profile.toml"
+    profile_path.parent.mkdir(parents=True, exist_ok=True)
+    profile = AppProfile(
+        sources={"leiting": SourceConfig(url="https://env.example", key="env-key", enabled=True)},
+        speed_test=SpeedTestConfig(
+            min_download_mb_s=1.0,
+            timeout_seconds=20,
+            concurrency=3,
+            urls=[],
+        ),
+        deploy=DeployConfig(
+            project_name="env-profile",
+            subscription_url="https://env.example/sub",
         ),
     )
+    ProfileStore(profile_path).save(profile)
+    monkeypatch.setenv("VPN_AUTOMATION_PROFILE_PATH", str(profile_path))
 
-    saved = captured["profile"]
-    assert saved.workspace.project_root == str(project_root)
-    assert json.loads(payload)["sources"]["leiting"]["url"] == "https://a.example"
+    profile_json = ensure_profile_json(project_root)
+    payload = json.loads(profile_json)
+
+    assert payload["deploy"]["project_name"] == "env-profile"
+    assert payload["sources"]["leiting"]["url"] == "https://env.example"
+
+
+def test_find_resume_run_db_prefers_latest_incomplete_artifact(tmp_path: Path) -> None:
+    from vpn_automation.backend import find_resume_run_db
+
+    project_root = tmp_path / "vpn-subscription-automation"
+    artifacts_root = project_root / "artifacts"
+    first_dir = artifacts_root / "20260423-010101"
+    second_dir = artifacts_root / "20260423-020202"
+    first_dir.mkdir(parents=True)
+    second_dir.mkdir(parents=True)
+
+    first = RunStore(first_dir / "run.db")
+    first.initialize(artifact_dir=str(first_dir))
+    first.record_stage_event("verify", "success")
+
+    second = RunStore(second_dir / "run.db")
+    second.initialize(artifact_dir=str(second_dir))
+    second.record_stage_event("extract", "running")
+
+    resolved = find_resume_run_db(project_root)
+
+    assert resolved == second_dir / "run.db"
 
 
 def test_run_pipeline_can_write_event_log_and_human_output(
@@ -124,10 +140,8 @@ def test_run_pipeline_can_write_event_log_and_human_output(
     assert code == 0
     assert "[extract] request ok" in captured.out
     assert "extract=success" in captured.out
-    assert event_log.exists()
     payloads = [json.loads(line) for line in event_log.read_text(encoding="utf-8").splitlines()]
     assert [payload["type"] for payload in payloads] == ["log", "stage", "summary"]
-    assert human_log.exists()
     assert "raw_links=1" in human_log.read_text(encoding="utf-8")
 
 
@@ -147,7 +161,10 @@ def test_run_pipeline_persists_structured_stage_events(
 
     class FakeController:
         def run(self, profile, **kwargs):
-            kwargs["event_callback"]("extract_request_result", {"source_name": "leiting", "success": True, "iteration": 1})
+            kwargs["event_callback"](
+                "extract_request_result",
+                {"source_name": "leiting", "success": True, "iteration": 1},
+            )
             return SimpleNamespace(
                 artifact_dir=str(project_root / "artifacts" / "20260423-010101"),
                 stage_status={"extract": "success"},
@@ -225,3 +242,48 @@ def test_resume_pipeline_appends_summary_for_continued_stages(
     assert "[availability] kept 2 links" in captured.out
     payloads = [json.loads(line) for line in event_log.read_text(encoding="utf-8").splitlines()]
     assert [payload["type"] for payload in payloads] == ["log", "stage", "summary"]
+
+
+def test_run_pipeline_resume_latest_uses_latest_run_db(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    artifacts_root = project_root / "artifacts"
+    artifact_dir = artifacts_root / "20260423-020202"
+    artifact_dir.mkdir(parents=True)
+    store = RunStore(artifact_dir / "run.db")
+    store.initialize(artifact_dir=str(artifact_dir))
+    store.record_stage_event("extract", "running")
+
+    class FakeStore:
+        def __init__(self, path: Path) -> None:
+            self.path = path
+
+        def load_or_create(self, project_root: Path):
+            return SimpleNamespace()
+
+    class FakeController:
+        def run(self, profile, **kwargs):
+            assert kwargs["resume_from"] == artifact_dir
+            return SimpleNamespace(
+                artifact_dir=str(artifact_dir),
+                stage_status={"extract": "success"},
+                counts={"raw_links": 1},
+                source_counts={},
+                deployment={},
+                run_status="success",
+                error="",
+            )
+
+    monkeypatch.setattr("vpn_automation.backend.ProfileStore", FakeStore)
+    monkeypatch.setattr("vpn_automation.backend.PipelineController", FakeController)
+
+    code = run_pipeline_resume_latest(
+        project_root,
+        project_root,
+        skip_deploy=True,
+        skip_verify=True,
+    )
+
+    assert code == 0

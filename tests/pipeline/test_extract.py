@@ -1,7 +1,7 @@
+from pathlib import Path
+
 import pytest
 from requests.exceptions import SSLError
-
-from pathlib import Path
 
 from vpn_automation.config.models import SourceConfig
 from vpn_automation.pipeline.extract import (
@@ -246,6 +246,177 @@ def test_fetch_source_links_retries_with_upstream_proxy_after_direct_failure(
     }
 
 
+def test_fetch_source_links_emits_checkpoint_callbacks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = SourceConfig(
+        url="https://example.com/api?t=123",
+        key="abcdabcdabcdabcd",
+        max_iterations=2,
+        min_iterations=0,
+        plateau_limit=99,
+    )
+    progress_events: list[dict] = []
+    raw_links: list[tuple[str, str]] = []
+
+    class FakeResponse:
+        text = "cipher"
+
+        def raise_for_status(self) -> None:
+            return None
+
+    def fake_get(self, url: str, timeout: int, verify: bool, proxies=None):
+        return FakeResponse()
+
+    extracted = iter([["vmess://first"], ["vmess://second"]])
+
+    monkeypatch.setattr("vpn_automation.pipeline.extract.requests.Session.get", fake_get)
+    monkeypatch.setattr("vpn_automation.pipeline.extract.decrypt_payload", lambda text, key: "plaintext")
+    monkeypatch.setattr(
+        "vpn_automation.pipeline.extract.extract_links_from_plaintext",
+        lambda source_name, plaintext: next(extracted),
+    )
+    monkeypatch.setattr("vpn_automation.pipeline.extract.resolve_upstream_proxy_url", lambda: "")
+
+    result = fetch_source_links(
+        "leiting",
+        source,
+        progress_state_callback=lambda **payload: progress_events.append(payload),
+        raw_link_callback=lambda source_name, link: raw_links.append((source_name, link)),
+    )
+
+    assert result.links == ["vmess://first", "vmess://second"]
+    assert progress_events == [
+        {
+            "source_name": "leiting",
+            "iteration": 1,
+            "max_iterations": 2,
+            "new_links": 1,
+            "raw_links": 1,
+            "successful_iterations": 1,
+            "failed_iterations": 0,
+        },
+        {
+            "source_name": "leiting",
+            "iteration": 2,
+            "max_iterations": 2,
+            "new_links": 1,
+            "raw_links": 2,
+            "successful_iterations": 2,
+            "failed_iterations": 0,
+        },
+    ]
+    assert raw_links == [
+        ("leiting", "vmess://first"),
+        ("leiting", "vmess://second"),
+    ]
+
+
+def test_fetch_source_links_records_each_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = SourceConfig(
+        url="https://example.com/api?t=123",
+        key="abcdabcdabcdabcd",
+        max_iterations=2,
+        min_iterations=0,
+        plateau_limit=99,
+    )
+    attempts: list[dict] = []
+
+    class FakeResponse:
+        text = "cipher"
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            return None
+
+    extracted = iter([["vmess://first"], []])
+
+    def fake_get(self, url: str, timeout: int, verify: bool, proxies=None):
+        return FakeResponse()
+
+    monkeypatch.setattr("vpn_automation.pipeline.extract.requests.Session.get", fake_get)
+    monkeypatch.setattr("vpn_automation.pipeline.extract.decrypt_payload", lambda text, key: "plaintext")
+    monkeypatch.setattr(
+        "vpn_automation.pipeline.extract.extract_links_from_plaintext",
+        lambda source_name, plaintext: next(extracted),
+    )
+    monkeypatch.setattr("vpn_automation.pipeline.extract.resolve_upstream_proxy_url", lambda: "http://127.0.0.1:7897")
+
+    result = fetch_source_links(
+        "leiting",
+        source,
+        attempt_callback=lambda **payload: attempts.append(payload),
+    )
+
+    assert result.links == ["vmess://first"]
+    assert len(attempts) == 2
+    assert attempts[0] == {
+        "source_name": "leiting",
+        "iteration": 1,
+        "url": attempts[0]["url"],
+        "used_proxy": False,
+        "success": True,
+        "http_status": 200,
+        "error_type": "",
+        "error_message": "",
+        "returned_links": 1,
+        "new_links": 1,
+        "total_links": 1,
+    }
+    assert attempts[0]["url"].startswith("https://example.com/api?t=")
+    assert attempts[1] == {
+        "source_name": "leiting",
+        "iteration": 2,
+        "url": attempts[1]["url"],
+        "used_proxy": False,
+        "success": True,
+        "http_status": 200,
+        "error_type": "",
+        "error_message": "",
+        "returned_links": 0,
+        "new_links": 0,
+        "total_links": 1,
+    }
+    assert attempts[1]["url"].startswith("https://example.com/api?t=")
+
+
+def test_fetch_source_links_resumes_from_iteration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = SourceConfig(
+        url="https://example.com/api?t=123",
+        key="abcdabcdabcdabcd",
+        max_iterations=5,
+        plateau_limit=99,
+    )
+    source.resume_from_iteration = 3
+    seen_iterations: list[int] = []
+
+    class FakeResponse:
+        text = "cipher"
+
+        def raise_for_status(self) -> None:
+            return None
+
+    def fake_get(self, url: str, timeout: int, verify: bool, proxies=None):
+        seen_iterations.append(len(seen_iterations) + 3)
+        return FakeResponse()
+
+    monkeypatch.setattr("vpn_automation.pipeline.extract.requests.Session.get", fake_get)
+    monkeypatch.setattr("vpn_automation.pipeline.extract.decrypt_payload", lambda text, key: "plaintext")
+    monkeypatch.setattr(
+        "vpn_automation.pipeline.extract.extract_links_from_plaintext",
+        lambda source_name, plaintext: [],
+    )
+    monkeypatch.setattr("vpn_automation.pipeline.extract.resolve_upstream_proxy_url", lambda: "")
+
+    fetch_source_links("leiting", source)
+
+    assert seen_iterations == [3, 4, 5]
+
+
 def test_fetch_source_links_emits_structured_extract_events(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -287,6 +458,7 @@ def test_fetch_source_links_emits_structured_extract_events(
         "extract_source_completed",
     ]
     assert events[1]["success"] is True
+    assert events[1]["via"] == "direct"
     assert events[2]["success"] is True
     assert events[3]["new_items"] == 1
     assert events[3]["total_links"] == 1
