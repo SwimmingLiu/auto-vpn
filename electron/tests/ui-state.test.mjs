@@ -9,6 +9,14 @@ import {
   toMetricItems
 } from '../renderer/state.js';
 import { getMessages, resolveLanguage } from '../renderer/i18n.js';
+import {
+  applySourceIterationDraft,
+  buildRegionStats,
+  buildSourceIterationDraft,
+  classifyLogEntry,
+  filterLogEntries,
+  groupLogEntriesByStage
+} from '../renderer/views.js';
 
 test('buildStageModel marks stages in configured order', () => {
   const rows = buildStageModel({ doctor: 'success', availability: 'running', deploy: 'running' });
@@ -26,10 +34,10 @@ test('toMetricItems maps summary counts to Chinese labels', () => {
     speedtest_links: 3,
     availability_links: 2
   });
-  assert.deepEqual(cards[0], { label: '原始节点数', value: '12' });
-  assert.deepEqual(cards[1], { label: '后处理节点数', value: '5' });
+  assert.deepEqual(cards[0], { label: '原始节点', value: '12' });
+  assert.deepEqual(cards[1], { label: '去重后', value: '5' });
   assert.deepEqual(cards[2], { label: '测速通过节点', value: '3' });
-  assert.deepEqual(cards[3], { label: '可用节点数', value: '2' });
+  assert.deepEqual(cards[3], { label: '最终可用', value: '2' });
 });
 
 test('resolveVerifyMetricValue preserves running and failed verify states', () => {
@@ -70,10 +78,10 @@ test('resolveLanguage ignores saved and system language and always returns zh-CN
 
 test('getMessages exposes Chinese-only copy', () => {
   assert.equal(getMessages().runButton, '立即运行');
-  assert.equal(getMessages('en-US').pageTitles.deploy, '部署设置');
+  assert.equal(getMessages('en-US').pageTitles.results, '结果');
   assert.equal(
     getMessages('en-US').pageSubtitles.dashboard,
-    '统一查看节点抓取、测速、部署与实时日志的桌面工作台'
+    '只展示运行状态、系统状态摘要、核心指标和最近结果'
   );
   assert.equal(getMessages('en-US').runButton, '立即运行');
   assert.equal(getMessages('en-US').stopButton, '停止运行');
@@ -84,32 +92,99 @@ test('getMessages suppresses language-switching copy', () => {
   const messages = getMessages('en-US');
 
   assert.equal(messages.locale, 'zh-CN');
-  assert.equal(messages.pageTitles.dashboard, '仪表盘总览');
+  assert.equal(messages.pageTitles.dashboard, '概览');
   assert.equal(messages.runButton, '立即运行');
   assert.equal(messages.stopButton, '停止运行');
   assert.equal(messages.languageLabel, '');
 });
 
-test('PAGE_ORDER exposes the full multipage workspace', () => {
-  assert.equal(PAGE_ORDER.length, 11);
-  assert.deepEqual(PAGE_ORDER.slice(0, 4), ['dashboard', 'config', 'runs', 'history']);
-  assert.equal(PAGE_ORDER.at(-1), 'about');
+test('PAGE_ORDER exposes the six-page canvas workspace', () => {
+  assert.equal(PAGE_ORDER.length, 6);
+  assert.deepEqual(PAGE_ORDER, ['dashboard', 'runs', 'results', 'subscriptions', 'logs', 'settings']);
 });
 
-test('getMessages exposes the multipage workspace copy for the redesigned renderer', () => {
+test('getMessages exposes the canvas-aligned workspace copy for the redesigned renderer', () => {
   const zh = getMessages('zh-CN');
 
   assert.equal(
     zh.brandSubtitle,
-    '自动抓取节点、测速筛选、节点处理、加密打包、Cloudflare Pages 部署，全流程自动化'
+    '概览、运行、结果、订阅、日志、设置统一管理'
   );
-  assert.equal(zh.pageTitles.dashboard, '仪表盘总览');
-  assert.equal(zh.pageTitles.config, '配置管理');
+  assert.equal(zh.pageTitles.dashboard, '概览');
+  assert.equal(zh.pageTitles.results, '结果');
   assert.equal(zh.stopButton, '停止运行');
   assert.equal(zh.stageLabels.availability, '站点验证');
   assert.equal(
     zh.pageSubtitles.dashboard,
-    '统一查看节点抓取、测速、部署与实时日志的桌面工作台'
+    '只展示运行状态、系统状态摘要、核心指标和最近结果'
   );
-  assert.doesNotMatch(zh.pageSubtitles.dashboard, /紧凑|抽屉/);
+  assert.doesNotMatch(zh.pageSubtitles.dashboard, /高频操作|紧凑|抽屉/);
+});
+
+test('classifyLogEntry infers level and stage from log lines', () => {
+  const entry = classifyLogEntry('[ERROR] availability failed after extract');
+
+  assert.equal(entry.level, 'error');
+  assert.equal(entry.stage, 'availability');
+});
+
+test('filterLogEntries filters runtime and error logs separately', () => {
+  const entries = [
+    classifyLogEntry('[INFO] extract started'),
+    classifyLogEntry('[ERROR] availability failed'),
+    classifyLogEntry('[WARN] deploy skipped')
+  ];
+
+  assert.equal(filterLogEntries(entries, '全部').length, 3);
+  assert.deepEqual(
+    filterLogEntries(entries, '运行日志').map((entry) => entry.line),
+    ['[INFO] extract started', '[WARN] deploy skipped']
+  );
+  assert.deepEqual(
+    filterLogEntries(entries, '错误').map((entry) => entry.line),
+    ['[ERROR] availability failed']
+  );
+});
+
+test('groupLogEntriesByStage groups unknown lines into 其他', () => {
+  const groups = groupLogEntriesByStage([
+    classifyLogEntry('[INFO] extract started'),
+    classifyLogEntry('[ERROR] availability failed'),
+    classifyLogEntry('plain line without stage')
+  ]);
+
+  assert.equal(groups[0].label, 'extract');
+  assert.equal(groups[1].label, 'availability');
+  assert.equal(groups.at(-1).label, '其他');
+});
+
+test('buildRegionStats counts decoded vmess rows by region prefix', () => {
+  const stats = buildRegionStats([
+    { name: '🇺🇸 US alpha' },
+    { name: '🇺🇸 US beta' },
+    { name: '🇯🇵 JP tokyo' },
+    { name: 'plain node' }
+  ]);
+
+  assert.deepEqual(stats, [
+    { region: 'US', count: 2 },
+    { region: 'JP', count: 1 },
+    { region: '其他', count: 1 }
+  ]);
+});
+
+test('source iteration draft applies one max_iterations value to all sources', () => {
+  const sources = {
+    leiting: { url: 'https://a.example', key: 'a', enabled: true, max_iterations: 12 },
+    heidong: { url: 'https://b.example', key: 'b', enabled: true, max_iterations: 40 }
+  };
+  const draft = buildSourceIterationDraft(sources);
+
+  assert.equal(draft.maxIterations, 12);
+  draft.maxIterations = 25;
+
+  assert.deepEqual(
+    Object.values(applySourceIterationDraft(sources, draft)).map((source) => source.max_iterations),
+    [25, 25]
+  );
 });

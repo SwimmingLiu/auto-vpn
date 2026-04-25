@@ -5,8 +5,8 @@ const ZH_MESSAGES = {
   locale: 'zh-CN',
   appTitle: 'VPN 订阅自动化部署工具',
   sidebarTitle: 'VPN Auto',
-  sidebarVersion: 'v2.0.0',
-  brandSubtitle: '自动抓取节点、测速筛选、节点处理、加密打包、Cloudflare Pages 部署，全流程自动化',
+  sidebarVersion: 'v2.1.0',
+  brandSubtitle: '概览、运行、结果、订阅、日志、设置统一管理',
   languageLabel: '',
   saveButton: '保存配置',
   runButton: '立即运行',
@@ -16,49 +16,34 @@ const ZH_MESSAGES = {
   projectButton: '项目地址',
   settingsButton: '设置',
   shortcutActions: {
-    capture: '自动抓取节点',
-    speed: '去重测速',
-    package: '加密打包',
-    deploy: '一键部署'
+    run: '开始运行',
+    settings: '设置统一管理',
+    results: '查看结果',
+    logs: '打开日志'
   },
   pageTitles: {
-    dashboard: '仪表盘总览',
-    config: '配置管理',
-    runs: '运行任务',
-    history: '任务历史',
-    nodes: '节点管理',
-    subscriptions: '订阅地址',
-    logs: '日志中心',
-    deploy: '部署设置',
-    monitor: '系统监控',
-    settings: '设置',
-    about: '关于'
+    dashboard: '概览',
+    runs: '运行',
+    results: '结果',
+    subscriptions: '订阅',
+    logs: '日志',
+    settings: '设置'
   },
   pageSubtitles: {
-    dashboard: '统一查看节点抓取、测速、部署与实时日志的桌面工作台',
-    config: '集中维护抓包 API、测速策略、节点处理规则、加密打包与 Cloudflare Pages 配置',
-    runs: '执行 VPN 节点抓取、测速筛选、节点处理、加密打包与自动部署任务',
-    history: '查看自动化部署任务的历史记录、执行结果、节点统计与部署详情',
-    nodes: '管理和维护 VPN 节点列表，支持筛选、状态监控和批量操作',
-    subscriptions: '管理和分发多个订阅链接，支持二维码、导入、复制和统计',
-    logs: '统一检索运行日志、部署日志、系统日志和错误日志',
-    deploy: '维护 Cloudflare Pages / GitHub Actions 的部署平台、分支、环境与发布记录',
-    monitor: '跟踪 CPU、内存、磁盘、网络流量与资源告警',
-    settings: '管理主题、通知、日志与性能相关偏好',
-    about: '查看产品说明、系统架构、更新日志与致谢信息'
+    dashboard: '只展示运行状态、系统状态摘要、核心指标和最近结果',
+    runs: '执行流水线、查看阶段进度和当前阶段详情',
+    results: '查看 pipeline 后最终留下的节点和区域统计',
+    subscriptions: '生成和分发 Clash、Clash Meta、Sing-box、Surge 订阅',
+    logs: '查看实时日志流、错误高亮和日志操作',
+    settings: '以分组卡片和右侧抽屉统一管理数据源和测速配置'
   },
   nav: {
-    dashboard: '仪表盘',
-    config: '配置管理',
-    runs: '运行任务',
-    history: '任务历史',
-    nodes: '节点管理',
-    subscriptions: '订阅地址',
-    logs: '日志中心',
-    deploy: '部署设置',
-    monitor: '系统监控',
-    settings: '设置',
-    about: '关于'
+    dashboard: '概览',
+    runs: '运行',
+    results: '结果',
+    subscriptions: '订阅',
+    logs: '日志',
+    settings: '设置'
   },
   currentTaskLabel: '当前任务',
   runModeLabel: '运行模式',
@@ -112,7 +97,8 @@ const ZH_MESSAGES = {
   pipelineFinished: '[界面] 流水线结束，退出码：{code}',
   pipelineFailed: '[界面] 流水线失败：{error}',
   stopUnavailable: '[界面] 当前没有可停止的运行任务',
-  copiedMessage: '[界面] 已复制：{value}'
+  copiedMessage: '[界面] 已复制：{value}',
+  openFailed: '[界面] 打开失败：{error}'
 };
 
 export function resolveLanguage() {

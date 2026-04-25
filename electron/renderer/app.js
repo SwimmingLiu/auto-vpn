@@ -1,11 +1,17 @@
 import { getMessages, formatMessage } from './i18n.js';
 import { resolveRunControlState } from './state.js';
 import {
+  applySourceIterationDraft,
   buildPageMarkup,
-  buildShortcutStrip,
+  buildLogCenterMarkup,
+  buildRunsCurrentStageMarkup,
+  buildRunsStageProgressMarkup,
+  buildSourceIterationDraft,
   buildSidebarNav,
-  buildSidebarStatus,
-  buildViewModel
+  buildViewModel,
+  buildTopbarActions,
+  classifyLogEntry,
+  filterLogEntries
 } from './views.js';
 
 const demoProfile = {
@@ -50,6 +56,10 @@ const demoProfile = {
     project_name: 'vpn-auto',
     pages_project_url: 'https://vpn-auto.pages.dev',
     subscription_url: 'https://vpn.example.top/179ba8dd-3854-4747-b853-fc1868ef3937'
+  },
+  paths: {
+    project_root: '/Users/user/vpn-sub',
+    artifacts_root: '/Users/user/vpn-sub/artifacts'
   }
 };
 
@@ -60,35 +70,31 @@ const state = {
   counts: {},
   language: 'zh-CN',
   activePage: 'dashboard',
-  subtabs: {
-    config: 'sources',
-    logs: 'runtime',
-    deploy: 'platform',
-    settings: 'general'
-  },
+  subtabs: {},
+  subscriptionFormat: 'Clash',
+  logFilter: '全部',
+  settingsDrawer: null,
   isDemo: false,
   runState: 'idle',
   runResult: 'idle',
   logEntries: [],
-  lastUpdateAt: null
+  artifactDir: '',
+  outputFiles: [],
+  nodeRows: [],
+  qrDataUrl: '',
+  runStartedAt: null,
+  lastUpdateAt: null,
+  modalTransform: ''
 };
 
 const elements = {
   sidebarTitle: document.querySelector('#sidebarTitle'),
   sidebarVersion: document.querySelector('#sidebarVersion'),
   sidebarNav: document.querySelector('#sidebarNav'),
-  sidebarStatusTitle: document.querySelector('#sidebarStatusTitle'),
-  sidebarStatusBadge: document.querySelector('#sidebarStatusBadge'),
-  sidebarStatusBody: document.querySelector('#sidebarStatusBody'),
   pageTitle: document.querySelector('#pageTitle'),
   pageSubtitle: document.querySelector('#pageSubtitle'),
-  projectBtn: document.querySelector('#projectBtn'),
-  topSettingsBtn: document.querySelector('#topSettingsBtn'),
-  saveBtn: document.querySelector('#saveBtn'),
-  stopBtn: document.querySelector('#stopBtn'),
-  runBtn: document.querySelector('#runBtn'),
   runStateBadge: document.querySelector('#runStateBadge'),
-  shortcutStrip: document.querySelector('#shortcutStrip'),
+  pageActions: document.querySelector('#pageActions'),
   pageContent: document.querySelector('#pageContent')
 };
 
@@ -108,18 +114,50 @@ async function bootstrap() {
 
   state.isDemo = false;
   state.profile = await window.vpnAutomation.loadProfile();
-  touchUpdate();
+  await refreshQrCode();
   renderAll();
   state.unsubscribe = window.vpnAutomation.onPipelineEvent(handlePipelineEvent);
 }
 
 function bindActions() {
-  elements.saveBtn.addEventListener('click', () => saveProfile());
-  elements.runBtn.addEventListener('click', runPipeline);
-  elements.stopBtn.addEventListener('click', stopPipeline);
   document.addEventListener('click', handleDocumentClick);
   document.addEventListener('input', handleDocumentInput);
   document.addEventListener('change', handleDocumentInput);
+  
+  document.addEventListener('mousedown', (e) => {
+    const header = e.target.closest('.settings-drawer-head');
+    if (!header) return;
+    
+    const panel = header.closest('.settings-drawer-panel');
+    if (!panel) return;
+    
+    e.preventDefault();
+    
+    let startX = e.clientX;
+    let startY = e.clientY;
+    
+    const style = window.getComputedStyle(panel);
+    // Parse matrix to get current X/Y translate
+    const matrix = new DOMMatrixReadOnly(style.transform);
+    let currentX = matrix.m41;
+    let currentY = matrix.m42;
+    
+    const onMouseMove = (moveEvent) => {
+      const dx = moveEvent.clientX - startX;
+      const dy = moveEvent.clientY - startY;
+      const newTransform = `scale(1) translate(${currentX + dx}px, ${currentY + dy}px)`;
+      panel.style.transform = newTransform;
+      state.modalTransform = newTransform;
+    };
+    
+    const onMouseUp = () => {
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+    };
+    
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  });
 }
 
 function renderAll() {
@@ -145,21 +183,16 @@ function renderChrome(messages, viewModel) {
   elements.sidebarVersion.textContent = messages.sidebarVersion;
   elements.pageTitle.textContent = messages.pageTitles[state.activePage];
   elements.pageSubtitle.textContent = messages.pageSubtitles[state.activePage];
-  elements.projectBtn.textContent = messages.projectButton;
-  elements.topSettingsBtn.textContent = messages.settingsButton;
-  elements.saveBtn.textContent = messages.saveButton;
-  elements.stopBtn.textContent = messages.stopButton;
-  elements.runBtn.textContent = resolveRunButtonLabel(messages);
-  elements.runBtn.disabled = controlState.runDisabled;
-  elements.stopBtn.disabled = controlState.stopDisabled;
-  elements.sidebarStatusTitle.textContent = messages.sidebarStatusTitle;
-  elements.sidebarStatusBadge.textContent = messages.runStateLabels[state.runState] ?? messages.runStateLabels.idle;
-  elements.sidebarStatusBadge.className = `badge ${runTone()}`;
   elements.runStateBadge.textContent = messages.runStateLabels[state.runState] ?? messages.runStateLabels.idle;
   elements.runStateBadge.className = `badge ${runTone()}`;
   elements.sidebarNav.innerHTML = buildSidebarNav(messages, state.activePage);
-  elements.shortcutStrip.innerHTML = buildShortcutStrip(messages);
-  elements.sidebarStatusBody.innerHTML = buildSidebarStatus(viewModel, messages, state, state.language);
+  elements.pageActions.innerHTML = buildTopbarActions(state.activePage, viewModel, messages, {
+    runDisabled: controlState.runDisabled,
+    stopDisabled: controlState.stopDisabled,
+    runLabel: resolveRunButtonLabel(messages),
+    stopLabel: messages.stopButton,
+    saveLabel: messages.saveButton
+  });
 }
 
 function resolveRunButtonLabel(messages) {
@@ -190,16 +223,6 @@ function handleDocumentClick(event) {
     return;
   }
 
-  const shortcut = event.target.closest('[data-shortcut-target]');
-  if (shortcut) {
-    state.activePage = shortcut.dataset.shortcutTarget;
-    if (shortcut.dataset.shortcutTab) {
-      state.subtabs[state.activePage] = shortcut.dataset.shortcutTab;
-    }
-    renderAll();
-    return;
-  }
-
   const subtab = event.target.closest('[data-subtab-page]');
   if (subtab) {
     state.subtabs[subtab.dataset.subtabPage] = subtab.dataset.subtab;
@@ -207,14 +230,17 @@ function handleDocumentClick(event) {
     return;
   }
 
-  if (event.target.closest('#projectBtn')) {
-    state.activePage = 'subscriptions';
+  const formatButton = event.target.closest('[data-subscription-format]');
+  if (formatButton) {
+    state.subscriptionFormat = formatButton.dataset.subscriptionFormat;
+    refreshQrCode();
     renderAll();
     return;
   }
 
-  if (event.target.closest('#topSettingsBtn')) {
-    state.activePage = 'settings';
+  const logFilterButton = event.target.closest('[data-log-filter]');
+  if (logFilterButton) {
+    state.logFilter = logFilterButton.dataset.logFilter;
     renderAll();
     return;
   }
@@ -222,6 +248,81 @@ function handleDocumentClick(event) {
   const copyButton = event.target.closest('[data-copy-text]');
   if (copyButton) {
     copyText(copyButton.dataset.copyText);
+    return;
+  }
+
+  const runAction = event.target.closest('[data-run-action]');
+  if (runAction?.dataset.runAction === 'start') {
+    runPipeline();
+    return;
+  }
+  if (runAction?.dataset.runAction === 'stop') {
+    stopPipeline();
+    return;
+  }
+
+  const openUrlButton = event.target.closest('[data-open-url]');
+  if (openUrlButton) {
+    openUrl(openUrlButton.dataset.openUrl);
+    return;
+  }
+
+  const action = event.target.closest('[data-action]');
+  if (action?.dataset.action === 'open-settings') {
+    state.activePage = 'settings';
+    renderAll();
+    return;
+  }
+  if (action?.dataset.action === 'save-profile') {
+    saveProfile();
+    return;
+  }
+  if (action?.dataset.action === 'open-artifact-dir') {
+    openArtifactDir();
+    return;
+  }
+  if (action?.dataset.action === 'copy-nodes') {
+    copyText((state.nodeRows ?? []).map((row) => row.link || row.name).filter(Boolean).join('\n'));
+    return;
+  }
+  if (action?.dataset.action === 'retry-current-stage') {
+    runPipeline();
+    return;
+  }
+  if (action?.dataset.action === 'copy-log') {
+    copyText(resolveVisibleLogEntries().map((entry) => entry.line).join('\n'));
+    return;
+  }
+  if (action?.dataset.action === 'clear-log') {
+    state.logEntries = [];
+    renderAll();
+    return;
+  }
+  if (action?.dataset.action === 'open-log-file') {
+    openCurrentLogFile();
+    return;
+  }
+
+  const settingsCard = event.target.closest('[data-settings-card]');
+  if (settingsCard) {
+    openSettingsDrawer(settingsCard.dataset.settingsCard);
+    return;
+  }
+
+  if (event.target.closest('[data-drawer-dismiss="backdrop"]')) {
+    state.settingsDrawer = null;
+    renderAll();
+    return;
+  }
+
+  if (event.target.closest('[data-drawer-close="cancel"]')) {
+    state.settingsDrawer = null;
+    renderAll();
+    return;
+  }
+
+  if (event.target.closest('[data-drawer-save="save"]')) {
+    saveSettingsDrawer();
   }
 }
 
@@ -229,6 +330,39 @@ function handleDocumentInput(event) {
   const target = event.target;
 
   if (!state.profile) {
+    return;
+  }
+
+  if (target.matches('[data-drawer-source][data-drawer-key]')) {
+    if (!state.settingsDrawer?.draft) {
+      return;
+    }
+    const sourceDraft = resolveDrawerSourceDraft();
+    const sourceName = target.dataset.drawerSource;
+    const key = target.dataset.drawerKey;
+    if (!sourceDraft?.[sourceName]) {
+      return;
+    }
+    sourceDraft[sourceName][key] =
+      target.type === 'checkbox'
+        ? target.checked
+        : coerceProfileValue(target.value.trim(), sourceDraft[sourceName][key]);
+    return;
+  }
+
+  if (target.matches('[data-source-max-iterations]')) {
+    if (!state.settingsDrawer?.draft) {
+      return;
+    }
+    state.settingsDrawer.draft.maxIterations = coerceProfileValue(
+      target.value.trim(),
+      state.settingsDrawer.draft.maxIterations
+    );
+    return;
+  }
+
+  if (target.matches('[data-drawer-path]')) {
+    setDrawerPath(target.dataset.drawerPath, target.value.trim());
     return;
   }
 
@@ -246,17 +380,46 @@ function handleDocumentInput(event) {
 
   if (target.matches('[data-profile-path]')) {
     setProfilePath(target.dataset.profilePath, target.value.trim());
+    if (target.dataset.profilePath === 'deploy.subscription_url') {
+      refreshQrCode();
+    }
     renderAll();
   }
 }
 
 function setProfilePath(path, value) {
-  const segments = String(path ?? '').split('.').filter(Boolean);
-  if (!segments.length || !state.profile) {
+  if (!state.profile) {
+    return;
+  }
+  setObjectPath(state.profile, path, value);
+}
+
+function setDrawerPath(path, value) {
+  if (!state.settingsDrawer?.draft) {
     return;
   }
 
-  let cursor = state.profile;
+  const section = state.settingsDrawer.section;
+  const normalizedPath = String(path ?? '').startsWith(`${section}.`)
+    ? String(path).slice(section.length + 1)
+    : String(path ?? '');
+  setObjectPath(state.settingsDrawer.draft, normalizedPath, value);
+}
+
+function resolveDrawerSourceDraft() {
+  if (state.settingsDrawer?.section !== 'sources') {
+    return null;
+  }
+  return state.settingsDrawer.draft?.sources ?? state.settingsDrawer.draft;
+}
+
+function setObjectPath(root, path, value) {
+  const segments = String(path ?? '').split('.').filter(Boolean);
+  if (!segments.length || !root) {
+    return;
+  }
+
+  let cursor = root;
   for (const segment of segments.slice(0, -1)) {
     if (!cursor[segment]) {
       return;
@@ -293,6 +456,116 @@ async function copyText(value) {
   appendLog(formatMessage(getMessages(state.language).copiedMessage, { value: text }));
 }
 
+async function openUrl(url) {
+  const value = String(url ?? '').trim();
+  if (!value || !window.vpnAutomation?.openUrl) {
+    return;
+  }
+  try {
+    await window.vpnAutomation.openUrl(value);
+  } catch (error) {
+    appendLog(formatMessage(getMessages(state.language).openFailed, { error: error.message }));
+  }
+}
+
+async function openArtifactDir() {
+  if (!state.artifactDir || !window.vpnAutomation?.openPath) {
+    return;
+  }
+  const result = await window.vpnAutomation.openPath(state.artifactDir);
+  if (!result?.ok) {
+    appendLog(formatMessage(getMessages(state.language).openFailed, { error: result?.error ?? 'unknown' }));
+  }
+}
+
+async function openCurrentLogFile() {
+  const logPath = state.artifactDir ? `${state.artifactDir}/human.log` : '';
+  if (!logPath || !window.vpnAutomation?.openPath) {
+    appendLog(formatMessage(getMessages(state.language).openFailed, { error: 'log_file_not_found' }));
+    return;
+  }
+
+  const result = await window.vpnAutomation.openPath(logPath);
+  if (!result?.ok) {
+    appendLog(formatMessage(getMessages(state.language).openFailed, { error: result?.error ?? 'unknown' }));
+  }
+}
+
+async function refreshQrCode() {
+  const subscriptionUrl = resolveActiveSubscriptionUrl();
+  if (!subscriptionUrl || !window.vpnAutomation?.generateQr) {
+    state.qrDataUrl = '';
+    return;
+  }
+
+  try {
+    const result = await window.vpnAutomation.generateQr(subscriptionUrl);
+    state.qrDataUrl = result?.dataUrl ?? '';
+    renderAll();
+  } catch {
+    state.qrDataUrl = '';
+  }
+}
+
+function resolveActiveSubscriptionUrl() {
+  const baseUrl = state.profile?.deploy?.subscription_url ?? '';
+  if (!baseUrl) {
+    return '';
+  }
+
+  const format = state.subscriptionFormat ?? 'Clash';
+  if (format === 'Clash') {
+    return baseUrl;
+  }
+  return `${baseUrl}?format=${encodeURIComponent(format.toLowerCase().replaceAll(' ', '-'))}`;
+}
+
+function openSettingsDrawer(section) {
+  if (!state.profile) {
+    return;
+  }
+
+  const draft = buildSettingsDraft(section);
+  if (!draft) {
+    return;
+  }
+
+  state.settingsDrawer = { section, draft };
+  renderAll();
+}
+
+function buildSettingsDraft(section) {
+  if (!state.profile) {
+    return null;
+  }
+
+  if (section === 'sources') return buildSourceIterationDraft(state.profile.sources);
+  if (section === 'speed_test') return structuredClone(state.profile.speed_test);
+  if (section === 'deploy') return structuredClone(state.profile.deploy);
+  if (section === 'paths') return structuredClone(state.profile.paths);
+  if (section === 'about') return { version: getMessages(state.language).sidebarVersion };
+  return null;
+}
+
+function saveSettingsDrawer() {
+  if (!state.settingsDrawer || !state.profile) {
+    return;
+  }
+
+  const { section, draft } = state.settingsDrawer;
+  if (section !== 'about') {
+    state.profile[section] = section === 'sources'
+      ? applySourceIterationDraft(draft.sources, draft)
+      : structuredClone(draft);
+    if (section === 'deploy') {
+      refreshQrCode();
+    }
+  }
+  state.settingsDrawer = null;
+  touchUpdate();
+  renderAll();
+}
+
 async function saveProfile({ silent = false } = {}) {
   if (!state.profile) {
     return;
@@ -319,10 +592,18 @@ async function runPipeline() {
   state.stageStatus = {};
   state.counts = {};
   state.logEntries = [];
+  state.artifactDir = '';
+  state.outputFiles = [];
+  state.nodeRows = [];
+  state.runStartedAt = Date.now();
   touchUpdate();
   renderAll();
   appendLog(messages.pipelineStarted);
-  await saveProfile({ silent: true });
+
+  const runOptions = collectRunOptions();
+  if (runOptions.saveBeforeRun) {
+    await saveProfile({ silent: true });
+  }
 
   if (!window.vpnAutomation) {
     state.runState = 'idle';
@@ -334,15 +615,31 @@ async function runPipeline() {
   }
 
   try {
-    const result = await window.vpnAutomation.runPipeline();
-    finishRun(result);
+    const result = await window.vpnAutomation.runPipeline(runOptions);
+    if (!result?.ok) {
+      finishRun(result);
+    }
   } catch (error) {
     state.runState = 'idle';
     state.runResult = 'failed';
+    state.runStartedAt = null;
     touchUpdate();
     renderAll();
     appendLog(formatMessage(messages.pipelineFailed, { error: error.message }));
   }
+}
+
+function collectRunOptions() {
+  const optionInputs = document.querySelectorAll('[data-run-option]');
+  const options = {
+    skipDeploy: false,
+    skipVerify: false,
+    saveBeforeRun: true
+  };
+  for (const input of optionInputs) {
+    options[input.dataset.runOption] = Boolean(input.checked);
+  }
+  return options;
 }
 
 async function stopPipeline() {
@@ -369,6 +666,7 @@ async function stopPipeline() {
 function finishRun(result = {}) {
   const messages = getMessages(state.language);
   state.runState = 'idle';
+  state.runStartedAt = null;
 
   if (result.stopped) {
     state.runResult = 'stopped';
@@ -404,24 +702,95 @@ function handlePipelineEvent(event) {
 
   if (event.type === 'stage') {
     state.stageStatus[event.stage] = event.status;
+    appendLog(`[stage] ${event.stage} ${event.status}`, {
+      kind: 'stage',
+      stage: event.stage,
+      level: event.status === 'failed' ? 'error' : event.status === 'running' ? 'warning' : 'info'
+    });
     touchUpdate();
-    renderAll();
+    renderRuntimeOnly({ chrome: true });
     return;
   }
 
   if (event.type === 'summary') {
-    state.stageStatus = event.stage_status;
-    state.counts = event.counts;
+    state.stageStatus = event.stage_status ?? {};
+    state.counts = normalizeCounts(event.counts ?? {});
+    state.artifactDir = event.artifact_dir ?? '';
     touchUpdate();
     renderAll();
     appendLog(`[summary] artifacts: ${event.artifact_dir}`);
+    hydrateArtifactPreview();
+    return;
+  }
+
+  if (event.type === 'finished') {
+    finishRun(event);
+    return;
+  }
+
+  if (event.type === 'run_started') {
+    state.artifactDir = event.artifact_dir ?? '';
+    touchUpdate();
+    renderAll();
   }
 }
 
-function appendLog(message) {
-  state.logEntries.push(String(message));
+function normalizeCounts(counts) {
+  return {
+    ...counts,
+    deduped_links: counts.deduped_links ?? counts.postprocess_links ?? 0
+  };
+}
+
+async function hydrateArtifactPreview() {
+  if (!state.artifactDir || !window.vpnAutomation?.previewArtifact) {
+    state.outputFiles = [];
+    state.nodeRows = [];
+    return;
+  }
+
+  const result = await window.vpnAutomation.previewArtifact(state.artifactDir);
+  if (result?.ok) {
+    state.outputFiles = result.outputFiles ?? [];
+    state.nodeRows = result.nodeRows ?? [];
+    renderAll();
+  }
+}
+
+function appendLog(message, overrides = {}) {
+  state.logEntries.push(classifyLogEntry(message, overrides));
   touchUpdate();
-  renderAll();
+  renderRuntimeOnly({ chrome: false });
+}
+
+function renderRuntimeOnly({ chrome = true } = {}) {
+  const messages = getMessages(state.language);
+  const viewModel = buildViewModel(state, messages, state.language);
+  if (chrome) {
+    renderChrome(messages, viewModel);
+  }
+  renderActiveRuntimeSections(viewModel);
+}
+
+function renderActiveRuntimeSections(viewModel) {
+  const logCenter = document.querySelector('#logCenterTable');
+  if (logCenter) {
+    logCenter.innerHTML = buildLogCenterMarkup(viewModel);
+  }
+
+  const stageProgress = document.querySelector('#runsStageProgress');
+  if (stageProgress) {
+    stageProgress.outerHTML = buildRunsStageProgressMarkup(viewModel);
+  }
+
+  const currentStage = document.querySelector('#runsCurrentStage');
+  if (currentStage) {
+    currentStage.outerHTML = buildRunsCurrentStageMarkup(viewModel);
+  }
+}
+
+function resolveVisibleLogEntries() {
+  return filterLogEntries((state.logEntries ?? []).map((entry) => classifyLogEntry(entry)), state.logFilter);
 }
 
 function touchUpdate() {

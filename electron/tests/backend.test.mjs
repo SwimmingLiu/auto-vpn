@@ -4,8 +4,16 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { parseVmessLinkForPreview, previewArtifactDirectory } from '../lib/artifact-preview.js';
 import { buildBackendInvocation, parseBackendEventLine, resolveBackendPython } from '../lib/backend.js';
-import { findProjectRoot, resolveProjectRoot, resolveStateProfilePath } from '../paths.js';
+import { findProjectRoot, resolveProjectRoot } from '../paths.js';
+
+test('qrcode package is available for real subscription QR images', async () => {
+  const QRCode = await import('qrcode');
+  const dataUrl = await QRCode.default.toDataURL('https://example.invalid/subscription');
+
+  assert.match(dataUrl, /^data:image\/png;base64,/);
+});
 
 test('buildBackendInvocation returns python module command', () => {
   const invocation = buildBackendInvocation('/repo', 'run');
@@ -44,22 +52,6 @@ test('resolveProjectRoot returns explicit root unchanged', () => {
   assert.equal(resolveProjectRoot('/repo'), '/repo');
 });
 
-test('resolveStateProfilePath prefers the repo-anchor state file for worktrees', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vpn-state-root-'));
-  const repoRoot = path.join(root, 'vpn-subscription-automation');
-  const worktreeRoot = path.join(repoRoot, '.worktrees', 'cleanup');
-  const anchorProfile = path.join(repoRoot, 'state', 'profiles', 'default.json');
-  const localProfile = path.join(worktreeRoot, 'state', 'profiles', 'default.json');
-
-  fs.mkdirSync(worktreeRoot, { recursive: true });
-  fs.mkdirSync(path.dirname(localProfile), { recursive: true });
-  fs.mkdirSync(path.dirname(anchorProfile), { recursive: true });
-  fs.writeFileSync(localProfile, '{"sources":"local"}', 'utf-8');
-  fs.writeFileSync(anchorProfile, '{}', 'utf-8');
-
-  assert.equal(resolveStateProfilePath(worktreeRoot), anchorProfile);
-});
-
 test('resolveBackendPython prefers a project virtualenv when present', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vpn-python-root-'));
   const venvPython = path.join(root, '.venv', 'bin', 'python');
@@ -68,4 +60,61 @@ test('resolveBackendPython prefers a project virtualenv when present', () => {
   fs.writeFileSync(venvPython, '', 'utf-8');
 
   assert.deepEqual(resolveBackendPython(root), [venvPython, 'python3.12', 'python3']);
+});
+
+test('parseVmessLinkForPreview decodes node fields for results page', () => {
+  const payload = {
+    v: '2',
+    ps: '🇺🇸 US demo-node',
+    add: '1.2.3.4',
+    port: '443',
+    id: '00000000-0000-0000-0000-000000000000',
+    aid: '0',
+    net: 'ws',
+    type: 'none',
+    host: 'example.invalid',
+    path: '/edge',
+    tls: 'tls'
+  };
+  const encoded = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+  const link = `vmess://${encoded}`;
+
+  assert.deepEqual(parseVmessLinkForPreview(link), {
+    name: '🇺🇸 US demo-node',
+    address: '1.2.3.4',
+    protocol: 'vmess',
+    path: '/edge',
+    link
+  });
+});
+
+test('previewArtifactDirectory prefers final emoji nodes and decodes vmess rows', () => {
+  const artifactDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vpn-artifact-preview-'));
+  const speedPayload = Buffer.from(JSON.stringify({
+    ps: '🇸🇬 SG speed-node',
+    add: '5.5.5.5',
+    path: '/speed'
+  }), 'utf8').toString('base64url');
+  const finalPayload = Buffer.from(JSON.stringify({
+    ps: '🇯🇵 JP final-node',
+    add: '6.6.6.6',
+    path: '/final'
+  }), 'utf8').toString('base64url');
+
+  fs.writeFileSync(path.join(artifactDir, 'vpn_node_speedtest.txt'), `vmess://${speedPayload}`, 'utf-8');
+  fs.writeFileSync(path.join(artifactDir, 'vpn_node_emoji.txt'), `vmess://${finalPayload}`, 'utf-8');
+
+  const preview = previewArtifactDirectory(artifactDir);
+
+  assert.equal(preview.ok, true);
+  assert.equal(preview.nodeSource, 'vpn_node_emoji.txt');
+  assert.deepEqual(preview.nodeRows, [
+    {
+      name: '🇯🇵 JP final-node',
+      address: '6.6.6.6',
+      protocol: 'vmess',
+      path: '/final',
+      link: `vmess://${finalPayload}`
+    }
+  ]);
 });

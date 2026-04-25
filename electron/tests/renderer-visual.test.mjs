@@ -12,31 +12,21 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const EXPECTED_DIGESTS = {
-  dashboard: 'eb3cc2a52a71c5a6ce0742c93f3d49b987fec518230dd048f3488c000a9d905a',
-  config: '040f19a98c2b35525edd6359a8920c9c8a82e5be7fe0e840e7634c2733e10b46',
-  runs: '30a33f4361319f63bc6ce112d11a31ac8e3ebdfee7cc40689b0a15b3e80643a8',
-  history: '7789101e98baf182cdb97d5ce82d7f41b889082a1f8fd886347d73c2f4638b0d',
-  nodes: '3618362c61debd00dc4d7604309ad365f4bc14c22ca543a092e573e38f194bf7',
-  subscriptions: '6fc3a5807f1baa6155cbdfb6a7ddee975fabc8a459bd3e4940e98b9d93228726',
-  logs: '3d8a7ae9d981bc1c11b1cf8a688d4892edcc01dd8101ffb489579b03d79cd639',
-  deploy: '302e370ea5217fc370985d3db628ffe229d973d8aa86f821118e5c7f2d99c0b4',
-  monitor: '7b6629e693bddac55fbe41306b568c8a5a93dd183631a7d9873ad47db6fd0949',
-  settings: 'ae1d25d6b999ed58cc2b57bde23cc2fd74eaf114925d149fdf8eea7512bd3025',
-  about: '4235924b8a56722b07cc9e4fbf892dd1287ea05b390f409d4038abd5fa8dc5d5'
+  dashboard: '1544b7cc3badc1ca94928c7464b494ef2a1ce2f75ac729b0f7f6a78e98b722e6',
+  runs: 'baa2f15cb1a98d0dcd77a7c446fb3ab7417fea9f896fcab947b0bf3f6b24a681',
+  results: '8e1783e1f1f7b34b538c990d8dfda28548f5bace4c5d709add17da127e04c25c',
+  subscriptions: '41d42810e754e09c8f1b624a92868c5c7d563a4d2254044b3153f15f7907294d',
+  logs: 'd7f8b01e8a40ddd32f7bb6aaa57d63b67b77501ee72a7c0ea736a484efab9722',
+  settings: 'e3855e4e822e531803fdcc3bd6e3c4d86922b61ac9dbbde2db877a43a7eb2408'
 };
 
 const VISUAL_CASES = [
   ['dashboard', '#navDashboard', '#dashboardOverview'],
-  ['config', '#navConfig', '#configPrimarySource'],
-  ['runs', '#navRuns', '#runsLogOutput'],
-  ['history', '#navHistory', '#historyTable'],
-  ['nodes', '#navNodes', '#nodeTable'],
+  ['runs', '#navRuns', '#runsWorkspace'],
+  ['results', '#navResults', '#resultsWorkspace'],
   ['subscriptions', '#navSubscriptions', '#subscriptionCards'],
   ['logs', '#navLogs', '#logCenterTable'],
-  ['deploy', '#navDeploy', '#deployPlatformCard'],
-  ['monitor', '#navMonitor', '#monitorCpuCard'],
-  ['settings', '#navSettings', '#settings-theme'],
-  ['about', '#navAbout', '#aboutArchitecture']
+  ['settings', '#navSettings', '#settingsWorkspace']
 ];
 
 test('renderer visual hashes match the full mockup-driven workspace', async () => {
