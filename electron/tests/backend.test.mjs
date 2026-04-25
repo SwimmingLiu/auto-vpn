@@ -84,7 +84,8 @@ test('parseVmessLinkForPreview decodes node fields for results page', () => {
     address: '1.2.3.4',
     protocol: 'vmess',
     path: '/edge',
-    link
+    link,
+    regionCode: 'US'
   });
 });
 
@@ -114,7 +115,49 @@ test('previewArtifactDirectory prefers final emoji nodes and decodes vmess rows'
       address: '6.6.6.6',
       protocol: 'vmess',
       path: '/final',
-      link: `vmess://${finalPayload}`
+      link: `vmess://${finalPayload}`,
+      regionCode: 'JP'
     }
+  ]);
+  assert.equal(preview.finalNodeCount, 1);
+  assert.deepEqual(preview.regionCards, [
+    { regionCode: 'JP', count: 1 }
+  ]);
+});
+
+test('previewArtifactDirectory groups nodes by region and falls back to OTHER', () => {
+  const artifactDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vpn-artifact-preview-regions-'));
+  const firstUsPayload = Buffer.from(JSON.stringify({
+    ps: '🇺🇸 US first-node',
+    add: '1.1.1.1',
+    path: '/us-1'
+  }), 'utf8').toString('base64url');
+  const secondUsPayload = Buffer.from(JSON.stringify({
+    ps: 'US second-node',
+    add: '1.1.1.2',
+    path: '/us-2'
+  }), 'utf8').toString('base64url');
+  const otherPayload = Buffer.from(JSON.stringify({
+    ps: 'demo node without region',
+    add: '9.9.9.9',
+    path: '/other'
+  }), 'utf8').toString('base64url');
+
+  fs.writeFileSync(
+    path.join(artifactDir, 'vpn_node_emoji.txt'),
+    [`vmess://${firstUsPayload}`, `vmess://${secondUsPayload}`, `vmess://${otherPayload}`].join('\n'),
+    'utf-8'
+  );
+
+  const preview = previewArtifactDirectory(artifactDir);
+
+  assert.equal(preview.finalNodeCount, 3);
+  assert.deepEqual(
+    preview.nodeRows.map((row) => row.regionCode),
+    ['US', 'US', 'OTHER']
+  );
+  assert.deepEqual(preview.regionCards, [
+    { regionCode: 'OTHER', count: 1 },
+    { regionCode: 'US', count: 2 }
   ]);
 });

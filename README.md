@@ -13,7 +13,7 @@
 - Python 自动化后端
   - 节点抓取
   - vmess 去重
-  - Xray 连通性与多测速源平均下载测速
+  - Mihomo 连通性与全量下载测速
   - Gemini / ChatGPT / Claude 首页可用性全通过过滤
   - 国家识别、节点命名、模板渲染、JS 混淆
   - Cloudflare Pages 部署与最终校验
@@ -41,8 +41,8 @@
 
 - 抓取 5 个来源的节点
 - vmess 去重
-- Xray 代理连通性检测
-- 多测速网站平均下载测速
+- Mihomo 代理连通性检测
+- 基于 GitHub Raw 测速文件的全量下载测速
 - Gemini / ChatGPT / Claude 首页地区可用性验证
 - IP 国家识别与节点命名
 - `vmess_node.js` 回填
@@ -53,11 +53,11 @@
 
 桌面端当前以这份文件作为**最高优先级主配置**：
 
-- `/Users/swimmingliu/data/VPN/vpn-subscription-automation/state/profiles/default.json`
+- `/Users/swimmingliu/data/VPN/vpn-subscription-automation/state/profile.toml`
 
 说明：
 
-- 如果这份文件存在，Electron / backend 优先读取它
+- Electron / backend 都通过 Python 配置层读写这份 TOML 文件
 - 当应用从 `.worktrees/` 或打包后的 `.app` 启动时，也会优先回退到这份主配置
 - `state/` 目录属于**本地运行时配置**，当前被 `.gitignore` 忽略，不进入 git
 
@@ -81,7 +81,7 @@ dist-electron/               Electron 打包产物（git ignore）
 
 - Python 3.12+
 - Node.js 24+
-- `xray` 已安装并在 `PATH`
+- `mihomo` 已安装并在 `PATH`
 - `/Users/swimmingliu/data/VPN/vpn-subscription-automation/.env` 中有：
 
 ```env
@@ -97,7 +97,7 @@ source .venv/bin/activate
 pip install -e .[dev]
 npm install
 npx playwright install chromium
-brew install xray
+brew install mihomo
 ```
 
 ## Run the Electron app in development
@@ -108,6 +108,61 @@ npm run electron:dev
 ```
 
 默认跟随系统语言，也可以在右上角手动切换中文 / English。
+
+## Run the backend pipeline manually
+
+如果这次只想验证后端真实链路，不经过 Electron，直接运行：
+
+```bash
+cd /Users/swimmingliu/data/VPN/vpn-subscription-automation
+./scripts/run_backend_pipeline.sh
+```
+
+默认行为：
+
+- 真实执行 `doctor -> extract -> dedupe -> speedtest -> availability -> postprocess -> render -> obfuscate`
+- 默认跳过 `deploy` 和 `verify`
+- 为本次运行创建独立 session 目录：
+  - `artifacts/manual-runs/<session-id>/events.jsonl`
+  - `artifacts/manual-runs/<session-id>/human.log`
+
+只看本次将执行什么但不真正启动：
+
+```bash
+cd /Users/swimmingliu/data/VPN/vpn-subscription-automation
+./scripts/run_backend_pipeline.sh --dry-run
+```
+
+如果后面要重新打开真实部署：
+
+```bash
+cd /Users/swimmingliu/data/VPN/vpn-subscription-automation
+./scripts/run_backend_pipeline.sh --with-deploy --with-verify
+```
+
+## Monitor a manual backend run
+
+在另一个终端里运行：
+
+```bash
+cd /Users/swimmingliu/data/VPN/vpn-subscription-automation
+./scripts/monitor_run.sh
+```
+
+默认监控最近一次 session。只打印一次快照：
+
+```bash
+cd /Users/swimmingliu/data/VPN/vpn-subscription-automation
+./scripts/monitor_run.sh --once
+```
+
+监控输出会展示：
+
+- 每个阶段当前状态
+- 每个抓取源的 `iter/max`、当前累计节点数、最近新增节点数
+- 请求成功/失败、解密成功/失败计数
+- speedtest / availability 进度摘要
+- 最近日志和卡住告警
 
 ## Tests
 

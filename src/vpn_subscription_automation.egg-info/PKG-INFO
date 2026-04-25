@@ -3,7 +3,6 @@ Name: vpn-subscription-automation
 Version: 0.1.0
 Requires-Python: >=3.12
 Requires-Dist: cryptography>=45.0.0
-Requires-Dist: pillow>=11.0.0
 Requires-Dist: python-dotenv>=1.0.1
 Requires-Dist: requests>=2.32.0
 Provides-Extra: dev

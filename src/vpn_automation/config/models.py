@@ -1,4 +1,3 @@
-import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -7,10 +6,9 @@ DEFAULT_SOURCE_ORDER = [
     "leiting",
     "heidong",
     "mifeng",
-    "xuanfeng1",
-    "xuanfeng2",
+    "xuanfeng-area",
+    "xuanfeng-all-area",
 ]
-
 
 @dataclass
 class SourceConfig:
@@ -18,8 +16,11 @@ class SourceConfig:
     key: str
     enabled: bool = True
     max_iterations: int = 40
+    min_iterations: int = 0
     plateau_limit: int = 8
     use_random_area: bool = True
+    failure_limit: int = 3
+    max_runtime_seconds: float = 60.0
 
 
 @dataclass
@@ -31,6 +32,7 @@ class SpeedTestConfig:
     probe_url: str = "https://www.gstatic.com/generate_204"
     max_download_bytes: int = 5_000_000
     startup_wait_seconds: float = 1.0
+    max_download_candidates: int = 50
 
 
 @dataclass
@@ -46,7 +48,7 @@ class DeployConfig:
 @dataclass
 class FilterConfig:
     excluded_country_codes: list[str] = field(default_factory=lambda: ["CN"])
-    per_country_limit: dict[str, int] = field(default_factory=lambda: {"HK": 5, "TW": 5})
+    per_country_limit: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -88,10 +90,10 @@ class AppProfile:
     @classmethod
     def from_dict(cls, data: dict) -> "AppProfile":
         return cls(
-            sources={name: SourceConfig(**value) for name, value in data["sources"].items()},
+            sources={name: _normalize_source_config(name, value) for name, value in data.get("sources", {}).items()},
             speed_test=SpeedTestConfig(**data["speed_test"]),
             deploy=DeployConfig(**data["deploy"]),
-            workspace=WorkspaceConfig(**data["workspace"]),
+            workspace=WorkspaceConfig(**data["workspace"]) if data.get("workspace") else _default_workspace(),
             filters=FilterConfig(**data.get("filters", {})),
         )
 
@@ -112,13 +114,30 @@ def resolve_repo_anchor(candidate: Path) -> Path:
     return current
 
 
+def _default_use_random_area(source_name: str) -> bool:
+    return source_name == "xuanfeng-all-area"
+
+
+def _normalize_source_config(source_name: str, payload: dict) -> SourceConfig:
+    normalized = dict(payload)
+    normalized.setdefault("use_random_area", _default_use_random_area(source_name))
+    return SourceConfig(**normalized)
+
+
 def _load_existing_sources(config_path: Path) -> dict[str, SourceConfig]:
     source_map = {
-        name: SourceConfig(url="", key="", enabled=True)
+        name: SourceConfig(
+            url="",
+            key="",
+            enabled=True,
+            use_random_area=_default_use_random_area(name),
+        )
         for name in DEFAULT_SOURCE_ORDER
     }
     if not config_path.exists():
         return source_map
+
+    import json
 
     payload = json.loads(config_path.read_text(encoding="utf-8"))
     for name in DEFAULT_SOURCE_ORDER:
@@ -128,7 +147,7 @@ def _load_existing_sources(config_path: Path) -> dict[str, SourceConfig]:
             url=str(payload[name].get("url", "")),
             key=str(payload[name].get("key", "")),
             enabled=True,
-            use_random_area=name != "xuanfeng1",
+            use_random_area=_default_use_random_area(name),
         )
     return source_map
 
@@ -144,14 +163,15 @@ def create_default_profile(project_root: Path) -> AppProfile:
     return AppProfile(
         sources=sources,
         speed_test=SpeedTestConfig(
-            min_download_mb_s=1.0,
+            min_download_mb_s=0.5,
             timeout_seconds=20,
-            concurrency=3,
+            concurrency=20,
             urls=[
-                "https://speed.cloudflare.com/__down?bytes=5000000",
-                "https://proof.ovh.net/files/1Mb.dat",
-                "https://cachefly.cachefly.net/1mb.test",
+                "https://raw.githubusercontent.com/bulianglin/demo/main/10MB.bin",
             ],
+            probe_url="http://www.gstatic.com/generate_204",
+            max_download_bytes=10_000_000,
+            max_download_candidates=0,
         ),
         deploy=DeployConfig(
             project_name="vmessnodes",

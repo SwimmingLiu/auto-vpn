@@ -13,16 +13,11 @@ export const STAGE_ORDER = [
 
 export const PAGE_ORDER = [
   'dashboard',
-  'config',
   'runs',
-  'history',
-  'nodes',
+  'results',
   'subscriptions',
   'logs',
-  'deploy',
-  'monitor',
-  'settings',
-  'about'
+  'settings'
 ];
 
 export const PAGE_INDEX = Object.fromEntries(
@@ -30,10 +25,10 @@ export const PAGE_INDEX = Object.fromEntries(
 );
 
 const METRIC_LABELS = {
-  raw_links: '原始节点数',
-  postprocess_links: '后处理节点数',
+  raw_links: '原始节点',
+  postprocess_links: '去重后',
   speedtest_links: '测速通过节点',
-  availability_links: '可用节点数'
+  availability_links: '最终可用'
 };
 
 export function buildStageModel(stageStatus = {}) {

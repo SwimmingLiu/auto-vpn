@@ -10,7 +10,14 @@ const FINAL_NODE_FILES = [
 export function previewArtifactDirectory(artifactDir) {
   const resolved = path.resolve(String(artifactDir ?? ''));
   if (!resolved || !fs.existsSync(resolved)) {
-    return { ok: false, outputFiles: [], nodeRows: [], nodeSource: '' };
+    return {
+      ok: false,
+      outputFiles: [],
+      nodeRows: [],
+      regionCards: [],
+      finalNodeCount: 0,
+      nodeSource: ''
+    };
   }
 
   const outputFiles = fs.readdirSync(resolved, { withFileTypes: true })
@@ -30,8 +37,10 @@ export function previewArtifactDirectory(artifactDir) {
       .map((line) => parseVmessLinkForPreview(line))
       .filter(Boolean)
     : [];
+  const regionCards = buildRegionCards(nodeRows);
+  const finalNodeCount = nodeRows.length;
 
-  return { ok: true, outputFiles, nodeRows, nodeSource };
+  return { ok: true, outputFiles, nodeRows, regionCards, finalNodeCount, nodeSource };
 }
 
 export function parseVmessLinkForPreview(link) {
@@ -48,11 +57,30 @@ export function parseVmessLinkForPreview(link) {
       address: String(payload.add ?? ''),
       protocol: 'vmess',
       path: String(payload.path ?? ''),
-      link: value
+      link: value,
+      regionCode: extractRegionCode(payload.ps)
     };
   } catch {
     return null;
   }
+}
+
+function extractRegionCode(name) {
+  const text = String(name ?? '').trim().toUpperCase();
+  const match = text.match(/\b([A-Z]{2})\b/);
+  return match ? match[1] : 'OTHER';
+}
+
+function buildRegionCards(nodeRows) {
+  const counts = new Map();
+  for (const row of nodeRows) {
+    const regionCode = String(row?.regionCode ?? 'OTHER') || 'OTHER';
+    counts.set(regionCode, (counts.get(regionCode) ?? 0) + 1);
+  }
+
+  return Array.from(counts.entries())
+    .map(([regionCode, count]) => ({ regionCode, count }))
+    .sort((left, right) => left.regionCode.localeCompare(right.regionCode, 'en'));
 }
 
 function padBase64(value) {

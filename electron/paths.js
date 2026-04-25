@@ -45,18 +45,3 @@ export function resolveProjectRoot(explicitRoot = '') {
   }
   return findProjectRoot(currentDir);
 }
-
-export function resolveStateProfilePath(projectRoot) {
-  const localRoot = path.resolve(projectRoot);
-  const localPath = path.join(localRoot, 'state', 'profiles', 'default.json');
-  const parts = localRoot.split(path.sep);
-  const worktreeIndex = parts.indexOf('.worktrees');
-
-  if (worktreeIndex === -1) {
-    return localPath;
-  }
-
-  const repoRoot = parts.slice(0, worktreeIndex).join(path.sep) || path.sep;
-  const anchorPath = path.join(repoRoot, 'state', 'profiles', 'default.json');
-  return anchorPath;
-}

@@ -1,9 +1,9 @@
 export function buildWindowOptions(preloadPath) {
   return {
-    width: 1100,
-    height: 760,
-    minWidth: 960,
-    minHeight: 720,
+    width: 1280,
+    height: 860,
+    minWidth: 880,
+    minHeight: 640,
     useContentSize: true,
     center: true,
     titleBarStyle: 'hiddenInset',

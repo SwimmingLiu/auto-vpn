@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from dotenv import dotenv_values
@@ -20,3 +21,10 @@ def load_runtime_env(candidate: Path) -> dict[str, str]:
         for key, value in dotenv_values(env_path).items()
         if key and value
     }
+
+
+def resolve_upstream_proxy_url() -> str:
+    value = os.environ.get("VPN_AUTOMATION_UPSTREAM_PROXY", "http://127.0.0.1:7897").strip()
+    if value.lower() in {"", "off", "none", "false", "0"}:
+        return ""
+    return value
