@@ -620,6 +620,7 @@ class PipelineController:
         results_by_source: dict[str, list[str]] = {}
         source_counts: dict[str, dict[str, int | str]] = {}
         resume_states: dict[str, dict[str, object]] = {}
+        accepted_unique_links: set[str] = set()
 
         for source_name, source in enabled_sources:
             if run_store and resume:
@@ -649,6 +650,7 @@ class PipelineController:
                     resume_state=resume_states[source_name],
                     event_callback=event_callback,
                     unique_link_callback=unique_link_callback,
+                    accepted_unique_links=accepted_unique_links,
                 ): (source_name, source)
                 for source_name, source in enabled_sources
             }
@@ -694,9 +696,14 @@ class PipelineController:
                 seen = set(results_by_source[source_name])
                 for link in new_links:
                     inserted = True
-                    if run_store:
+                    already_accepted = link in accepted_unique_links
+                    if run_store and already_accepted:
+                        inserted = True
+                    elif run_store:
                         inserted = run_store.record_raw_link(source_name, link)
-                    if inserted and unique_link_callback:
+                    if not inserted:
+                        continue
+                    if inserted and unique_link_callback and not already_accepted:
                         unique_link_callback(link)
                     if link in seen:
                         continue
@@ -742,6 +749,7 @@ class PipelineController:
         resume_state: dict[str, object],
         event_callback: Callable[[str, dict[str, Any]], None] | None = None,
         unique_link_callback: Callable[[str], None] | None = None,
+        accepted_unique_links: set[str] | None = None,
     ) -> Any:
         kwargs: dict[str, Any] = {"progress_callback": log}
         signature = inspect.signature(self.extractor)
@@ -763,6 +771,8 @@ class PipelineController:
         if run_store and (accepts_kwargs or "raw_link_callback" in parameters):
             def raw_link_callback(source_name: str, link: str) -> bool:
                 inserted = run_store.record_raw_link(source_name, link)
+                if inserted and accepted_unique_links is not None:
+                    accepted_unique_links.add(link)
                 if inserted and unique_link_callback:
                     unique_link_callback(link)
                 return inserted
