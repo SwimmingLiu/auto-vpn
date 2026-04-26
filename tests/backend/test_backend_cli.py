@@ -3,6 +3,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from vpn_automation.backend import (
+    artifact_latest_json,
     build_event,
     ensure_profile_json,
     resume_pipeline,
@@ -92,6 +93,43 @@ def test_find_resume_run_db_prefers_latest_incomplete_artifact(tmp_path: Path) -
     resolved = find_resume_run_db(project_root)
 
     assert resolved == second_dir / "run.db"
+
+
+def test_artifact_latest_json_returns_latest_reported_artifact(tmp_path: Path) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    artifacts_root = project_root / "artifacts"
+    first_dir = artifacts_root / "20260423-010101"
+    latest_dir = artifacts_root / "20260423-020202"
+    first_dir.mkdir(parents=True)
+    latest_dir.mkdir(parents=True)
+    (latest_dir / "pipeline_report.json").write_text(
+        json.dumps(
+            {
+                "artifact_dir": str(latest_dir),
+                "run_status": "success",
+                "stage_status": {"availability": "success"},
+                "counts": {"availability_links": 2},
+                "source_counts": {"leiting": {"raw_links": 3}},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(artifact_latest_json(project_root))
+
+    assert payload["ok"] is True
+    assert payload["artifact_dir"] == str(latest_dir)
+    assert payload["counts"]["availability_links"] == 2
+    assert payload["source_counts"]["leiting"]["raw_links"] == 3
+
+
+def test_artifact_latest_json_returns_empty_when_no_artifact_exists(tmp_path: Path) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+
+    payload = json.loads(artifact_latest_json(project_root))
+
+    assert payload == {"ok": False, "artifact_dir": ""}
 
 
 def test_run_pipeline_can_write_event_log_and_human_output(

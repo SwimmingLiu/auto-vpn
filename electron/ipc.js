@@ -5,7 +5,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { ipcMain, shell } from 'electron';
 import QRCode from 'qrcode';
 
-import { previewArtifactDirectory } from './lib/artifact-preview.js';
+import { mergeLatestArtifactPreview, previewArtifactDirectory } from './lib/artifact-preview.js';
 import { buildBackendInvocation, parseBackendEventLine } from './lib/backend.js';
 import { resolveStateProfilePath } from './paths.js';
 
@@ -181,6 +181,22 @@ export function registerIpcHandlers({ mainWindow, projectRoot, runtimeProfilePat
 
   ipcMain.handle('artifact:preview', async (_event, artifactDir) => {
     return previewArtifactDirectory(artifactDir);
+  });
+
+  ipcMain.handle('artifact:latest', async () => {
+    const invocation = buildBackendInvocation(projectRoot, 'artifact-latest');
+    const output = await runCommand(
+      invocation.commands,
+      invocation.args,
+      projectRoot,
+      runtimeProfilePath,
+      bundledProfilePath
+    );
+    const report = JSON.parse(output.stdout);
+    if (!report?.ok) {
+      return { ok: false, artifact_dir: '' };
+    }
+    return mergeLatestArtifactPreview(report, previewArtifactDirectory(report.artifact_dir));
   });
 
   ipcMain.handle('qr:generate', async (_event, text) => ({

@@ -49,6 +49,40 @@ def ensure_profile_json(project_root: Path) -> str:
     return json.dumps(profile.to_dict(), ensure_ascii=False)
 
 
+def artifact_latest_json(project_root: Path) -> str:
+    runtime_root = resolve_runtime_root(project_root)
+    latest_dir = RunStore.find_latest_artifact_dir(resolve_artifacts_root(runtime_root))
+    if not latest_dir:
+        return json.dumps({"ok": False, "artifact_dir": ""}, ensure_ascii=False)
+
+    report_path = latest_dir / "pipeline_report.json"
+    payload: dict[str, Any] = {"ok": True, "artifact_dir": str(latest_dir)}
+    if report_path.exists():
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        payload.update(
+            {
+                "run_status": report.get("run_status", ""),
+                "stage_status": report.get("stage_status", {}),
+                "counts": report.get("counts", {}),
+                "source_counts": report.get("source_counts", {}),
+                "deployment": report.get("deployment", {}),
+                "error": report.get("error", ""),
+            }
+        )
+    else:
+        payload.update(
+            {
+                "run_status": "",
+                "stage_status": {},
+                "counts": {},
+                "source_counts": {},
+                "deployment": {},
+                "error": "",
+            }
+        )
+    return json.dumps(payload, ensure_ascii=False)
+
+
 def save_profile_payload(project_root: Path, payload: dict[str, Any]) -> str:
     store = ProfileStore(resolve_profile_path(project_root))
     profile = AppProfile.from_dict(payload)
@@ -316,6 +350,9 @@ def main(argv: list[str] | None = None) -> int:
     profile_save_parser = subparsers.add_parser("profile-save")
     profile_save_parser.add_argument("--project-root", default="")
 
+    artifact_latest_parser = subparsers.add_parser("artifact-latest")
+    artifact_latest_parser.add_argument("--project-root", default="")
+
     run_parser = subparsers.add_parser("run")
     run_parser.add_argument("--project-root", default="")
     run_parser.add_argument("--resume-latest", action="store_true")
@@ -348,6 +385,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "profile-save":
         print(save_profile_json(project_root, sys.stdin.read()))
+        return 0
+    if args.command == "artifact-latest":
+        print(artifact_latest_json(project_root))
         return 0
     if args.command == "run":
         if args.resume_latest:

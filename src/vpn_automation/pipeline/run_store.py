@@ -382,6 +382,17 @@ class RunStore:
             return db_path
         return None
 
+    @staticmethod
+    def find_latest_artifact_dir(artifacts_root: Path) -> Path | None:
+        if not artifacts_root.exists():
+            return None
+        candidates = sorted(
+            [path for path in artifacts_root.iterdir() if path.is_dir()],
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        return candidates[0] if candidates else None
+
     def fetch_stage_status(self) -> dict[str, str]:
         result = {name: "pending" for name in DEFAULT_STAGES}
         with sqlite3.connect(self.path) as connection:

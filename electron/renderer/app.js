@@ -128,6 +128,7 @@ async function bootstrap() {
   state.savedProfile = structuredClone(loadedProfile);
   touchUpdate();
   await refreshQrCode();
+  await hydrateLatestArtifact();
   renderAll();
   state.unsubscribe = window.vpnAutomation.onPipelineEvent(handlePipelineEvent);
 }
@@ -850,6 +851,31 @@ async function hydrateArtifactPreview() {
     state.outputFiles = result.outputFiles ?? [];
     state.nodeRows = result.nodeRows ?? [];
     renderAll();
+  }
+}
+
+async function hydrateLatestArtifact() {
+  if (!window.vpnAutomation?.latestArtifact) {
+    return;
+  }
+
+  try {
+    const result = await window.vpnAutomation.latestArtifact();
+    if (!result?.ok || !result.artifact_dir) {
+      return;
+    }
+    state.artifactDir = result.artifact_dir;
+    state.counts = normalizeCounts(result.counts ?? {});
+    state.sourceCounts = normalizeSourceCounts(result.source_counts ?? {});
+    state.outputFiles = result.outputFiles ?? [];
+    state.nodeRows = result.nodeRows ?? [];
+    state.runResult = result.run_status === 'success' ? 'success' : state.runResult;
+    if (result.stage_status) {
+      state.stageStatus = result.stage_status;
+    }
+    touchUpdate();
+  } catch (error) {
+    appendLog(formatMessage(getMessages(state.language).openFailed, { error: error.message }));
   }
 }
 

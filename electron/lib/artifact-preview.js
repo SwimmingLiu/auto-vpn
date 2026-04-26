@@ -43,6 +43,20 @@ export function previewArtifactDirectory(artifactDir) {
   return { ok: true, outputFiles, nodeRows, regionCards, finalNodeCount, nodeSource };
 }
 
+export function mergeLatestArtifactPreview(report, preview) {
+  if (!report?.ok) {
+    return { ok: false, artifact_dir: '' };
+  }
+  return {
+    ...report,
+    outputFiles: preview?.outputFiles ?? [],
+    nodeRows: preview?.nodeRows ?? [],
+    regionCards: preview?.regionCards ?? [],
+    finalNodeCount: preview?.finalNodeCount ?? 0,
+    nodeSource: preview?.nodeSource ?? ''
+  };
+}
+
 export function parseVmessLinkForPreview(link) {
   const value = String(link ?? '').trim();
   if (!value.startsWith('vmess://')) {
