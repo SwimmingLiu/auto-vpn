@@ -12,12 +12,12 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const EXPECTED_DIGESTS = {
-  dashboard: '6e021fbad6b17ab9a0ffdc2d62017a3448cd6d80a608d523a41f0b8ce5caaf94',
-  runs: 'bd79fd72888a0c6a02b87abdc4d38c02225fbf7834179eeb85af7e247fc5596e',
-  results: 'eecd6f970ddb76743029c6d1af0bd4c60b1dc0355f73aa7ffc08317f3589993f',
-  subscriptions: 'defd7383834254eafcf6c315ad89d6dab947258fd384299e80cbabc012682ac2',
-  logs: '00304d3005dec0d78c1c08ae6f4e026004a8a039082aca3b87ccff6de1fa80e5',
-  settings: '711fe75b37ca08f520af86fd58e8730dda37259c8526f0fd09236a660c9541f9'
+  dashboard: '4ba57c170b83752899ce1a2210144e29a2ae511322feae9b9fa2194e9dde3c9f',
+  runs: '809b8a4034cb2a7bf5f71e722d31f78f1e2147bd8f1f9ee65436427515a68e94',
+  results: '2fc09f43b0486c827a2113462d24c63c2bff05d0b037f5386fd226e449069206',
+  subscriptions: '787f14e1696884474ae9b5d5c63d953dd04aa2b0a8f0bd66b1286b380022149c',
+  logs: '313e46799422a1ea352c4ff66b19d6a84e41021c1ff2c5649e26bd52f5742879',
+  settings: 'd9b631a551f090fba9acb2b53dda8b97dc7550c2e1772f266e35fada5b9f1f53'
 };
 
 const VISUAL_CASES = [
@@ -46,7 +46,11 @@ test('renderer visual hashes match the full mockup-driven workspace', async () =
 
     const digests = {};
     for (const [name, navSelector, readySelector] of VISUAL_CASES) {
-      await page.locator(navSelector).click();
+      if (name !== 'dashboard') {
+        await page.evaluate((selector) => {
+          document.querySelector(selector)?.click();
+        }, navSelector);
+      }
       await page.waitForSelector(readySelector);
       await page.waitForTimeout(120);
       const buffer = await page.screenshot({ animations: 'disabled' });

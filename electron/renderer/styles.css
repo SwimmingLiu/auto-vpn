@@ -182,14 +182,14 @@ textarea:focus {
   border-radius: 18px;
   color: var(--text-soft);
   text-align: left;
-  transition: background 0.18s ease, color 0.18s ease, transform 0.18s ease;
+  transition: background 0.18s ease, color 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
 }
 
 .nav-item:hover,
 .nav-item.active {
   background: rgba(91, 92, 226, 0.1);
   color: var(--accent);
-  transform: translateX(2px);
+  box-shadow: inset 0 0 0 1px rgba(91, 92, 226, 0.08);
 }
 
 .nav-icon {
@@ -332,17 +332,17 @@ textarea:focus {
   padding: 0 16px;
   border-radius: 14px;
   font-weight: 750;
-  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+  transition: box-shadow 0.18s ease, border-color 0.18s ease, background 0.18s ease, color 0.18s ease;
 }
 
 .btn:hover {
-  transform: translateY(-1px);
+  box-shadow: 0 10px 22px rgba(29, 39, 71, 0.12);
 }
 
 .btn:disabled {
   opacity: 0.55;
   cursor: default;
-  transform: none;
+  box-shadow: none;
 }
 
 .btn.small {
@@ -899,7 +899,7 @@ body[data-page="logs"] .page-content {
   min-height: 240px;
   border-radius: 18px;
   border: 1px solid rgba(128, 152, 196, 0.22);
-  background: rgba(7, 11, 18, 0.34);
+  background: linear-gradient(180deg, #0a101b 0%, #131c2b 100%);
   padding: 16px;
   overflow: auto;
   font: 13px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -926,8 +926,8 @@ body[data-page="logs"] #logsWorkspace > .panel {
 
 body[data-page="logs"] #logCenterTable {
   min-height: 0;
-  overflow: hidden;
-}
+  height: 100%;
+  overflow: auto;
 }
 
 .log-line {
@@ -970,12 +970,24 @@ body[data-page="logs"] #logCenterTable {
   gap: 16px;
 }
 
-.subscriptions-grid > .panel:first-child {
-  padding: 22px 26px;
+.subscriptions-primary-panel {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 26px 28px;
 }
 
-.subscriptions-grid .subscription-primary {
-  margin-block: 14px;
+.subscription-primary-stack {
+  display: grid;
+  gap: 18px;
+  align-content: space-between;
+  flex: 1;
+}
+
+.subscriptions-primary-panel .subscription-primary {
+  margin: 0;
+  padding: 18px;
 }
 
 .subscription-tab-scroller {
@@ -993,13 +1005,12 @@ body[data-page="logs"] #logCenterTable {
 .subscription-tab-scroller .subtab {
   flex: 0 0 auto;
   scroll-snap-align: start;
-  transition: background 0.18s ease, color 0.18s ease, transform 0.18s ease;
+  transition: background 0.18s ease, color 0.18s ease, box-shadow 0.18s ease;
 }
 
 .subscription-tab-scroller .subtab.active {
   background: #fff;
   box-shadow: 0 10px 22px rgba(91, 92, 226, 0.14);
-  transform: translateY(-1px);
 }
 
 .action-grid.four {
@@ -1107,6 +1118,7 @@ body[data-page="logs"] #logCenterTable {
   text-align: left;
   font-size: 14px;
   vertical-align: top;
+  overflow-wrap: anywhere;
 }
 
 .data-table thead th {
@@ -1116,9 +1128,60 @@ body[data-page="logs"] #logCenterTable {
   font-weight: 700;
 }
 
-.settings-source-table input {
+.settings-source-table input,
+.availability-target-table input {
   min-height: 36px;
   border-radius: 10px;
+}
+
+.settings-source-table,
+.availability-target-table {
+  table-layout: fixed;
+}
+
+.settings-source-name {
+  display: inline-block;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.table-textarea {
+  min-height: 72px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  line-height: 1.45;
+  resize: vertical;
+}
+
+.settings-col-enabled,
+.availability-col-enabled {
+  width: 78px;
+}
+
+.settings-col-name,
+.availability-col-name {
+  width: 112px;
+}
+
+.settings-col-url {
+  width: 44%;
+}
+
+.settings-col-key {
+  width: 28%;
+}
+
+.availability-col-url {
+  width: 28%;
+}
+
+.availability-col-hosts,
+.availability-col-phrases {
+  width: 22%;
+}
+
+.availability-col-actions {
+  width: 104px;
 }
 
 .source-drawer-settings {
@@ -1151,7 +1214,7 @@ body[data-page="logs"] #logCenterTable {
 
 .settings-overview-card:hover {
   border-color: rgba(91, 92, 226, 0.24);
-  transform: translateY(-1px);
+  box-shadow: 0 18px 30px rgba(29, 39, 71, 0.08);
 }
 
 .settings-card-kicker {
@@ -1203,13 +1266,13 @@ body[data-page="logs"] #logCenterTable {
 }
 
 .settings-drawer-panel {
-  width: 100%;
-  max-width: 800px;
-  max-height: 85vh;
-  padding: 24px 22px;
+  width: min(1320px, calc(100vw - 48px));
+  max-width: 1320px;
+  max-height: min(88vh, 960px);
+  padding: 26px 26px 24px;
   background: rgba(255, 255, 255, 0.96);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 26px;
   box-shadow: 0 16px 48px rgba(29, 39, 71, 0.16);
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
@@ -1248,7 +1311,7 @@ body[data-page="logs"] #logCenterTable {
   overflow: auto;
   display: grid;
   gap: 16px;
-  padding-right: 4px;
+  padding-right: 6px;
 }
 
 .settings-drawer-actions {

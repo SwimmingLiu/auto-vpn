@@ -11,6 +11,7 @@ from vpn_automation.config.models import AvailabilityTargetConfig
 from vpn_automation.pipeline.availability import AvailabilityResult, ProviderCheckResult
 from vpn_automation.pipeline.controller import PipelineController
 from vpn_automation.pipeline.speedtest import SpeedTestResult
+from vpn_automation.pipeline.vmess import generate_vmess_link, parse_vmess_link
 
 
 VMESS_LINK = "vmess://eyJhZGQiOiIxLjEuMS4xIiwiYWlkIjoiNjQiLCJob3N0Ijoid3d3Lmdvb2dsZS5jb20iLCJpZCI6IjQxODA0OGFmLWEyOTMtNGI5OS05YjBjLTk4Y2EzNTgwZGQyNCIsIm5ldCI6IndzIiwicGF0aCI6IlwvZm9vdGVycyIsInBvcnQiOjQ0MywicHMiOiJVUyBub2RlIiwidGxzIjoidGxzIiwidHlwZSI6ImR0bHMiLCJ2IjoiMiJ9"
@@ -249,6 +250,58 @@ def test_pipeline_streams_speedtest_before_extract_finishes(tmp_path: Path) -> N
     assert saw_speedtest_before_return["value"] is True
     assert summary.stage_status["dedupe"] == "success"
     assert summary.counts["deduped_links"] == 1
+    assert summary.source_counts["leiting"]["deduped_links"] == 1
+
+
+def test_pipeline_reports_per_source_deduped_counts(tmp_path: Path) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    edge_root = tmp_path / "cloudflarevpn" / "edgetunnel"
+    edge_root.mkdir(parents=True)
+    (edge_root / "vmess_node.js").write_text("const MainData = `__MAIN_DATA__`;", encoding="utf-8")
+
+    profile = create_default_profile(project_root)
+    profile.workspace.edgetunnel_root = str(edge_root)
+    profile.sources = {
+        "leiting": profile.sources["leiting"],
+        "heidong": profile.sources["heidong"],
+    }
+    profile.sources["leiting"].url = "https://a.example/api"
+    profile.sources["leiting"].key = "key-a"
+    profile.sources["heidong"].url = "https://b.example/api"
+    profile.sources["heidong"].key = "key-b"
+
+    payload = parse_vmess_link(VMESS_LINK)
+    alternate_payload = {**payload, "add": "2.2.2.2", "ps": "US node 2"}
+    alternate_link = generate_vmess_link(alternate_payload)
+
+    def extractor(source_name, source, progress_callback=None, **kwargs):
+        if source_name == "leiting":
+            return [VMESS_LINK]
+        return [VMESS_LINK, alternate_link]
+
+    controller = PipelineController(
+        extractor=extractor,
+        speedtester=lambda links, config, runtime_path="", progress_callback=None, event_callback=None: [
+            SpeedTestResult(link=link, reachable=True, average_download_mb_s=2.5, latency_ms=50)
+            for link in links
+        ],
+        availability_checker=lambda results, config, runtime_path="", progress_callback=None, event_callback=None, targets=None: [
+            AvailabilityResult(
+                speed_result=result,
+                provider_results={"gemini": ProviderCheckResult(provider="gemini", passed=True, reason="ok")},
+            )
+            for result in results
+        ],
+        country_lookup=lambda host: "US",
+        obfuscator=lambda input_path, output_path: output_path.write_text("obfuscated", encoding="utf-8"),
+        env_loader=lambda _candidate: {"CLOUDFLARE_API_TOKEN": "token"},
+    )
+
+    summary = controller.run(profile, skip_deploy=True, skip_verify=True)
+
+    assert summary.counts["deduped_links"] == 2
+    assert summary.source_counts["leiting"]["deduped_links"] == 1
+    assert summary.source_counts["heidong"]["deduped_links"] == 1
 
 
 def test_pipeline_prunes_old_artifacts_after_new_run(tmp_path: Path) -> None:

@@ -322,14 +322,25 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     assert.match(settingsText, /数据源配置/);
     assert.match(settingsText, /测速配置/);
     assert.match(settingsText, /AI可达性检测/);
+    assert.match(settingsText, /弹窗/);
+    assert.doesNotMatch(settingsText, /右侧抽屉|顶部统一保存/);
     assert.doesNotMatch(settingsText, /部署配置/);
     assert.equal(await page.locator('.settings-overview-card').count(), 3);
     assert.equal(await page.locator('.settings-source-table').count(), 0);
+    assert.equal(await page.locator('#pageActions [data-action="save-profile"]').count(), 0);
 
     await page.locator('[data-settings-card="sources"]').click();
     await page.waitForSelector('#settingsDrawer[data-open="true"]');
     assert.match(await page.locator('#settingsDrawerTitle').innerText(), /数据源配置/);
     assert.equal(await page.locator('[data-source-max-iterations]').inputValue(), '40');
+
+    const curlInput = "curl 'https://www.xnfvjf.info:20000/api/evmess?&proto=v6&platform=ios&ver=5.8.55347&unicode=CDC37303-6CEC-4AB2-AAD9-AE88DEF1CF10&deviceid=CDC37303-6CEC-4AB2-AAD9-AE88DEF1CF10&code=ZRGOIXI&recomm_code=&device_token=&f=2026-04-23&install=2026-04-23&xf_fans=0&token=ZGSNZ19nnZqSl2VobGppZZOWaGZonHGRYWeVk5lu&t=1777190098.382194&width=375.0&height=812.0&area=999' -H 'Host: www.xnfvjf.info:20000'";
+    await page.locator('[data-drawer-source="leiting"][data-drawer-key="url"]').fill(curlInput);
+    await page.locator('[data-drawer-source="leiting"][data-drawer-key="url"]').blur();
+    assert.equal(
+      await page.locator('[data-drawer-source="leiting"][data-drawer-key="url"]').inputValue(),
+      'https://www.xnfvjf.info:20000/api/evmess?&proto=v6&platform=ios&ver=5.8.55347&unicode=CDC37303-6CEC-4AB2-AAD9-AE88DEF1CF10&deviceid=CDC37303-6CEC-4AB2-AAD9-AE88DEF1CF10&code=ZRGOIXI&recomm_code=&device_token=&f=2026-04-23&install=2026-04-23&xf_fans=0&token=ZGSNZ19nnZqSl2VobGppZZOWaGZonHGRYWeVk5lu&t=1777190098.382194&width=375.0&height=812.0&area=999'
+    );
 
     await page.locator('[data-source-max-iterations]').fill('25');
     await page.locator('[data-source-area-min]').fill('20');
@@ -339,10 +350,13 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     assert.equal(await page.locator('[data-source-area-max]').inputValue(), '60');
     await page.locator('[data-drawer-save="save"]').click();
     await page.waitForSelector('#settingsDrawer[data-open="false"]');
-    await page.locator('#pageActions [data-action="save-profile"]').click();
     assert.equal(
       await page.evaluate(() => window.__savedProfiles.at(-1).sources.leiting.max_iterations),
       25
+    );
+    assert.equal(
+      await page.evaluate(() => window.__savedProfiles.at(-1).sources.leiting.url),
+      'https://www.xnfvjf.info:20000/api/evmess?&proto=v6&platform=ios&ver=5.8.55347&unicode=CDC37303-6CEC-4AB2-AAD9-AE88DEF1CF10&deviceid=CDC37303-6CEC-4AB2-AAD9-AE88DEF1CF10&code=ZRGOIXI&recomm_code=&device_token=&f=2026-04-23&install=2026-04-23&xf_fans=0&token=ZGSNZ19nnZqSl2VobGppZZOWaGZonHGRYWeVk5lu&t=1777190098.382194&width=375.0&height=812.0&area=999'
     );
     assert.deepEqual(
       await page.evaluate(() => [
@@ -365,7 +379,6 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     await lastRow.locator('[data-availability-key="negative_phrases"]').fill('blocked');
     await page.locator('[data-drawer-save="save"]').click();
     await page.waitForSelector('#settingsDrawer[data-open="false"]');
-    await page.locator('#pageActions [data-action="save-profile"]').click();
     assert.deepEqual(
       await page.evaluate(() => window.__savedProfiles.at(-1).availability_targets.tmailor),
       {
@@ -391,6 +404,19 @@ test('renderer matches the six-page canvas redesign and supports page navigation
       return window.__stableRunButton === document.querySelector('#runsWorkspace [data-run-action="start"]');
     });
     assert.equal(sameButtonAfterLogs, true);
+
+    await page.locator('#navDashboard').click();
+    await page.waitForSelector('#dashboardOverview');
+    const sameDashboardButtonAfterStages = await page.locator('#pageActions [data-run-action="start"]').evaluate((button) => {
+      window.__stableDashboardButton = button;
+      window.__emitPipelineEvent({ type: 'stage', stage: 'extract', status: 'running' });
+      window.__emitPipelineEvent({ type: 'stage', stage: 'dedupe', status: 'running' });
+      return window.__stableDashboardButton === document.querySelector('#pageActions [data-run-action="start"]');
+    });
+    assert.equal(sameDashboardButtonAfterStages, true);
+
+    await page.locator('#navRuns').click();
+    await page.waitForSelector('#runsWorkspace');
 
     const runButtonBox = await page.locator('#runsWorkspace [data-run-action="start"]').boundingBox();
     await page.mouse.move(runButtonBox.x + runButtonBox.width / 2, runButtonBox.y + runButtonBox.height / 2);

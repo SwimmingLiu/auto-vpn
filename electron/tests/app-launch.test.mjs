@@ -34,7 +34,7 @@ test('electron app exposes preload bridge and renders the real saved profile', a
     assert.equal(hasQrBridge, true);
     assert.equal(hasOpenUrlBridge, true);
     assert.equal(hasPreviewBridge, true);
-    assert.match(actionText, /保存配置/);
+    assert.equal(actionText.trim(), '');
     assert.equal(pageTitle, '设置');
     assert.notEqual(sourceSummary.trim(), '');
   } finally {

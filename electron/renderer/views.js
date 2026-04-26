@@ -103,10 +103,18 @@ const DEFAULT_AVAILABILITY_TARGETS = {
 
 export function buildViewModel(state, messages, language) {
   const profile = mergeProfile(state.profile ?? FALLBACK_PROFILE);
+  const sourceCounts = state.sourceCounts ?? {};
+  const dedupedSourceCount = Object.values(sourceCounts).reduce(
+    (total, counts) => total + Number(counts?.deduped_links ?? 0),
+    0
+  );
   const counts = {
     ...EMPTY_COUNTS,
     ...(state.counts ?? {})
   };
+  if (!Number.isFinite(Number(counts.deduped_links)) || Number(counts.deduped_links) <= 0) {
+    counts.deduped_links = dedupedSourceCount || counts.deduped_links || counts.postprocess_links || 0;
+  }
   const subscriptionUrl = profile.deploy.subscription_url || FALLBACK_PROFILE.deploy.subscription_url;
   const subscriptionCards = buildSubscriptionCards(subscriptionUrl);
   const currentSubscription = subscriptionCards.find((card) => card.title === state.subscriptionFormat) ?? subscriptionCards[0];
@@ -140,8 +148,9 @@ export function buildViewModel(state, messages, language) {
     subscriptionCards,
     currentSubscription,
     sourceRows: buildSourceRows(profile),
-    sourceCounts: state.sourceCounts ?? {},
-    sourceMetricRows: buildSourceMetricRows(profile, state.sourceCounts ?? {}),
+    sourceCounts,
+    rawSourceMetricRows: buildSourceMetricRows(profile, sourceCounts, 'raw_links'),
+    dedupedSourceMetricRows: buildSourceMetricRows(profile, sourceCounts, 'deduped_links'),
     runControlState: resolveRunControlState(state.runState),
     statusItems: buildStatusItems(state, messages),
     currentStatusLabel: resolveCurrentStatusLabel(state, messages),
@@ -181,9 +190,7 @@ export function buildTopbarActions(activePage, viewModel, messages, labels) {
     subscriptions: [
     ],
     logs: [],
-    settings: [
-      `<button class="btn btn-primary" data-action="save-profile" type="button">${escapeHtml(labels.saveLabel)}</button>`
-    ]
+    settings: []
   };
   return (actionSets[activePage] ?? []).join('');
 }
@@ -308,7 +315,11 @@ export function buildDashboardMetricsMarkup(vm) {
             <span>${escapeHtml(metric.label)}</span>
             <strong>${escapeHtml(metric.value)}</strong>
             <small>${escapeHtml(metric.detail)}</small>
-            ${metric.key === 'raw_links' ? renderSourceMetricRows(vm.sourceMetricRows) : ''}
+            ${metric.key === 'raw_links'
+              ? renderSourceMetricRows(vm.rawSourceMetricRows, '各数据源原始节点数')
+              : metric.key === 'deduped_links'
+                ? renderSourceMetricRows(vm.dedupedSourceMetricRows, '各数据源去重节点数')
+                : ''}
           </div>
         `).join('')}
       </div>
@@ -428,21 +439,23 @@ function buildSubscriptionsPage(vm, messages) {
   const primaryCard = vm.currentSubscription;
   return `
     <div id="subscriptionCards" class="page-grid subscriptions-grid">
-      <article class="panel">
+      <article class="panel subscriptions-primary-panel">
         <div class="panel-headline"><h3>主订阅地址</h3>${renderBadge('自动生成', 'success')}</div>
-        <div class="subscription-tab-scroller">
-          ${SUBSCRIPTION_FORMATS.map((format) => `
-            <button
-              class="subtab ${vm.subscriptionFormat === format ? 'active' : ''}"
-              data-subscription-format="${escapeHtml(format)}"
-              type="button"
-            >${escapeHtml(format)}</button>
-          `).join('')}
-        </div>
-        <div class="subscription-primary mono">${escapeHtml(primaryCard.url)}</div>
-        <div class="action-grid">
-          <button class="btn btn-primary" data-copy-text="${escapeHtml(primaryCard.url)}" type="button">复制链接</button>
-          <button class="btn btn-secondary" data-open-url="${escapeHtml(primaryCard.url)}" type="button">打开订阅</button>
+        <div class="subscription-primary-stack">
+          <div class="subscription-tab-scroller">
+            ${SUBSCRIPTION_FORMATS.map((format) => `
+              <button
+                class="subtab ${vm.subscriptionFormat === format ? 'active' : ''}"
+                data-subscription-format="${escapeHtml(format)}"
+                type="button"
+              >${escapeHtml(format)}</button>
+            `).join('')}
+          </div>
+          <div class="subscription-primary mono">${escapeHtml(primaryCard.url)}</div>
+          <div class="action-grid">
+            <button class="btn btn-primary" data-copy-text="${escapeHtml(primaryCard.url)}" type="button">复制链接</button>
+            <button class="btn btn-secondary" data-open-url="${escapeHtml(primaryCard.url)}" type="button">打开订阅</button>
+          </div>
         </div>
       </article>
 
@@ -463,7 +476,7 @@ function buildSubscriptionsPage(vm, messages) {
 function buildLogsPage(vm, messages) {
   return `
     <div id="logsWorkspace" class="page-grid logs-grid">
-      <article class="panel wide-panel">
+      <article class="panel wide-panel terminal-panel logs-panel">
         <div class="toolbar-row log-toolbar">
           <div class="toolbar-left">
             ${LOG_FILTERS.map((filter) => `
@@ -498,7 +511,7 @@ function buildSettingsPage(vm, messages) {
       <article class="panel wide-panel settings-overview-panel">
         <div class="panel-headline">
           <h3>设置总览</h3>
-          <span class="panel-subcopy">点击卡片后在右侧抽屉中编辑，顶部统一保存</span>
+          <span class="panel-subcopy">点击卡片后在弹窗中编辑，并在弹窗内直接保存</span>
         </div>
         <div class="settings-overview-grid">
           ${buildSettingsCard('sources', '数据源配置', `已启用 ${vm.sourceRows.filter((row) => row.enabled).length} / ${vm.sourceRows.length} 个来源`, '管理抓取地址、密钥和启用状态')}
@@ -561,11 +574,11 @@ function buildSettingsDrawer(vm) {
 
   return `
     <div id="settingsDrawer" class="settings-drawer-shell" data-open="${isOpen ? 'true' : 'false'}">
-      <button class="settings-drawer-backdrop" data-drawer-dismiss="backdrop" type="button" aria-label="关闭设置抽屉"></button>
+      <button class="settings-drawer-backdrop" data-drawer-dismiss="backdrop" type="button" aria-label="关闭设置弹窗"></button>
       <aside class="settings-drawer-panel" ${style}>
         <div class="settings-drawer-head">
           <div>
-            <span class="settings-card-kicker">编辑分组</span>
+            <span class="settings-card-kicker">编辑配置</span>
             <h3 id="settingsDrawerTitle">${escapeHtml(title)}</h3>
           </div>
         </div>
@@ -602,13 +615,26 @@ function buildSettingsDrawerBody(section, draft) {
       </div>
       <div class="table-wrap">
         <table class="data-table settings-source-table">
+          <colgroup>
+            <col class="settings-col-enabled" />
+            <col class="settings-col-name" />
+            <col class="settings-col-url" />
+            <col class="settings-col-key" />
+          </colgroup>
           <thead><tr><th>启用</th><th>名称</th><th>地址</th><th>密钥</th></tr></thead>
           <tbody>
             ${Object.entries(sourceDraft).map(([name, source]) => `
               <tr>
                 <td><input type="checkbox" data-drawer-source="${escapeHtml(name)}" data-drawer-key="enabled" ${source.enabled ? 'checked' : ''} /></td>
-                <td><strong style="white-space:nowrap;font-size:13px">${escapeHtml(SOURCE_NAMES[name] || name)}</strong></td>
-                <td><input data-drawer-source="${escapeHtml(name)}" data-drawer-key="url" value="${escapeHtml(source.url ?? '')}" /></td>
+                <td><strong class="settings-source-name">${escapeHtml(SOURCE_NAMES[name] || name)}</strong></td>
+                <td>
+                  <textarea
+                    class="table-textarea mono"
+                    rows="3"
+                    data-drawer-source="${escapeHtml(name)}"
+                    data-drawer-key="url"
+                  >${escapeHtml(source.url ?? '')}</textarea>
+                </td>
                 <td><input data-drawer-source="${escapeHtml(name)}" data-drawer-key="key" value="${escapeHtml(source.key ?? '')}" /></td>
               </tr>
             `).join('')}
@@ -635,15 +661,25 @@ function buildSettingsDrawerBody(section, draft) {
       </div>
       <div class="table-wrap">
         <table class="data-table availability-target-table">
+          <colgroup>
+            <col class="availability-col-enabled" />
+            <col class="availability-col-name" />
+            <col class="availability-col-url" />
+            <col class="availability-col-hosts" />
+            <col class="availability-col-phrases" />
+            <col class="availability-col-actions" />
+          </colgroup>
           <thead><tr><th>启用</th><th>名称</th><th>URL</th><th>允许域名</th><th>屏蔽短语</th><th>操作</th></tr></thead>
           <tbody>
             ${(draft?.targets ?? []).map((target, index) => `
               <tr>
                 <td><input type="checkbox" data-availability-index="${index}" data-availability-key="enabled" ${target.enabled ? 'checked' : ''} /></td>
                 <td><input data-availability-index="${index}" data-availability-key="name" value="${escapeHtml(target.name ?? '')}" /></td>
-                <td><input data-availability-index="${index}" data-availability-key="url" value="${escapeHtml(target.url ?? '')}" /></td>
-                <td><textarea data-availability-index="${index}" data-availability-key="allowed_hosts">${escapeHtml(target.allowed_hosts ?? '')}</textarea></td>
-                <td><textarea data-availability-index="${index}" data-availability-key="negative_phrases">${escapeHtml(target.negative_phrases ?? '')}</textarea></td>
+                <td>
+                  <textarea class="table-textarea mono" rows="3" data-availability-index="${index}" data-availability-key="url">${escapeHtml(target.url ?? '')}</textarea>
+                </td>
+                <td><textarea class="table-textarea mono" rows="4" data-availability-index="${index}" data-availability-key="allowed_hosts">${escapeHtml(target.allowed_hosts ?? '')}</textarea></td>
+                <td><textarea class="table-textarea mono" rows="4" data-availability-index="${index}" data-availability-key="negative_phrases">${escapeHtml(target.negative_phrases ?? '')}</textarea></td>
                 <td><button class="btn btn-secondary small" data-availability-action="remove" data-availability-index="${index}" type="button">删除</button></td>
               </tr>
             `).join('')}
@@ -707,20 +743,20 @@ function buildStatusItems(state, messages) {
 function dashboardMetrics(counts) {
   return [
     { key: 'raw_links', label: '原始节点', value: String(counts.raw_links), detail: '抓取输入', tone: 'accent' },
-    { key: 'deduped_links', label: '去重后', value: String(counts.deduped_links ?? counts.postprocess_links), detail: '去重结果', tone: 'accent' },
+    { key: 'deduped_links', label: '去重节点', value: String(counts.deduped_links ?? counts.postprocess_links), detail: '全局去重', tone: 'accent' },
     { key: 'speedtest_links', label: '测速通过', value: String(counts.speedtest_links), detail: '速度达标', tone: 'success' },
     { key: 'availability_links', label: '最终可用', value: String(counts.availability_links), detail: '验证通过', tone: 'success' }
   ];
 }
 
-function renderSourceMetricRows(rows) {
+function renderSourceMetricRows(rows, ariaLabel) {
   if (!rows.length) {
     return '';
   }
   return `
-    <div class="metric-source-list" aria-label="各数据源原始节点数">
+    <div class="metric-source-list" aria-label="${escapeHtml(ariaLabel)}">
       ${rows.map((row) => `
-        <span class="metric-source-chip">${escapeHtml(row.label)} ${escapeHtml(row.rawLinks)}</span>
+        <span class="metric-source-chip">${escapeHtml(row.label)} ${escapeHtml(row.count)}</span>
       `).join('')}
     </div>
   `;
@@ -743,11 +779,16 @@ function buildSourceRows(profile) {
   }));
 }
 
-function buildSourceMetricRows(profile, sourceCounts = {}) {
+function buildSourceMetricRows(profile, sourceCounts = {}, countKey = 'raw_links') {
   const sourceNames = new Set([
     ...Object.keys(profile.sources ?? {}),
     ...Object.keys(sourceCounts ?? {})
   ]);
+  const hasRequestedValues = countKey === 'raw_links'
+    || Object.values(sourceCounts ?? {}).some((counts) => counts && countKey in counts);
+  if (!hasRequestedValues) {
+    return [];
+  }
   return Array.from(sourceNames)
     .sort((left, right) => {
       const leftIndex = SOURCE_DISPLAY_ORDER.indexOf(left);
@@ -757,8 +798,26 @@ function buildSourceMetricRows(profile, sourceCounts = {}) {
     .map((name) => ({
       name,
       label: SOURCE_NAMES[name] || name,
-      rawLinks: Number(sourceCounts[name]?.raw_links ?? 0)
+      count: Number(sourceCounts[name]?.[countKey] ?? 0)
     }));
+}
+
+export function extractSourceUrlFromCurl(value = '') {
+  const text = String(value ?? '').trim();
+  if (!text) {
+    return '';
+  }
+  if (!/^curl(?:\s|$)/i.test(text)) {
+    return text;
+  }
+
+  const quoted = text.match(/(['"])(https?:\/\/[\s\S]+?)\1/i);
+  if (quoted?.[2]) {
+    return quoted[2].trim();
+  }
+
+  const bare = text.match(/\bhttps?:\/\/[^\s'"]+/i);
+  return bare?.[0]?.trim() ?? '';
 }
 
 export function buildRegionStats(nodeRows = []) {

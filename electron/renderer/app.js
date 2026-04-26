@@ -16,6 +16,7 @@ import {
   buildTopbarActions,
   removeAvailabilityTargetDraft,
   classifyLogEntry,
+  extractSourceUrlFromCurl,
   filterLogEntries
 } from './views.js';
 
@@ -355,12 +356,14 @@ function handleDocumentClick(event) {
 
   if (event.target.closest('[data-drawer-dismiss="backdrop"]')) {
     state.settingsDrawer = null;
+    state.modalTransform = '';
     renderAll();
     return;
   }
 
   if (event.target.closest('[data-drawer-close="cancel"]')) {
     state.settingsDrawer = null;
+    state.modalTransform = '';
     renderAll();
     return;
   }
@@ -387,10 +390,17 @@ function handleDocumentInput(event) {
     if (!sourceDraft?.[sourceName]) {
       return;
     }
+    const rawValue = target.type === 'checkbox' ? target.checked : target.value.trim();
+    const normalizedValue = key === 'url' && typeof rawValue === 'string'
+      ? normalizeSourceUrlInput(rawValue)
+      : rawValue;
+    if (target.type !== 'checkbox' && normalizedValue !== target.value) {
+      target.value = normalizedValue;
+    }
     sourceDraft[sourceName][key] =
       target.type === 'checkbox'
-        ? target.checked
-        : coerceProfileValue(target.value.trim(), sourceDraft[sourceName][key]);
+        ? normalizedValue
+        : coerceProfileValue(normalizedValue, sourceDraft[sourceName][key]);
     return;
   }
 
@@ -449,6 +459,14 @@ function resolveDrawerSourceDraft() {
     return null;
   }
   return state.settingsDrawer.draft?.sources ?? state.settingsDrawer.draft;
+}
+
+function normalizeSourceUrlInput(value) {
+  const text = String(value ?? '').trim();
+  if (!/^curl(?:\s|$)/i.test(text)) {
+    return text;
+  }
+  return extractSourceUrlFromCurl(text) || text;
 }
 
 function setObjectPath(root, path, value) {
@@ -574,6 +592,7 @@ function openSettingsDrawer(section) {
     return;
   }
 
+  state.modalTransform = '';
   state.settingsDrawer = { section, draft };
   renderAll();
 }
@@ -601,7 +620,7 @@ function resolveProfilePaths(profile = state.profile) {
   };
 }
 
-function saveSettingsDrawer() {
+async function saveSettingsDrawer() {
   if (!state.settingsDrawer || !state.profile) {
     return;
   }
@@ -609,12 +628,17 @@ function saveSettingsDrawer() {
   const { section, draft } = state.settingsDrawer;
   if (section !== 'about') {
     state.profile[section] = resolveSettingsDraftPayload(section, draft);
-    if (section === 'deploy') {
-      refreshQrCode();
-    }
   }
   state.settingsDrawer = null;
+  state.modalTransform = '';
   touchUpdate();
+  if (section === 'deploy') {
+    await refreshQrCode();
+  }
+  if (section !== 'about') {
+    await saveProfile({ silent: true });
+    return;
+  }
   renderAll();
 }
 
@@ -817,7 +841,7 @@ function handlePipelineEvent(event) {
       level: event.status === 'failed' ? 'error' : event.status === 'running' ? 'warning' : 'info'
     });
     touchUpdate();
-    renderRuntimeOnly({ chrome: true });
+    renderRuntimeOnly({ chrome: false });
     return;
   }
 
@@ -836,7 +860,7 @@ function handlePipelineEvent(event) {
   if (event.type === 'extract_iteration') {
     updateExtractMetrics(event);
     touchUpdate();
-    renderRuntimeOnly({ chrome: true });
+    renderRuntimeOnly({ chrome: false });
     return;
   }
 
@@ -845,7 +869,7 @@ function handlePipelineEvent(event) {
       state.counts.speedtest_links = Number(state.counts.speedtest_links ?? 0) + 1;
     }
     touchUpdate();
-    renderRuntimeOnly({ chrome: true });
+    renderRuntimeOnly({ chrome: false });
     return;
   }
 
@@ -854,7 +878,7 @@ function handlePipelineEvent(event) {
       state.counts.availability_links = Number(state.counts.availability_links ?? 0) + 1;
     }
     touchUpdate();
-    renderRuntimeOnly({ chrome: true });
+    renderRuntimeOnly({ chrome: false });
     return;
   }
 
@@ -876,7 +900,7 @@ function normalizeCounts(counts) {
     raw_links: Number(counts.raw_links ?? 0),
     speedtest_links: Number(counts.speedtest_links ?? 0),
     availability_links: Number(counts.availability_links ?? 0),
-    deduped_links: counts.deduped_links ?? counts.postprocess_links ?? 0
+    deduped_links: Number(counts.deduped_links ?? counts.postprocess_links ?? 0)
   };
 }
 
@@ -886,7 +910,8 @@ function normalizeSourceCounts(sourceCounts = {}) {
       sourceName,
       {
         ...counts,
-        raw_links: Number(counts?.raw_links ?? 0)
+        raw_links: Number(counts?.raw_links ?? 0),
+        deduped_links: Number(counts?.deduped_links ?? 0)
       }
     ])
   );

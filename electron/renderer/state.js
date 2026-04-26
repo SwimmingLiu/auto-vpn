@@ -26,7 +26,8 @@ export const PAGE_INDEX = Object.fromEntries(
 
 const METRIC_LABELS = {
   raw_links: '原始节点',
-  postprocess_links: '去重后',
+  postprocess_links: '去重节点',
+  deduped_links: '去重节点',
   speedtest_links: '测速通过节点',
   availability_links: '最终可用'
 };
