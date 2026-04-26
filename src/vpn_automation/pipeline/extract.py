@@ -13,7 +13,10 @@ from requests import RequestException
 
 from vpn_automation.config.models import SourceConfig
 from vpn_automation.config.runtime import resolve_upstream_proxy_url
+from vpn_automation.pipeline.tls_warnings import suppress_insecure_request_warnings
 from vpn_automation.pipeline.vmess import generate_vmess_link, transform_node_id
+
+suppress_insecure_request_warnings()
 
 
 @dataclass
@@ -46,7 +49,11 @@ def build_runtime_source_url(source: SourceConfig, iteration: int = 0) -> str:
     parsed = urlparse(source.url)
     query = parse_qs(parsed.query)
     if source.use_random_area and iteration > 0:
-        query["area"] = [str(random.randint(0, 100))]
+        area_min = int(getattr(source, "area_min", 0))
+        area_max = int(getattr(source, "area_max", 100))
+        if area_min > area_max:
+            area_min, area_max = area_max, area_min
+        query["area"] = [str(random.randint(area_min, area_max))]
     if "t" in query:
         query["t"] = [f"{time.time():.6f}"]
     return urlunparse(parsed._replace(query=urlencode(query, doseq=True)))

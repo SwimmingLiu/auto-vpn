@@ -176,12 +176,12 @@ textarea:focus {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 40px;
-  height: 40px;
+  min-width: 46px;
+  height: 46px;
   border-radius: 14px;
   background: var(--surface-muted);
   border: 1px solid rgba(91, 92, 226, 0.14);
-  font-size: 14px;
+  font-size: 18px;
   font-weight: 800;
   letter-spacing: 0.08em;
 }
@@ -391,6 +391,10 @@ textarea:focus {
   min-height: 0;
   overflow: auto;
   padding-right: 2px;
+}
+
+body[data-page="logs"] .page-content {
+  overflow: hidden;
 }
 
 .page-shell {
@@ -731,6 +735,26 @@ textarea:focus {
   font-size: 12px;
 }
 
+.metric-source-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.metric-source-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: #fff;
+  border: 1px solid rgba(91, 92, 226, 0.14);
+  color: var(--text-soft);
+  font-size: 11px;
+  font-weight: 750;
+}
+
 .metric-card.accent {
   background: linear-gradient(180deg, #f6f5ff 0%, #fff 100%);
 }
@@ -863,7 +887,26 @@ textarea:focus {
 }
 
 .log-stream {
-  min-height: 430px;
+  min-height: 0;
+}
+
+body[data-page="logs"] .page-shell,
+body[data-page="logs"] .logs-grid,
+body[data-page="logs"] #logsWorkspace,
+body[data-page="logs"] #logsWorkspace > .panel {
+  min-height: 0;
+  height: 100%;
+}
+
+body[data-page="logs"] #logsWorkspace > .panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+body[data-page="logs"] #logCenterTable {
+  min-height: 0;
+  overflow: hidden;
+}
 }
 
 .log-line {
@@ -903,14 +946,22 @@ textarea:focus {
 .action-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  gap: 16px;
+}
+
+.subscriptions-grid > .panel:first-child {
+  padding: 24px 28px;
+}
+
+.subscriptions-grid .subscription-primary {
+  margin-block: 14px;
 }
 
 .subscription-tab-scroller {
   display: flex;
   gap: 8px;
   margin-bottom: 12px;
-  padding: 6px;
+  padding: 8px;
   overflow-x: auto;
   border-radius: 16px;
   border: 1px solid var(--border);
@@ -1051,7 +1102,7 @@ textarea:focus {
 
 .source-drawer-settings {
   display: grid;
-  grid-template-columns: minmax(180px, 240px);
+  grid-template-columns: repeat(3, minmax(160px, 1fr));
   gap: 12px;
 }
 

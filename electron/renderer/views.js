@@ -64,6 +64,8 @@ const EMPTY_COUNTS = {
   postprocess_links: 0
 };
 
+const SOURCE_DISPLAY_ORDER = ['leiting', 'heidong', 'mifeng', 'xuanfeng-area', 'xuanfeng-all-area'];
+
 export function buildViewModel(state, messages, language) {
   const profile = mergeProfile(state.profile ?? FALLBACK_PROFILE);
   const counts = {
@@ -103,6 +105,8 @@ export function buildViewModel(state, messages, language) {
     subscriptionCards,
     currentSubscription,
     sourceRows: buildSourceRows(profile),
+    sourceCounts: state.sourceCounts ?? {},
+    sourceMetricRows: buildSourceMetricRows(profile, state.sourceCounts ?? {}),
     runControlState: resolveRunControlState(state.runState),
     statusItems: buildStatusItems(state, messages),
     currentStatusLabel: resolveCurrentStatusLabel(state, messages),
@@ -224,17 +228,7 @@ function buildDashboardPage(vm, messages) {
         <div class="status-orb">✓</div>
       </article>
 
-      <article class="panel wide-panel">
-        <div class="metric-grid four">
-          ${dashboardMetrics(vm.counts).map((metric) => `
-            <div class="metric-card ${metric.tone}">
-              <span>${escapeHtml(metric.label)}</span>
-              <strong>${escapeHtml(metric.value)}</strong>
-              <small>${escapeHtml(metric.detail)}</small>
-            </div>
-          `).join('')}
-        </div>
-      </article>
+      ${buildDashboardMetricsMarkup(vm)}
 
       <article class="panel">
         <div class="panel-headline">
@@ -267,6 +261,23 @@ function buildDashboardPage(vm, messages) {
         </div>
       </article>
     </div>
+  `;
+}
+
+export function buildDashboardMetricsMarkup(vm) {
+  return `
+    <article id="dashboardMetricsPanel" class="panel wide-panel">
+      <div class="metric-grid four">
+        ${dashboardMetrics(vm.counts).map((metric) => `
+          <div class="metric-card ${metric.tone}" data-metric-key="${escapeHtml(metric.key)}">
+            <span>${escapeHtml(metric.label)}</span>
+            <strong>${escapeHtml(metric.value)}</strong>
+            <small>${escapeHtml(metric.detail)}</small>
+            ${metric.key === 'raw_links' ? renderSourceMetricRows(vm.sourceMetricRows) : ''}
+          </div>
+        `).join('')}
+      </div>
+    </article>
   `;
 }
 
@@ -549,6 +560,8 @@ function buildSettingsDrawerBody(section, draft) {
     return `
       <div class="source-drawer-settings">
         ${renderDrawerField('最大迭代次数', 'number', draft?.maxIterations ?? 40, 'sources.maxIterations', true, 'data-source-max-iterations min="1"')}
+        ${renderDrawerField('区域起始', 'number', draft?.areaMin ?? 0, 'sources.areaMin', true, 'data-source-area-min')}
+        ${renderDrawerField('区域结束', 'number', draft?.areaMax ?? 100, 'sources.areaMax', true, 'data-source-area-max')}
       </div>
       <div class="table-wrap">
         <table class="data-table settings-source-table">
@@ -631,11 +644,24 @@ function buildStatusItems(state, messages) {
 
 function dashboardMetrics(counts) {
   return [
-    { label: '原始节点', value: String(counts.raw_links), detail: '抓取输入', tone: 'accent' },
-    { label: '去重后', value: String(counts.deduped_links ?? counts.postprocess_links), detail: '去重结果', tone: 'accent' },
-    { label: '测速通过', value: String(counts.speedtest_links), detail: '速度达标', tone: 'success' },
-    { label: '最终可用', value: String(counts.availability_links), detail: '验证通过', tone: 'success' }
+    { key: 'raw_links', label: '原始节点', value: String(counts.raw_links), detail: '抓取输入', tone: 'accent' },
+    { key: 'deduped_links', label: '去重后', value: String(counts.deduped_links ?? counts.postprocess_links), detail: '去重结果', tone: 'accent' },
+    { key: 'speedtest_links', label: '测速通过', value: String(counts.speedtest_links), detail: '速度达标', tone: 'success' },
+    { key: 'availability_links', label: '最终可用', value: String(counts.availability_links), detail: '验证通过', tone: 'success' }
   ];
+}
+
+function renderSourceMetricRows(rows) {
+  if (!rows.length) {
+    return '';
+  }
+  return `
+    <div class="metric-source-list" aria-label="各数据源原始节点数">
+      ${rows.map((row) => `
+        <span class="metric-source-chip">${escapeHtml(row.label)} ${escapeHtml(row.rawLinks)}</span>
+      `).join('')}
+    </div>
+  `;
 }
 
 function buildSubscriptionCards(baseUrl) {
@@ -655,6 +681,24 @@ function buildSourceRows(profile) {
   }));
 }
 
+function buildSourceMetricRows(profile, sourceCounts = {}) {
+  const sourceNames = new Set([
+    ...Object.keys(profile.sources ?? {}),
+    ...Object.keys(sourceCounts ?? {})
+  ]);
+  return Array.from(sourceNames)
+    .sort((left, right) => {
+      const leftIndex = SOURCE_DISPLAY_ORDER.indexOf(left);
+      const rightIndex = SOURCE_DISPLAY_ORDER.indexOf(right);
+      return (leftIndex === -1 ? 999 : leftIndex) - (rightIndex === -1 ? 999 : rightIndex);
+    })
+    .map((name) => ({
+      name,
+      label: SOURCE_NAMES[name] || name,
+      rawLinks: Number(sourceCounts[name]?.raw_links ?? 0)
+    }));
+}
+
 export function buildRegionStats(nodeRows = []) {
   const counts = new Map();
   for (const row of nodeRows) {
@@ -668,18 +712,24 @@ export function buildSourceIterationDraft(sources = {}) {
   const firstSource = Object.values(sources)[0] ?? {};
   return {
     sources: structuredClone(sources),
-    maxIterations: coercePositiveInteger(firstSource.max_iterations, 40)
+    maxIterations: coercePositiveInteger(firstSource.max_iterations, 40),
+    areaMin: coerceAreaValue(firstSource.area_min, 0),
+    areaMax: coerceAreaValue(firstSource.area_max, 100)
   };
 }
 
 export function applySourceIterationDraft(sources = {}, draft = {}) {
   const maxIterations = coercePositiveInteger(draft.maxIterations, 40);
+  const areaMin = coerceAreaValue(draft.areaMin, 0);
+  const areaMax = coerceAreaValue(draft.areaMax, 100);
   return Object.fromEntries(
     Object.entries(sources).map(([name, source]) => [
       name,
       {
         ...source,
-        max_iterations: maxIterations
+        max_iterations: maxIterations,
+        area_min: Math.min(areaMin, areaMax),
+        area_max: Math.max(areaMin, areaMax)
       }
     ])
   );
@@ -699,8 +749,16 @@ function coercePositiveInteger(value, fallback) {
   return Math.trunc(parsed);
 }
 
+function coerceAreaValue(value, fallback) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.trunc(parsed);
+}
+
 function buildLogRows(displayLogs) {
-  return displayLogs.slice(-40).map((entry) => ({
+  return displayLogs.slice(-28).map((entry) => ({
     ...entry,
     levelClass: entry.level === 'error' ? 'danger' : entry.level === 'warning' ? 'warning' : 'success'
   }));

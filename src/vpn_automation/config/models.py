@@ -21,6 +21,8 @@ class SourceConfig:
     min_iterations: int = 0
     plateau_limit: int = 8
     use_random_area: bool = True
+    area_min: int = 0
+    area_max: int = 100
     failure_limit: int = 3
     max_runtime_seconds: float = 0.0
 
@@ -164,6 +166,8 @@ def _normalize_source_config(source_name: str, payload: dict) -> SourceConfig:
     normalized.setdefault("min_iterations", defaults.min_iterations)
     normalized.setdefault("plateau_limit", defaults.plateau_limit)
     normalized.setdefault("use_random_area", _default_use_random_area(source_name))
+    normalized.setdefault("area_min", defaults.area_min)
+    normalized.setdefault("area_max", defaults.area_max)
     normalized.setdefault("failure_limit", defaults.failure_limit)
     normalized.setdefault("max_runtime_seconds", defaults.max_runtime_seconds)
     return SourceConfig(**normalized)

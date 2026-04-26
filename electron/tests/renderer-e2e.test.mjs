@@ -103,7 +103,8 @@ test('renderer matches the six-page canvas redesign and supports page navigation
               type: 'summary',
               artifact_dir: '/Users/user/vpn-sub/artifacts/20260425-000000',
               stage_status: { extract: 'success', availability: 'success' },
-              counts: { raw_links: 3, deduped_links: 2, speedtest_links: 1, availability_links: 1, final_links: 1 }
+              counts: { raw_links: 3, deduped_links: 2, speedtest_links: 1, availability_links: 1, final_links: 1 },
+              source_counts: { leiting: { raw_links: 3 } }
             });
           }, 10);
           return () => {};
@@ -138,11 +139,27 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     await page.waitForSelector('#dashboardOverview');
     const overviewText = await page.locator('#dashboardOverview').innerText();
     assert.match(overviewText, /原始节点/);
+    assert.match(overviewText, /雷霆 3/);
     assert.match(overviewText, /最终可用/);
     assert.match(overviewText, /未开始/);
     assert.match(overviewText, /系统状态/);
     assert.doesNotMatch(overviewText, /高频操作/);
     assert.doesNotMatch(overviewText, /不放|占位|合并/);
+
+    await page.evaluate(() => {
+      window.__emitPipelineEvent({ type: 'extract_iteration', source_name: 'leiting', total_links: 4, new_items: 1 });
+      window.__emitPipelineEvent({ type: 'extract_iteration', source_name: 'heidong', total_links: 2, new_items: 2 });
+      window.__emitPipelineEvent({ type: 'speedtest_result', passed_threshold: true });
+      window.__emitPipelineEvent({ type: 'availability_link_result', all_passed: true });
+    });
+    const updatedRawMetric = await page.locator('[data-metric-key="raw_links"]').innerText();
+    const updatedSpeedMetric = await page.locator('[data-metric-key="speedtest_links"]').innerText();
+    const updatedAvailabilityMetric = await page.locator('[data-metric-key="availability_links"]').innerText();
+    assert.match(updatedRawMetric, /6/);
+    assert.match(updatedRawMetric, /雷霆 4/);
+    assert.match(updatedRawMetric, /黑洞 2/);
+    assert.match(updatedSpeedMetric, /2/);
+    assert.match(updatedAvailabilityMetric, /2/);
 
     await page.locator('#navResults').click();
     await page.waitForSelector('#resultsWorkspace');
@@ -216,13 +233,24 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     assert.equal(await page.locator('[data-source-max-iterations]').inputValue(), '40');
 
     await page.locator('[data-source-max-iterations]').fill('25');
+    await page.locator('[data-source-area-min]').fill('20');
+    await page.locator('[data-source-area-max]').fill('60');
     assert.equal(await page.locator('[data-source-max-iterations]').inputValue(), '25');
+    assert.equal(await page.locator('[data-source-area-min]').inputValue(), '20');
+    assert.equal(await page.locator('[data-source-area-max]').inputValue(), '60');
     await page.locator('[data-drawer-save="save"]').click();
     await page.waitForSelector('#settingsDrawer[data-open="false"]');
     await page.locator('#pageActions [data-action="save-profile"]').click();
     assert.equal(
       await page.evaluate(() => window.__savedProfiles.at(-1).sources.leiting.max_iterations),
       25
+    );
+    assert.deepEqual(
+      await page.evaluate(() => [
+        window.__savedProfiles.at(-1).sources.leiting.area_min,
+        window.__savedProfiles.at(-1).sources.leiting.area_max
+      ]),
+      [20, 60]
     );
 
     await page.locator('#navRuns').click();
