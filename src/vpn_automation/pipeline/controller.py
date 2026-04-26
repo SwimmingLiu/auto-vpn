@@ -270,12 +270,12 @@ class PipelineController:
             key=lambda path: path.stat().st_mtime,
             reverse=True,
         )
+        extra_keep_slots = max(0, keep_count - len(keep_resolved))
         kept = 0
         for directory in directories:
             if directory.resolve() in keep_resolved:
-                kept += 1
                 continue
-            if kept < keep_count:
+            if kept < extra_keep_slots:
                 kept += 1
                 continue
             shutil.rmtree(directory, ignore_errors=True)

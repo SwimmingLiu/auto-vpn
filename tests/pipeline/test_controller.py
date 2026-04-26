@@ -1,4 +1,5 @@
 import json
+import os
 import threading
 import time
 from pathlib import Path
@@ -262,6 +263,7 @@ def test_pipeline_prunes_old_artifacts_after_new_run(tmp_path: Path) -> None:
     (old_first / "keep.txt").write_text("old", encoding="utf-8")
     (old_second / "keep.txt").write_text("old", encoding="utf-8")
     (edge_root / "vmess_node.js").write_text("const MainData = `old`;", encoding="utf-8")
+    os.utime(old_second, (4102444800, 4102444800))
 
     profile = create_default_profile(project_root)
     profile.workspace.edgetunnel_root = str(edge_root)
