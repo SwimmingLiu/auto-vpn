@@ -1,4 +1,6 @@
 import json
+import os
+import shutil
 import subprocess
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
@@ -113,6 +115,12 @@ CHALLENGE_PHRASES = (
     "enable javascript and cookies",
 )
 
+NODE_BINARY_CANDIDATES = (
+    "/opt/homebrew/bin/node",
+    "/usr/local/bin/node",
+    "/usr/bin/node",
+)
+
 
 def _emit_event(
     event_callback: Callable[[str, dict[str, Any]], None] | None,
@@ -222,6 +230,19 @@ def should_retry_with_browser(result: ProviderCheckResult) -> bool:
     return result.reason in {"http_error", "challenge_page", "unexpected_host"}
 
 
+def resolve_node_binary(extra_candidates: tuple[str, ...] = ()) -> str:
+    candidates = [
+        os.environ.get("VPN_AUTOMATION_NODE_PATH", "").strip(),
+        shutil.which("node") or "",
+        *extra_candidates,
+        *NODE_BINARY_CANDIDATES,
+    ]
+    for candidate in candidates:
+        if candidate and Path(candidate).exists():
+            return candidate
+    raise FileNotFoundError("node binary not found")
+
+
 def fetch_provider_results_with_browser(
     proxies: dict[str, str],
     targets: tuple[ProviderTarget, ...],
@@ -270,7 +291,7 @@ await browser.close();
     target_payload = json.dumps([{"name": target.name, "url": target.url} for target in targets], ensure_ascii=False)
     timeout_budget = max(timeout_seconds * len(targets) + 45, 60)
     result = subprocess.run(
-        ["node", "--input-type=module", "-e", script, proxy_server, str(timeout_seconds * 1000), target_payload],
+        [resolve_node_binary(), "--input-type=module", "-e", script, proxy_server, str(timeout_seconds * 1000), target_payload],
         cwd=str(repo_root),
         capture_output=True,
         text=True,
@@ -339,12 +360,23 @@ def check_link_availability(
                 target for target in PROVIDER_TARGETS if should_retry_with_browser(provider_results[target.name])
             )
             if fallback_targets:
-                browser_results = fetch_provider_results_with_browser(
-                    runtime.proxies,
-                    fallback_targets,
-                    config.timeout_seconds,
-                )
-                provider_results.update(browser_results)
+                try:
+                    browser_results = fetch_provider_results_with_browser(
+                        runtime.proxies,
+                        fallback_targets,
+                        config.timeout_seconds,
+                    )
+                    provider_results.update(browser_results)
+                except Exception as exc:
+                    for target in fallback_targets:
+                        provider_results[target.name] = ProviderCheckResult(
+                            provider=target.name,
+                            passed=False,
+                            reason="browser_probe_error",
+                            status_code=provider_results[target.name].status_code,
+                            final_url=provider_results[target.name].final_url or target.url,
+                            matched_phrase=str(exc),
+                        )
         return AvailabilityResult(speed_result=speed_result, provider_results=provider_results)
     except Exception as exc:
         return _build_runtime_error_result(speed_result, str(exc))

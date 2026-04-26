@@ -11,6 +11,7 @@ from vpn_automation.pipeline.availability import (
     check_link_availability,
     fetch_provider_result,
     evaluate_provider_response,
+    resolve_node_binary,
 )
 from vpn_automation.config.models import SpeedTestConfig
 from vpn_automation.pipeline.speedtest import SpeedTestResult
@@ -177,6 +178,66 @@ def test_check_link_availability_uses_browser_fallback_for_http_errors(
     assert result.all_passed is True
     assert result.provider_results["chatgpt"].passed is True
     assert result.provider_results["claude"].passed is True
+
+
+def test_resolve_node_binary_falls_back_when_path_does_not_find_node(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    bundled_node = tmp_path / "node"
+    bundled_node.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    monkeypatch.delenv("VPN_AUTOMATION_NODE_PATH", raising=False)
+    monkeypatch.setattr("vpn_automation.pipeline.availability.shutil.which", lambda _name: None)
+
+    assert resolve_node_binary(extra_candidates=(str(bundled_node),)) == str(bundled_node)
+
+
+def test_check_link_availability_preserves_primary_results_when_browser_fallback_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = SpeedTestConfig(
+        min_download_mb_s=1.0,
+        timeout_seconds=20,
+        concurrency=1,
+        urls=["https://speed.cloudflare.com/__down?bytes=5000000"],
+    )
+    speed = SpeedTestResult(link="vmess://node", reachable=True, average_download_mb_s=2.0, latency_ms=50)
+
+    class DummyRuntime:
+        def __init__(self) -> None:
+            self.session = object()
+            self.proxies = {"http": "http://127.0.0.1:18080", "https": "http://127.0.0.1:18080"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    primary_results = {
+        "gemini": ProviderCheckResult(provider="gemini", passed=True, reason="ok", status_code=200, final_url="https://gemini.google.com/"),
+        "chatgpt": ProviderCheckResult(provider="chatgpt", passed=False, reason="http_error", status_code=403, final_url="https://chatgpt.com/"),
+        "claude": ProviderCheckResult(provider="claude", passed=False, reason="unexpected_host", status_code=200, final_url="https://claude.com/app-unavailable-in-region"),
+    }
+
+    monkeypatch.setattr("vpn_automation.pipeline.availability.open_proxy_runtime", lambda *args, **kwargs: DummyRuntime())
+    monkeypatch.setattr(
+        "vpn_automation.pipeline.availability.fetch_provider_result",
+        lambda session, proxies, target, timeout_seconds: primary_results[target.name],
+    )
+    monkeypatch.setattr(
+        "vpn_automation.pipeline.availability.fetch_provider_results_with_browser",
+        lambda *args, **kwargs: (_ for _ in ()).throw(FileNotFoundError("node binary not found")),
+    )
+
+    result = check_link_availability(speed, config)
+
+    assert result.provider_results["gemini"].passed is True
+    assert result.provider_results["gemini"].reason == "ok"
+    assert result.provider_results["chatgpt"].reason == "browser_probe_error"
+    assert result.provider_results["claude"].reason == "browser_probe_error"
+    assert result.provider_results["chatgpt"].matched_phrase == "node binary not found"
 
 
 def test_check_link_availability_uses_runtime_proxy_session(
