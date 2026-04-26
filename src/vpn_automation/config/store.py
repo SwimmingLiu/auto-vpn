@@ -7,6 +7,7 @@ from tomlkit import comment, document, nl, table
 
 from vpn_automation.config.models import (
     AppProfile,
+    DEFAULT_AVAILABILITY_TARGET_ORDER,
     DEFAULT_SOURCE_ORDER,
     create_default_profile,
     resolve_repo_anchor,
@@ -47,6 +48,13 @@ def _ordered_source_names(profile: AppProfile) -> list[str]:
     ]
 
 
+def _ordered_availability_target_names(profile: AppProfile) -> list[str]:
+    return [
+        *[name for name in DEFAULT_AVAILABILITY_TARGET_ORDER if name in profile.availability_targets],
+        *sorted(name for name in profile.availability_targets if name not in DEFAULT_AVAILABILITY_TARGET_ORDER),
+    ]
+
+
 def _render_profile_toml(profile: AppProfile) -> str:
     doc = document()
     doc.add(comment("VPN Subscription Automation runtime profile"))
@@ -82,6 +90,18 @@ def _render_profile_toml(profile: AppProfile) -> str:
     speed_table.add("startup_wait_seconds", profile.speed_test.startup_wait_seconds)
     speed_table.add("max_download_candidates", profile.speed_test.max_download_candidates)
     doc.add("speed_test", speed_table)
+    doc.add(nl())
+
+    availability_table = table()
+    for target_name in _ordered_availability_target_names(profile):
+        target = profile.availability_targets[target_name]
+        target_table = table()
+        target_table.add("url", target.url)
+        target_table.add("enabled", target.enabled)
+        target_table.add("allowed_hosts", target.allowed_hosts)
+        target_table.add("negative_phrases", target.negative_phrases)
+        availability_table.add(target_name, target_table)
+    doc.add("availability_targets", availability_table)
     doc.add(nl())
 
     deploy_table = table()

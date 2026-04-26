@@ -11,6 +11,8 @@ DEFAULT_SOURCE_ORDER = [
     "xuanfeng-all-area",
 ]
 
+DEFAULT_AVAILABILITY_TARGET_ORDER = ["gemini", "chatgpt", "claude"]
+
 
 @dataclass
 class SourceConfig:
@@ -37,6 +39,14 @@ class SpeedTestConfig:
     max_download_bytes: int = 5_000_000
     startup_wait_seconds: float = 1.0
     max_download_candidates: int = 50
+
+
+@dataclass
+class AvailabilityTargetConfig:
+    url: str
+    enabled: bool = True
+    allowed_hosts: list[str] = field(default_factory=list)
+    negative_phrases: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -77,10 +87,13 @@ class AppProfile:
     sources: dict[str, SourceConfig]
     speed_test: SpeedTestConfig
     deploy: DeployConfig
+    availability_targets: dict[str, AvailabilityTargetConfig] = field(default_factory=dict)
     filters: FilterConfig = field(default_factory=FilterConfig)
 
     def __post_init__(self) -> None:
         self._workspace_compat = _default_workspace_compat()
+        if not self.availability_targets:
+            self.availability_targets = default_availability_targets()
 
     @property
     def workspace(self) -> SimpleNamespace:
@@ -97,10 +110,18 @@ class AppProfile:
         sources = default_sources()
         for name, value in data.get("sources", {}).items():
             sources[name] = _normalize_source_config(name, value)
+        if "availability_targets" in data:
+            availability_targets = {
+                name: _normalize_availability_target_config(name, value)
+                for name, value in data.get("availability_targets", {}).items()
+            }
+        else:
+            availability_targets = default_availability_targets()
         profile = cls(
             sources=sources,
             speed_test=SpeedTestConfig(**data["speed_test"]),
             deploy=DeployConfig(**data["deploy"]),
+            availability_targets=availability_targets,
             filters=FilterConfig(**data.get("filters", {})),
         )
         return profile
@@ -158,6 +179,52 @@ def default_sources() -> dict[str, SourceConfig]:
     }
 
 
+def _default_availability_target_config(target_name: str) -> AvailabilityTargetConfig:
+    target_defaults = {
+        "gemini": AvailabilityTargetConfig(
+            url="https://gemini.google.com/",
+            enabled=True,
+            allowed_hosts=["gemini.google.com", "accounts.google.com"],
+            negative_phrases=[
+                "not available in your country",
+                "not available in your country or territory",
+                "isn't available in your country",
+                "not available in your region",
+            ],
+        ),
+        "chatgpt": AvailabilityTargetConfig(
+            url="https://chatgpt.com/",
+            enabled=True,
+            allowed_hosts=["chatgpt.com", "chat.openai.com", "auth.openai.com", "login.openai.com"],
+            negative_phrases=[
+                "unsupported country",
+                "unsupported region",
+                "country, region, or territory",
+                "not available in your country",
+            ],
+        ),
+        "claude": AvailabilityTargetConfig(
+            url="https://claude.ai/",
+            enabled=True,
+            allowed_hosts=["claude.ai", "support.anthropic.com"],
+            negative_phrases=[
+                "unavailable in your region",
+                "supported regions",
+                "physically located in one of our supported regions",
+                "outside of our supported locations",
+            ],
+        ),
+    }
+    return target_defaults[target_name]
+
+
+def default_availability_targets() -> dict[str, AvailabilityTargetConfig]:
+    return {
+        name: _default_availability_target_config(name)
+        for name in DEFAULT_AVAILABILITY_TARGET_ORDER
+    }
+
+
 def _normalize_source_config(source_name: str, payload: dict) -> SourceConfig:
     normalized = dict(payload)
     defaults = _default_source_config(source_name) if source_name in DEFAULT_SOURCE_ORDER else SourceConfig(url="", key="")
@@ -171,6 +238,34 @@ def _normalize_source_config(source_name: str, payload: dict) -> SourceConfig:
     normalized.setdefault("failure_limit", defaults.failure_limit)
     normalized.setdefault("max_runtime_seconds", defaults.max_runtime_seconds)
     return SourceConfig(**normalized)
+
+
+def _normalize_string_list(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, tuple):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    return []
+
+
+def _normalize_availability_target_config(target_name: str, payload: dict) -> AvailabilityTargetConfig:
+    defaults = (
+        _default_availability_target_config(target_name)
+        if target_name in DEFAULT_AVAILABILITY_TARGET_ORDER
+        else AvailabilityTargetConfig(url="")
+    )
+    normalized = dict(payload)
+    normalized.setdefault("url", defaults.url)
+    normalized.setdefault("enabled", defaults.enabled)
+    normalized["allowed_hosts"] = _normalize_string_list(
+        normalized.get("allowed_hosts", defaults.allowed_hosts)
+    )
+    normalized["negative_phrases"] = _normalize_string_list(
+        normalized.get("negative_phrases", defaults.negative_phrases)
+    )
+    return AvailabilityTargetConfig(**normalized)
 
 
 def _load_existing_sources(config_path: Path) -> dict[str, SourceConfig]:
@@ -219,6 +314,7 @@ def create_default_profile(project_root: Path) -> AppProfile:
             project_name="vmessnodes",
             subscription_url="https://swimmingliu.xyz/179ba8dd-3854-4747-b853-fc1868ef3937",
         ),
+        availability_targets=default_availability_targets(),
     )
     profile.set_workspace_compat(project_root)
     return profile
