@@ -6,9 +6,13 @@ from pathlib import Path
 import pytest
 
 from vpn_automation.config.models import create_default_profile
+from vpn_automation.config.models import AvailabilityTargetConfig
 from vpn_automation.pipeline.availability import AvailabilityResult, ProviderCheckResult
 from vpn_automation.pipeline.controller import PipelineController
 from vpn_automation.pipeline.speedtest import SpeedTestResult
+
+
+VMESS_LINK = "vmess://eyJhZGQiOiIxLjEuMS4xIiwiYWlkIjoiNjQiLCJob3N0Ijoid3d3Lmdvb2dsZS5jb20iLCJpZCI6IjQxODA0OGFmLWEyOTMtNGI5OS05YjBjLTk4Y2EzNTgwZGQyNCIsIm5ldCI6IndzIiwicGF0aCI6IlwvZm9vdGVycyIsInBvcnQiOjQ0MywicHMiOiJVUyBub2RlIiwidGxzIjoidGxzIiwidHlwZSI6ImR0bHMiLCJ2IjoiMiJ9"
 
 
 def test_pipeline_controller_exposes_named_stages() -> None:
@@ -193,3 +197,144 @@ def test_pipeline_controller_forwards_structured_stage_events(tmp_path: Path) ->
     assert "extract_request_result" in {event["type"] for event in events}
     assert "speedtest_selected" in {event["type"] for event in events}
     assert "availability_link_result" in {event["type"] for event in events}
+
+
+def test_pipeline_streams_speedtest_before_extract_finishes(tmp_path: Path) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    catch_root = tmp_path / "vpn-catch-nodes" / "config"
+    edge_root = tmp_path / "cloudflarevpn" / "edgetunnel"
+    catch_root.mkdir(parents=True)
+    edge_root.mkdir(parents=True)
+    (catch_root / "vpn_api.json").write_text("{}", encoding="utf-8")
+    (edge_root / "vmess_node.js").write_text("const MainData = `old`;", encoding="utf-8")
+
+    profile = create_default_profile(project_root)
+    profile.workspace.vpn_catch_nodes_root = str(tmp_path / "vpn-catch-nodes")
+    profile.workspace.edgetunnel_root = str(edge_root)
+    profile.workspace.artifacts_root = str(project_root / "artifacts")
+    profile.sources = {"leiting": profile.sources["leiting"]}
+    profile.sources["leiting"].url = "https://example.com/api"
+    profile.sources["leiting"].key = "abcdabcdabcdabcd"
+
+    speedtest_started = threading.Event()
+    saw_speedtest_before_return = {"value": False}
+
+    def extractor(source_name, source, progress_callback=None, raw_link_callback=None, **kwargs):
+        assert raw_link_callback is not None
+        raw_link_callback(source_name, VMESS_LINK)
+        saw_speedtest_before_return["value"] = speedtest_started.wait(timeout=0.5)
+        return [VMESS_LINK]
+
+    def speedtester(links, config, runtime_path="", progress_callback=None, event_callback=None):
+        speedtest_started.set()
+        return [SpeedTestResult(link=links[0], reachable=True, average_download_mb_s=2.5, latency_ms=50)]
+
+    controller = PipelineController(
+        extractor=extractor,
+        speedtester=speedtester,
+        availability_checker=lambda results, config, runtime_path="", progress_callback=None, event_callback=None, targets=None: [
+            AvailabilityResult(
+                speed_result=results[0],
+                provider_results={"gemini": ProviderCheckResult(provider="gemini", passed=True, reason="ok")},
+            )
+        ],
+        country_lookup=lambda host: "US",
+        obfuscator=lambda input_path, output_path: output_path.write_text("obfuscated", encoding="utf-8"),
+        env_loader=lambda _candidate: {"CLOUDFLARE_API_TOKEN": "token"},
+    )
+
+    summary = controller.run(profile, skip_deploy=True, skip_verify=True)
+
+    assert saw_speedtest_before_return["value"] is True
+    assert summary.stage_status["dedupe"] == "success"
+    assert summary.counts["deduped_links"] == 1
+
+
+def test_pipeline_prunes_old_artifacts_after_new_run(tmp_path: Path) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    artifacts_root = project_root / "artifacts"
+    old_first = artifacts_root / "20260420-010101"
+    old_second = artifacts_root / "20260421-010101"
+    edge_root = tmp_path / "cloudflarevpn" / "edgetunnel"
+    old_first.mkdir(parents=True)
+    old_second.mkdir(parents=True)
+    edge_root.mkdir(parents=True)
+    (old_first / "keep.txt").write_text("old", encoding="utf-8")
+    (old_second / "keep.txt").write_text("old", encoding="utf-8")
+    (edge_root / "vmess_node.js").write_text("const MainData = `old`;", encoding="utf-8")
+
+    profile = create_default_profile(project_root)
+    profile.workspace.edgetunnel_root = str(edge_root)
+    profile.workspace.artifacts_root = str(artifacts_root)
+    profile.sources = {"leiting": profile.sources["leiting"]}
+    profile.sources["leiting"].url = "https://example.com/api"
+    profile.sources["leiting"].key = "abcdabcdabcdabcd"
+
+    controller = PipelineController(
+        extractor=lambda source_name, source, progress_callback=None, raw_link_callback=None, **kwargs: [VMESS_LINK],
+        speedtester=lambda links, config, runtime_path="", progress_callback=None, event_callback=None: [
+            SpeedTestResult(link=links[0], reachable=True, average_download_mb_s=2.5, latency_ms=50)
+        ],
+        availability_checker=lambda results, config, runtime_path="", progress_callback=None, event_callback=None, targets=None: [
+            AvailabilityResult(
+                speed_result=results[0],
+                provider_results={"gemini": ProviderCheckResult(provider="gemini", passed=True, reason="ok")},
+            )
+        ],
+        country_lookup=lambda host: "US",
+        obfuscator=lambda input_path, output_path: output_path.write_text("obfuscated", encoding="utf-8"),
+        env_loader=lambda _candidate: {"CLOUDFLARE_API_TOKEN": "token"},
+        now_factory=lambda: __import__("datetime").datetime(2026, 4, 26, 12, 0, 0),
+    )
+
+    summary = controller.run(profile, skip_deploy=True, skip_verify=True)
+
+    assert sorted(path.name for path in artifacts_root.iterdir()) == [Path(summary.artifact_dir).name]
+
+
+def test_pipeline_passes_profile_availability_targets(tmp_path: Path) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    edge_root = tmp_path / "cloudflarevpn" / "edgetunnel"
+    edge_root.mkdir(parents=True)
+    (edge_root / "vmess_node.js").write_text("const MainData = `old`;", encoding="utf-8")
+
+    profile = create_default_profile(project_root)
+    profile.workspace.edgetunnel_root = str(edge_root)
+    profile.workspace.artifacts_root = str(project_root / "artifacts")
+    profile.sources = {"leiting": profile.sources["leiting"]}
+    profile.sources["leiting"].url = "https://example.com/api"
+    profile.sources["leiting"].key = "abcdabcdabcdabcd"
+    profile.availability_targets = {
+        "gemini": AvailabilityTargetConfig(url="https://gemini.example/", enabled=False),
+        "tmailor": AvailabilityTargetConfig(
+            url="https://tmailor.example/",
+            enabled=True,
+            allowed_hosts=["tmailor.example"],
+            negative_phrases=[],
+        ),
+    }
+    captured_targets: list[str] = []
+
+    def availability_checker(results, config, runtime_path="", progress_callback=None, event_callback=None, targets=None):
+        captured_targets.extend(target.name for target in targets)
+        return [
+            AvailabilityResult(
+                speed_result=results[0],
+                provider_results={"tmailor": ProviderCheckResult(provider="tmailor", passed=True, reason="ok")},
+            )
+        ]
+
+    controller = PipelineController(
+        extractor=lambda source_name, source, progress_callback=None, raw_link_callback=None, **kwargs: [VMESS_LINK],
+        speedtester=lambda links, config, runtime_path="", progress_callback=None, event_callback=None: [
+            SpeedTestResult(link=links[0], reachable=True, average_download_mb_s=2.5, latency_ms=50)
+        ],
+        availability_checker=availability_checker,
+        country_lookup=lambda host: "US",
+        obfuscator=lambda input_path, output_path: output_path.write_text("obfuscated", encoding="utf-8"),
+        env_loader=lambda _candidate: {"CLOUDFLARE_API_TOKEN": "token"},
+    )
+
+    controller.run(profile, skip_deploy=True, skip_verify=True)
+
+    assert captured_targets == ["tmailor"]
