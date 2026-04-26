@@ -24,7 +24,7 @@ def test_pipeline_controller_runs_end_to_end_with_fake_services(tmp_path: Path) 
     template_root = project_root / "templates"
 
     template_root.mkdir(parents=True)
-    (template_root / "vmess_node.js").write_text("const MainData = `old`;", encoding="utf-8")
+    (template_root / "vmess_node.js").write_text("const MainData = `__MAIN_DATA__`;", encoding="utf-8")
 
     profile = create_default_profile(project_root)
     profile.sources = {
@@ -86,7 +86,7 @@ def test_pipeline_controller_can_skip_deploy_and_verify(tmp_path: Path) -> None:
     template_root = project_root / "templates"
 
     template_root.mkdir(parents=True)
-    (template_root / "vmess_node.js").write_text("const MainData = `old`;", encoding="utf-8")
+    (template_root / "vmess_node.js").write_text("const MainData = `__MAIN_DATA__`;", encoding="utf-8")
 
     profile = create_default_profile(project_root)
     profile.sources = {
@@ -130,7 +130,7 @@ def test_pipeline_controller_filters_links_when_any_provider_fails(tmp_path: Pat
     template_root = project_root / "templates"
 
     template_root.mkdir(parents=True)
-    (template_root / "vmess_node.js").write_text("const MainData = `old`;", encoding="utf-8")
+    (template_root / "vmess_node.js").write_text("const MainData = `__MAIN_DATA__`;", encoding="utf-8")
 
     profile = create_default_profile(project_root)
     profile.sources = {
@@ -185,7 +185,7 @@ def test_pipeline_controller_continues_when_one_source_extractor_fails(tmp_path:
     template_root = project_root / "templates"
 
     template_root.mkdir(parents=True)
-    (template_root / "vmess_node.js").write_text("const MainData = `old`;", encoding="utf-8")
+    (template_root / "vmess_node.js").write_text("const MainData = `__MAIN_DATA__`;", encoding="utf-8")
 
     profile = create_default_profile(project_root)
     profile.sources = {
@@ -241,7 +241,7 @@ def test_pipeline_controller_resume_continues_extract_from_saved_iteration(tmp_p
     artifact_dir = project_root / "artifacts" / "20260423-030303"
     template_root.mkdir(parents=True)
     artifact_dir.mkdir(parents=True)
-    (template_root / "vmess_node.js").write_text("const MainData = `old`;", encoding="utf-8")
+    (template_root / "vmess_node.js").write_text("const MainData = `__MAIN_DATA__`;", encoding="utf-8")
 
     profile = create_default_profile(project_root)
     profile.sources = {
@@ -320,7 +320,7 @@ def test_pipeline_controller_fails_fast_when_no_links_are_extracted(tmp_path: Pa
     project_root = tmp_path / "vpn-subscription-automation"
     template_root = project_root / "templates"
     template_root.mkdir(parents=True)
-    (template_root / "vmess_node.js").write_text("const MainData = `old`;", encoding="utf-8")
+    (template_root / "vmess_node.js").write_text("const MainData = `__MAIN_DATA__`;", encoding="utf-8")
 
     profile = create_default_profile(project_root)
     profile.sources = {
@@ -343,7 +343,7 @@ def test_pipeline_controller_fails_fast_when_no_links_pass_speedtest(tmp_path: P
     project_root = tmp_path / "vpn-subscription-automation"
     template_root = project_root / "templates"
     template_root.mkdir(parents=True)
-    (template_root / "vmess_node.js").write_text("const MainData = `old`;", encoding="utf-8")
+    (template_root / "vmess_node.js").write_text("const MainData = `__MAIN_DATA__`;", encoding="utf-8")
 
     profile = create_default_profile(project_root)
     profile.sources = {
@@ -371,7 +371,7 @@ def test_pipeline_controller_fails_fast_when_no_links_pass_availability(tmp_path
     project_root = tmp_path / "vpn-subscription-automation"
     template_root = project_root / "templates"
     template_root.mkdir(parents=True)
-    (template_root / "vmess_node.js").write_text("const MainData = `old`;", encoding="utf-8")
+    (template_root / "vmess_node.js").write_text("const MainData = `__MAIN_DATA__`;", encoding="utf-8")
 
     profile = create_default_profile(project_root)
     profile.sources = {

@@ -53,7 +53,7 @@ class AvailabilityTargetConfig:
 class DeployConfig:
     project_name: str
     subscription_url: str
-    pages_project_url: str = "https://vmess2clash.pages.dev"
+    pages_project_url: str = "https://vms-nodes.pages.dev"
     secret_query: str = "serect_key=swimmingliu"
     account_id: str = "e743286b4304e96ee8795d62917052aa"
     use_wrangler: bool = True
@@ -311,7 +311,7 @@ def create_default_profile(project_root: Path) -> AppProfile:
             max_download_candidates=50,
         ),
         deploy=DeployConfig(
-            project_name="vmessnodes",
+            project_name="vms-nodes",
             subscription_url="https://swimmingliu.xyz/179ba8dd-3854-4747-b853-fc1868ef3937",
         ),
         availability_targets=default_availability_targets(),

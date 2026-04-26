@@ -78,7 +78,7 @@ def test_pipeline_controller_persists_failed_stage_status_to_report(tmp_path: Pa
     catch_root.mkdir(parents=True)
     edge_root.mkdir(parents=True)
     (catch_root / "vpn_api.json").write_text("{}", encoding="utf-8")
-    (edge_root / "vmess_node.js").write_text("const MainData = `old`;", encoding="utf-8")
+    (edge_root / "vmess_node.js").write_text("const MainData = `__MAIN_DATA__`;", encoding="utf-8")
 
     profile = create_default_profile(project_root)
     profile.workspace.vpn_catch_nodes_root = str(tmp_path / "vpn-catch-nodes")
@@ -136,7 +136,7 @@ def test_pipeline_controller_forwards_structured_stage_events(tmp_path: Path) ->
     catch_root.mkdir(parents=True)
     edge_root.mkdir(parents=True)
     (catch_root / "vpn_api.json").write_text("{}", encoding="utf-8")
-    (edge_root / "vmess_node.js").write_text("const MainData = `old`;", encoding="utf-8")
+    (edge_root / "vmess_node.js").write_text("const MainData = `__MAIN_DATA__`;", encoding="utf-8")
 
     profile = create_default_profile(project_root)
     profile.workspace.vpn_catch_nodes_root = str(tmp_path / "vpn-catch-nodes")
@@ -207,7 +207,7 @@ def test_pipeline_streams_speedtest_before_extract_finishes(tmp_path: Path) -> N
     catch_root.mkdir(parents=True)
     edge_root.mkdir(parents=True)
     (catch_root / "vpn_api.json").write_text("{}", encoding="utf-8")
-    (edge_root / "vmess_node.js").write_text("const MainData = `old`;", encoding="utf-8")
+    (edge_root / "vmess_node.js").write_text("const MainData = `__MAIN_DATA__`;", encoding="utf-8")
 
     profile = create_default_profile(project_root)
     profile.workspace.vpn_catch_nodes_root = str(tmp_path / "vpn-catch-nodes")
@@ -262,7 +262,7 @@ def test_pipeline_prunes_old_artifacts_after_new_run(tmp_path: Path) -> None:
     edge_root.mkdir(parents=True)
     (old_first / "keep.txt").write_text("old", encoding="utf-8")
     (old_second / "keep.txt").write_text("old", encoding="utf-8")
-    (edge_root / "vmess_node.js").write_text("const MainData = `old`;", encoding="utf-8")
+    (edge_root / "vmess_node.js").write_text("const MainData = `__MAIN_DATA__`;", encoding="utf-8")
     os.utime(old_second, (4102444800, 4102444800))
 
     profile = create_default_profile(project_root)
@@ -298,7 +298,7 @@ def test_pipeline_passes_profile_availability_targets(tmp_path: Path) -> None:
     project_root = tmp_path / "vpn-subscription-automation"
     edge_root = tmp_path / "cloudflarevpn" / "edgetunnel"
     edge_root.mkdir(parents=True)
-    (edge_root / "vmess_node.js").write_text("const MainData = `old`;", encoding="utf-8")
+    (edge_root / "vmess_node.js").write_text("const MainData = `__MAIN_DATA__`;", encoding="utf-8")
 
     profile = create_default_profile(project_root)
     profile.workspace.edgetunnel_root = str(edge_root)
