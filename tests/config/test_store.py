@@ -194,3 +194,20 @@ def test_profile_store_keeps_non_blank_runtime_profile(tmp_path: Path, monkeypat
 
     assert profile.deploy.secret_query == "keep-me"
     assert profile.deploy.project_name == ""
+
+
+def test_profile_store_migrates_legacy_pages_defaults(tmp_path: Path) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    runtime_profile = project_root / "state" / "profile.toml"
+    runtime_profile.parent.mkdir(parents=True, exist_ok=True)
+    legacy_profile = make_profile(project_name="vmessnodes", source_url="https://legacy.example")
+    legacy_profile.deploy.pages_project_url = "https://vmess2clash.pages.dev"
+    ProfileStore(runtime_profile).save(legacy_profile)
+
+    profile = ProfileStore(runtime_profile).load_or_create(project_root)
+    persisted = ProfileStore(runtime_profile).load()
+
+    assert profile.deploy.project_name == "vms-nodes"
+    assert profile.deploy.pages_project_url == "https://vms-nodes.pages.dev"
+    assert persisted.deploy.project_name == "vms-nodes"
+    assert persisted.deploy.pages_project_url == "https://vms-nodes.pages.dev"
