@@ -11,7 +11,7 @@ from vpn_automation.config.models import (
 from vpn_automation.config.store import ProfileStore, resolve_profile_path
 
 
-def make_profile(project_name: str = "vmessnodes", source_url: str = "https://a.example") -> AppProfile:
+def make_profile(project_name: str = "vms-nodes", source_url: str = "https://a.example") -> AppProfile:
     return AppProfile(
         sources={
             "leiting": SourceConfig(url=source_url, key="k1", enabled=True),
@@ -43,7 +43,7 @@ def test_profile_store_round_trip(tmp_path: Path) -> None:
     assert loaded.sources["leiting"].url == "https://a.example"
     assert loaded.sources["leiting"].area_min == 8
     assert loaded.sources["leiting"].area_max == 64
-    assert loaded.deploy.project_name == "vmessnodes"
+    assert loaded.deploy.project_name == "vms-nodes"
     assert "[sources.leiting]" in payload
     assert "area_min = 8" in payload
     assert "area_max = 64" in payload
@@ -59,7 +59,7 @@ def test_profile_store_load_or_create_returns_default_profile(tmp_path: Path) ->
     assert "workspace" not in profile.to_dict()
     assert store.path.name == "profile.toml"
     assert profile.sources["leiting"].enabled is True
-    assert profile.deploy.project_name == "vmessnodes"
+    assert profile.deploy.project_name == "vms-nodes"
     assert store.path.exists()
 
 
@@ -69,7 +69,7 @@ def test_create_default_profile_starts_with_editable_defaults(tmp_path: Path) ->
     assert profile.sources["leiting"].url == ""
     assert profile.sources["leiting"].key == ""
     assert all(source.max_iterations == 5000 for source in profile.sources.values())
-    assert profile.deploy.project_name == "vmessnodes"
+    assert profile.deploy.project_name == "vms-nodes"
     assert profile.deploy.subscription_url == "https://swimmingliu.xyz/179ba8dd-3854-4747-b853-fc1868ef3937"
     assert len(profile.speed_test.urls) == 3
 

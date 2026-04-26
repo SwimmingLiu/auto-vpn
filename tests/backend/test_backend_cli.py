@@ -27,7 +27,7 @@ def test_ensure_profile_json_bootstraps_missing_profile(tmp_path: Path) -> None:
     project_root = tmp_path / "vpn-subscription-automation"
     profile_json = ensure_profile_json(project_root)
     payload = json.loads(profile_json)
-    assert payload["deploy"]["project_name"] == "vmessnodes"
+    assert payload["deploy"]["project_name"] == "vms-nodes"
     assert "workspace" not in payload
 
 
