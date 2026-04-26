@@ -2,6 +2,7 @@ import sqlite3
 from pathlib import Path
 
 from vpn_automation.pipeline.run_store import RunStore
+from vpn_automation.pipeline.vmess import generate_vmess_link
 
 
 def test_run_store_creates_schema(tmp_path: Path) -> None:
@@ -51,6 +52,59 @@ def test_run_store_records_progress_and_raw_links(tmp_path: Path) -> None:
 
     assert store.fetch_source_progress()["leiting"]["raw_links"] == 2
     assert store.count_links("raw_links") == 2
+
+
+def test_record_raw_link_returns_false_for_duplicate(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "run.db")
+    store.initialize(artifact_dir=str(tmp_path / "artifacts"))
+
+    assert store.record_raw_link("leiting", "vmess://first") is True
+    assert store.record_raw_link("leiting", "vmess://first") is False
+    assert store.count_links("raw_links") == 1
+
+
+def test_run_store_dedupes_raw_links_by_canonical_key_across_sources(tmp_path: Path) -> None:
+    first = generate_vmess_link(
+        {
+            "v": "2",
+            "ps": "US first",
+            "add": "1.1.1.1",
+            "port": "443",
+            "id": "418048af-a293-4b99-9b0c-98ca3580dd24",
+            "aid": "0",
+            "scy": "auto",
+            "net": "ws",
+            "type": "dtls",
+            "host": "example.com",
+            "path": "/node",
+            "tls": "tls",
+            "sni": "example.com",
+        }
+    )
+    duplicate = generate_vmess_link(
+        {
+            "v": "2",
+            "ps": "US duplicate display name",
+            "add": "1.1.1.1",
+            "port": "443",
+            "id": "418048af-a293-4b99-9b0c-98ca3580dd24",
+            "aid": "0",
+            "scy": "auto",
+            "net": "ws",
+            "type": "dtls",
+            "host": "example.com",
+            "path": "/node",
+            "tls": "tls",
+            "sni": "example.com",
+        }
+    )
+    store = RunStore(tmp_path / "run.db")
+    store.initialize(artifact_dir=str(tmp_path / "artifacts"))
+
+    assert store.record_raw_link("leiting", first) is True
+    assert store.record_raw_link("heidong", duplicate) is False
+
+    assert store.count_links("raw_links") == 1
 
 
 def test_run_store_records_extract_attempts(tmp_path: Path) -> None:
