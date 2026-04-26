@@ -11,9 +11,10 @@ from vpn_automation.pipeline.availability import (
     check_link_availability,
     fetch_provider_result,
     evaluate_provider_response,
+    normalize_provider_targets,
     resolve_node_binary,
 )
-from vpn_automation.config.models import SpeedTestConfig
+from vpn_automation.config.models import AvailabilityTargetConfig, SpeedTestConfig
 from vpn_automation.pipeline.speedtest import SpeedTestResult
 
 
@@ -70,6 +71,96 @@ def test_availability_result_requires_all_providers_to_pass() -> None:
 
     assert result.all_passed is False
     assert result.link == "vmess://node"
+
+
+def test_normalize_provider_targets_uses_custom_profile_targets() -> None:
+    targets = normalize_provider_targets(
+        {
+            "gemini": AvailabilityTargetConfig(
+                url="https://gemini.example/",
+                enabled=False,
+                allowed_hosts=["gemini.example"],
+                negative_phrases=["blocked"],
+            ),
+            "tmailor": AvailabilityTargetConfig(
+                url="https://tmailor.example/",
+                enabled=True,
+                allowed_hosts=["tmailor.example"],
+                negative_phrases=["not supported"],
+            ),
+        }
+    )
+
+    assert [target.name for target in targets] == ["tmailor"]
+    assert targets[0].url == "https://tmailor.example/"
+    assert targets[0].allowed_hosts == ("tmailor.example",)
+    assert targets[0].negative_phrases == ("not supported",)
+
+
+def test_check_link_availability_only_checks_enabled_targets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = SpeedTestConfig(
+        min_download_mb_s=1.0,
+        timeout_seconds=20,
+        concurrency=1,
+        urls=["https://speed.cloudflare.com/__down?bytes=5000000"],
+    )
+    speed = SpeedTestResult(link="vmess://node", reachable=True, average_download_mb_s=2.0, latency_ms=50)
+    checked_targets: list[str] = []
+
+    class DummyRuntime:
+        def __init__(self) -> None:
+            self.session = object()
+            self.proxies = {"http": "http://127.0.0.1:18080", "https": "http://127.0.0.1:18080"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_fetch_provider_result(session, proxies, target, timeout_seconds):
+        checked_targets.append(target.name)
+        return ProviderCheckResult(
+            provider=target.name,
+            passed=True,
+            reason="ok",
+            status_code=200,
+            final_url=target.url,
+        )
+
+    monkeypatch.setattr("vpn_automation.pipeline.availability.open_proxy_runtime", lambda *args, **kwargs: DummyRuntime())
+    monkeypatch.setattr("vpn_automation.pipeline.availability.fetch_provider_result", fake_fetch_provider_result)
+    monkeypatch.setattr(
+        "vpn_automation.pipeline.availability.fetch_provider_results_with_browser",
+        lambda proxies, targets, timeout_seconds, project_root='': {},
+    )
+
+    result = check_link_availability(
+        speed,
+        config,
+        targets=normalize_provider_targets(
+            {
+                "gemini": AvailabilityTargetConfig(
+                    url="https://gemini.example/",
+                    enabled=False,
+                    allowed_hosts=["gemini.example"],
+                    negative_phrases=[],
+                ),
+                "tmailor": AvailabilityTargetConfig(
+                    url="https://tmailor.example/",
+                    enabled=True,
+                    allowed_hosts=["tmailor.example"],
+                    negative_phrases=[],
+                ),
+            }
+        ),
+    )
+
+    assert checked_targets == ["tmailor"]
+    assert list(result.provider_results) == ["tmailor"]
+    assert result.all_passed is True
 
 
 def test_fetch_provider_result_uses_tls_verification(monkeypatch: pytest.MonkeyPatch) -> None:
