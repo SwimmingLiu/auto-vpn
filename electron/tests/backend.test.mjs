@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { parseVmessLinkForPreview, previewArtifactDirectory } from '../lib/artifact-preview.js';
+import { mergeLatestArtifactPreview, parseVmessLinkForPreview, previewArtifactDirectory } from '../lib/artifact-preview.js';
 import { buildBackendInvocation, parseBackendEventLine, resolveBackendPython } from '../lib/backend.js';
 import {
   findProjectRoot,
@@ -192,4 +192,30 @@ test('previewArtifactDirectory groups nodes by region and falls back to OTHER', 
     { regionCode: 'OTHER', count: 1 },
     { regionCode: 'US', count: 2 }
   ]);
+});
+
+test('mergeLatestArtifactPreview combines backend report metadata and preview rows', () => {
+  const report = {
+    ok: true,
+    artifact_dir: '/tmp/artifacts/20260426-120000',
+    counts: { availability_links: 2 },
+    source_counts: { leiting: { raw_links: 3 } }
+  };
+  const preview = {
+    ok: true,
+    outputFiles: [{ name: 'vpn_node_emoji.txt', size: '2 KB' }],
+    nodeRows: [{ name: 'JP node' }]
+  };
+
+  assert.deepEqual(mergeLatestArtifactPreview(report, preview), {
+    ok: true,
+    artifact_dir: '/tmp/artifacts/20260426-120000',
+    counts: { availability_links: 2 },
+    source_counts: { leiting: { raw_links: 3 } },
+    outputFiles: [{ name: 'vpn_node_emoji.txt', size: '2 KB' }],
+    nodeRows: [{ name: 'JP node' }],
+    regionCards: [],
+    finalNodeCount: 0,
+    nodeSource: ''
+  });
 });

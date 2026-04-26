@@ -28,6 +28,76 @@ const REMOVED_NAV = [
   '#navAbout'
 ];
 
+test('renderer hydrates the latest artifact on startup when backend has results', async () => {
+  const server = await startStaticServer(path.join(__dirname, '..', 'renderer'));
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 820 } });
+    await page.addInitScript(() => {
+      window.__latestCalls = 0;
+      window.vpnAutomation = {
+        loadProfile: async () => ({
+          sources: {
+            leiting: { url: 'https://capture.example/api', key: 'demo', enabled: true, max_iterations: 40 }
+          },
+          availability_targets: {},
+          speed_test: { min_download_mb_s: 1, timeout_seconds: 20, concurrency: 3 },
+          deploy: {
+            project_name: 'vpn-auto',
+            pages_project_url: 'https://vpn-auto.pages.dev',
+            subscription_url: 'https://vpn.example.top/sub'
+          },
+          paths: { project_root: '/Users/user/vpn-sub', artifacts_root: '/Users/user/vpn-sub/artifacts' }
+        }),
+        latestArtifact: async () => {
+          window.__latestCalls += 1;
+          return {
+            ok: true,
+            artifact_dir: '/Users/user/vpn-sub/artifacts/20260426-120000',
+            counts: { raw_links: 5, deduped_links: 4, speedtest_links: 3, availability_links: 2 },
+            source_counts: { leiting: { raw_links: 5 } },
+            outputFiles: [{ name: 'vpn_node_emoji.txt', size: '2 KB' }],
+            nodeRows: [
+              {
+                name: '🇯🇵 JP latest-node',
+                address: '6.6.6.6',
+                protocol: 'vmess',
+                path: '/latest',
+                link: 'vmess://latest'
+              }
+            ]
+          };
+        },
+        saveProfile: async () => ({ ok: true }),
+        runPipeline: async () => ({ ok: true, pid: 1 }),
+        stopPipeline: async () => ({ ok: true, requested: true }),
+        openUrl: async () => ({ ok: true }),
+        openPath: async () => ({ ok: true }),
+        generateQr: async () => ({ ok: true, dataUrl: 'data:image/mock;base64,latest' }),
+        previewArtifact: async () => ({ ok: false, outputFiles: [], nodeRows: [] }),
+        onPipelineEvent: () => () => {}
+      };
+    });
+
+    await page.goto(`${server.origin}/index.html`);
+    await page.waitForSelector('#dashboardOverview');
+    await page.waitForFunction(() => window.__latestCalls === 1);
+
+    const dashboardText = await page.locator('#dashboardOverview').innerText();
+    assert.match(dashboardText, /20260426-120000/);
+    assert.match(await page.locator('[data-metric-key="availability_links"]').innerText(), /2/);
+
+    await page.locator('#navResults').click();
+    await page.waitForSelector('#resultsWorkspace');
+    const resultsText = await page.locator('#resultsWorkspace').innerText();
+    assert.match(resultsText, /latest-node/);
+    assert.match(resultsText, /6\.6\.6\.6/);
+  } finally {
+    await browser.close();
+    await server.close();
+  }
+});
+
 test('renderer matches the six-page canvas redesign and supports page navigation', async () => {
   const server = await startStaticServer(path.join(__dirname, '..', 'renderer'));
   const browser = await chromium.launch();
@@ -56,6 +126,26 @@ test('renderer matches the six-page canvas redesign and supports page navigation
             timeout_seconds: 20,
             concurrency: 3
           },
+          availability_targets: {
+            gemini: {
+              url: 'https://gemini.google.com/',
+              enabled: true,
+              allowed_hosts: ['gemini.google.com'],
+              negative_phrases: ['not available']
+            },
+            chatgpt: {
+              url: 'https://chatgpt.com/',
+              enabled: true,
+              allowed_hosts: ['chatgpt.com'],
+              negative_phrases: ['unsupported region']
+            },
+            claude: {
+              url: 'https://claude.ai/',
+              enabled: true,
+              allowed_hosts: ['claude.ai'],
+              negative_phrases: ['unavailable in your region']
+            }
+          },
           deploy: {
             project_name: 'vpn-auto',
             pages_project_url: 'https://vpn-auto.pages.dev',
@@ -70,6 +160,7 @@ test('renderer matches the six-page canvas redesign and supports page navigation
           window.__savedProfiles.push(structuredClone(payload));
           return { ok: true };
         },
+        latestArtifact: async () => ({ ok: false, artifact_dir: '' }),
         runPipeline: async () => {
           window.__runCalls += 1;
           return { ok: true, pid: 1 };
@@ -114,6 +205,13 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     await page.goto(target);
     await page.waitForSelector('.workspace-shell');
     await page.waitForTimeout(60);
+
+    assert.ok(await page.locator('.window-titlebar').isVisible());
+    assert.equal(await page.locator('.app-content-shell').count(), 1);
+    const titlebarBox = await page.locator('.window-titlebar').boundingBox();
+    const topbarBox = await page.locator('.topbar').boundingBox();
+    assert.ok(titlebarBox.height >= 32);
+    assert.ok(topbarBox.y >= titlebarBox.height);
 
     assert.equal(await page.locator('.sidebar-nav .nav-item').count(), 6);
     assert.equal(await page.locator('.shortcut-action').count(), 0);
@@ -223,8 +321,9 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     const settingsText = await page.locator('#settingsWorkspace').innerText();
     assert.match(settingsText, /数据源配置/);
     assert.match(settingsText, /测速配置/);
+    assert.match(settingsText, /AI可达性检测/);
     assert.doesNotMatch(settingsText, /部署配置/);
-    assert.equal(await page.locator('.settings-overview-card').count(), 2);
+    assert.equal(await page.locator('.settings-overview-card').count(), 3);
     assert.equal(await page.locator('.settings-source-table').count(), 0);
 
     await page.locator('[data-settings-card="sources"]').click();
@@ -251,6 +350,30 @@ test('renderer matches the six-page canvas redesign and supports page navigation
         window.__savedProfiles.at(-1).sources.leiting.area_max
       ]),
       [20, 60]
+    );
+
+    await page.locator('[data-settings-card="availability_targets"]').click();
+    await page.waitForSelector('#settingsDrawer[data-open="true"]');
+    assert.match(await page.locator('#settingsDrawerTitle').innerText(), /AI可达性检测/);
+    assert.equal(await page.locator('.availability-target-table tbody tr').count(), 3);
+    await page.locator('[data-availability-action="add"]').click();
+    await page.waitForFunction(() => document.querySelectorAll('.availability-target-table tbody tr').length === 4);
+    const lastRow = page.locator('.availability-target-table tbody tr').last();
+    await lastRow.locator('[data-availability-key="name"]').fill('tmailor');
+    await lastRow.locator('[data-availability-key="url"]').fill('https://tmailor.example/');
+    await lastRow.locator('[data-availability-key="allowed_hosts"]').fill('tmailor.example');
+    await lastRow.locator('[data-availability-key="negative_phrases"]').fill('blocked');
+    await page.locator('[data-drawer-save="save"]').click();
+    await page.waitForSelector('#settingsDrawer[data-open="false"]');
+    await page.locator('#pageActions [data-action="save-profile"]').click();
+    assert.deepEqual(
+      await page.evaluate(() => window.__savedProfiles.at(-1).availability_targets.tmailor),
+      {
+        url: 'https://tmailor.example/',
+        enabled: true,
+        allowed_hosts: ['tmailor.example'],
+        negative_phrases: ['blocked']
+      }
     );
 
     await page.locator('#navRuns').click();

@@ -1,6 +1,13 @@
 from pathlib import Path
 
-from vpn_automation.config.models import AppProfile, DeployConfig, SourceConfig, SpeedTestConfig, create_default_profile
+from vpn_automation.config.models import (
+    AppProfile,
+    AvailabilityTargetConfig,
+    DeployConfig,
+    SourceConfig,
+    SpeedTestConfig,
+    create_default_profile,
+)
 from vpn_automation.config.store import ProfileStore, resolve_profile_path
 
 
@@ -65,6 +72,40 @@ def test_create_default_profile_starts_with_editable_defaults(tmp_path: Path) ->
     assert profile.deploy.project_name == "vmessnodes"
     assert profile.deploy.subscription_url == "https://swimmingliu.xyz/179ba8dd-3854-4747-b853-fc1868ef3937"
     assert len(profile.speed_test.urls) == 3
+
+
+def test_default_profile_has_editable_ai_availability_targets(tmp_path: Path) -> None:
+    profile = create_default_profile(tmp_path / "vpn-subscription-automation")
+
+    assert list(profile.availability_targets) == ["gemini", "chatgpt", "claude"]
+    assert all(target.enabled for target in profile.availability_targets.values())
+    assert profile.availability_targets["gemini"].url == "https://gemini.google.com/"
+    assert "gemini.google.com" in profile.availability_targets["gemini"].allowed_hosts
+    assert profile.availability_targets["chatgpt"].url == "https://chatgpt.com/"
+    assert "claude.ai" in profile.availability_targets["claude"].allowed_hosts
+
+
+def test_profile_store_round_trips_custom_availability_target(tmp_path: Path) -> None:
+    profile = make_profile()
+    profile.availability_targets["tmailor"] = AvailabilityTargetConfig(
+        url="https://tmailor.example/",
+        enabled=True,
+        allowed_hosts=["tmailor.example"],
+        negative_phrases=["blocked in your region"],
+    )
+    profile.availability_targets["claude"].enabled = False
+    store = ProfileStore(tmp_path / "profile.toml")
+
+    store.save(profile)
+    loaded = store.load()
+    payload = store.path.read_text(encoding="utf-8")
+
+    assert "[availability_targets.gemini]" in payload
+    assert "[availability_targets.tmailor]" in payload
+    assert loaded.availability_targets["claude"].enabled is False
+    assert loaded.availability_targets["tmailor"].url == "https://tmailor.example/"
+    assert loaded.availability_targets["tmailor"].allowed_hosts == ["tmailor.example"]
+    assert loaded.availability_targets["tmailor"].negative_phrases == ["blocked in your region"]
 
 
 def test_resolve_profile_path_prefers_repo_anchor_state_when_running_from_worktree(tmp_path: Path) -> None:

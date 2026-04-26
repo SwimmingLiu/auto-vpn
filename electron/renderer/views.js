@@ -65,6 +65,41 @@ const EMPTY_COUNTS = {
 };
 
 const SOURCE_DISPLAY_ORDER = ['leiting', 'heidong', 'mifeng', 'xuanfeng-area', 'xuanfeng-all-area'];
+const DEFAULT_AVAILABILITY_TARGETS = {
+  gemini: {
+    url: 'https://gemini.google.com/',
+    enabled: true,
+    allowed_hosts: ['gemini.google.com', 'accounts.google.com'],
+    negative_phrases: [
+      'not available in your country',
+      'not available in your country or territory',
+      "isn't available in your country",
+      'not available in your region'
+    ]
+  },
+  chatgpt: {
+    url: 'https://chatgpt.com/',
+    enabled: true,
+    allowed_hosts: ['chatgpt.com', 'chat.openai.com', 'auth.openai.com', 'login.openai.com'],
+    negative_phrases: [
+      'unsupported country',
+      'unsupported region',
+      'country, region, or territory',
+      'not available in your country'
+    ]
+  },
+  claude: {
+    url: 'https://claude.ai/',
+    enabled: true,
+    allowed_hosts: ['claude.ai', 'support.anthropic.com'],
+    negative_phrases: [
+      'unavailable in your region',
+      'supported regions',
+      'physically located in one of our supported regions',
+      'outside of our supported locations'
+    ]
+  }
+};
 
 export function buildViewModel(state, messages, language) {
   const profile = mergeProfile(state.profile ?? FALLBACK_PROFILE);
@@ -468,6 +503,7 @@ function buildSettingsPage(vm, messages) {
         <div class="settings-overview-grid">
           ${buildSettingsCard('sources', '数据源配置', `已启用 ${vm.sourceRows.filter((row) => row.enabled).length} / ${vm.sourceRows.length} 个来源`, '管理抓取地址、密钥和启用状态')}
           ${buildSettingsCard('speed_test', '测速配置', `最低 ${vm.profile.speed_test.min_download_mb_s} MB/s · 并发 ${vm.profile.speed_test.concurrency}`, '控制测速阈值、超时和并发')}
+          ${buildSettingsCard('availability_targets', 'AI可达性检测', `已启用 ${enabledAvailabilityTargetCount(vm.profile.availability_targets)} / ${Object.keys(vm.profile.availability_targets ?? {}).length} 个网站`, '配置 Gemini、ChatGPT、Claude 或自定义网站')}
         </div>
       </article>
 
@@ -517,7 +553,8 @@ function buildSettingsDrawer(vm) {
   const section = drawer?.section ?? '';
   const title = {
     sources: '数据源配置',
-    speed_test: '测速配置'
+    speed_test: '测速配置',
+    availability_targets: 'AI可达性检测'
   }[section] ?? '设置';
 
   const style = vm.modalTransform ? `style="transform: ${escapeHtml(vm.modalTransform)};"` : '';
@@ -587,6 +624,31 @@ function buildSettingsDrawerBody(section, draft) {
         ${renderDrawerField('最低下载速度（MB/s）', 'number', draft.min_download_mb_s, 'speed_test.min_download_mb_s', true)}
         ${renderDrawerField('超时时间（秒）', 'number', draft.timeout_seconds, 'speed_test.timeout_seconds', true)}
         ${renderDrawerField('并发数量', 'number', draft.concurrency, 'speed_test.concurrency', true)}
+      </div>
+    `;
+  }
+
+  if (section === 'availability_targets') {
+    return `
+      <div class="availability-toolbar">
+        <button class="btn btn-secondary small" data-availability-action="add" type="button">新增网站</button>
+      </div>
+      <div class="table-wrap">
+        <table class="data-table availability-target-table">
+          <thead><tr><th>启用</th><th>名称</th><th>URL</th><th>允许域名</th><th>屏蔽短语</th><th>操作</th></tr></thead>
+          <tbody>
+            ${(draft?.targets ?? []).map((target, index) => `
+              <tr>
+                <td><input type="checkbox" data-availability-index="${index}" data-availability-key="enabled" ${target.enabled ? 'checked' : ''} /></td>
+                <td><input data-availability-index="${index}" data-availability-key="name" value="${escapeHtml(target.name ?? '')}" /></td>
+                <td><input data-availability-index="${index}" data-availability-key="url" value="${escapeHtml(target.url ?? '')}" /></td>
+                <td><textarea data-availability-index="${index}" data-availability-key="allowed_hosts">${escapeHtml(target.allowed_hosts ?? '')}</textarea></td>
+                <td><textarea data-availability-index="${index}" data-availability-key="negative_phrases">${escapeHtml(target.negative_phrases ?? '')}</textarea></td>
+                <td><button class="btn btn-secondary small" data-availability-action="remove" data-availability-index="${index}" type="button">删除</button></td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
       </div>
     `;
   }
@@ -716,6 +778,63 @@ export function buildSourceIterationDraft(sources = {}) {
     areaMin: coerceAreaValue(firstSource.area_min, 0),
     areaMax: coerceAreaValue(firstSource.area_max, 100)
   };
+}
+
+export function buildAvailabilityTargetDraft(targets = {}) {
+  return {
+    targets: Object.entries(targets).map(([name, target]) => ({
+      name,
+      url: target?.url ?? '',
+      enabled: target?.enabled !== false,
+      allowed_hosts: normalizeEditableList(target?.allowed_hosts).join('\n'),
+      negative_phrases: normalizeEditableList(target?.negative_phrases).join('\n')
+    }))
+  };
+}
+
+export function addAvailabilityTargetDraft(draft, preferredName = 'custom') {
+  if (!draft?.targets) {
+    return;
+  }
+  const existing = new Set(draft.targets.map((target) => target.name));
+  let name = sanitizeTargetName(preferredName) || 'custom';
+  let index = 2;
+  while (existing.has(name)) {
+    name = `${sanitizeTargetName(preferredName) || 'custom'}-${index}`;
+    index += 1;
+  }
+  draft.targets.push({
+    name,
+    url: '',
+    enabled: true,
+    allowed_hosts: '',
+    negative_phrases: ''
+  });
+}
+
+export function removeAvailabilityTargetDraft(draft, index) {
+  if (!draft?.targets) {
+    return;
+  }
+  draft.targets.splice(Number(index), 1);
+}
+
+export function applyAvailabilityTargetDraft(draft = {}) {
+  const result = {};
+  for (const target of draft.targets ?? []) {
+    const name = sanitizeTargetName(target.name);
+    const url = String(target.url ?? '').trim();
+    if (!name || !url) {
+      continue;
+    }
+    result[name] = {
+      url,
+      enabled: target.enabled !== false,
+      allowed_hosts: splitEditableList(target.allowed_hosts),
+      negative_phrases: splitEditableList(target.negative_phrases)
+    };
+  }
+  return result;
 }
 
 export function applySourceIterationDraft(sources = {}, draft = {}) {
@@ -855,11 +974,38 @@ function mergeProfile(profile) {
     ...FALLBACK_PROFILE,
     ...profile,
     sources: profile?.sources ?? FALLBACK_PROFILE.sources,
+    availability_targets: profile?.availability_targets ?? DEFAULT_AVAILABILITY_TARGETS,
     speed_test: { ...FALLBACK_PROFILE.speed_test, ...(profile?.speed_test ?? {}) },
     deploy: { ...FALLBACK_PROFILE.deploy, ...(profile?.deploy ?? {}) },
     paths: mergedPaths,
     workspace: mergedPaths
   };
+}
+
+function enabledAvailabilityTargetCount(targets = {}) {
+  return Object.values(targets).filter((target) => target?.enabled !== false).length;
+}
+
+function normalizeEditableList(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item).trim()).filter(Boolean);
+  }
+  return splitEditableList(value);
+}
+
+function splitEditableList(value) {
+  return String(value ?? '')
+    .split(/[\n,]/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function sanitizeTargetName(value) {
+  return String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
 }
 
 function stateClass(status) {

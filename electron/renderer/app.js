@@ -1,7 +1,10 @@
 import { getMessages, formatMessage } from './i18n.js';
 import { resolveRunControlState } from './state.js';
 import {
+  addAvailabilityTargetDraft,
+  applyAvailabilityTargetDraft,
   applySourceIterationDraft,
+  buildAvailabilityTargetDraft,
   buildPageMarkup,
   buildDashboardMetricsMarkup,
   buildLogCenterMarkup,
@@ -11,6 +14,7 @@ import {
   buildSidebarNav,
   buildViewModel,
   buildTopbarActions,
+  removeAvailabilityTargetDraft,
   classifyLogEntry,
   filterLogEntries
 } from './views.js';
@@ -52,6 +56,26 @@ const demoProfile = {
       'https://speed-2.vpn.example/1mb.dat',
       'https://speed-3.vpn.example/1mb.dat'
     ]
+  },
+  availability_targets: {
+    gemini: {
+      url: 'https://gemini.google.com/',
+      enabled: true,
+      allowed_hosts: ['gemini.google.com', 'accounts.google.com'],
+      negative_phrases: ['not available in your country', 'not available in your region']
+    },
+    chatgpt: {
+      url: 'https://chatgpt.com/',
+      enabled: true,
+      allowed_hosts: ['chatgpt.com', 'chat.openai.com'],
+      negative_phrases: ['unsupported country', 'unsupported region']
+    },
+    claude: {
+      url: 'https://claude.ai/',
+      enabled: true,
+      allowed_hosts: ['claude.ai'],
+      negative_phrases: ['unavailable in your region']
+    }
   },
   deploy: {
     project_name: 'vpn-auto',
@@ -128,6 +152,7 @@ async function bootstrap() {
   state.savedProfile = structuredClone(loadedProfile);
   touchUpdate();
   await refreshQrCode();
+  await hydrateLatestArtifact();
   renderAll();
   state.unsubscribe = window.vpnAutomation.onPipelineEvent(handlePipelineEvent);
 }
@@ -322,6 +347,12 @@ function handleDocumentClick(event) {
     return;
   }
 
+  const availabilityAction = event.target.closest('[data-availability-action]');
+  if (availabilityAction) {
+    handleAvailabilityTargetAction(availabilityAction);
+    return;
+  }
+
   if (event.target.closest('[data-drawer-dismiss="backdrop"]')) {
     state.settingsDrawer = null;
     renderAll();
@@ -360,6 +391,11 @@ function handleDocumentInput(event) {
       target.type === 'checkbox'
         ? target.checked
         : coerceProfileValue(target.value.trim(), sourceDraft[sourceName][key]);
+    return;
+  }
+
+  if (target.matches('[data-availability-index][data-availability-key]')) {
+    updateAvailabilityTargetDraft(target);
     return;
   }
 
@@ -549,6 +585,7 @@ function buildSettingsDraft(section) {
 
   if (section === 'sources') return buildSourceIterationDraft(state.profile.sources);
   if (section === 'speed_test') return structuredClone(state.profile.speed_test);
+  if (section === 'availability_targets') return buildAvailabilityTargetDraft(state.profile.availability_targets);
   if (section === 'deploy') return structuredClone(state.profile.deploy);
   if (section === 'paths') return structuredClone(state.profile.paths);
   if (section === 'about') return { version: getMessages(state.language).sidebarVersion };
@@ -571,9 +608,7 @@ function saveSettingsDrawer() {
 
   const { section, draft } = state.settingsDrawer;
   if (section !== 'about') {
-    state.profile[section] = section === 'sources'
-      ? applySourceIterationDraft(draft.sources, draft)
-      : structuredClone(draft);
+    state.profile[section] = resolveSettingsDraftPayload(section, draft);
     if (section === 'deploy') {
       refreshQrCode();
     }
@@ -597,6 +632,44 @@ async function saveProfile({ silent = false } = {}) {
   if (!silent) {
     appendLog(getMessages(state.language).profileSaved);
   }
+}
+
+function resolveSettingsDraftPayload(section, draft) {
+  if (section === 'sources') {
+    return applySourceIterationDraft(draft.sources, draft);
+  }
+  if (section === 'availability_targets') {
+    return applyAvailabilityTargetDraft(draft);
+  }
+  return structuredClone(draft);
+}
+
+function handleAvailabilityTargetAction(action) {
+  if (state.settingsDrawer?.section !== 'availability_targets') {
+    return;
+  }
+  if (action.dataset.availabilityAction === 'add') {
+    addAvailabilityTargetDraft(state.settingsDrawer.draft, 'custom');
+    renderAll();
+    return;
+  }
+  if (action.dataset.availabilityAction === 'remove') {
+    removeAvailabilityTargetDraft(state.settingsDrawer.draft, action.dataset.availabilityIndex);
+    renderAll();
+  }
+}
+
+function updateAvailabilityTargetDraft(target) {
+  if (state.settingsDrawer?.section !== 'availability_targets') {
+    return;
+  }
+  const index = Number(target.dataset.availabilityIndex);
+  const key = target.dataset.availabilityKey;
+  const row = state.settingsDrawer.draft?.targets?.[index];
+  if (!row || !key) {
+    return;
+  }
+  row[key] = target.type === 'checkbox' ? target.checked : target.value;
 }
 
 async function exportLogs() {
@@ -850,6 +923,31 @@ async function hydrateArtifactPreview() {
     state.outputFiles = result.outputFiles ?? [];
     state.nodeRows = result.nodeRows ?? [];
     renderAll();
+  }
+}
+
+async function hydrateLatestArtifact() {
+  if (!window.vpnAutomation?.latestArtifact) {
+    return;
+  }
+
+  try {
+    const result = await window.vpnAutomation.latestArtifact();
+    if (!result?.ok || !result.artifact_dir) {
+      return;
+    }
+    state.artifactDir = result.artifact_dir;
+    state.counts = normalizeCounts(result.counts ?? {});
+    state.sourceCounts = normalizeSourceCounts(result.source_counts ?? {});
+    state.outputFiles = result.outputFiles ?? [];
+    state.nodeRows = result.nodeRows ?? [];
+    state.runResult = result.run_status === 'success' ? 'success' : state.runResult;
+    if (result.stage_status) {
+      state.stageStatus = result.stage_status;
+    }
+    touchUpdate();
+  } catch (error) {
+    appendLog(formatMessage(getMessages(state.language).openFailed, { error: error.message }));
   }
 }
 

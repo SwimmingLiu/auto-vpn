@@ -1,5 +1,8 @@
 import sqlite3
+from dataclasses import astuple
 from pathlib import Path
+
+from vpn_automation.pipeline.vmess import canonical_key, parse_vmess_link
 
 
 DEFAULT_STAGES = [
@@ -60,11 +63,13 @@ class RunStore:
                 CREATE TABLE IF NOT EXISTS raw_links (
                     source_name TEXT NOT NULL,
                     link TEXT NOT NULL,
+                    canonical_key TEXT NOT NULL DEFAULT '',
                     first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(source_name, link)
+                    UNIQUE(canonical_key)
                 )
                 """
             )
+            self._ensure_raw_links_schema(connection)
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS extract_attempts (
@@ -171,12 +176,14 @@ class RunStore:
                 (stage_name, status),
             )
 
-    def record_raw_link(self, source_name: str, link: str) -> None:
+    def record_raw_link(self, source_name: str, link: str) -> bool:
+        key = self._canonical_link_key(link)
         with sqlite3.connect(self.path) as connection:
-            connection.execute(
-                "INSERT OR IGNORE INTO raw_links (source_name, link) VALUES (?, ?)",
-                (source_name, link),
+            cursor = connection.execute(
+                "INSERT OR IGNORE INTO raw_links (source_name, link, canonical_key) VALUES (?, ?, ?)",
+                (source_name, link, key),
             )
+            return cursor.rowcount > 0
 
     def record_extract_attempt(
         self,
@@ -375,6 +382,17 @@ class RunStore:
             return db_path
         return None
 
+    @staticmethod
+    def find_latest_artifact_dir(artifacts_root: Path) -> Path | None:
+        if not artifacts_root.exists():
+            return None
+        candidates = sorted(
+            [path for path in artifacts_root.iterdir() if path.is_dir()],
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        return candidates[0] if candidates else None
+
     def fetch_stage_status(self) -> dict[str, str]:
         result = {name: "pending" for name in DEFAULT_STAGES}
         with sqlite3.connect(self.path) as connection:
@@ -423,3 +441,34 @@ class RunStore:
         with sqlite3.connect(self.path) as connection:
             row = connection.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()
         return int(row[0] if row else 0)
+
+    @staticmethod
+    def _canonical_link_key(link: str) -> str:
+        try:
+            return "|".join(astuple(canonical_key(parse_vmess_link(link))))
+        except Exception:
+            return str(link)
+
+    @staticmethod
+    def _ensure_raw_links_schema(connection: sqlite3.Connection) -> None:
+        columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(raw_links)").fetchall()
+        }
+        if "canonical_key" not in columns:
+            connection.execute("ALTER TABLE raw_links ADD COLUMN canonical_key TEXT NOT NULL DEFAULT ''")
+            rows = connection.execute("SELECT rowid, link FROM raw_links ORDER BY rowid ASC").fetchall()
+            seen: set[str] = set()
+            for rowid, link in rows:
+                key = RunStore._canonical_link_key(str(link))
+                if key in seen:
+                    connection.execute("DELETE FROM raw_links WHERE rowid = ?", (rowid,))
+                    continue
+                seen.add(key)
+                connection.execute(
+                    "UPDATE raw_links SET canonical_key = ? WHERE rowid = ?",
+                    (key, rowid),
+                )
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_links_canonical_key ON raw_links(canonical_key)"
+        )

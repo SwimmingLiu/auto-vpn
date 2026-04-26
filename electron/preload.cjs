@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('vpnAutomation', {
   openPath: (targetPath) => ipcRenderer.invoke('shell:open-path', targetPath),
   generateQr: (text) => ipcRenderer.invoke('qr:generate', text),
   previewArtifact: (artifactDir) => ipcRenderer.invoke('artifact:preview', artifactDir),
+  latestArtifact: () => ipcRenderer.invoke('artifact:latest'),
   exportLogs: (content) => ipcRenderer.invoke('logs:export', content),
   onPipelineEvent: (callback) => {
     const listener = (_event, payload) => callback(payload);

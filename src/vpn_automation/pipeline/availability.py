@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 import subprocess
+import inspect
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -11,6 +12,7 @@ from urllib.parse import urlparse
 import requests
 
 from vpn_automation.config.models import resolve_repo_anchor
+from vpn_automation.config.models import AvailabilityTargetConfig
 from vpn_automation.config.models import SpeedTestConfig
 from vpn_automation.pipeline.proxy_runtime import open_proxy_runtime
 from vpn_automation.pipeline.speedtest import SpeedTestResult
@@ -134,6 +136,46 @@ def _emit_event(
 def _host_is_allowed(hostname: str, allowed_hosts: tuple[str, ...]) -> bool:
     host = hostname.lower()
     return any(host == allowed or host.endswith(f".{allowed}") for allowed in allowed_hosts)
+
+
+def normalize_provider_targets(
+    targets: dict[str, AvailabilityTargetConfig] | tuple[ProviderTarget, ...] | list[ProviderTarget] | None = None,
+) -> tuple[ProviderTarget, ...]:
+    if targets is None:
+        return PROVIDER_TARGETS
+    if isinstance(targets, tuple) and all(isinstance(target, ProviderTarget) for target in targets):
+        return tuple(targets)
+    if isinstance(targets, list) and all(isinstance(target, ProviderTarget) for target in targets):
+        return tuple(targets)
+
+    normalized_targets: list[ProviderTarget] = []
+    for name, config in dict(targets).items():
+        if not getattr(config, "enabled", True):
+            continue
+        url = str(getattr(config, "url", "") or "").strip()
+        if not url:
+            continue
+        allowed_hosts = tuple(
+            str(host).strip().lower()
+            for host in getattr(config, "allowed_hosts", [])
+            if str(host).strip()
+        )
+        if not allowed_hosts:
+            host = urlparse(url).hostname or ""
+            allowed_hosts = (host.lower(),) if host else ()
+        normalized_targets.append(
+            ProviderTarget(
+                name=str(name),
+                url=url,
+                allowed_hosts=allowed_hosts,
+                negative_phrases=tuple(
+                    str(phrase).strip()
+                    for phrase in getattr(config, "negative_phrases", [])
+                    if str(phrase).strip()
+                ),
+            )
+        )
+    return tuple(normalized_targets)
 
 
 def evaluate_provider_response(
@@ -326,7 +368,12 @@ await browser.close();
     return browser_results
 
 
-def _build_runtime_error_result(speed_result: SpeedTestResult, reason: str) -> AvailabilityResult:
+def _build_runtime_error_result(
+    speed_result: SpeedTestResult,
+    reason: str,
+    targets: tuple[ProviderTarget, ...] | None = None,
+) -> AvailabilityResult:
+    active_targets = normalize_provider_targets(targets)
     provider_results = {
         target.name: ProviderCheckResult(
             provider=target.name,
@@ -335,7 +382,7 @@ def _build_runtime_error_result(speed_result: SpeedTestResult, reason: str) -> A
             final_url=target.url,
             matched_phrase=reason,
         )
-        for target in PROVIDER_TARGETS
+        for target in active_targets
     }
     return AvailabilityResult(speed_result=speed_result, provider_results=provider_results)
 
@@ -345,7 +392,11 @@ def check_link_availability(
     config: SpeedTestConfig,
     *,
     runtime_path: str = "",
+    targets: dict[str, AvailabilityTargetConfig] | tuple[ProviderTarget, ...] | list[ProviderTarget] | None = None,
 ) -> AvailabilityResult:
+    active_targets = normalize_provider_targets(targets)
+    if not active_targets:
+        return AvailabilityResult(speed_result=speed_result, provider_results={})
     try:
         with open_proxy_runtime(
             speed_result.link,
@@ -354,10 +405,10 @@ def check_link_availability(
         ) as runtime:
             provider_results = {
                 target.name: fetch_provider_result(runtime.session, runtime.proxies, target, config.timeout_seconds)
-                for target in PROVIDER_TARGETS
+                for target in active_targets
             }
             fallback_targets = tuple(
-                target for target in PROVIDER_TARGETS if should_retry_with_browser(provider_results[target.name])
+                target for target in active_targets if should_retry_with_browser(provider_results[target.name])
             )
             if fallback_targets:
                 try:
@@ -379,7 +430,15 @@ def check_link_availability(
                         )
         return AvailabilityResult(speed_result=speed_result, provider_results=provider_results)
     except Exception as exc:
-        return _build_runtime_error_result(speed_result, str(exc))
+        return _build_runtime_error_result(speed_result, str(exc), active_targets)
+
+
+def _worker_accepts_targets(worker: Callable[..., Any]) -> bool:
+    signature = inspect.signature(worker)
+    return (
+        "targets" in signature.parameters
+        or any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values())
+    )
 
 
 def check_link_availability_batch(
@@ -387,25 +446,30 @@ def check_link_availability_batch(
     config: SpeedTestConfig,
     *,
     runtime_path: str = "",
+    targets: dict[str, AvailabilityTargetConfig] | tuple[ProviderTarget, ...] | list[ProviderTarget] | None = None,
     progress_callback: Callable[[str], None] | None = None,
     event_callback: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> list[AvailabilityResult]:
     if not results:
         return []
 
+    active_targets = normalize_provider_targets(targets)
+    accepts_targets = _worker_accepts_targets(check_link_availability)
     collected: list[AvailabilityResult | None] = [None] * len(results)
     with ThreadPoolExecutor(max_workers=max(1, config.concurrency)) as executor:
-        future_map = {
-            executor.submit(check_link_availability, result, config, runtime_path=runtime_path): index
-            for index, result in enumerate(results)
-        }
+        future_map = {}
+        for index, result in enumerate(results):
+            kwargs: dict[str, Any] = {"runtime_path": runtime_path}
+            if accepts_targets:
+                kwargs["targets"] = active_targets
+            future_map[executor.submit(check_link_availability, result, config, **kwargs)] = index
         for completed_index, future in enumerate(as_completed(future_map), start=1):
             index = future_map[future]
             speed_result = results[index]
             try:
                 availability = future.result()
             except Exception as exc:
-                availability = _build_runtime_error_result(speed_result, str(exc))
+                availability = _build_runtime_error_result(speed_result, str(exc), active_targets)
             collected[index] = availability
             if progress_callback:
                 statuses = " ".join(

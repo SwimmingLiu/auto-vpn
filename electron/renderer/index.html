@@ -7,33 +7,38 @@
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body data-page="dashboard">
-    <div class="workspace-shell">
-      <aside class="sidebar">
-        <div class="sidebar-brand">
-          <div class="brand-mark">VA</div>
-          <div class="brand-copy">
-            <div id="sidebarTitle" class="sidebar-title"></div>
-            <div id="sidebarVersion" class="sidebar-version"></div>
+    <div class="app-frame">
+      <div class="window-titlebar" aria-hidden="true"></div>
+      <div class="app-content-shell">
+        <div class="workspace-shell">
+          <aside class="sidebar">
+            <div class="sidebar-brand">
+              <div class="brand-mark">VA</div>
+              <div class="brand-copy">
+                <div id="sidebarTitle" class="sidebar-title"></div>
+                <div id="sidebarVersion" class="sidebar-version"></div>
+              </div>
+            </div>
+
+            <nav id="sidebarNav" class="sidebar-nav"></nav>
+          </aside>
+
+          <div class="main-shell">
+            <header class="topbar">
+              <div class="topbar-heading">
+                <div class="page-title-row">
+                  <h1 id="pageTitle"></h1>
+                  <span id="runStateBadge" class="badge neutral"></span>
+                </div>
+                <p id="pageSubtitle"></p>
+              </div>
+
+              <div id="pageActions" class="topbar-actions"></div>
+            </header>
+
+            <main id="pageContent" class="page-content"></main>
           </div>
         </div>
-
-        <nav id="sidebarNav" class="sidebar-nav"></nav>
-      </aside>
-
-      <div class="main-shell">
-        <header class="topbar">
-          <div class="topbar-heading">
-            <div class="page-title-row">
-              <h1 id="pageTitle"></h1>
-              <span id="runStateBadge" class="badge neutral"></span>
-            </div>
-            <p id="pageSubtitle"></p>
-          </div>
-
-          <div id="pageActions" class="topbar-actions"></div>
-        </header>
-
-        <main id="pageContent" class="page-content"></main>
       </div>
     </div>
 

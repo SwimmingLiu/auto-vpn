@@ -87,10 +87,31 @@ textarea:focus {
   border: 0;
 }
 
+.app-frame {
+  display: grid;
+  grid-template-rows: 38px minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+}
+
+.window-titlebar {
+  -webkit-app-region: drag;
+  user-select: none;
+  background: rgba(255, 255, 255, 0.78);
+  border-bottom: 1px solid rgba(207, 215, 239, 0.72);
+  backdrop-filter: blur(16px);
+}
+
+.app-content-shell {
+  min-height: 0;
+  overflow: hidden;
+}
+
 .workspace-shell {
   display: grid;
   grid-template-columns: 248px minmax(0, 1fr);
   height: 100%;
+  min-height: 0;
 }
 
 .sidebar {
@@ -254,7 +275,7 @@ textarea:focus {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   gap: 16px;
-  padding: 18px 18px 16px;
+  padding: 14px 18px 14px;
 }
 
 .topbar {
@@ -950,7 +971,7 @@ body[data-page="logs"] #logCenterTable {
 }
 
 .subscriptions-grid > .panel:first-child {
-  padding: 24px 28px;
+  padding: 22px 26px;
 }
 
 .subscriptions-grid .subscription-primary {

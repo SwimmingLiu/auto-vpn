@@ -10,12 +10,18 @@ import {
 } from '../renderer/state.js';
 import { getMessages, resolveLanguage } from '../renderer/i18n.js';
 import {
+  addAvailabilityTargetDraft,
   applySourceIterationDraft,
+  applyAvailabilityTargetDraft,
+  buildAvailabilityTargetDraft,
+  buildPageMarkup,
+  buildViewModel,
   buildRegionStats,
   buildSourceIterationDraft,
   classifyLogEntry,
   filterLogEntries,
-  groupLogEntriesByStage
+  groupLogEntriesByStage,
+  removeAvailabilityTargetDraft
 } from '../renderer/views.js';
 
 test('buildStageModel marks stages in configured order', () => {
@@ -195,4 +201,68 @@ test('source iteration draft applies one max_iterations and area range to all so
     Object.values(applySourceIterationDraft(sources, draft)).map((source) => [source.area_min, source.area_max]),
     [[20, 60], [20, 60]]
   );
+});
+
+test('availability target draft supports add edit and delete', () => {
+  const draft = buildAvailabilityTargetDraft({
+    gemini: {
+      url: 'https://gemini.google.com/',
+      enabled: true,
+      allowed_hosts: ['gemini.google.com'],
+      negative_phrases: ['not available']
+    }
+  });
+
+  addAvailabilityTargetDraft(draft, 'tmailor');
+  draft.targets[1].url = 'https://tmailor.example/';
+  draft.targets[1].allowed_hosts = 'tmailor.example, mail.tmailor.example';
+  draft.targets[1].negative_phrases = 'blocked\nunsupported';
+  removeAvailabilityTargetDraft(draft, 0);
+
+  assert.deepEqual(applyAvailabilityTargetDraft(draft), {
+    tmailor: {
+      url: 'https://tmailor.example/',
+      enabled: true,
+      allowed_hosts: ['tmailor.example', 'mail.tmailor.example'],
+      negative_phrases: ['blocked', 'unsupported']
+    }
+  });
+});
+
+test('settings page renders AI availability target card and drawer table', () => {
+  const messages = getMessages('zh-CN');
+  const state = {
+    profile: {
+      sources: {},
+      availability_targets: {
+        gemini: {
+          url: 'https://gemini.google.com/',
+          enabled: true,
+          allowed_hosts: ['gemini.google.com'],
+          negative_phrases: ['not available']
+        }
+      },
+      speed_test: { min_download_mb_s: 1, timeout_seconds: 20, concurrency: 3 },
+      deploy: { subscription_url: 'https://vpn.example/sub' }
+    },
+    settingsDrawer: {
+      section: 'availability_targets',
+      draft: buildAvailabilityTargetDraft({
+        gemini: {
+          url: 'https://gemini.google.com/',
+          enabled: true,
+          allowed_hosts: ['gemini.google.com'],
+          negative_phrases: ['not available']
+        }
+      })
+    }
+  };
+  const vm = buildViewModel(state, messages, 'zh-CN');
+  const markup = buildPageMarkup('settings', vm, messages, 'zh-CN');
+
+  assert.match(markup, /AI可达性检测/);
+  assert.match(markup, /data-settings-card="availability_targets"/);
+  assert.match(markup, /data-availability-action="add"/);
+  assert.match(markup, /data-availability-key="allowed_hosts"/);
+  assert.match(markup, /gemini\.google\.com/);
 });
