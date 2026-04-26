@@ -34,7 +34,7 @@ from vpn_automation.pipeline.postprocess import (
 from vpn_automation.pipeline.render import replace_main_data
 from vpn_automation.pipeline.run_store import RunStore
 from vpn_automation.pipeline.speedtest import speedtest_links
-from vpn_automation.pipeline.vmess import parse_vmess_link
+from vpn_automation.pipeline.vmess import canonical_key, parse_vmess_link
 
 
 @dataclass
@@ -80,6 +80,7 @@ class PipelineController:
         self.now_factory = now_factory
         self.artifact_retention_count = artifact_retention_count
         self._last_source_counts: dict[str, dict[str, int | str]] = {}
+        self._last_source_links: dict[str, list[str]] = {}
 
     def stage_names(self) -> list[str]:
         return [
@@ -443,7 +444,7 @@ class PipelineController:
         summary.counts["deduped_links"] = len(deduped_links)
         summary.counts["speedtest_links"] = len(fast_links)
         summary.counts["availability_links"] = len(available_links)
-        summary.source_counts = dict(self._last_source_counts)
+        summary.source_counts = self._merge_source_dedupe_counts(profile)
         log(f"[extract] collected {len(raw_links)} raw links")
         log(f"[dedupe] kept {len(deduped_links)} unique links")
         log(f"[speedtest] kept {len(fast_links)} links above threshold")
@@ -492,7 +493,7 @@ class PipelineController:
         )
         set_stage("extract", "success")
         summary.counts["raw_links"] = len(raw_links)
-        summary.source_counts = dict(self._last_source_counts)
+        summary.source_counts = self._merge_source_dedupe_counts(profile)
         self._write_pipeline_report(artifact_dir, summary)
         if not raw_links:
             raise RuntimeError("No links extracted from enabled sources")
@@ -502,6 +503,7 @@ class PipelineController:
         self._write_lines(artifact_dir / "vpn_node_deduped.txt", deduped_links)
         set_stage("dedupe", "success")
         summary.counts["deduped_links"] = len(deduped_links)
+        summary.source_counts = self._merge_source_dedupe_counts(profile)
         log(f"[dedupe] kept {len(deduped_links)} unique links")
         self._write_pipeline_report(artifact_dir, summary)
 
@@ -589,6 +591,35 @@ class PipelineController:
             for parameter in parameters.values()
         )
 
+    def _merge_source_dedupe_counts(self, profile: AppProfile) -> dict[str, dict[str, int | str]]:
+        deduped_counts = self._count_source_deduped_links(profile, self._last_source_links)
+        merged: dict[str, dict[str, int | str]] = {}
+        for name, counts in self._last_source_counts.items():
+            merged[name] = {
+                **counts,
+                "deduped_links": int(deduped_counts.get(name, 0)),
+            }
+        for name, count in deduped_counts.items():
+            merged.setdefault(name, {"raw_links": 0})
+            merged[name]["deduped_links"] = int(count)
+        return merged
+
+    @staticmethod
+    def _count_source_deduped_links(
+        profile: AppProfile,
+        source_links: dict[str, list[str]],
+    ) -> dict[str, int]:
+        deduped_counts = {name: 0 for name in source_links}
+        seen: set[Any] = set()
+        for source_name in profile.sources:
+            for link in source_links.get(source_name, []):
+                key = canonical_key(parse_vmess_link(link))
+                if key in seen:
+                    continue
+                seen.add(key)
+                deduped_counts[source_name] = deduped_counts.get(source_name, 0) + 1
+        return deduped_counts
+
     def _run_extract(
         self,
         profile: AppProfile,
@@ -614,6 +645,7 @@ class PipelineController:
         ]
         if not enabled_sources:
             self._last_source_counts = {}
+            self._last_source_links = {}
             self._write_lines(artifact_dir / "vpn_node_raw.txt", [])
             return []
 
@@ -736,6 +768,7 @@ class PipelineController:
             )
 
         self._last_source_counts = source_counts
+        self._last_source_links = {name: list(links) for name, links in results_by_source.items()}
         self._write_lines(artifact_dir / "vpn_node_raw.txt", raw_links)
         return raw_links
 

@@ -14,11 +14,13 @@ import {
   applySourceIterationDraft,
   applyAvailabilityTargetDraft,
   buildAvailabilityTargetDraft,
+  buildDashboardMetricsMarkup,
   buildPageMarkup,
   buildViewModel,
   buildRegionStats,
   buildSourceIterationDraft,
   classifyLogEntry,
+  extractSourceUrlFromCurl,
   filterLogEntries,
   groupLogEntriesByStage,
   removeAvailabilityTargetDraft
@@ -41,7 +43,7 @@ test('toMetricItems maps summary counts to Chinese labels', () => {
     availability_links: 2
   });
   assert.deepEqual(cards[0], { label: '原始节点', value: '12' });
-  assert.deepEqual(cards[1], { label: '去重后', value: '5' });
+  assert.deepEqual(cards[1], { label: '去重节点', value: '5' });
   assert.deepEqual(cards[2], { label: '测速通过节点', value: '3' });
   assert.deepEqual(cards[3], { label: '最终可用', value: '2' });
 });
@@ -265,4 +267,55 @@ test('settings page renders AI availability target card and drawer table', () =>
   assert.match(markup, /data-availability-action="add"/);
   assert.match(markup, /data-availability-key="allowed_hosts"/);
   assert.match(markup, /gemini\.google\.com/);
+});
+
+test('extractSourceUrlFromCurl returns the first request URL from a pasted curl command', () => {
+  const value = extractSourceUrlFromCurl(
+    "curl 'https://www.xnfvjf.info:20000/api/evmess?&proto=v6&platform=ios&ver=5.8.55347&unicode=CDC37303-6CEC-4AB2-AAD9-AE88DEF1CF10&deviceid=CDC37303-6CEC-4AB2-AAD9-AE88DEF1CF10&code=ZRGOIXI&recomm_code=&device_token=&f=2026-04-23&install=2026-04-23&xf_fans=0&token=ZGSNZ19nnZqSl2VobGppZZOWaGZonHGRYWeVk5lu&t=1777190098.382194&width=375.0&height=812.0&area=999' -H 'Host: www.xnfvjf.info:20000'"
+  );
+
+  assert.equal(
+    value,
+    'https://www.xnfvjf.info:20000/api/evmess?&proto=v6&platform=ios&ver=5.8.55347&unicode=CDC37303-6CEC-4AB2-AAD9-AE88DEF1CF10&deviceid=CDC37303-6CEC-4AB2-AAD9-AE88DEF1CF10&code=ZRGOIXI&recomm_code=&device_token=&f=2026-04-23&install=2026-04-23&xf_fans=0&token=ZGSNZ19nnZqSl2VobGppZZOWaGZonHGRYWeVk5lu&t=1777190098.382194&width=375.0&height=812.0&area=999'
+  );
+  assert.equal(extractSourceUrlFromCurl('https://already.example/sub'), 'https://already.example/sub');
+  assert.equal(extractSourceUrlFromCurl('curl --compressed'), '');
+});
+
+test('dashboard metrics show deduped node copy and per-source dedupe counts', () => {
+  const messages = getMessages('zh-CN');
+  const vm = buildViewModel(
+    {
+      profile: {
+        sources: {
+          leiting: { url: 'https://a.example', key: 'a', enabled: true },
+          heidong: { url: 'https://b.example', key: 'b', enabled: true }
+        },
+        availability_targets: {},
+        speed_test: { min_download_mb_s: 1, timeout_seconds: 20, concurrency: 3 },
+        deploy: { subscription_url: 'https://vpn.example/sub' }
+      },
+      counts: {
+        raw_links: 12,
+        deduped_links: 9,
+        speedtest_links: 5,
+        availability_links: 4
+      },
+      sourceCounts: {
+        leiting: { raw_links: 7, deduped_links: 5 },
+        heidong: { raw_links: 5, deduped_links: 4 }
+      }
+    },
+    messages,
+    'zh-CN'
+  );
+
+  const markup = buildDashboardMetricsMarkup(vm);
+
+  assert.match(markup, /原始节点/);
+  assert.match(markup, /去重节点/);
+  assert.match(markup, /雷霆 7/);
+  assert.match(markup, /雷霆 5/);
+  assert.match(markup, /黑洞 4/);
+  assert.doesNotMatch(markup, /去重后/);
 });

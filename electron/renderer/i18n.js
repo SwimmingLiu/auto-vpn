@@ -35,7 +35,7 @@ const ZH_MESSAGES = {
     results: '查看 pipeline 后最终留下的节点和区域统计',
     subscriptions: '生成和分发 Clash、Clash Meta、Sing-box、Surge 订阅',
     logs: '查看实时日志流、错误高亮和日志操作',
-    settings: '以分组卡片和右侧抽屉统一管理数据源和测速配置'
+    settings: '以分组卡片和弹窗方式管理数据源、测速与可达性配置'
   },
   nav: {
     dashboard: '概览',
