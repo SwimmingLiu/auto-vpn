@@ -292,6 +292,18 @@ class PipelineController:
         resume: bool = False,
         event_callback: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
+        if resume or not self._extractor_supports_streaming():
+            return self._run_quality_pipeline_batch(
+                profile,
+                artifact_dir,
+                log,
+                run_store,
+                set_stage,
+                summary,
+                resume=resume,
+                event_callback=event_callback,
+            )
+
         lock = threading.Lock()
         deduped_links: list[str] = []
         speedtest_results: list[Any] = []
@@ -454,6 +466,128 @@ class PipelineController:
             "available_results": available_results,
             "available_links": available_links,
         }
+
+    def _run_quality_pipeline_batch(
+        self,
+        profile: AppProfile,
+        artifact_dir: Path,
+        log: Callable[[str], None],
+        run_store: RunStore,
+        set_stage: Callable[[str, str], None],
+        summary: PipelineSummary,
+        *,
+        resume: bool = False,
+        event_callback: Callable[[str, dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
+        availability_targets = normalize_provider_targets(profile.availability_targets)
+
+        set_stage("extract", "running")
+        raw_links = self._run_extract(
+            profile,
+            artifact_dir,
+            log,
+            run_store,
+            resume=resume,
+            event_callback=event_callback,
+        )
+        set_stage("extract", "success")
+        summary.counts["raw_links"] = len(raw_links)
+        summary.source_counts = dict(self._last_source_counts)
+        self._write_pipeline_report(artifact_dir, summary)
+        if not raw_links:
+            raise RuntimeError("No links extracted from enabled sources")
+
+        set_stage("dedupe", "running")
+        deduped_links = dedupe_vmess_links(raw_links)
+        self._write_lines(artifact_dir / "vpn_node_deduped.txt", deduped_links)
+        set_stage("dedupe", "success")
+        summary.counts["deduped_links"] = len(deduped_links)
+        log(f"[dedupe] kept {len(deduped_links)} unique links")
+        self._write_pipeline_report(artifact_dir, summary)
+
+        set_stage("speedtest", "running")
+        speedtest_results = self._call_worker(
+            self.speedtester,
+            deduped_links,
+            profile.speed_test,
+            progress_callback=log,
+            event_callback=event_callback,
+        )
+        fast_results = [
+            result
+            for result in speedtest_results
+            if result.reachable and result.average_download_mb_s >= profile.speed_test.min_download_mb_s
+        ]
+        for result in speedtest_results:
+            run_store.record_speedtest_result(
+                link=result.link,
+                reachable=result.reachable,
+                latency_ms=result.latency_ms,
+                average_download_mb_s=result.average_download_mb_s,
+                error=getattr(result, "error", "") or "",
+            )
+        fast_results.sort(key=lambda item: item.average_download_mb_s, reverse=True)
+        fast_links = [result.link for result in fast_results]
+        self._write_lines(artifact_dir / "vpn_node_speedtest.txt", fast_links)
+        set_stage("speedtest", "success")
+        summary.counts["speedtest_links"] = len(fast_links)
+        log(f"[speedtest] kept {len(fast_links)} links above threshold")
+        self._write_pipeline_report(artifact_dir, summary)
+        if not fast_links:
+            raise RuntimeError("No links passed speed test")
+
+        set_stage("availability", "running")
+        availability_results = self._call_worker(
+            self.availability_checker,
+            fast_results,
+            profile.speed_test,
+            progress_callback=log,
+            event_callback=event_callback,
+            worker_kwargs={"targets": availability_targets},
+        )
+        available_results = [
+            item.speed_result
+            for item in availability_results
+            if item.all_passed
+        ]
+        for item in availability_results:
+            for provider_name, provider_result in item.provider_results.items():
+                run_store.record_availability_result(
+                    link=item.speed_result.link,
+                    provider=provider_name,
+                    passed=provider_result.passed,
+                    reason=provider_result.reason,
+                )
+        available_links = [item.link for item in available_results]
+        self._write_lines(artifact_dir / "vpn_node_availability.txt", available_links)
+        (artifact_dir / "vpn_node_availability_report.json").write_text(
+            json.dumps([item.to_dict() for item in availability_results], ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        set_stage("availability", "success")
+        summary.counts["availability_links"] = len(available_links)
+        log(f"[availability] kept {len(available_links)} links after provider validation")
+        self._write_pipeline_report(artifact_dir, summary)
+        if not available_links:
+            raise RuntimeError("No links passed availability")
+
+        return {
+            "raw_links": raw_links,
+            "deduped_links": deduped_links,
+            "speedtest_results": speedtest_results,
+            "fast_results": fast_results,
+            "availability_results": availability_results,
+            "available_results": available_results,
+            "available_links": available_links,
+        }
+
+    def _extractor_supports_streaming(self) -> bool:
+        signature = inspect.signature(self.extractor)
+        parameters = signature.parameters
+        return "raw_link_callback" in parameters or any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters.values()
+        )
 
     def _run_extract(
         self,
