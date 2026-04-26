@@ -47,7 +47,7 @@ const demoProfile = {
       enabled: false
     }
   },
-    speed_test: {
+  speed_test: {
     min_download_mb_s: 1.0,
     timeout_seconds: 20,
     concurrency: 3,
