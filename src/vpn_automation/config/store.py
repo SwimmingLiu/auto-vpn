@@ -13,6 +13,11 @@ from vpn_automation.config.models import (
     resolve_repo_anchor,
 )
 
+LEGACY_PAGES_PROJECT_NAME = "vmessnodes"
+LEGACY_PAGES_PROJECT_URL = "https://vmess2clash.pages.dev"
+CURRENT_PAGES_PROJECT_NAME = "vms-nodes"
+CURRENT_PAGES_PROJECT_URL = "https://vms-nodes.pages.dev"
+
 
 def resolve_profile_path(project_root: Path) -> Path:
     profile_override = os.environ.get("VPN_AUTOMATION_PROFILE_PATH", "").strip()
@@ -144,6 +149,17 @@ def _is_blank_profile(profile: AppProfile) -> bool:
     return not has_source_values and not has_deploy_values
 
 
+def _migrate_legacy_deploy_defaults(profile: AppProfile) -> bool:
+    if (
+        profile.deploy.project_name == LEGACY_PAGES_PROJECT_NAME
+        and profile.deploy.pages_project_url == LEGACY_PAGES_PROJECT_URL
+    ):
+        profile.deploy.project_name = CURRENT_PAGES_PROJECT_NAME
+        profile.deploy.pages_project_url = CURRENT_PAGES_PROJECT_URL
+        return True
+    return False
+
+
 class ProfileStore:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -160,6 +176,8 @@ class ProfileStore:
         seed_profile = resolve_seed_profile_path(project_root)
         if self.path.exists():
             profile = self.load()
+            if _migrate_legacy_deploy_defaults(profile):
+                self.save(profile)
             if seed_profile and _is_blank_profile(profile):
                 shutil.copy2(seed_profile, self.path)
                 return self.load()
