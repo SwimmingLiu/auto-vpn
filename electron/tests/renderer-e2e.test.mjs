@@ -126,6 +126,26 @@ test('renderer matches the six-page canvas redesign and supports page navigation
             timeout_seconds: 20,
             concurrency: 3
           },
+          availability_targets: {
+            gemini: {
+              url: 'https://gemini.google.com/',
+              enabled: true,
+              allowed_hosts: ['gemini.google.com'],
+              negative_phrases: ['not available']
+            },
+            chatgpt: {
+              url: 'https://chatgpt.com/',
+              enabled: true,
+              allowed_hosts: ['chatgpt.com'],
+              negative_phrases: ['unsupported region']
+            },
+            claude: {
+              url: 'https://claude.ai/',
+              enabled: true,
+              allowed_hosts: ['claude.ai'],
+              negative_phrases: ['unavailable in your region']
+            }
+          },
           deploy: {
             project_name: 'vpn-auto',
             pages_project_url: 'https://vpn-auto.pages.dev',
@@ -294,8 +314,9 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     const settingsText = await page.locator('#settingsWorkspace').innerText();
     assert.match(settingsText, /数据源配置/);
     assert.match(settingsText, /测速配置/);
+    assert.match(settingsText, /AI可达性检测/);
     assert.doesNotMatch(settingsText, /部署配置/);
-    assert.equal(await page.locator('.settings-overview-card').count(), 2);
+    assert.equal(await page.locator('.settings-overview-card').count(), 3);
     assert.equal(await page.locator('.settings-source-table').count(), 0);
 
     await page.locator('[data-settings-card="sources"]').click();
@@ -322,6 +343,30 @@ test('renderer matches the six-page canvas redesign and supports page navigation
         window.__savedProfiles.at(-1).sources.leiting.area_max
       ]),
       [20, 60]
+    );
+
+    await page.locator('[data-settings-card="availability_targets"]').click();
+    await page.waitForSelector('#settingsDrawer[data-open="true"]');
+    assert.match(await page.locator('#settingsDrawerTitle').innerText(), /AI可达性检测/);
+    assert.equal(await page.locator('.availability-target-table tbody tr').count(), 3);
+    await page.locator('[data-availability-action="add"]').click();
+    await page.waitForFunction(() => document.querySelectorAll('.availability-target-table tbody tr').length === 4);
+    const lastRow = page.locator('.availability-target-table tbody tr').last();
+    await lastRow.locator('[data-availability-key="name"]').fill('tmailor');
+    await lastRow.locator('[data-availability-key="url"]').fill('https://tmailor.example/');
+    await lastRow.locator('[data-availability-key="allowed_hosts"]').fill('tmailor.example');
+    await lastRow.locator('[data-availability-key="negative_phrases"]').fill('blocked');
+    await page.locator('[data-drawer-save="save"]').click();
+    await page.waitForSelector('#settingsDrawer[data-open="false"]');
+    await page.locator('#pageActions [data-action="save-profile"]').click();
+    assert.deepEqual(
+      await page.evaluate(() => window.__savedProfiles.at(-1).availability_targets.tmailor),
+      {
+        url: 'https://tmailor.example/',
+        enabled: true,
+        allowed_hosts: ['tmailor.example'],
+        negative_phrases: ['blocked']
+      }
     );
 
     await page.locator('#navRuns').click();
