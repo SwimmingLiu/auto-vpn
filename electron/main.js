@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, screen } from 'electron';
 
 import { registerIpcHandlers } from './ipc.js';
 import { resolveBundledProfilePath, resolveProjectRoot, resolveStateProfilePath } from './paths.js';
@@ -11,7 +11,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 function createWindow() {
-  const win = new BrowserWindow(buildWindowOptions(path.join(__dirname, 'preload.cjs')));
+  const workAreaSize = screen.getPrimaryDisplay().workAreaSize;
+  const win = new BrowserWindow(buildWindowOptions(path.join(__dirname, 'preload.cjs'), workAreaSize));
 
   const projectRoot = resolveProjectRoot();
   const runtimeProfilePath = resolveStateProfilePath(projectRoot, {

@@ -206,6 +206,13 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     await page.waitForSelector('.workspace-shell');
     await page.waitForTimeout(60);
 
+    assert.ok(await page.locator('.window-titlebar').isVisible());
+    assert.equal(await page.locator('.app-content-shell').count(), 1);
+    const titlebarBox = await page.locator('.window-titlebar').boundingBox();
+    const topbarBox = await page.locator('.topbar').boundingBox();
+    assert.ok(titlebarBox.height >= 32);
+    assert.ok(topbarBox.y >= titlebarBox.height);
+
     assert.equal(await page.locator('.sidebar-nav .nav-item').count(), 6);
     assert.equal(await page.locator('.shortcut-action').count(), 0);
     assert.equal(await page.locator('.status-card').count(), 0);
