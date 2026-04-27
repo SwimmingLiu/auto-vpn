@@ -13,7 +13,7 @@ const __dirname = path.dirname(__filename);
 
 const EXPECTED_DIGESTS = {
   dashboard: '4ba57c170b83752899ce1a2210144e29a2ae511322feae9b9fa2194e9dde3c9f',
-  runs: '25c179d6621f7311fc1d9f7a49cbe5807bea41666554877ebcdfe9aabebe3e92',
+  runs: 'e0a043f291adae3d3a38a19bafe32259f9e3a5abec4ce1062a681503721415ed',
   results: '2fc09f43b0486c827a2113462d24c63c2bff05d0b037f5386fd226e449069206',
   subscriptions: '787f14e1696884474ae9b5d5c63d953dd04aa2b0a8f0bd66b1286b380022149c',
   logs: '313e46799422a1ea352c4ff66b19d6a84e41021c1ff2c5649e26bd52f5742879',
