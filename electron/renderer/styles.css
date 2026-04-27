@@ -810,13 +810,57 @@ body[data-page="logs"] .page-content {
 .retry-control-card {
   grid-column: 1 / -1;
   display: grid;
-  grid-template-columns: minmax(220px, 1.4fr) minmax(160px, 0.8fr) minmax(200px, 1fr);
+  grid-template-columns: minmax(280px, 1.8fr) minmax(160px, 0.8fr) minmax(200px, 1fr);
   gap: 12px;
   align-items: end;
   padding: 14px;
   border-radius: 18px;
   border: 1px solid var(--border);
   background: var(--surface-soft);
+}
+
+.retry-artifact-field {
+  align-self: start;
+}
+
+.retry-artifact-list {
+  display: grid;
+  gap: 10px;
+  max-height: 180px;
+  overflow: auto;
+}
+
+.retry-artifact-card {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: #fff;
+  text-align: left;
+  transition: border-color 120ms ease, box-shadow 120ms ease, background 120ms ease;
+}
+
+.retry-artifact-card.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(108, 99, 255, 0.08);
+  background: linear-gradient(180deg, #f6f5ff 0%, #fff 100%);
+}
+
+.retry-artifact-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.retry-artifact-card-meta {
+  display: grid;
+  gap: 4px;
+  color: var(--text-soft);
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .retry-field select {

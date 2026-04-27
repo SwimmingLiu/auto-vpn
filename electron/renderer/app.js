@@ -305,9 +305,13 @@ function handleDocumentClick(event) {
     return;
   }
 
-  const retryArtifactSelect = event.target.closest('[data-run-retry-artifact]');
-  if (retryArtifactSelect) {
-    state.selectedRetryArtifactDir = retryArtifactSelect.value;
+  const retryArtifactCard = event.target.closest('[data-run-retry-artifact-card]');
+  if (retryArtifactCard) {
+    state.selectedRetryArtifactDir = retryArtifactCard.dataset.runRetryArtifactValue || '';
+    const selectedArtifact = (state.retryArtifacts ?? []).find(
+      (item) => item.artifact_dir === state.selectedRetryArtifactDir
+    );
+    state.selectedRetryStage = resolveDefaultRetryStage(selectedArtifact);
     touchUpdate();
     renderAll();
     return;

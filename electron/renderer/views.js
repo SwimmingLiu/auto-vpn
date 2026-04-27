@@ -362,18 +362,33 @@ function buildRunsPage(vm, messages) {
         <button class="btn btn-primary run-big" data-run-action="start" type="button" ${runDisabled}>▶ 开始运行</button>
         <button class="btn btn-secondary run-big" data-run-action="stop" type="button" ${stopDisabled}>■ 停止运行</button>
         <div class="retry-control-card">
-          <label class="field compact retry-field">
+          <div class="field compact retry-field retry-artifact-field">
             <span>历史 run</span>
-            <select data-run-retry-artifact ${retryDisabled && !vm.selectedRetryArtifactDir ? 'disabled' : ''}>
+            <div class="retry-artifact-list" role="list">
               ${vm.retryArtifacts.length
                 ? vm.retryArtifacts.map((item) => `
-                  <option value="${escapeHtml(item.artifact_dir)}" ${vm.selectedRetryArtifactDir === item.artifact_dir ? 'selected' : ''}>
-                    ${escapeHtml(formatRetryArtifactLabel(item))}
-                  </option>
+                  <button
+                    class="retry-artifact-card ${vm.selectedRetryArtifactDir === item.artifact_dir ? 'selected' : ''}"
+                    data-run-retry-artifact-card
+                    data-run-retry-artifact-value="${escapeHtml(item.artifact_dir)}"
+                    type="button"
+                    ${vm.runControlState.isBusy ? 'disabled' : ''}
+                  >
+                    <div class="retry-artifact-card-head">
+                      <strong>${escapeHtml(item.artifact_name)}</strong>
+                      ${renderBadge(item.run_status || 'unknown', stateClass(item.run_status === 'success' ? 'success' : item.run_status === 'failed' ? 'failed' : 'pending'))}
+                    </div>
+                    <div class="retry-artifact-card-meta">
+                      <span>可重试阶段：${escapeHtml((item.retryable_stages ?? []).join(', ') || '暂无')}</span>
+                      ${item.retry_context?.source_artifact_name
+                        ? `<span>来源：${escapeHtml(item.retry_context.source_artifact_name)} · ${escapeHtml(item.retry_context.start_stage || '—')}</span>`
+                        : '<span>来源：原始 run</span>'}
+                    </div>
+                  </button>
                 `).join('')
-                : '<option value="">暂无可重试 run</option>'}
-            </select>
-          </label>
+                : '<div class="empty-state">暂无可重试 run</div>'}
+            </div>
+          </div>
           <label class="field compact retry-field">
             <span>阶段</span>
             <select data-run-retry-stage ${retryDisabled && !vm.selectedRetryStage ? 'disabled' : ''}>
@@ -1161,7 +1176,7 @@ function formatRetryArtifactLabel(item) {
   const status = item.run_status || 'unknown';
   const source = item.retry_context?.source_artifact_name
     ? ` ← ${item.retry_context.source_artifact_name}:${item.retry_context.start_stage}`
-    : '';
+  : '';
   return `${item.artifact_name} [${status}]${source}`;
 }
 
