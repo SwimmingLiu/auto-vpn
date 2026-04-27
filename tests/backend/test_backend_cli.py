@@ -3,10 +3,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from vpn_automation.backend import (
+    artifact_list_json,
     artifact_latest_json,
     build_event,
     ensure_profile_json,
     resume_pipeline,
+    retry_stage,
     run_pipeline,
     run_pipeline_resume_latest,
     save_profile_json,
@@ -130,6 +132,110 @@ def test_artifact_latest_json_returns_empty_when_no_artifact_exists(tmp_path: Pa
     payload = json.loads(artifact_latest_json(project_root))
 
     assert payload == {"ok": False, "artifact_dir": ""}
+
+
+def test_artifact_list_json_reports_retryable_stages_and_retry_context(tmp_path: Path) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    artifact_dir = project_root / "artifacts" / "20260427-081718"
+    artifact_dir.mkdir(parents=True)
+    vmess_link = "vmess://demo"
+    (artifact_dir / "vpn_node_deduped.txt").write_text(f"{vmess_link}\n", encoding="utf-8")
+    (artifact_dir / "vpn_node_speedtest.txt").write_text(f"{vmess_link}\n", encoding="utf-8")
+    (artifact_dir / "vpn_node_availability.txt").write_text(f"{vmess_link}\n", encoding="utf-8")
+    (artifact_dir / "vpn_node_emoji.txt").write_text("US demo\n", encoding="utf-8")
+    (artifact_dir / "vmess_node.js").write_text("rendered", encoding="utf-8")
+    (artifact_dir / "vmess_node_worker.js").write_text("obfuscated", encoding="utf-8")
+    (artifact_dir / "pipeline_report.json").write_text(
+        json.dumps(
+            {
+                "artifact_dir": str(artifact_dir),
+                "run_status": "failed",
+                "stage_status": {
+                    "doctor": "success",
+                    "extract": "success",
+                    "dedupe": "success",
+                    "speedtest": "success",
+                    "availability": "success",
+                    "postprocess": "success",
+                    "render": "success",
+                    "obfuscate": "success",
+                    "deploy": "success",
+                    "verify": "failed",
+                },
+                "counts": {"final_links": 1},
+                "retry_context": {
+                    "source_artifact_dir": "/tmp/source-run",
+                    "source_artifact_name": "20260426-000000",
+                    "start_stage": "deploy",
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    store = RunStore(artifact_dir / "run.db")
+    store.initialize(artifact_dir=str(artifact_dir))
+    store.record_speedtest_result(
+        link=vmess_link,
+        reachable=True,
+        latency_ms=20,
+        average_download_mb_s=5.0,
+    )
+
+    payload = json.loads(artifact_list_json(project_root))
+
+    assert payload["ok"] is True
+    assert payload["items"][0]["artifact_dir"] == str(artifact_dir)
+    assert payload["items"][0]["retryable_stages"] == [
+        "speedtest",
+        "availability",
+        "postprocess",
+        "render",
+        "obfuscate",
+        "deploy",
+        "verify",
+    ]
+    assert payload["items"][0]["retry_context"]["start_stage"] == "deploy"
+
+
+def test_retry_stage_emits_summary_for_retry_run(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    artifact_dir = project_root / "artifacts" / "20260427-081718"
+    artifact_dir.mkdir(parents=True)
+
+    def fake_retry(artifact_dir_arg, *, stage_name, project_root, log_callback=None, stage_callback=None, event_callback=None):
+        assert artifact_dir_arg == artifact_dir
+        assert stage_name == "deploy"
+        log_callback("[deploy] retry started")
+        stage_callback("deploy", "success")
+        return SimpleNamespace(
+            artifact_dir=str(project_root / "artifacts" / "20260427-090000"),
+            stage_status={"deploy": "success", "verify": "success"},
+            counts={"final_links": 2},
+            source_counts={},
+            deployment={"secret_ok": True, "subscription_ok": True},
+            retry_context={"source_artifact_dir": str(artifact_dir), "start_stage": "deploy"},
+            run_status="success",
+            error="",
+        )
+
+    monkeypatch.setattr("vpn_automation.backend.retry_pipeline_from_stage", fake_retry)
+
+    code = retry_stage(
+        project_root,
+        artifact_dir=artifact_dir,
+        stage_name="deploy",
+        output_format="human",
+    )
+
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "[deploy] retry started" in captured.out
+    assert "final_links=2" in captured.out
 
 
 def test_run_pipeline_can_write_event_log_and_human_output(

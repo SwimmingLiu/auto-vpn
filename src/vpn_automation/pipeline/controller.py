@@ -44,6 +44,7 @@ class PipelineSummary:
     counts: dict[str, int] = field(default_factory=dict)
     source_counts: dict[str, dict[str, int | str]] = field(default_factory=dict)
     deployment: dict[str, Any] = field(default_factory=dict)
+    retry_context: dict[str, Any] = field(default_factory=dict)
     run_status: str = "pending"
     error: str = ""
 
@@ -883,6 +884,7 @@ class PipelineController:
                     "counts": summary.counts,
                     "source_counts": summary.source_counts,
                     "deployment": summary.deployment,
+                    "retry_context": summary.retry_context,
                 },
                 ensure_ascii=False,
                 indent=2,

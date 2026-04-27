@@ -68,8 +68,23 @@ test('renderer hydrates the latest artifact on startup when backend has results'
             ]
           };
         },
+        artifactList: async () => ({
+          ok: true,
+          items: [
+            {
+              artifact_dir: '/Users/user/vpn-sub/artifacts/20260426-120000',
+              artifact_name: '20260426-120000',
+              run_status: 'failed',
+              stage_status: { speedtest: 'success', deploy: 'failed' },
+              counts: { speedtest_links: 3, availability_links: 2, final_links: 2 },
+              retryable_stages: ['speedtest', 'availability', 'postprocess', 'render', 'obfuscate', 'deploy', 'verify'],
+              retry_context: {}
+            }
+          ]
+        }),
         saveProfile: async () => ({ ok: true }),
         runPipeline: async () => ({ ok: true, pid: 1 }),
+        retryStage: async () => ({ ok: true, pid: 2 }),
         stopPipeline: async () => ({ ok: true, requested: true }),
         openUrl: async () => ({ ok: true }),
         openPath: async () => ({ ok: true }),
@@ -161,9 +176,31 @@ test('renderer matches the six-page canvas redesign and supports page navigation
           return { ok: true };
         },
         latestArtifact: async () => ({ ok: false, artifact_dir: '' }),
+        artifactList: async () => ({
+          ok: true,
+          items: [
+            {
+              artifact_dir: '/Users/user/vpn-sub/artifacts/20260425-000000',
+              artifact_name: '20260425-000000',
+              run_status: 'failed',
+              stage_status: { deploy: 'failed' },
+              counts: { speedtest_links: 1, availability_links: 1, final_links: 1 },
+              retryable_stages: ['speedtest', 'availability', 'postprocess', 'render', 'obfuscate', 'deploy', 'verify'],
+              retry_context: {}
+            }
+          ]
+        }),
         runPipeline: async () => {
           window.__runCalls += 1;
           return { ok: true, pid: 1 };
+        },
+        retryStage: async (payload) => {
+          window.__retryCalls = (window.__retryCalls ?? 0) + 1;
+          window.__lastRetryPayload = structuredClone(payload);
+          setTimeout(() => {
+            window.__emitPipelineEvent?.({ type: 'finished', ok: true, code: 0, signal: null, stopped: false });
+          }, 0);
+          return { ok: true, pid: 2 };
         },
         stopPipeline: async () => ({ ok: true, requested: true }),
         openUrl: async () => ({ ok: true }),
@@ -393,8 +430,26 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     await page.waitForSelector('#runsWorkspace');
     assert.equal(await page.locator('[data-run-action="start"]').count(), 1);
     assert.equal(await page.locator('[data-run-action="stop"]').count(), 1);
-    assert.equal(await page.locator('[data-action="retry-current-stage"]').count(), 1);
+    assert.equal(await page.locator('[data-run-retry-artifact]').count(), 1);
+    assert.equal(await page.locator('[data-run-retry-stage]').count(), 1);
+    assert.equal(await page.locator('[data-action="retry-stage"]').count(), 1);
     assert.equal(await page.locator('#runsLogOutput').count(), 0);
+
+    assert.equal(
+      await page.locator('[data-run-retry-artifact]').inputValue(),
+      '/Users/user/vpn-sub/artifacts/20260425-000000'
+    );
+    await page.locator('[data-run-retry-stage]').selectOption('deploy');
+    await page.locator('[data-action="retry-stage"]').click();
+    await page.waitForFunction(() => window.__retryCalls === 1);
+    assert.deepEqual(
+      await page.evaluate(() => window.__lastRetryPayload),
+      {
+        artifactDir: '/Users/user/vpn-sub/artifacts/20260425-000000',
+        stage: 'deploy',
+        saveBeforeRun: true
+      }
+    );
 
     const sameButtonAfterLogs = await page.locator('#runsWorkspace [data-run-action="start"]').evaluate((button) => {
       window.__stableRunButton = button;

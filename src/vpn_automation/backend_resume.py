@@ -1,5 +1,8 @@
 import json
+import shutil
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -11,11 +14,13 @@ from vpn_automation.pipeline.availability import check_link_availability_batch
 from vpn_automation.pipeline.controller import PipelineController, PipelineSummary
 from vpn_automation.pipeline.package import build_pages_bundle
 from vpn_automation.pipeline.postprocess import (
+    FilterConfig,
     decorate_link_with_country,
     lookup_country_code,
     select_links_by_country_limit,
 )
 from vpn_automation.pipeline.render import replace_main_data
+from vpn_automation.pipeline.run_store import DEFAULT_STAGES, RunStore
 from vpn_automation.pipeline.speedtest import (
     ProbeResult,
     SpeedTestResult,
@@ -24,6 +29,665 @@ from vpn_automation.pipeline.speedtest import (
     test_vmess_link,
 )
 from vpn_automation.pipeline.vmess import parse_vmess_link
+
+
+RETRYABLE_STAGES = (
+    "speedtest",
+    "availability",
+    "postprocess",
+    "render",
+    "obfuscate",
+    "deploy",
+    "verify",
+)
+
+
+def _has_non_empty_file(path: Path) -> bool:
+    return path.exists() and bool(path.read_text(encoding="utf-8").strip())
+
+
+def _load_stage_status(artifact_dir: Path) -> dict[str, str]:
+    report = _load_json(artifact_dir / "pipeline_report.json")
+    return dict(report.get("stage_status", {}))
+
+
+def _count_run_db_rows(db_path: Path, table_name: str) -> int:
+    if not db_path.exists():
+        return 0
+    store = RunStore(db_path)
+    return store.count_links(table_name)
+
+
+def _build_artifact_retry_item(artifact_dir: Path) -> dict[str, Any]:
+    report = _load_json(artifact_dir / "pipeline_report.json")
+    stage_status = dict(report.get("stage_status", {}))
+    counts = dict(report.get("counts", {}))
+    source_counts = dict(report.get("source_counts", {}))
+    retry_context = dict(report.get("retry_context", {}))
+    run_db_path = artifact_dir / "run.db"
+
+    retryable_stages: list[str] = []
+    if _has_non_empty_file(artifact_dir / "vpn_node_deduped.txt"):
+        retryable_stages.append("speedtest")
+    if _has_non_empty_file(artifact_dir / "vpn_node_speedtest.txt") and _count_run_db_rows(run_db_path, "speedtest_results") > 0:
+        retryable_stages.append("availability")
+    if _has_non_empty_file(artifact_dir / "vpn_node_availability.txt") and _count_run_db_rows(run_db_path, "speedtest_results") > 0:
+        retryable_stages.append("postprocess")
+    if _has_non_empty_file(artifact_dir / "vpn_node_emoji.txt"):
+        retryable_stages.append("render")
+    if (artifact_dir / "vmess_node.js").exists():
+        retryable_stages.append("obfuscate")
+    if (artifact_dir / "vmess_node_worker.js").exists():
+        retryable_stages.append("deploy")
+    if stage_status.get("deploy") == "success":
+        retryable_stages.append("verify")
+
+    return {
+        "artifact_dir": str(artifact_dir),
+        "artifact_name": artifact_dir.name,
+        "run_status": report.get("run_status", ""),
+        "stage_status": stage_status,
+        "counts": counts,
+        "source_counts": source_counts,
+        "retry_context": retry_context,
+        "retryable_stages": retryable_stages,
+        "updated_at": datetime.fromtimestamp(artifact_dir.stat().st_mtime).isoformat(),
+    }
+
+
+def _create_retry_artifact_dir(project_root: Path) -> Path:
+    root = project_root / "artifacts"
+    root.mkdir(parents=True, exist_ok=True)
+    artifact_dir = root / datetime.now().strftime("%Y%m%d-%H%M%S")
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    return artifact_dir
+
+
+def _copy_if_exists(source: Path, target: Path) -> None:
+    if source.exists():
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+
+
+def _copy_table(source_db: Path, target_db: Path, table_name: str) -> None:
+    if not source_db.exists() or not target_db.exists():
+        return
+    with sqlite3.connect(source_db) as source_connection, sqlite3.connect(target_db) as target_connection:
+        rows = source_connection.execute(f"SELECT * FROM {table_name}").fetchall()
+        if not rows:
+            return
+        column_count = len(rows[0])
+        placeholders = ",".join("?" for _ in range(column_count))
+        target_connection.executemany(
+            f"INSERT INTO {table_name} VALUES ({placeholders})",
+            rows,
+        )
+
+
+def _seed_retry_artifact(
+    source_artifact_dir: Path,
+    retry_artifact_dir: Path,
+    stage_name: str,
+    retry_context: dict[str, Any],
+) -> None:
+    source_report = _load_json(source_artifact_dir / "pipeline_report.json")
+    report = {
+        "artifact_dir": str(retry_artifact_dir),
+        "run_status": "pending",
+        "error": "",
+        "stage_status": {stage: "pending" for stage in DEFAULT_STAGES},
+        "counts": dict(source_report.get("counts", {})),
+        "source_counts": dict(source_report.get("source_counts", {})),
+        "deployment": {},
+        "retry_context": retry_context,
+    }
+    (retry_artifact_dir / "pipeline_report.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    retry_store = RunStore(retry_artifact_dir / "run.db")
+    retry_store.initialize(artifact_dir=str(retry_artifact_dir))
+
+    _copy_if_exists(source_artifact_dir / "vpn_node_raw.txt", retry_artifact_dir / "vpn_node_raw.txt")
+    _copy_if_exists(source_artifact_dir / "vpn_node_deduped.txt", retry_artifact_dir / "vpn_node_deduped.txt")
+
+    if stage_name in {"availability", "postprocess", "render", "obfuscate", "deploy", "verify"}:
+        _copy_if_exists(source_artifact_dir / "vpn_node_speedtest.txt", retry_artifact_dir / "vpn_node_speedtest.txt")
+        _copy_table(source_artifact_dir / "run.db", retry_artifact_dir / "run.db", "speedtest_results")
+    if stage_name in {"postprocess", "render", "obfuscate", "deploy", "verify"}:
+        _copy_if_exists(source_artifact_dir / "vpn_node_availability.txt", retry_artifact_dir / "vpn_node_availability.txt")
+        _copy_if_exists(
+            source_artifact_dir / "vpn_node_availability_report.json",
+            retry_artifact_dir / "vpn_node_availability_report.json",
+        )
+        _copy_table(source_artifact_dir / "run.db", retry_artifact_dir / "run.db", "availability_results")
+    if stage_name in {"render", "obfuscate", "deploy", "verify"}:
+        _copy_if_exists(source_artifact_dir / "vpn_node_emoji.txt", retry_artifact_dir / "vpn_node_emoji.txt")
+        _copy_table(source_artifact_dir / "run.db", retry_artifact_dir / "run.db", "final_links")
+    if stage_name in {"obfuscate", "deploy", "verify"}:
+        _copy_if_exists(source_artifact_dir / "vmess_node.js", retry_artifact_dir / "vmess_node.js")
+    if stage_name in {"deploy", "verify"}:
+        _copy_if_exists(source_artifact_dir / "vmess_node_worker.js", retry_artifact_dir / "vmess_node_worker.js")
+    if stage_name == "verify":
+        _copy_if_exists(source_artifact_dir / "pages_bundle" / "_worker.js", retry_artifact_dir / "pages_bundle" / "_worker.js")
+
+
+def _seed_completed_stage_status(
+    summary: PipelineSummary,
+    run_store: RunStore,
+    stage_name: str,
+) -> None:
+    seen_target = False
+    for name in DEFAULT_STAGES:
+        if name == stage_name:
+            seen_target = True
+        if seen_target:
+            continue
+        summary.stage_status[name] = "success"
+        run_store.record_stage_event(name, "success")
+
+
+def _read_speedtest_results_from_db(artifact_dir: Path) -> list[SpeedTestResult]:
+    db_path = artifact_dir / "run.db"
+    if not db_path.exists():
+        return []
+    with sqlite3.connect(db_path) as connection:
+        rows = connection.execute(
+            """
+            SELECT link, reachable, average_download_mb_s, latency_ms, error
+            FROM speedtest_results
+            ORDER BY average_download_mb_s DESC, rowid ASC
+            """
+        ).fetchall()
+    return [
+        SpeedTestResult(
+            link=str(link),
+            reachable=bool(reachable),
+            average_download_mb_s=float(average_download_mb_s),
+            latency_ms=int(latency_ms),
+            error=str(error or ""),
+        )
+        for link, reachable, average_download_mb_s, latency_ms, error in rows
+    ]
+
+
+def _read_available_speed_results(artifact_dir: Path) -> list[SpeedTestResult]:
+    available_links = set(_read_non_empty_lines(artifact_dir / "vpn_node_availability.txt"))
+    speedtest_by_link = {
+        result.link: result for result in _read_speedtest_results_from_db(artifact_dir)
+    }
+    return [speedtest_by_link[link] for link in available_links if link in speedtest_by_link]
+
+
+def _retry_from_speedtest(
+    controller: PipelineController,
+    profile: Any,
+    retry_artifact_dir: Path,
+    source_artifact_dir: Path,
+    summary: PipelineSummary,
+    log: Callable[[str], None],
+    set_stage: Callable[[str, str], None],
+    *,
+    event_callback: Callable[[str, dict[str, Any]], None] | None = None,
+) -> PipelineSummary:
+    run_store = RunStore(retry_artifact_dir / "run.db")
+    _seed_completed_stage_status(summary, run_store, "speedtest")
+    raw_links = _read_non_empty_lines(source_artifact_dir / "vpn_node_raw.txt")
+    deduped_links = _read_non_empty_lines(source_artifact_dir / "vpn_node_deduped.txt")
+    if not deduped_links:
+        raise RuntimeError("No deduped links available to retry speedtest")
+    summary.counts["raw_links"] = len(raw_links)
+    summary.counts["deduped_links"] = len(deduped_links)
+
+    set_stage("speedtest", "running")
+    speedtest_results = controller._call_worker(
+        controller.speedtester,
+        deduped_links,
+        profile.speed_test,
+        progress_callback=log,
+        event_callback=event_callback,
+    )
+    fast_results = [
+        result
+        for result in speedtest_results
+        if result.reachable and result.average_download_mb_s >= profile.speed_test.min_download_mb_s
+    ]
+    for result in speedtest_results:
+        run_store.record_speedtest_result(
+            link=result.link,
+            reachable=result.reachable,
+            latency_ms=result.latency_ms,
+            average_download_mb_s=result.average_download_mb_s,
+            error=getattr(result, "error", "") or "",
+        )
+    fast_results.sort(key=lambda item: item.average_download_mb_s, reverse=True)
+    controller._write_lines(retry_artifact_dir / "vpn_node_speedtest.txt", [result.link for result in fast_results])
+    summary.counts["speedtest_links"] = len(fast_results)
+    if not fast_results:
+        set_stage("speedtest", "failed")
+        summary.run_status = "failed"
+        summary.error = "RuntimeError: No links passed speed test"
+        controller._write_pipeline_report(retry_artifact_dir, summary)
+        return summary
+    set_stage("speedtest", "success")
+    return _continue_after_speedtest_results(
+        controller,
+        profile,
+        retry_artifact_dir,
+        summary,
+        log,
+        set_stage,
+        run_store,
+        fast_results,
+        event_callback=event_callback,
+    )
+
+
+def _retry_from_availability(
+    controller: PipelineController,
+    profile: Any,
+    retry_artifact_dir: Path,
+    source_artifact_dir: Path,
+    summary: PipelineSummary,
+    log: Callable[[str], None],
+    set_stage: Callable[[str, str], None],
+    *,
+    event_callback: Callable[[str, dict[str, Any]], None] | None = None,
+) -> PipelineSummary:
+    run_store = RunStore(retry_artifact_dir / "run.db")
+    _seed_completed_stage_status(summary, run_store, "availability")
+    raw_links = _read_non_empty_lines(source_artifact_dir / "vpn_node_raw.txt")
+    deduped_links = _read_non_empty_lines(source_artifact_dir / "vpn_node_deduped.txt")
+    fast_results = [
+        result
+        for result in _read_speedtest_results_from_db(retry_artifact_dir)
+        if result.link in set(_read_non_empty_lines(retry_artifact_dir / "vpn_node_speedtest.txt"))
+    ]
+    summary.counts["raw_links"] = len(raw_links)
+    summary.counts["deduped_links"] = len(deduped_links)
+    summary.counts["speedtest_links"] = len(fast_results)
+    if not fast_results:
+        raise RuntimeError("No speedtest results available to retry availability")
+    return _continue_after_speedtest_results(
+        controller,
+        profile,
+        retry_artifact_dir,
+        summary,
+        log,
+        set_stage,
+        run_store,
+        fast_results,
+        start_at="availability",
+        event_callback=event_callback,
+    )
+
+
+def _retry_from_postprocess(
+    controller: PipelineController,
+    profile: Any,
+    retry_artifact_dir: Path,
+    source_artifact_dir: Path,
+    summary: PipelineSummary,
+    log: Callable[[str], None],
+    set_stage: Callable[[str, str], None],
+) -> PipelineSummary:
+    run_store = RunStore(retry_artifact_dir / "run.db")
+    _seed_completed_stage_status(summary, run_store, "postprocess")
+    raw_links = _read_non_empty_lines(source_artifact_dir / "vpn_node_raw.txt")
+    deduped_links = _read_non_empty_lines(source_artifact_dir / "vpn_node_deduped.txt")
+    available_results = _read_available_speed_results(retry_artifact_dir)
+    summary.counts["raw_links"] = len(raw_links)
+    summary.counts["deduped_links"] = len(deduped_links)
+    summary.counts["speedtest_links"] = len(_read_non_empty_lines(retry_artifact_dir / "vpn_node_speedtest.txt"))
+    summary.counts["availability_links"] = len(available_results)
+    if not available_results:
+        raise RuntimeError("No availability inputs available to retry postprocess")
+    return _continue_after_available_results(
+        controller,
+        profile,
+        retry_artifact_dir,
+        summary,
+        log,
+        set_stage,
+        run_store,
+        available_results,
+    )
+
+
+def _retry_from_render(
+    controller: PipelineController,
+    profile: Any,
+    retry_artifact_dir: Path,
+    source_artifact_dir: Path,
+    summary: PipelineSummary,
+    log: Callable[[str], None],
+    set_stage: Callable[[str, str], None],
+) -> PipelineSummary:
+    run_store = RunStore(retry_artifact_dir / "run.db")
+    _seed_completed_stage_status(summary, run_store, "render")
+    decorated_links = _read_non_empty_lines(source_artifact_dir / "vpn_node_emoji.txt")
+    if not decorated_links:
+        raise RuntimeError("No postprocess output available to retry render")
+    summary.counts["final_links"] = len(decorated_links)
+    summary.counts["postprocess_links"] = len(decorated_links)
+    return _continue_after_decorated_links(
+        controller,
+        profile,
+        retry_artifact_dir,
+        summary,
+        log,
+        set_stage,
+        decorated_links,
+        start_at="render",
+    )
+
+
+def _retry_from_obfuscate(
+    controller: PipelineController,
+    profile: Any,
+    retry_artifact_dir: Path,
+    source_artifact_dir: Path,
+    summary: PipelineSummary,
+    log: Callable[[str], None],
+    set_stage: Callable[[str, str], None],
+) -> PipelineSummary:
+    run_store = RunStore(retry_artifact_dir / "run.db")
+    _seed_completed_stage_status(summary, run_store, "obfuscate")
+    rendered_path = retry_artifact_dir / "vmess_node.js"
+    if not rendered_path.exists():
+        raise RuntimeError("No rendered template available to retry obfuscate")
+    return _continue_after_rendered_script(
+        controller,
+        profile,
+        retry_artifact_dir,
+        summary,
+        log,
+        set_stage,
+        rendered_path,
+        start_at="obfuscate",
+    )
+
+
+def _retry_from_deploy(
+    controller: PipelineController,
+    profile: Any,
+    retry_artifact_dir: Path,
+    source_artifact_dir: Path,
+    summary: PipelineSummary,
+    log: Callable[[str], None],
+    set_stage: Callable[[str, str], None],
+    *,
+    api_token: str,
+) -> PipelineSummary:
+    run_store = RunStore(retry_artifact_dir / "run.db")
+    _seed_completed_stage_status(summary, run_store, "deploy")
+    obfuscated_path = retry_artifact_dir / "vmess_node_worker.js"
+    if not obfuscated_path.exists():
+        raise RuntimeError("No obfuscated worker available to retry deploy")
+    return _continue_after_obfuscated_script(
+        controller,
+        profile,
+        retry_artifact_dir,
+        summary,
+        log,
+        set_stage,
+        obfuscated_path,
+        api_token=api_token,
+        start_at="deploy",
+    )
+
+
+def _retry_from_verify(
+    controller: PipelineController,
+    profile: Any,
+    retry_artifact_dir: Path,
+    summary: PipelineSummary,
+    log: Callable[[str], None],
+    set_stage: Callable[[str, str], None],
+    *,
+    api_token: str,
+) -> PipelineSummary:
+    run_store = RunStore(retry_artifact_dir / "run.db")
+    _seed_completed_stage_status(summary, run_store, "verify")
+    return _run_verify_only(
+        controller,
+        profile,
+        retry_artifact_dir,
+        summary,
+        log,
+        set_stage,
+        api_token=api_token,
+    )
+
+
+def _continue_after_speedtest_results(
+    controller: PipelineController,
+    profile: Any,
+    retry_artifact_dir: Path,
+    summary: PipelineSummary,
+    log: Callable[[str], None],
+    set_stage: Callable[[str, str], None],
+    run_store: RunStore,
+    fast_results: list[SpeedTestResult],
+    *,
+    start_at: str = "speedtest",
+    event_callback: Callable[[str, dict[str, Any]], None] | None = None,
+) -> PipelineSummary:
+    if start_at == "speedtest":
+        summary.counts["speedtest_links"] = len(fast_results)
+    set_stage("availability", "running")
+    availability_results = controller._call_worker(
+        controller.availability_checker,
+        fast_results,
+        profile.speed_test,
+        progress_callback=log,
+        event_callback=event_callback,
+        worker_kwargs={"targets": profile.availability_targets},
+    )
+    available_results = [item.speed_result for item in availability_results if item.all_passed]
+    for item in availability_results:
+        for provider_name, provider_result in item.provider_results.items():
+            run_store.record_availability_result(
+                link=item.speed_result.link,
+                provider=provider_name,
+                passed=provider_result.passed,
+                reason=provider_result.reason,
+            )
+    available_links = [item.link for item in available_results]
+    controller._write_lines(retry_artifact_dir / "vpn_node_availability.txt", available_links)
+    (retry_artifact_dir / "vpn_node_availability_report.json").write_text(
+        json.dumps([item.to_dict() for item in availability_results], ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    summary.counts["availability_links"] = len(available_links)
+    if not available_links:
+        set_stage("availability", "failed")
+        summary.run_status = "failed"
+        summary.error = "RuntimeError: No links passed availability"
+        controller._write_pipeline_report(retry_artifact_dir, summary)
+        return summary
+    set_stage("availability", "success")
+    return _continue_after_available_results(
+        controller,
+        profile,
+        retry_artifact_dir,
+        summary,
+        log,
+        set_stage,
+        run_store,
+        available_results,
+    )
+
+
+def _continue_after_available_results(
+    controller: PipelineController,
+    profile: Any,
+    retry_artifact_dir: Path,
+    summary: PipelineSummary,
+    log: Callable[[str], None],
+    set_stage: Callable[[str, str], None],
+    run_store: RunStore,
+    available_results: list[SpeedTestResult],
+) -> PipelineSummary:
+    set_stage("postprocess", "running")
+    ranked_links: list[tuple[str, SpeedTestResult, str]] = []
+    for result in available_results:
+        country_code = controller.country_lookup(parse_vmess_link(result.link)["add"])
+        ranked_links.append((result.link, result, country_code))
+    selected_links = select_links_by_country_limit(ranked_links, getattr(profile, "filters", FilterConfig()))
+    selected_country = {link: country for link, _result, country in ranked_links}
+    decorated_links = [
+        decorate_link_with_country(link, selected_country[link]) for link in selected_links
+    ]
+    for link in selected_links:
+        run_store.record_final_link(stage_name="postprocess", link=link, country_code=selected_country[link])
+    controller._write_lines(retry_artifact_dir / "vpn_node_emoji.txt", decorated_links)
+    summary.counts["postprocess_links"] = len(decorated_links)
+    summary.counts["final_links"] = len(decorated_links)
+    if not decorated_links:
+        set_stage("postprocess", "failed")
+        summary.run_status = "failed"
+        summary.error = "RuntimeError: No links remained after postprocess filters"
+        controller._write_pipeline_report(retry_artifact_dir, summary)
+        return summary
+    set_stage("postprocess", "success")
+    return _continue_after_decorated_links(
+        controller,
+        profile,
+        retry_artifact_dir,
+        summary,
+        log,
+        set_stage,
+        decorated_links,
+    )
+
+
+def _continue_after_decorated_links(
+    controller: PipelineController,
+    profile: Any,
+    retry_artifact_dir: Path,
+    summary: PipelineSummary,
+    log: Callable[[str], None],
+    set_stage: Callable[[str, str], None],
+    decorated_links: list[str],
+    *,
+    start_at: str = "postprocess",
+) -> PipelineSummary:
+    set_stage("render", "running")
+    rendered_path = controller._render_template(
+        Path(profile.workspace.project_root or __file__),
+        retry_artifact_dir,
+        decorated_links,
+        profile=profile,
+    )
+    set_stage("render", "success")
+    return _continue_after_rendered_script(
+        controller,
+        profile,
+        retry_artifact_dir,
+        summary,
+        log,
+        set_stage,
+        rendered_path,
+    )
+
+
+def _continue_after_rendered_script(
+    controller: PipelineController,
+    profile: Any,
+    retry_artifact_dir: Path,
+    summary: PipelineSummary,
+    log: Callable[[str], None],
+    set_stage: Callable[[str, str], None],
+    rendered_path: Path,
+    *,
+    start_at: str = "render",
+) -> PipelineSummary:
+    set_stage("obfuscate", "running")
+    obfuscated_path = retry_artifact_dir / "vmess_node_worker.js"
+    controller.obfuscator(rendered_path, obfuscated_path)
+    if not obfuscated_path.exists():
+        set_stage("obfuscate", "failed")
+        summary.run_status = "failed"
+        summary.error = "RuntimeError: vmess_node_worker.js was not created by the obfuscation step"
+        controller._write_pipeline_report(retry_artifact_dir, summary)
+        return summary
+    set_stage("obfuscate", "success")
+    env = controller.env_loader(Path(profile.workspace.project_root or __file__))
+    api_token = env.get("CLOUDFLARE_API_TOKEN", "")
+    if not api_token:
+        raise RuntimeError("CLOUDFLARE_API_TOKEN is missing")
+    return _continue_after_obfuscated_script(
+        controller,
+        profile,
+        retry_artifact_dir,
+        summary,
+        log,
+        set_stage,
+        obfuscated_path,
+        api_token=api_token,
+    )
+
+
+def _continue_after_obfuscated_script(
+    controller: PipelineController,
+    profile: Any,
+    retry_artifact_dir: Path,
+    summary: PipelineSummary,
+    log: Callable[[str], None],
+    set_stage: Callable[[str, str], None],
+    obfuscated_path: Path,
+    *,
+    api_token: str,
+    start_at: str = "obfuscate",
+) -> PipelineSummary:
+    set_stage("deploy", "running")
+    bundle_dir = build_pages_bundle(obfuscated_path.read_text(encoding="utf-8"), retry_artifact_dir / "pages_bundle")
+    deployment = controller.deployer(bundle_dir, profile.deploy, api_token)
+    summary.deployment = deployment
+    if deployment.get("returncode", 1) != 0:
+        set_stage("deploy", "failed")
+        summary.run_status = "failed"
+        summary.error = f"RuntimeError: Cloudflare deployment failed: {deployment}"
+        controller._write_pipeline_report(retry_artifact_dir, summary)
+        return summary
+    set_stage("deploy", "success")
+    return _run_verify_only(
+        controller,
+        profile,
+        retry_artifact_dir,
+        summary,
+        log,
+        set_stage,
+        api_token=api_token,
+    )
+
+
+def _run_verify_only(
+    controller: PipelineController,
+    profile: Any,
+    retry_artifact_dir: Path,
+    summary: PipelineSummary,
+    log: Callable[[str], None],
+    set_stage: Callable[[str, str], None],
+    *,
+    api_token: str,
+) -> PipelineSummary:
+    set_stage("verify", "running")
+    verification = controller.verifier(profile.deploy, api_token)
+    if not (verification.get("secret_ok") and verification.get("subscription_ok")):
+        summary.deployment.update(verification)
+        set_stage("verify", "failed")
+        summary.run_status = "failed"
+        summary.error = f"RuntimeError: Verification failed: {verification}"
+        controller._write_pipeline_report(retry_artifact_dir, summary)
+        return summary
+    summary.deployment.update(verification)
+    set_stage("verify", "success")
+    summary.run_status = "success"
+    summary.error = ""
+    controller._write_pipeline_report(retry_artifact_dir, summary)
+    return summary
 
 
 def _read_non_empty_lines(path: Path) -> list[str]:
@@ -43,6 +707,169 @@ def _default_verify(deploy: Any, api_token: str) -> dict[str, bool]:
     secret_ok = client.verify_url(build_secret_url(deploy))
     subscription_ok = client.verify_url(deploy.subscription_url)
     return {"secret_ok": secret_ok, "subscription_ok": subscription_ok}
+
+
+def list_artifacts_with_retry_stages(project_root: Path, *, limit: int = 20) -> list[dict[str, Any]]:
+    artifacts_root = project_root / "artifacts"
+    if not artifacts_root.exists():
+        return []
+
+    candidates = sorted(
+        [path for path in artifacts_root.iterdir() if path.is_dir()],
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )[:limit]
+    return [_build_artifact_retry_item(path) for path in candidates]
+
+
+def retry_pipeline_from_stage(
+    artifact_dir: Path,
+    *,
+    stage_name: str,
+    project_root: Path,
+    log_callback: Callable[[str], None] | None = None,
+    stage_callback: Callable[[str, str], None] | None = None,
+    event_callback: Callable[[str, dict[str, Any]], None] | None = None,
+) -> PipelineSummary:
+    source_artifact_dir = Path(artifact_dir).resolve()
+    if not source_artifact_dir.exists():
+        raise FileNotFoundError(f"artifact dir not found: {source_artifact_dir}")
+    if stage_name not in RETRYABLE_STAGES:
+        raise RuntimeError(f"Unsupported retry stage: {stage_name}")
+
+    source_item = _build_artifact_retry_item(source_artifact_dir)
+    if stage_name not in source_item["retryable_stages"]:
+        raise RuntimeError(f"Stage is not retryable for artifact: {stage_name}")
+
+    profile = ProfileStore(resolve_profile_path(project_root)).load_or_create(project_root)
+    controller = PipelineController(
+        availability_checker=check_link_availability_batch,
+        country_lookup=lookup_country_code,
+        obfuscator=obfuscate_javascript,
+        env_loader=load_runtime_env,
+        verifier=_default_verify,
+        artifact_retention_count=99,
+    )
+    retry_artifact_dir = _create_retry_artifact_dir(project_root)
+    retry_context = {
+        "source_artifact_dir": str(source_artifact_dir),
+        "source_artifact_name": source_artifact_dir.name,
+        "start_stage": stage_name,
+    }
+    _seed_retry_artifact(source_artifact_dir, retry_artifact_dir, stage_name, retry_context)
+
+    report = _load_json(retry_artifact_dir / "pipeline_report.json")
+    stage_status = {name: "pending" for name in controller.stage_names()}
+    stage_status.update(report.get("stage_status", {}))
+    summary = PipelineSummary(
+        artifact_dir=str(retry_artifact_dir),
+        stage_status=stage_status,
+        counts=dict(report.get("counts", {})),
+        source_counts=dict(report.get("source_counts", {})),
+        deployment=dict(report.get("deployment", {})),
+        retry_context=retry_context,
+        run_status=str(report.get("run_status", "pending")),
+        error=str(report.get("error", "")),
+    )
+
+    def log(message: str) -> None:
+        if log_callback:
+            log_callback(message)
+
+    def set_stage(stage_key: str, status: str) -> None:
+        summary.stage_status[stage_key] = status
+        if stage_callback:
+            stage_callback(stage_key, status)
+        controller._write_pipeline_report(retry_artifact_dir, summary)
+
+    env = controller.env_loader(Path(profile.workspace.project_root or __file__))
+    api_token = env.get("CLOUDFLARE_API_TOKEN", "")
+    if stage_name in {"deploy", "verify"} and not api_token:
+        raise RuntimeError("CLOUDFLARE_API_TOKEN is missing")
+
+    _emit_event(
+        event_callback,
+        "run_started",
+        artifact_dir=str(retry_artifact_dir),
+        skip_deploy=False,
+        skip_verify=False,
+        retry_stage=stage_name,
+        source_artifact_dir=str(source_artifact_dir),
+    )
+    log(f"[retry] source={source_artifact_dir.name} stage={stage_name}")
+
+    if stage_name == "speedtest":
+        return _retry_from_speedtest(
+            controller,
+            profile,
+            retry_artifact_dir,
+            source_artifact_dir,
+            summary,
+            log,
+            set_stage,
+            event_callback=event_callback,
+        )
+    if stage_name == "availability":
+        return _retry_from_availability(
+            controller,
+            profile,
+            retry_artifact_dir,
+            source_artifact_dir,
+            summary,
+            log,
+            set_stage,
+            event_callback=event_callback,
+        )
+    if stage_name == "postprocess":
+        return _retry_from_postprocess(
+            controller,
+            profile,
+            retry_artifact_dir,
+            source_artifact_dir,
+            summary,
+            log,
+            set_stage,
+        )
+    if stage_name == "render":
+        return _retry_from_render(
+            controller,
+            profile,
+            retry_artifact_dir,
+            source_artifact_dir,
+            summary,
+            log,
+            set_stage,
+        )
+    if stage_name == "obfuscate":
+        return _retry_from_obfuscate(
+            controller,
+            profile,
+            retry_artifact_dir,
+            source_artifact_dir,
+            summary,
+            log,
+            set_stage,
+        )
+    if stage_name == "deploy":
+        return _retry_from_deploy(
+            controller,
+            profile,
+            retry_artifact_dir,
+            source_artifact_dir,
+            summary,
+            log,
+            set_stage,
+            api_token=api_token,
+        )
+    return _retry_from_verify(
+        controller,
+        profile,
+        retry_artifact_dir,
+        summary,
+        log,
+        set_stage,
+        api_token=api_token,
+    )
 
 
 def _emit_event(

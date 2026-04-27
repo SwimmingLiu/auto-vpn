@@ -65,6 +65,19 @@ const EMPTY_COUNTS = {
 };
 
 const SOURCE_DISPLAY_ORDER = ['leiting', 'heidong', 'mifeng', 'xuanfeng-area', 'xuanfeng-all-area'];
+const RETRY_STAGE_ORDER = ['speedtest', 'availability', 'postprocess', 'render', 'obfuscate', 'deploy', 'verify'];
+const STAGE_DISPLAY_NAMES = {
+  doctor: 'doctor',
+  extract: 'extract',
+  dedupe: 'dedupe',
+  speedtest: 'speedtest',
+  availability: 'availability',
+  postprocess: 'postprocess',
+  render: 'render',
+  obfuscate: 'obfuscate',
+  deploy: 'deploy',
+  verify: 'verify'
+};
 const DEFAULT_AVAILABILITY_TARGETS = {
   gemini: {
     url: 'https://gemini.google.com/',
@@ -124,6 +137,12 @@ export function buildViewModel(state, messages, language) {
   const currentStage = stageRows.find((row) => row.status === 'running') ?? stageRows.find((row) => row.status === 'success') ?? stageRows[0];
   const artifactDir = state.artifactDir ?? '';
   const hasResult = Boolean(artifactDir || Object.values(counts).some((value) => Number(value) > 0));
+  const retryArtifacts = Array.isArray(state.retryArtifacts) ? state.retryArtifacts : [];
+  const selectedRetryArtifact = retryArtifacts.find((item) => item.artifact_dir === state.selectedRetryArtifactDir) ?? retryArtifacts[0] ?? null;
+  const retryStageOptions = deriveRetryStageOptions(selectedRetryArtifact);
+  const selectedRetryStage = retryStageOptions.includes(state.selectedRetryStage)
+    ? state.selectedRetryStage
+    : retryStageOptions[0] ?? '';
 
   return {
     profile,
@@ -151,6 +170,11 @@ export function buildViewModel(state, messages, language) {
     sourceCounts,
     rawSourceMetricRows: buildSourceMetricRows(profile, sourceCounts, 'raw_links'),
     dedupedSourceMetricRows: buildSourceMetricRows(profile, sourceCounts, 'deduped_links'),
+    retryArtifacts,
+    selectedRetryArtifact,
+    selectedRetryArtifactDir: selectedRetryArtifact?.artifact_dir ?? '',
+    retryStageOptions,
+    selectedRetryStage,
     runControlState: resolveRunControlState(state.runState),
     statusItems: buildStatusItems(state, messages),
     currentStatusLabel: resolveCurrentStatusLabel(state, messages),
@@ -330,12 +354,40 @@ export function buildDashboardMetricsMarkup(vm) {
 function buildRunsPage(vm, messages) {
   const runDisabled = vm.runControlState.runDisabled ? 'disabled' : '';
   const stopDisabled = vm.runControlState.stopDisabled ? 'disabled' : '';
+  const retryDisabled = vm.runControlState.isBusy || !vm.selectedRetryArtifactDir || !vm.selectedRetryStage ? 'disabled' : '';
   return `
     <div id="runsWorkspace" class="page-grid runs-grid">
       <article class="panel wide-panel run-control-panel">
         <button class="btn btn-primary run-big" data-run-action="start" type="button" ${runDisabled}>▶ 开始运行</button>
         <button class="btn btn-secondary run-big" data-run-action="stop" type="button" ${stopDisabled}>■ 停止运行</button>
-        <button class="btn btn-secondary run-big" data-action="retry-current-stage" type="button" ${runDisabled}>重试当前阶段</button>
+        <div class="retry-control-card">
+          <label class="field compact retry-field">
+            <span>历史 run</span>
+            <select data-run-retry-artifact ${retryDisabled && !vm.selectedRetryArtifactDir ? 'disabled' : ''}>
+              ${vm.retryArtifacts.length
+                ? vm.retryArtifacts.map((item) => `
+                  <option value="${escapeHtml(item.artifact_dir)}" ${vm.selectedRetryArtifactDir === item.artifact_dir ? 'selected' : ''}>
+                    ${escapeHtml(formatRetryArtifactLabel(item))}
+                  </option>
+                `).join('')
+                : '<option value="">暂无可重试 run</option>'}
+            </select>
+          </label>
+          <label class="field compact retry-field">
+            <span>阶段</span>
+            <select data-run-retry-stage ${retryDisabled && !vm.selectedRetryStage ? 'disabled' : ''}>
+              ${vm.retryStageOptions.length
+                ? vm.retryStageOptions.map((stage) => `
+                  <option value="${escapeHtml(stage)}" ${vm.selectedRetryStage === stage ? 'selected' : ''}>
+                    ${escapeHtml(STAGE_DISPLAY_NAMES[stage] || stage)}
+                  </option>
+                `).join('')
+                : '<option value="">暂无可重试阶段</option>'}
+            </select>
+          </label>
+          <button class="btn btn-secondary run-big retry-stage-button" data-action="retry-stage" type="button" ${retryDisabled}>从所选阶段重试</button>
+          <p class="retry-help">阶段重试会新建 artifact，并从所选阶段继续执行到 verify。</p>
+        </div>
         <div class="run-options">
           ${[
             ['跳过部署', 'skipDeploy', false],
@@ -1081,6 +1133,21 @@ function stageLabel(status) {
     failed: '失败',
     pending: '等待中'
   }[status] ?? status;
+}
+
+function deriveRetryStageOptions(artifact) {
+  if (!artifact?.retryable_stages) {
+    return [];
+  }
+  return RETRY_STAGE_ORDER.filter((stage) => artifact.retryable_stages.includes(stage));
+}
+
+function formatRetryArtifactLabel(item) {
+  const status = item.run_status || 'unknown';
+  const source = item.retry_context?.source_artifact_name
+    ? ` ← ${item.retry_context.source_artifact_name}:${item.retry_context.start_stage}`
+    : '';
+  return `${item.artifact_name} [${status}]${source}`;
 }
 
 function resolveCurrentStatusLabel(state, messages) {
