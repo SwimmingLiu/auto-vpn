@@ -1,5 +1,13 @@
+from types import SimpleNamespace
+
+import requests
+
 from vpn_automation.config.models import FilterConfig
-from vpn_automation.pipeline.postprocess import decorate_node_name, select_links_by_country_limit
+from vpn_automation.pipeline.postprocess import (
+    decorate_node_name,
+    lookup_country_code,
+    select_links_by_country_limit,
+)
 from vpn_automation.pipeline.speedtest import SpeedTestResult
 
 
@@ -22,3 +30,27 @@ def test_select_links_by_country_limit_filters_cn_and_limits_hk() -> None:
     )
 
     assert selected == ["vmess://1", "vmess://4"]
+
+
+def test_lookup_country_code_returns_zz_when_geoip_service_is_rate_limited(monkeypatch) -> None:
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            error = requests.HTTPError("429")
+            error.response = SimpleNamespace(status_code=429)
+            raise error
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.trust_env = True
+
+        def get(self, url: str, timeout: int) -> FakeResponse:
+            assert url == "https://ipwho.is/23.224.112.134"
+            assert timeout == 20
+            return FakeResponse()
+
+    cache_clear = getattr(lookup_country_code, "cache_clear", None)
+    if callable(cache_clear):
+        cache_clear()
+    monkeypatch.setattr("vpn_automation.pipeline.postprocess.requests.Session", FakeSession)
+
+    assert lookup_country_code("23.224.112.134") == "ZZ"

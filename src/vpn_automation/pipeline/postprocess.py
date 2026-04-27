@@ -1,4 +1,5 @@
 import socket
+from functools import lru_cache
 
 import requests
 
@@ -45,6 +46,8 @@ EMOJI_MAP = {
     "ZA": "🇿🇦",
 }
 
+UNKNOWN_COUNTRY_CODE = "ZZ"
+
 
 def country_to_emoji(country_code: str) -> str:
     return EMOJI_MAP.get(country_code.upper(), "🏳️")
@@ -68,14 +71,25 @@ def resolve_host_to_ip(host: str) -> str:
         return socket.gethostbyname(host)
 
 
+def normalize_country_code(country_code: str) -> str:
+    normalized = str(country_code or "").strip().upper()
+    if len(normalized) != 2 or not normalized.isalpha():
+        return UNKNOWN_COUNTRY_CODE
+    return normalized
+
+
+@lru_cache(maxsize=2048)
 def lookup_country_code(host: str) -> str:
-    ip = resolve_host_to_ip(host)
-    session = requests.Session()
-    session.trust_env = False
-    response = session.get(f"https://ipwho.is/{ip}", timeout=20)
-    response.raise_for_status()
-    payload = response.json()
-    return str(payload.get("country_code", "")).upper()
+    try:
+        ip = resolve_host_to_ip(host)
+        session = requests.Session()
+        session.trust_env = False
+        response = session.get(f"https://ipwho.is/{ip}", timeout=20)
+        response.raise_for_status()
+        payload = response.json()
+    except (OSError, ValueError, requests.RequestException):
+        return UNKNOWN_COUNTRY_CODE
+    return normalize_country_code(str(payload.get("country_code", "")))
 
 
 def select_links_by_country_limit(

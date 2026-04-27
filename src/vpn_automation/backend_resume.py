@@ -782,13 +782,21 @@ def retry_pipeline_from_stage(
         run_status=str(report.get("run_status", "pending")),
         error=str(report.get("error", "")),
     )
+    run_store = RunStore(retry_artifact_dir / "run.db")
+    current_stage = ""
 
     def log(message: str) -> None:
         if log_callback:
             log_callback(message)
 
     def set_stage(stage_key: str, status: str) -> None:
+        nonlocal current_stage
         summary.stage_status[stage_key] = status
+        run_store.record_stage_event(stage_key, status)
+        if status == "running":
+            current_stage = stage_key
+        elif current_stage == stage_key and status in {"success", "failed", "skipped"}:
+            current_stage = ""
         if stage_callback:
             stage_callback(stage_key, status)
         controller._write_pipeline_report(retry_artifact_dir, summary)
@@ -808,79 +816,86 @@ def retry_pipeline_from_stage(
         source_artifact_dir=str(source_artifact_dir),
     )
     log(f"[retry] source={source_artifact_dir.name} stage={stage_name}")
-
-    if stage_name == "speedtest":
-        return _retry_from_speedtest(
+    try:
+        if stage_name == "speedtest":
+            return _retry_from_speedtest(
+                controller,
+                profile,
+                retry_artifact_dir,
+                source_artifact_dir,
+                summary,
+                log,
+                set_stage,
+                event_callback=event_callback,
+            )
+        if stage_name == "availability":
+            return _retry_from_availability(
+                controller,
+                profile,
+                retry_artifact_dir,
+                source_artifact_dir,
+                summary,
+                log,
+                set_stage,
+                event_callback=event_callback,
+            )
+        if stage_name == "postprocess":
+            return _retry_from_postprocess(
+                controller,
+                profile,
+                retry_artifact_dir,
+                source_artifact_dir,
+                summary,
+                log,
+                set_stage,
+            )
+        if stage_name == "render":
+            return _retry_from_render(
+                controller,
+                profile,
+                retry_artifact_dir,
+                source_artifact_dir,
+                summary,
+                log,
+                set_stage,
+            )
+        if stage_name == "obfuscate":
+            return _retry_from_obfuscate(
+                controller,
+                profile,
+                retry_artifact_dir,
+                source_artifact_dir,
+                summary,
+                log,
+                set_stage,
+            )
+        if stage_name == "deploy":
+            return _retry_from_deploy(
+                controller,
+                profile,
+                retry_artifact_dir,
+                source_artifact_dir,
+                summary,
+                log,
+                set_stage,
+                api_token=api_token,
+            )
+        return _retry_from_verify(
             controller,
             profile,
             retry_artifact_dir,
-            source_artifact_dir,
-            summary,
-            log,
-            set_stage,
-            event_callback=event_callback,
-        )
-    if stage_name == "availability":
-        return _retry_from_availability(
-            controller,
-            profile,
-            retry_artifact_dir,
-            source_artifact_dir,
-            summary,
-            log,
-            set_stage,
-            event_callback=event_callback,
-        )
-    if stage_name == "postprocess":
-        return _retry_from_postprocess(
-            controller,
-            profile,
-            retry_artifact_dir,
-            source_artifact_dir,
-            summary,
-            log,
-            set_stage,
-        )
-    if stage_name == "render":
-        return _retry_from_render(
-            controller,
-            profile,
-            retry_artifact_dir,
-            source_artifact_dir,
-            summary,
-            log,
-            set_stage,
-        )
-    if stage_name == "obfuscate":
-        return _retry_from_obfuscate(
-            controller,
-            profile,
-            retry_artifact_dir,
-            source_artifact_dir,
-            summary,
-            log,
-            set_stage,
-        )
-    if stage_name == "deploy":
-        return _retry_from_deploy(
-            controller,
-            profile,
-            retry_artifact_dir,
-            source_artifact_dir,
             summary,
             log,
             set_stage,
             api_token=api_token,
         )
-    return _retry_from_verify(
-        controller,
-        profile,
-        retry_artifact_dir,
-        summary,
-        log,
-        set_stage,
-        api_token=api_token,
-    )
+    except Exception as exc:
+        if current_stage and summary.stage_status.get(current_stage) == "running":
+            set_stage(current_stage, "failed")
+        summary.run_status = "failed"
+        summary.error = f"{exc.__class__.__name__}: {exc}"
+        controller._write_pipeline_report(retry_artifact_dir, summary)
+        raise
 
 
 def _emit_event(
