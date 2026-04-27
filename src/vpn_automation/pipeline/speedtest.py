@@ -6,7 +6,7 @@ from typing import Any, Callable
 import requests
 
 from vpn_automation.config.models import SpeedTestConfig
-from vpn_automation.pipeline.proxy_runtime import open_proxy_runtime, probe_mihomo_proxy_delay
+from vpn_automation.pipeline.proxy_runtime import open_proxy_runtime
 from vpn_automation.pipeline.tls_warnings import suppress_insecure_request_warnings
 
 suppress_insecure_request_warnings()
@@ -44,6 +44,25 @@ def aggregate_speed_measurements(values: list[float]) -> float:
     return round(sum(values) / len(values), 3)
 
 
+def _probe_proxy_latency_ms(
+    session: requests.Session,
+    probe_url: str,
+    proxies: dict[str, str],
+    timeout: int,
+) -> int:
+    started = time.perf_counter()
+    response = session.get(
+        probe_url,
+        proxies=proxies,
+        timeout=timeout,
+        verify=False,
+    )
+    elapsed = max(time.perf_counter() - started, 0.001)
+    if response.status_code not in (200, 204):
+        raise RuntimeError(f"probe returned unexpected status {response.status_code}")
+    return max(int(round(elapsed * 1000)), 1)
+
+
 def _download_speed_mb_s(session: requests.Session, url: str, proxies: dict, max_bytes: int, timeout: int) -> float:
     started = time.perf_counter()
     total = 0
@@ -71,10 +90,10 @@ def test_vmess_link(
             startup_wait_seconds=config.startup_wait_seconds,
             runtime_path=runtime_path,
         ) as runtime:
-            latency_ms = probe_mihomo_proxy_delay(
-                runtime.controller_url,
-                runtime.proxy_name,
+            latency_ms = _probe_proxy_latency_ms(
+                runtime.session,
                 config.probe_url,
+                runtime.proxies,
                 config.timeout_seconds,
             )
 
@@ -126,10 +145,10 @@ def probe_vmess_link(
             startup_wait_seconds=config.startup_wait_seconds,
             runtime_path=runtime_path,
         ) as runtime:
-            latency_ms = probe_mihomo_proxy_delay(
-                runtime.controller_url,
-                runtime.proxy_name,
+            latency_ms = _probe_proxy_latency_ms(
+                runtime.session,
                 config.probe_url,
+                runtime.proxies,
                 config.timeout_seconds,
             )
             return ProbeResult(link=link, reachable=True, latency_ms=latency_ms)
