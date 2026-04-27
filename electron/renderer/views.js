@@ -387,7 +387,7 @@ function buildRunsPage(vm, messages) {
                 : '<option value="">暂无可重试阶段</option>'}
             </select>
           </label>
-          <button class="btn btn-secondary run-big retry-stage-button" data-action="retry-stage" type="button" ${retryDisabled}>从所选阶段重试</button>
+          <button class="btn btn-secondary retry-stage-button" data-action="retry-stage" type="button" ${retryDisabled}>从所选阶段重试</button>
           <div class="retry-summary-card">
             ${vm.selectedRetryArtifact
               ? `
