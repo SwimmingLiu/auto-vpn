@@ -198,6 +198,32 @@ def test_artifact_list_json_reports_retryable_stages_and_retry_context(tmp_path:
     assert payload["items"][0]["retry_context"]["start_stage"] == "deploy"
 
 
+def test_artifact_list_json_filters_non_run_directories(tmp_path: Path) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    artifacts_root = project_root / "artifacts"
+    artifact_dir = artifacts_root / "20260427-081718"
+    screenshots_dir = artifacts_root / "screenshots"
+    artifact_dir.mkdir(parents=True)
+    screenshots_dir.mkdir(parents=True)
+    (artifact_dir / "pipeline_report.json").write_text(
+        json.dumps(
+            {
+                "artifact_dir": str(artifact_dir),
+                "run_status": "success",
+                "stage_status": {"deploy": "success"},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (screenshots_dir / "runs-current.png").write_text("mock png", encoding="utf-8")
+
+    payload = json.loads(artifact_list_json(project_root))
+
+    assert payload["ok"] is True
+    assert [item["artifact_name"] for item in payload["items"]] == ["20260427-081718"]
+
+
 def test_retry_stage_emits_summary_for_retry_run(
     tmp_path: Path,
     monkeypatch,

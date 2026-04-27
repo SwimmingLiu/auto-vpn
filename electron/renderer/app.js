@@ -16,6 +16,7 @@ import {
   buildTopbarActions,
   removeAvailabilityTargetDraft,
   classifyLogEntry,
+  escapeHtml,
   extractSourceUrlFromCurl,
   filterLogEntries
 } from './views.js';
@@ -119,6 +120,7 @@ const state = {
   retryContext: {},
   outputFiles: [],
   nodeRows: [],
+  toast: null,
   qrDataUrl: '',
   runStartedAt: null,
   lastUpdateAt: null,
@@ -133,8 +135,11 @@ const elements = {
   pageSubtitle: document.querySelector('#pageSubtitle'),
   runStateBadge: document.querySelector('#runStateBadge'),
   pageActions: document.querySelector('#pageActions'),
-  pageContent: document.querySelector('#pageContent')
+  pageContent: document.querySelector('#pageContent'),
+  toastRoot: document.querySelector('#toastRoot')
 };
+
+let toastTimer = null;
 
 async function bootstrap() {
   state.language = 'zh-CN';
@@ -219,6 +224,7 @@ function renderAll() {
     state.language,
     state.subtabs
   );
+  renderToast();
 }
 
 function renderChrome(messages, viewModel) {
@@ -305,26 +311,6 @@ function handleDocumentClick(event) {
     return;
   }
 
-  const retryArtifactCard = event.target.closest('[data-run-retry-artifact-card]');
-  if (retryArtifactCard) {
-    state.selectedRetryArtifactDir = retryArtifactCard.dataset.runRetryArtifactValue || '';
-    const selectedArtifact = (state.retryArtifacts ?? []).find(
-      (item) => item.artifact_dir === state.selectedRetryArtifactDir
-    );
-    state.selectedRetryStage = resolveDefaultRetryStage(selectedArtifact);
-    touchUpdate();
-    renderAll();
-    return;
-  }
-
-  const retryStageSelect = event.target.closest('[data-run-retry-stage]');
-  if (retryStageSelect) {
-    state.selectedRetryStage = retryStageSelect.value;
-    touchUpdate();
-    renderAll();
-    return;
-  }
-
   const openUrlButton = event.target.closest('[data-open-url]');
   if (openUrlButton) {
     openUrl(openUrlButton.dataset.openUrl);
@@ -346,7 +332,15 @@ function handleDocumentClick(event) {
     return;
   }
   if (action?.dataset.action === 'copy-nodes') {
-    copyText((state.nodeRows ?? []).map((row) => row.link || row.name).filter(Boolean).join('\n'));
+    const messages = getMessages(state.language);
+    const nodeLinks = (state.nodeRows ?? []).map((row) => row.link || row.name).filter(Boolean);
+    copyText(nodeLinks.join('\n'), {
+      emptyToast: messages.nothingToCopyMessage,
+      successToast: formatMessage(messages.copiedNodesToastMessage, { count: nodeLinks.length }),
+      successLog: formatMessage(messages.copiedNodesLogMessage, { count: nodeLinks.length }),
+      failureToast: formatMessage(messages.copyFailedToastMessage, { error: '{error}' }),
+      failureLog: formatMessage(messages.copyFailedLogMessage, { error: '{error}' })
+    });
     return;
   }
   if (action?.dataset.action === 'retry-stage') {
@@ -536,21 +530,81 @@ function coerceProfileValue(value, currentValue) {
   return value;
 }
 
-async function copyText(value) {
+function resolveErrorMessage(error) {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  return String(error ?? 'unknown');
+}
+
+async function writeClipboardText(text) {
+  if (window.vpnAutomation?.copyText) {
+    const result = await window.vpnAutomation.copyText(text);
+    if (!result?.ok) {
+      throw new Error(result?.error ?? 'clipboard_write_failed');
+    }
+    return;
+  }
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  throw new Error('clipboard_unavailable');
+}
+
+function showToast({ tone = 'neutral', message, durationMs = 2400 }) {
+  if (!message) {
+    return;
+  }
+  state.toast = { tone, message };
+  renderToast();
+  if (toastTimer) {
+    clearTimeout(toastTimer);
+  }
+  toastTimer = window.setTimeout(() => {
+    state.toast = null;
+    renderToast();
+    toastTimer = null;
+  }, durationMs);
+}
+
+function renderToast() {
+  if (!elements.toastRoot) {
+    return;
+  }
+  if (!state.toast?.message) {
+    elements.toastRoot.innerHTML = '';
+    return;
+  }
+  elements.toastRoot.innerHTML = `
+    <div class="toast ${escapeHtml(state.toast.tone || 'neutral')}" data-toast data-toast-tone="${escapeHtml(state.toast.tone || 'neutral')}">
+      ${escapeHtml(state.toast.message)}
+    </div>
+  `;
+}
+
+async function copyText(value, options = {}) {
   const text = String(value ?? '').trim();
+  const messages = getMessages(state.language);
   if (!text) {
+    showToast({ tone: 'neutral', message: options.emptyToast ?? messages.nothingToCopyMessage });
     return;
   }
 
   try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
-    }
-  } catch {
-    // Ignore clipboard failures in browser demo mode.
+    await writeClipboardText(text);
+    showToast({ tone: 'success', message: options.successToast ?? messages.copiedToastMessage });
+    appendLog(options.successLog ?? formatMessage(messages.copiedMessage, { value: text }));
+  } catch (error) {
+    const detail = resolveErrorMessage(error);
+    showToast({
+      tone: 'danger',
+      message: (options.failureToast ?? formatMessage(messages.copyFailedToastMessage, { error: detail })).replace('{error}', detail)
+    });
+    appendLog(
+      (options.failureLog ?? formatMessage(messages.copyFailedLogMessage, { error: detail })).replace('{error}', detail)
+    );
   }
-
-  appendLog(formatMessage(getMessages(state.language).copiedMessage, { value: text }));
 }
 
 async function openUrl(url) {
@@ -1128,6 +1182,7 @@ function renderRuntimeOnly({ chrome = true } = {}) {
     renderChrome(messages, viewModel);
   }
   renderActiveRuntimeSections(viewModel);
+  renderToast();
 }
 
 function renderActiveRuntimeSections(viewModel) {

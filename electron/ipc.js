@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 
-import { ipcMain, shell } from 'electron';
+import { clipboard, ipcMain, shell } from 'electron';
 import QRCode from 'qrcode';
 
 import { mergeLatestArtifactPreview, previewArtifactDirectory } from './lib/artifact-preview.js';
@@ -51,6 +51,15 @@ export function registerIpcHandlers({ mainWindow, projectRoot, runtimeProfilePat
 
   ipcMain.handle('shell:open-path', async (_event, targetPath) => {
     return openPathWithShell(String(targetPath ?? '').trim(), { strictExists: false });
+  });
+
+  ipcMain.handle('clipboard:write-text', async (_event, text) => {
+    const value = String(text ?? '');
+    if (!value.trim()) {
+      return { ok: false, error: 'empty_text' };
+    }
+    clipboard.writeText(value);
+    return { ok: true };
   });
 
   ipcMain.handle('logs:export', async (_event, content) => {
