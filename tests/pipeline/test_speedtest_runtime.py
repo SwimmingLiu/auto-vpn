@@ -1,5 +1,3 @@
-from types import SimpleNamespace
-
 from vpn_automation.config.models import SpeedTestConfig
 from vpn_automation.pipeline.proxy_runtime import (
     build_mihomo_runtime_config,
@@ -133,7 +131,7 @@ def test_probe_links_emits_probe_events(monkeypatch) -> None:
     assert events[-1]["completed"] == 2
 
 
-def test_probe_vmess_link_uses_mihomo_delay_api_when_configured(monkeypatch) -> None:
+def test_probe_vmess_link_measures_reachability_through_runtime_proxy(monkeypatch) -> None:
     config = SpeedTestConfig(
         min_download_mb_s=1.0,
         timeout_seconds=20,
@@ -142,11 +140,20 @@ def test_probe_vmess_link_uses_mihomo_delay_api_when_configured(monkeypatch) -> 
     )
     captured: dict[str, object] = {}
 
+    class DummyResponse:
+        status_code = 204
+
+    class DummySession:
+        def get(self, url, *, proxies, timeout, verify):
+            captured["url"] = url
+            captured["proxies"] = proxies
+            captured["timeout"] = timeout
+            captured["verify"] = verify
+            return DummyResponse()
+
     class DummyRuntime:
-        controller_url = "http://127.0.0.1:19090"
-        proxy_name = "runtime-node"
         proxies = {"http": "http://127.0.0.1:18080", "https": "http://127.0.0.1:18080"}
-        session = SimpleNamespace()
+        session = DummySession()
 
         def __enter__(self):
             return self
@@ -158,26 +165,17 @@ def test_probe_vmess_link_uses_mihomo_delay_api_when_configured(monkeypatch) -> 
         "vpn_automation.pipeline.speedtest.open_proxy_runtime",
         lambda *args, **kwargs: DummyRuntime(),
     )
-    monkeypatch.setattr(
-        "vpn_automation.pipeline.speedtest.probe_mihomo_proxy_delay",
-        lambda controller_url, proxy_name, probe_url, timeout_seconds: captured.update(
-            {
-                "controller_url": controller_url,
-                "proxy_name": proxy_name,
-                "probe_url": probe_url,
-                "timeout_seconds": timeout_seconds,
-            }
-        )
-        or 321,
-    )
+    probe_times = iter([10.0, 10.321])
+    monkeypatch.setattr("vpn_automation.pipeline.speedtest.time.perf_counter", lambda: next(probe_times))
 
     result = probe_vmess_link("vmess://a", config)
 
     assert result.reachable is True
     assert result.latency_ms == 321
-    assert captured["controller_url"] == "http://127.0.0.1:19090"
-    assert captured["proxy_name"] == "runtime-node"
-    assert captured["probe_url"] == config.probe_url
+    assert captured["url"] == config.probe_url
+    assert captured["proxies"] == DummyRuntime.proxies
+    assert captured["timeout"] == config.timeout_seconds
+    assert captured["verify"] is False
 
 
 def test_speedtest_links_emits_selected_and_full_test_events(monkeypatch) -> None:
