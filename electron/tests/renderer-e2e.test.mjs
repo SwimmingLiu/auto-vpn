@@ -56,6 +56,11 @@ test('renderer hydrates the latest artifact on startup when backend has results'
             artifact_dir: '/Users/user/vpn-sub/artifacts/20260426-120000',
             counts: { raw_links: 5, deduped_links: 4, speedtest_links: 3, availability_links: 2 },
             source_counts: { leiting: { raw_links: 5 } },
+            retry_context: {
+              source_artifact_dir: '/Users/user/vpn-sub/artifacts/20260425-000000',
+              source_artifact_name: '20260425-000000',
+              start_stage: 'deploy'
+            },
             outputFiles: [{ name: 'vpn_node_emoji.txt', size: '2 KB' }],
             nodeRows: [
               {
@@ -105,6 +110,9 @@ test('renderer hydrates the latest artifact on startup when backend has results'
     await page.locator('#navResults').click();
     await page.waitForSelector('#resultsWorkspace');
     const resultsText = await page.locator('#resultsWorkspace').innerText();
+    assert.match(resultsText, /重试来源/);
+    assert.match(resultsText, /20260425-000000/);
+    assert.match(resultsText, /deploy/);
     assert.match(resultsText, /latest-node/);
     assert.match(resultsText, /6\.6\.6\.6/);
   } finally {
@@ -450,6 +458,7 @@ test('renderer matches the six-page canvas redesign and supports page navigation
         saveBeforeRun: true
       }
     );
+    await page.waitForFunction(() => !document.querySelector('[data-action="retry-stage"]').disabled);
 
     const sameButtonAfterLogs = await page.locator('#runsWorkspace [data-run-action="start"]').evaluate((button) => {
       window.__stableRunButton = button;

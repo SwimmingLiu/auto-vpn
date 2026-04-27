@@ -49,6 +49,7 @@ export function mergeLatestArtifactPreview(report, preview) {
   }
   return {
     ...report,
+    retry_context: report?.retry_context ?? {},
     outputFiles: preview?.outputFiles ?? [],
     nodeRows: preview?.nodeRows ?? [],
     regionCards: preview?.regionCards ?? [],
