@@ -221,7 +221,12 @@ test('mergeLatestArtifactPreview combines backend report metadata and preview ro
     ok: true,
     artifact_dir: '/tmp/artifacts/20260426-120000',
     counts: { availability_links: 2 },
-    source_counts: { leiting: { raw_links: 3 } }
+    source_counts: { leiting: { raw_links: 3 } },
+    retry_context: {
+      source_artifact_dir: '/tmp/artifacts/20260425-000000',
+      source_artifact_name: '20260425-000000',
+      start_stage: 'deploy'
+    }
   };
   const preview = {
     ok: true,
@@ -234,6 +239,11 @@ test('mergeLatestArtifactPreview combines backend report metadata and preview ro
     artifact_dir: '/tmp/artifacts/20260426-120000',
     counts: { availability_links: 2 },
     source_counts: { leiting: { raw_links: 3 } },
+    retry_context: {
+      source_artifact_dir: '/tmp/artifacts/20260425-000000',
+      source_artifact_name: '20260425-000000',
+      start_stage: 'deploy'
+    },
     outputFiles: [{ name: 'vpn_node_emoji.txt', size: '2 KB' }],
     nodeRows: [{ name: 'JP node' }],
     regionCards: [],

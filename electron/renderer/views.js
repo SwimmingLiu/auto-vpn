@@ -170,6 +170,7 @@ export function buildViewModel(state, messages, language) {
     sourceCounts,
     rawSourceMetricRows: buildSourceMetricRows(profile, sourceCounts, 'raw_links'),
     dedupedSourceMetricRows: buildSourceMetricRows(profile, sourceCounts, 'deduped_links'),
+    retryContext: state.retryContext ?? {},
     retryArtifacts,
     selectedRetryArtifact,
     selectedRetryArtifactDir: selectedRetryArtifact?.artifact_dir ?? '',
@@ -451,6 +452,20 @@ function buildResultsPage(vm, messages) {
           <button class="btn btn-secondary" data-action="open-artifact-dir" type="button">打开目录</button>
         </div>
       </article>
+
+      ${vm.retryContext?.source_artifact_name ? `
+        <article class="panel wide-panel retry-origin-card">
+          <div class="panel-headline">
+            <h3>重试来源</h3>
+            ${renderBadge('阶段重试生成', 'warning')}
+          </div>
+          <div class="key-value-list">
+            <div class="key-value-row"><span>来源 run</span><strong class="mono">${escapeHtml(vm.retryContext.source_artifact_name)}</strong></div>
+            <div class="key-value-row"><span>起始阶段</span><strong>${escapeHtml(vm.retryContext.start_stage || '—')}</strong></div>
+            <div class="key-value-row"><span>来源目录</span><strong class="mono">${escapeHtml(vm.retryContext.source_artifact_dir || '—')}</strong></div>
+          </div>
+        </article>
+      ` : ''}
 
       <article class="panel wide-panel">
         <div class="panel-headline"><h3>区域统计</h3><span class="panel-subcopy">按最终节点名称中的区域码统计</span></div>

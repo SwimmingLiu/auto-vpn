@@ -116,6 +116,7 @@ const state = {
   retryArtifacts: [],
   selectedRetryArtifactDir: '',
   selectedRetryStage: '',
+  retryContext: {},
   outputFiles: [],
   nodeRows: [],
   qrDataUrl: '',
@@ -943,6 +944,7 @@ function handlePipelineEvent(event) {
     state.stageStatus = event.stage_status ?? {};
     state.counts = normalizeCounts(event.counts ?? {});
     state.sourceCounts = normalizeSourceCounts(event.source_counts ?? state.sourceCounts);
+    state.retryContext = event.retry_context ?? state.retryContext ?? {};
     state.artifactDir = event.artifact_dir ?? '';
     state.selectedRetryArtifactDir = state.artifactDir || state.selectedRetryArtifactDir;
     touchUpdate();
@@ -1043,6 +1045,7 @@ async function hydrateArtifactPreview() {
   if (result?.ok) {
     state.outputFiles = result.outputFiles ?? [];
     state.nodeRows = result.nodeRows ?? [];
+    state.retryContext = result.retry_context ?? state.retryContext ?? {};
     renderAll();
   }
 }
@@ -1062,6 +1065,7 @@ async function hydrateLatestArtifact() {
     state.sourceCounts = normalizeSourceCounts(result.source_counts ?? {});
     state.outputFiles = result.outputFiles ?? [];
     state.nodeRows = result.nodeRows ?? [];
+    state.retryContext = result.retry_context ?? {};
     state.runResult = result.run_status === 'success' ? 'success' : state.runResult;
     if (result.stage_status) {
       state.stageStatus = result.stage_status;
