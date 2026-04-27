@@ -26,6 +26,7 @@ test('electron app exposes preload bridge and renders the real saved profile', a
     const hasPreviewBridge = await page.evaluate(() => typeof window.vpnAutomation?.previewArtifact === 'function');
     const hasArtifactListBridge = await page.evaluate(() => typeof window.vpnAutomation?.artifactList === 'function');
     const hasRetryStageBridge = await page.evaluate(() => typeof window.vpnAutomation?.retryStage === 'function');
+    const hasCopyTextBridge = await page.evaluate(() => typeof window.vpnAutomation?.copyText === 'function');
     const pageTitle = await page.locator('#pageTitle').innerText();
     const actionText = await page.locator('#pageActions').innerText();
     const sourceSummary = await page.locator('#settingsCardSummary-sources').innerText();
@@ -38,6 +39,7 @@ test('electron app exposes preload bridge and renders the real saved profile', a
     assert.equal(hasPreviewBridge, true);
     assert.equal(hasArtifactListBridge, true);
     assert.equal(hasRetryStageBridge, true);
+    assert.equal(hasCopyTextBridge, true);
     assert.equal(actionText.trim(), '');
     assert.equal(pageTitle, '设置');
     assert.notEqual(sourceSummary.trim(), '');

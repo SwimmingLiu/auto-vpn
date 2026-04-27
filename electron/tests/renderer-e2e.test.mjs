@@ -103,6 +103,10 @@ test('renderer hydrates the latest artifact on startup when backend has results'
         saveProfile: async () => ({ ok: true }),
         runPipeline: async () => ({ ok: true, pid: 1 }),
         retryStage: async () => ({ ok: true, pid: 2 }),
+        copyText: async (value) => {
+          window.__copiedTexts = [...(window.__copiedTexts ?? []), value];
+          return { ok: true };
+        },
         stopPipeline: async () => ({ ok: true, requested: true }),
         openUrl: async () => ({ ok: true }),
         openPath: async () => ({ ok: true }),
@@ -236,6 +240,10 @@ test('renderer matches the six-page canvas redesign and supports page navigation
           }, 0);
           return { ok: true, pid: 2 };
         },
+        copyText: async (value) => {
+          window.__copiedTexts = [...(window.__copiedTexts ?? []), value];
+          return { ok: true };
+        },
         stopPipeline: async () => ({ ok: true, requested: true }),
         openUrl: async () => ({ ok: true }),
         openPath: async () => ({ ok: true }),
@@ -340,6 +348,13 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     assert.match(resultsText, /\/edge/);
     assert.match(resultsText, /US/);
     assert.doesNotMatch(resultsText, /合并到这里|vpn_node_raw\.txt/);
+    await page.getByRole('button', { name: '复制节点' }).click();
+    await page.waitForSelector('[data-toast]');
+    assert.equal(
+      await page.evaluate(() => window.__copiedTexts?.at(-1)),
+      'vmess://demo'
+    );
+    assert.match(await page.locator('[data-toast]').innerText(), /已复制 1 条节点/);
 
     await page.locator('#navLogs').click();
     await page.waitForSelector('#logsWorkspace');
@@ -464,15 +479,21 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     await page.waitForSelector('#runsWorkspace');
     assert.equal(await page.locator('[data-run-action="start"]').count(), 1);
     assert.equal(await page.locator('[data-run-action="stop"]').count(), 1);
-    assert.equal(await page.locator('[data-run-retry-artifact-card]').count(), 2);
+    assert.equal(await page.locator('[data-run-retry-artifact]').count(), 1);
     assert.equal(await page.locator('[data-run-retry-stage]').count(), 1);
     assert.equal(await page.locator('[data-action="retry-stage"]').count(), 1);
+    assert.equal(await page.locator('[data-run-retry-artifact-card]').count(), 0);
     assert.equal(await page.locator('#runsLogOutput').count(), 0);
 
-    assert.equal(await page.locator('[data-run-retry-artifact-card].selected').count(), 1);
-    assert.match(await page.locator('[data-run-retry-artifact-card].selected').innerText(), /20260425-000000/);
-    await page.locator('[data-run-retry-artifact-card]').nth(1).click();
-    assert.match(await page.locator('[data-run-retry-artifact-card].selected').innerText(), /20260424-000000/);
+    assert.equal(
+      await page.locator('[data-run-retry-artifact]').inputValue(),
+      '/Users/user/vpn-sub/artifacts/20260425-000000'
+    );
+    await page.locator('[data-run-retry-artifact]').selectOption('/Users/user/vpn-sub/artifacts/20260424-000000');
+    assert.equal(
+      await page.locator('[data-run-retry-artifact]').inputValue(),
+      '/Users/user/vpn-sub/artifacts/20260424-000000'
+    );
     await page.locator('[data-run-retry-stage]').selectOption('deploy');
     await page.locator('[data-action="retry-stage"]').click();
     await page.waitForFunction(() => window.__retryCalls === 1);

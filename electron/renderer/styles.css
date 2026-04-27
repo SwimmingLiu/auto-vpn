@@ -810,7 +810,7 @@ body[data-page="logs"] .page-content {
 .retry-control-card {
   grid-column: 1 / -1;
   display: grid;
-  grid-template-columns: minmax(280px, 1.8fr) minmax(160px, 0.8fr) minmax(200px, 1fr);
+  grid-template-columns: minmax(320px, 1.8fr) minmax(180px, 0.8fr) minmax(220px, 1fr);
   gap: 12px;
   align-items: end;
   padding: 14px;
@@ -821,46 +821,6 @@ body[data-page="logs"] .page-content {
 
 .retry-artifact-field {
   align-self: start;
-}
-
-.retry-artifact-list {
-  display: grid;
-  gap: 10px;
-  max-height: 180px;
-  overflow: auto;
-}
-
-.retry-artifact-card {
-  display: grid;
-  gap: 8px;
-  width: 100%;
-  padding: 12px;
-  border-radius: 14px;
-  border: 1px solid var(--border);
-  background: #fff;
-  text-align: left;
-  transition: border-color 120ms ease, box-shadow 120ms ease, background 120ms ease;
-}
-
-.retry-artifact-card.selected {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(108, 99, 255, 0.08);
-  background: linear-gradient(180deg, #f6f5ff 0%, #fff 100%);
-}
-
-.retry-artifact-card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.retry-artifact-card-meta {
-  display: grid;
-  gap: 4px;
-  color: var(--text-soft);
-  font-size: 12px;
-  line-height: 1.45;
 }
 
 .retry-field select {
@@ -875,6 +835,31 @@ body[data-page="logs"] .page-content {
 
 .retry-stage-button {
   min-height: 38px;
+}
+
+.retry-summary-card {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: #fff;
+}
+
+.retry-summary-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.retry-summary-meta {
+  display: grid;
+  gap: 4px;
+  color: var(--text-soft);
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .retry-help {
@@ -896,6 +881,39 @@ body[data-page="logs"] .page-content {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.toast-root {
+  position: fixed;
+  top: 58px;
+  right: 28px;
+  z-index: 40;
+  display: grid;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.toast {
+  min-width: 220px;
+  max-width: 420px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: var(--shadow);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.toast.success {
+  border-color: rgba(45, 179, 106, 0.24);
+  background: rgba(232, 250, 240, 0.98);
+}
+
+.toast.danger {
+  border-color: rgba(240, 91, 105, 0.26);
+  background: rgba(255, 236, 239, 0.98);
 }
 
 .checkbox-chip {

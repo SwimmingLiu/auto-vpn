@@ -1,4 +1,5 @@
 import json
+import re
 import shutil
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -40,6 +41,8 @@ RETRYABLE_STAGES = (
     "deploy",
     "verify",
 )
+
+ARTIFACT_DIR_PATTERN = re.compile(r"^\d{8}-\d{6}$")
 
 
 def _has_non_empty_file(path: Path) -> bool:
@@ -93,6 +96,14 @@ def _build_artifact_retry_item(artifact_dir: Path) -> dict[str, Any]:
         "retryable_stages": retryable_stages,
         "updated_at": datetime.fromtimestamp(artifact_dir.stat().st_mtime).isoformat(),
     }
+
+
+def _is_retry_artifact_dir(path: Path) -> bool:
+    if not path.is_dir():
+        return False
+    if not ARTIFACT_DIR_PATTERN.fullmatch(path.name):
+        return False
+    return (path / "run.db").exists() or (path / "pipeline_report.json").exists()
 
 
 def _create_retry_artifact_dir(project_root: Path) -> Path:
@@ -715,7 +726,7 @@ def list_artifacts_with_retry_stages(project_root: Path, *, limit: int = 20) -> 
         return []
 
     candidates = sorted(
-        [path for path in artifacts_root.iterdir() if path.is_dir()],
+        [path for path in artifacts_root.iterdir() if _is_retry_artifact_dir(path)],
         key=lambda path: path.stat().st_mtime,
         reverse=True,
     )[:limit]
