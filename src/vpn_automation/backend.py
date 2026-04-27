@@ -5,7 +5,12 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-from vpn_automation.backend_resume import continue_pipeline_session, resume_speedtest_session
+from vpn_automation.backend_resume import (
+    continue_pipeline_session,
+    list_artifacts_with_retry_stages,
+    resume_speedtest_session,
+    retry_pipeline_from_stage,
+)
 from vpn_automation.config.models import AppProfile, resolve_repo_anchor
 from vpn_automation.config.runtime import resolve_artifacts_root, resolve_runtime_root
 from vpn_automation.config.store import ProfileStore, resolve_profile_path
@@ -81,6 +86,10 @@ def artifact_latest_json(project_root: Path) -> str:
             }
         )
     return json.dumps(payload, ensure_ascii=False)
+
+
+def artifact_list_json(project_root: Path) -> str:
+    return json.dumps({"ok": True, "items": list_artifacts_with_retry_stages(project_root)}, ensure_ascii=False)
 
 
 def save_profile_payload(project_root: Path, payload: dict[str, Any]) -> str:
@@ -338,6 +347,39 @@ def resume_pipeline(
     )
 
 
+def retry_stage(
+    project_root: Path,
+    *,
+    artifact_dir: Path,
+    stage_name: str,
+    output_format: str = "jsonl",
+    event_log_path: Path | None = None,
+    human_log_path: Path | None = None,
+) -> int:
+    def runner(emit: Callable[[str, dict[str, Any]], None]) -> Any:
+        def log(message: str) -> None:
+            emit("log", {"message": message})
+
+        def stage(stage_key: str, status: str) -> None:
+            emit("stage", {"stage": stage_key, "status": status})
+
+        return retry_pipeline_from_stage(
+            artifact_dir,
+            stage_name=stage_name,
+            project_root=project_root,
+            log_callback=log,
+            stage_callback=stage,
+            event_callback=emit,
+        )
+
+    return _run_with_streams(
+        output_format=output_format,
+        event_log_path=event_log_path,
+        human_log_path=human_log_path,
+        runner=runner,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     suppress_insecure_request_warnings()
 
@@ -352,6 +394,9 @@ def main(argv: list[str] | None = None) -> int:
 
     artifact_latest_parser = subparsers.add_parser("artifact-latest")
     artifact_latest_parser.add_argument("--project-root", default="")
+
+    artifact_list_parser = subparsers.add_parser("artifact-list")
+    artifact_list_parser.add_argument("--project-root", default="")
 
     run_parser = subparsers.add_parser("run")
     run_parser.add_argument("--project-root", default="")
@@ -376,6 +421,14 @@ def main(argv: list[str] | None = None) -> int:
     continue_parser.add_argument("--event-log", default="")
     continue_parser.add_argument("--human-log", default="")
 
+    retry_parser = subparsers.add_parser("retry-stage")
+    retry_parser.add_argument("--project-root", default="")
+    retry_parser.add_argument("--artifact-dir", required=True)
+    retry_parser.add_argument("--stage", required=True)
+    retry_parser.add_argument("--output", choices=("jsonl", "human"), default="jsonl")
+    retry_parser.add_argument("--event-log", default="")
+    retry_parser.add_argument("--human-log", default="")
+
     args = parser.parse_args(argv)
     candidate = Path(args.project_root or __file__)
     project_root = resolve_repo_anchor(candidate)
@@ -388,6 +441,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "artifact-latest":
         print(artifact_latest_json(project_root))
+        return 0
+    if args.command == "artifact-list":
+        print(artifact_list_json(project_root))
         return 0
     if args.command == "run":
         if args.resume_latest:
@@ -421,6 +477,15 @@ def main(argv: list[str] | None = None) -> int:
         return resume_pipeline(
             project_root,
             session_dir=Path(str(args.session)).resolve(),
+            output_format=str(args.output),
+            event_log_path=Path(args.event_log).resolve() if args.event_log else None,
+            human_log_path=Path(args.human_log).resolve() if args.human_log else None,
+        )
+    if args.command == "retry-stage":
+        return retry_stage(
+            project_root,
+            artifact_dir=Path(str(args.artifact_dir)).resolve(),
+            stage_name=str(args.stage),
             output_format=str(args.output),
             event_log_path=Path(args.event_log).resolve() if args.event_log else None,
             human_log_path=Path(args.human_log).resolve() if args.human_log else None,

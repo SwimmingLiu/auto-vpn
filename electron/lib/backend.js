@@ -17,10 +17,10 @@ export function resolveBackendPython(projectRoot) {
   });
 }
 
-export function buildBackendInvocation(projectRoot, command) {
+export function buildBackendInvocation(projectRoot, command, extraArgs = []) {
   return {
     commands: resolveBackendPython(projectRoot),
-    args: ['-m', 'vpn_automation.backend', command, '--project-root', projectRoot]
+    args: ['-m', 'vpn_automation.backend', command, '--project-root', projectRoot, ...extraArgs]
   };
 }
 

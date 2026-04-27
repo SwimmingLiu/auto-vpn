@@ -807,6 +807,40 @@ body[data-page="logs"] .page-content {
   gap: 14px;
 }
 
+.retry-control-card {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(220px, 1.4fr) minmax(160px, 0.8fr) minmax(200px, 1fr);
+  gap: 12px;
+  align-items: end;
+  padding: 14px;
+  border-radius: 18px;
+  border: 1px solid var(--border);
+  background: var(--surface-soft);
+}
+
+.retry-field select {
+  width: 100%;
+  min-height: 38px;
+  padding: 0 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--text-main);
+}
+
+.retry-stage-button {
+  min-height: 38px;
+}
+
+.retry-help {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .run-big {
   min-height: 58px;
   font-size: 16px;

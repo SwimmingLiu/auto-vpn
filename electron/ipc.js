@@ -199,6 +199,101 @@ export function registerIpcHandlers({ mainWindow, projectRoot, runtimeProfilePat
     return mergeLatestArtifactPreview(report, previewArtifactDirectory(report.artifact_dir));
   });
 
+  ipcMain.handle('artifact:list', async () => {
+    const invocation = buildBackendInvocation(projectRoot, 'artifact-list');
+    const output = await runCommand(
+      invocation.commands,
+      invocation.args,
+      projectRoot,
+      runtimeProfilePath,
+      bundledProfilePath
+    );
+    return JSON.parse(output.stdout);
+  });
+
+  ipcMain.handle('pipeline:retry-stage', async (_event, payload = {}) => {
+    if (activePipelineChild) {
+      return { ok: false, code: null, signal: null, stopped: false, error: 'already_running' };
+    }
+
+    const artifactDir = String(payload?.artifactDir ?? '').trim();
+    const stageName = String(payload?.stage ?? '').trim();
+    if (!artifactDir || !stageName) {
+      return { ok: false, code: null, signal: null, stopped: false, error: 'invalid_retry_payload' };
+    }
+
+    const invocation = buildBackendInvocation(projectRoot, 'retry-stage', [
+      '--artifact-dir',
+      artifactDir,
+      '--stage',
+      stageName
+    ]);
+    const command = selectBackendCommand(invocation.commands);
+    const child = spawn(command, invocation.args, {
+      cwd: projectRoot,
+      env: buildBackendEnv(projectRoot, runtimeProfilePath, bundledProfilePath),
+      detached: true,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    activePipelineChild = child;
+    stopRequested = false;
+
+    child.stdout.setEncoding('utf-8');
+    child.stderr.setEncoding('utf-8');
+
+    child.stdout.on('data', (chunk) => {
+      for (const line of chunk.split(/\r?\n/)) {
+        const event = parseBackendEventLine(line);
+        if (event) {
+          emit(event);
+        }
+      }
+    });
+
+    child.stderr.on('data', (chunk) => {
+      const message = String(chunk).trim();
+      if (message) {
+        emit({ type: 'log', message });
+      }
+    });
+
+    child.on('error', (error) => {
+      if (stopTimer) {
+        clearTimeout(stopTimer);
+        stopTimer = null;
+      }
+      activePipelineChild = null;
+      emit({
+        type: 'finished',
+        ok: false,
+        code: null,
+        signal: null,
+        stopped: stopRequested,
+        error: error.message
+      });
+    });
+
+    child.on('close', (code, signal) => {
+      if (stopTimer) {
+        clearTimeout(stopTimer);
+        stopTimer = null;
+      }
+      activePipelineChild = null;
+      const stopped = stopRequested || signal === 'SIGTERM' || signal === 'SIGKILL';
+      emit({
+        type: 'finished',
+        ok: code === 0 && !stopped,
+        code,
+        signal,
+        stopped
+      });
+    });
+
+    child.unref();
+
+    return { ok: true, pid: child.pid };
+  });
+
   ipcMain.handle('qr:generate', async (_event, text) => ({
     ok: true,
     dataUrl: await QRCode.toDataURL(String(text ?? ''), {

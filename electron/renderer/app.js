@@ -113,6 +113,9 @@ const state = {
   runResult: 'idle',
   logEntries: [],
   artifactDir: '',
+  retryArtifacts: [],
+  selectedRetryArtifactDir: '',
+  selectedRetryStage: '',
   outputFiles: [],
   nodeRows: [],
   qrDataUrl: '',
@@ -153,6 +156,7 @@ async function bootstrap() {
   state.savedProfile = structuredClone(loadedProfile);
   touchUpdate();
   await refreshQrCode();
+  await hydrateRetryArtifacts();
   await hydrateLatestArtifact();
   renderAll();
   state.unsubscribe = window.vpnAutomation.onPipelineEvent(handlePipelineEvent);
@@ -300,6 +304,22 @@ function handleDocumentClick(event) {
     return;
   }
 
+  const retryArtifactSelect = event.target.closest('[data-run-retry-artifact]');
+  if (retryArtifactSelect) {
+    state.selectedRetryArtifactDir = retryArtifactSelect.value;
+    touchUpdate();
+    renderAll();
+    return;
+  }
+
+  const retryStageSelect = event.target.closest('[data-run-retry-stage]');
+  if (retryStageSelect) {
+    state.selectedRetryStage = retryStageSelect.value;
+    touchUpdate();
+    renderAll();
+    return;
+  }
+
   const openUrlButton = event.target.closest('[data-open-url]');
   if (openUrlButton) {
     openUrl(openUrlButton.dataset.openUrl);
@@ -324,8 +344,8 @@ function handleDocumentClick(event) {
     copyText((state.nodeRows ?? []).map((row) => row.link || row.name).filter(Boolean).join('\n'));
     return;
   }
-  if (action?.dataset.action === 'retry-current-stage') {
-    runPipeline();
+  if (action?.dataset.action === 'retry-stage') {
+    retryStage();
     return;
   }
   if (action?.dataset.action === 'copy-log') {
@@ -377,6 +397,22 @@ function handleDocumentInput(event) {
   const target = event.target;
 
   if (!state.profile) {
+    return;
+  }
+
+  if (target.matches('[data-run-retry-artifact]')) {
+    state.selectedRetryArtifactDir = target.value;
+    const selectedArtifact = (state.retryArtifacts ?? []).find((item) => item.artifact_dir === target.value);
+    state.selectedRetryStage = resolveDefaultRetryStage(selectedArtifact);
+    touchUpdate();
+    renderAll();
+    return;
+  }
+
+  if (target.matches('[data-run-retry-stage]')) {
+    state.selectedRetryStage = target.value;
+    touchUpdate();
+    renderAll();
     return;
   }
 
@@ -728,6 +764,7 @@ async function runPipeline() {
   state.artifactDir = '';
   state.outputFiles = [];
   state.nodeRows = [];
+  state.selectedRetryStage = '';
   state.runStartedAt = Date.now();
   touchUpdate();
   renderAll();
@@ -749,6 +786,60 @@ async function runPipeline() {
 
   try {
     const result = await window.vpnAutomation.runPipeline(runOptions);
+    if (!result?.ok) {
+      finishRun(result);
+    }
+  } catch (error) {
+    state.runState = 'idle';
+    state.runResult = 'failed';
+    state.runStartedAt = null;
+    touchUpdate();
+    renderAll();
+    appendLog(formatMessage(messages.pipelineFailed, { error: error.message }));
+  }
+}
+
+async function retryStage() {
+  if (state.runState !== 'idle' || !state.profile || !state.selectedRetryArtifactDir || !state.selectedRetryStage) {
+    return;
+  }
+
+  const messages = getMessages(state.language);
+  state.runState = 'running';
+  state.runResult = 'running';
+  state.stageStatus = {};
+  state.counts = {};
+  state.sourceCounts = {};
+  state.logEntries = [];
+  state.artifactDir = '';
+  state.outputFiles = [];
+  state.nodeRows = [];
+  state.runStartedAt = Date.now();
+  touchUpdate();
+  renderAll();
+  appendLog(`[retry] artifact=${state.selectedRetryArtifactDir} stage=${state.selectedRetryStage}`);
+
+  const runOptions = collectRunOptions();
+  if (runOptions.saveBeforeRun) {
+    await saveProfile({ silent: true });
+  }
+
+  if (!window.vpnAutomation?.retryStage) {
+    state.runState = 'idle';
+    state.runResult = 'failed';
+    state.runStartedAt = null;
+    touchUpdate();
+    renderAll();
+    appendLog(formatMessage(messages.pipelineFailed, { error: 'retry bridge unavailable' }));
+    return;
+  }
+
+  try {
+    const result = await window.vpnAutomation.retryStage({
+      artifactDir: state.selectedRetryArtifactDir,
+      stage: state.selectedRetryStage,
+      saveBeforeRun: runOptions.saveBeforeRun
+    });
     if (!result?.ok) {
       finishRun(result);
     }
@@ -806,6 +897,7 @@ function finishRun(result = {}) {
     touchUpdate();
     renderAll();
     appendLog(messages.pipelineStopped);
+    void hydrateRetryArtifacts();
     return;
   }
 
@@ -814,6 +906,7 @@ function finishRun(result = {}) {
     touchUpdate();
     renderAll();
     appendLog(formatMessage(messages.pipelineFinished, { code: result.code ?? 0 }));
+    void hydrateRetryArtifacts();
     return;
   }
 
@@ -825,6 +918,7 @@ function finishRun(result = {}) {
   } else {
     appendLog(formatMessage(messages.pipelineFinished, { code: result.code ?? 'error' }));
   }
+  void hydrateRetryArtifacts();
 }
 
 function handlePipelineEvent(event) {
@@ -850,10 +944,12 @@ function handlePipelineEvent(event) {
     state.counts = normalizeCounts(event.counts ?? {});
     state.sourceCounts = normalizeSourceCounts(event.source_counts ?? state.sourceCounts);
     state.artifactDir = event.artifact_dir ?? '';
+    state.selectedRetryArtifactDir = state.artifactDir || state.selectedRetryArtifactDir;
     touchUpdate();
     renderAll();
     appendLog(`[summary] artifacts: ${event.artifact_dir}`);
     hydrateArtifactPreview();
+    void hydrateRetryArtifacts();
     return;
   }
 
@@ -974,6 +1070,41 @@ async function hydrateLatestArtifact() {
   } catch (error) {
     appendLog(formatMessage(getMessages(state.language).openFailed, { error: error.message }));
   }
+}
+
+async function hydrateRetryArtifacts() {
+  if (!window.vpnAutomation?.artifactList) {
+    return;
+  }
+
+  try {
+    const result = await window.vpnAutomation.artifactList();
+    if (!result?.ok) {
+      return;
+    }
+    state.retryArtifacts = result.items ?? [];
+    if (!state.selectedRetryArtifactDir) {
+      state.selectedRetryArtifactDir = state.retryArtifacts[0]?.artifact_dir ?? '';
+    }
+    const selectedArtifact = state.retryArtifacts.find((item) => item.artifact_dir === state.selectedRetryArtifactDir) ?? state.retryArtifacts[0];
+    const nextStage = selectedArtifact?.retryable_stages?.includes(state.selectedRetryStage)
+      ? state.selectedRetryStage
+      : resolveDefaultRetryStage(selectedArtifact);
+    state.selectedRetryArtifactDir = selectedArtifact?.artifact_dir ?? '';
+    state.selectedRetryStage = nextStage;
+    touchUpdate();
+  } catch (error) {
+    appendLog(formatMessage(getMessages(state.language).openFailed, { error: error.message }));
+  }
+}
+
+function resolveDefaultRetryStage(artifact) {
+  const retryableStages = Array.isArray(artifact?.retryable_stages) ? artifact.retryable_stages : [];
+  if (!retryableStages.length) {
+    return '';
+  }
+  const failedStage = retryableStages.find((stage) => artifact?.stage_status?.[stage] === 'failed');
+  return failedStage || retryableStages.at(-1) || '';
 }
 
 function appendLog(message, overrides = {}) {

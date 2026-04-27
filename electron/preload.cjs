@@ -10,6 +10,8 @@ contextBridge.exposeInMainWorld('vpnAutomation', {
   generateQr: (text) => ipcRenderer.invoke('qr:generate', text),
   previewArtifact: (artifactDir) => ipcRenderer.invoke('artifact:preview', artifactDir),
   latestArtifact: () => ipcRenderer.invoke('artifact:latest'),
+  artifactList: () => ipcRenderer.invoke('artifact:list'),
+  retryStage: (payload) => ipcRenderer.invoke('pipeline:retry-stage', payload),
   exportLogs: (content) => ipcRenderer.invoke('logs:export', content),
   onPipelineEvent: (callback) => {
     const listener = (_event, payload) => callback(payload);

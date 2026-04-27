@@ -26,6 +26,28 @@ test('buildBackendInvocation returns python module command', () => {
   assert.deepEqual(invocation.args, ['-m', 'vpn_automation.backend', 'run', '--project-root', '/repo']);
 });
 
+test('buildBackendInvocation appends extra args for retry-stage style commands', () => {
+  const invocation = buildBackendInvocation('/repo', 'retry-stage', [
+    '--artifact-dir',
+    '/repo/artifacts/20260427-081718',
+    '--stage',
+    'deploy'
+  ]);
+
+  assert.deepEqual(invocation.commands, ['python3.12', 'python3']);
+  assert.deepEqual(invocation.args, [
+    '-m',
+    'vpn_automation.backend',
+    'retry-stage',
+    '--project-root',
+    '/repo',
+    '--artifact-dir',
+    '/repo/artifacts/20260427-081718',
+    '--stage',
+    'deploy'
+  ]);
+});
+
 test('parseBackendEventLine decodes backend json line', () => {
   const event = parseBackendEventLine('{"type":"log","message":"hello"}');
   assert.equal(event.type, 'log');
