@@ -571,5 +571,6 @@ function contentType(filePath) {
   if (filePath.endsWith('.html')) return 'text/html';
   if (filePath.endsWith('.js')) return 'text/javascript';
   if (filePath.endsWith('.css')) return 'text/css';
+  if (filePath.endsWith('.svg')) return 'image/svg+xml';
   return 'text/plain';
 }
