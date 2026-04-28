@@ -134,17 +134,12 @@ textarea:focus {
 
 .brand-mark,
 .about-logo {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+  display: block;
   width: 52px;
   height: 52px;
   border-radius: 18px;
-  background: linear-gradient(135deg, var(--accent), #7a7af1);
-  color: #fff;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-  box-shadow: 0 14px 30px rgba(91, 92, 226, 0.3);
+  object-fit: contain;
+  flex: none;
 }
 
 .sidebar-title {
