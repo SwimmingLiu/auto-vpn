@@ -12,12 +12,12 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const EXPECTED_DIGESTS = {
-  dashboard: '4ba57c170b83752899ce1a2210144e29a2ae511322feae9b9fa2194e9dde3c9f',
-  runs: 'e0a043f291adae3d3a38a19bafe32259f9e3a5abec4ce1062a681503721415ed',
-  results: '2fc09f43b0486c827a2113462d24c63c2bff05d0b037f5386fd226e449069206',
-  subscriptions: '787f14e1696884474ae9b5d5c63d953dd04aa2b0a8f0bd66b1286b380022149c',
-  logs: '313e46799422a1ea352c4ff66b19d6a84e41021c1ff2c5649e26bd52f5742879',
-  settings: 'd9b631a551f090fba9acb2b53dda8b97dc7550c2e1772f266e35fada5b9f1f53'
+  dashboard: 'd6ae44e5597fac7b868a50b37455eb68548ac1e8943c5df780980fb43a1bc661',
+  runs: '4618b9ed64072251b9015f768bcff9490d71773d1025db6b7779b3df7e988ed4',
+  results: 'cb2c5208c1240b4893822fe0559985351cd1f4ff690997521fbe61de4e3fd461',
+  subscriptions: 'dff9ceed2dd4d2a32b15747e7f552081b478d1233a4b65f19bd1a1c1214d8996',
+  logs: '60ddf9af654b35e995d1beaffe907a746adb4833ffed0d318117e7760f2b51fb',
+  settings: 'beecf995b4007c392746889584f595c52c1bac25bb5179fbf8cd57b13ac14bc5'
 };
 
 const VISUAL_CASES = [
@@ -92,5 +92,6 @@ function contentType(filePath) {
   if (filePath.endsWith('.html')) return 'text/html';
   if (filePath.endsWith('.js')) return 'text/javascript';
   if (filePath.endsWith('.css')) return 'text/css';
+  if (filePath.endsWith('.svg')) return 'image/svg+xml';
   return 'text/plain';
 }
