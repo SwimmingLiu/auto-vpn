@@ -35,6 +35,7 @@ from vpn_automation.pipeline.render import replace_main_data
 from vpn_automation.pipeline.run_store import RunStore
 from vpn_automation.pipeline.speedtest import speedtest_links
 from vpn_automation.pipeline.vmess import canonical_key, parse_vmess_link
+from vpn_automation.pipeline.worker_build import build_worker_artifacts
 
 
 @dataclass
@@ -203,10 +204,18 @@ class PipelineController:
             set_stage("render", "success")
 
             set_stage("obfuscate", "running")
-            obfuscated_path = artifact_dir / "vmess_node_worker.js"
-            self.obfuscator(rendered_path, obfuscated_path)
+            build_artifacts = build_worker_artifacts(
+                rendered_path.read_text(encoding="utf-8"),
+                profile.worker_build,
+                profile.deploy.secret_query,
+            )
+            transformed_path = artifact_dir / "worker_transformed.js"
+            transformed_path.write_text(build_artifacts.transformed_source, encoding="utf-8")
+            obfuscated_path = artifact_dir / profile.worker_build.entry_filename
+            self.obfuscator(transformed_path, obfuscated_path)
             if not obfuscated_path.exists():
-                raise RuntimeError("vmess_node_worker.js was not created by the obfuscation step")
+                raise RuntimeError("_worker.js was not created by the obfuscation step")
+            summary.counts["worker_modules"] = len(build_artifacts.modules)
             set_stage("obfuscate", "success")
             self._write_pipeline_report(artifact_dir, summary)
 
@@ -218,12 +227,22 @@ class PipelineController:
                 set_stage("deploy", "running")
                 bundle_dir = build_pages_bundle(
                     obfuscated_path.read_text(encoding="utf-8"),
-                    artifact_dir / "pages_bundle",
+                    artifact_dir / profile.worker_build.bundle_subdir,
+                    build_artifacts,
+                    profile.worker_build,
+                )
+                log(
+                    f"[deploy] project={profile.deploy.project_name} "
+                    f"bundle={bundle_dir} url={profile.deploy.pages_project_url}"
                 )
                 deployment = self.deployer(bundle_dir, profile.deploy, api_token)
                 summary.deployment = deployment
                 if deployment.get("returncode", 1) != 0:
                     raise RuntimeError(f"Cloudflare deployment failed: {deployment}")
+                log(
+                    f"[deploy] returncode={deployment.get('returncode')} "
+                    f"attempts={','.join(item['mode'] for item in deployment.get('attempts', []))}"
+                )
                 set_stage("deploy", "success")
                 self._write_pipeline_report(artifact_dir, summary)
 

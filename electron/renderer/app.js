@@ -80,8 +80,8 @@ const demoProfile = {
     }
   },
   deploy: {
-    project_name: 'vpn-auto',
-    pages_project_url: 'https://vpn-auto.pages.dev',
+    project_name: 'sub-nodes',
+    pages_project_url: 'https://sub-nodes.pages.dev',
     subscription_url: 'https://vpn.example.top/179ba8dd-3854-4747-b853-fc1868ef3937'
   },
   paths: {
@@ -118,6 +118,7 @@ const state = {
   selectedRetryArtifactDir: '',
   selectedRetryStage: '',
   retryContext: {},
+  deployment: {},
   outputFiles: [],
   nodeRows: [],
   toast: null,
@@ -445,7 +446,7 @@ function handleDocumentInput(event) {
   }
 
   if (target.matches('[data-drawer-path]')) {
-    setDrawerPath(target.dataset.drawerPath, target.value.trim());
+    handleDeployDrawerInput(target.dataset.drawerPath, target.value.trim(), target);
     return;
   }
 
@@ -477,16 +478,74 @@ function setProfilePath(path, value) {
   setObjectPath(state.profile, path, value);
 }
 
+function normalizeDrawerPath(section, path) {
+  return String(path ?? '').startsWith(`${section}.`)
+    ? String(path).slice(section.length + 1)
+    : String(path ?? '');
+}
+
 function setDrawerPath(path, value) {
   if (!state.settingsDrawer?.draft) {
     return;
   }
 
   const section = state.settingsDrawer.section;
-  const normalizedPath = String(path ?? '').startsWith(`${section}.`)
-    ? String(path).slice(section.length + 1)
-    : String(path ?? '');
+  const normalizedPath = normalizeDrawerPath(section, path);
   setObjectPath(state.settingsDrawer.draft, normalizedPath, value);
+}
+
+function derivePagesProjectUrl(projectName) {
+  const normalizedProjectName = String(projectName ?? '').trim();
+  if (!normalizedProjectName) {
+    return '';
+  }
+  return `https://${normalizedProjectName}.pages.dev`;
+}
+
+function buildDeployDraft(deploy = {}) {
+  const draft = structuredClone(deploy);
+  const derivedUrl = derivePagesProjectUrl(draft.project_name);
+  if (!draft.pages_project_url && derivedUrl) {
+    draft.pages_project_url = derivedUrl;
+  }
+  draft.__autoLinkedPagesProjectUrl = draft.pages_project_url === derivePagesProjectUrl(draft.project_name);
+  return draft;
+}
+
+function sanitizeDeployDraft(draft = {}) {
+  const sanitizedDraft = structuredClone(draft);
+  delete sanitizedDraft.__autoLinkedPagesProjectUrl;
+  return sanitizedDraft;
+}
+
+function handleDeployDrawerInput(path, value, target) {
+  if (state.settingsDrawer?.section !== 'deploy' || !state.settingsDrawer.draft) {
+    setDrawerPath(path, value);
+    return;
+  }
+
+  const normalizedPath = normalizeDrawerPath('deploy', path);
+  if (normalizedPath === 'project_name') {
+    state.settingsDrawer.draft.project_name = value;
+    if (state.settingsDrawer.draft.__autoLinkedPagesProjectUrl) {
+      const derivedUrl = derivePagesProjectUrl(value);
+      state.settingsDrawer.draft.pages_project_url = derivedUrl;
+      const pagesUrlInput = document.querySelector('[data-drawer-path="deploy.pages_project_url"]');
+      if (pagesUrlInput && pagesUrlInput !== target) {
+        pagesUrlInput.value = derivedUrl;
+      }
+    }
+    return;
+  }
+
+  if (normalizedPath === 'pages_project_url') {
+    state.settingsDrawer.draft.pages_project_url = value;
+    state.settingsDrawer.draft.__autoLinkedPagesProjectUrl =
+      value === derivePagesProjectUrl(state.settingsDrawer.draft.project_name);
+    return;
+  }
+
+  setDrawerPath(path, value);
 }
 
 function resolveDrawerSourceDraft() {
@@ -700,7 +759,7 @@ function buildSettingsDraft(section) {
   if (section === 'sources') return buildSourceIterationDraft(state.profile.sources);
   if (section === 'speed_test') return structuredClone(state.profile.speed_test);
   if (section === 'availability_targets') return buildAvailabilityTargetDraft(state.profile.availability_targets);
-  if (section === 'deploy') return structuredClone(state.profile.deploy);
+  if (section === 'deploy') return buildDeployDraft(state.profile.deploy);
   if (section === 'paths') return structuredClone(state.profile.paths);
   if (section === 'about') return { version: getMessages(state.language).sidebarVersion };
   return null;
@@ -732,6 +791,16 @@ async function saveSettingsDrawer() {
   }
   if (section !== 'about') {
     await saveProfile({ silent: true });
+    if (section === 'deploy') {
+      showToast({
+        tone: 'success',
+        message: `部署配置已保存：${state.profile.deploy.project_name} · ${state.profile.deploy.pages_project_url}`,
+        durationMs: 3200
+      });
+      appendLog(
+        `[settings] deploy saved project=${state.profile.deploy.project_name} url=${state.profile.deploy.pages_project_url}`
+      );
+    }
     return;
   }
   renderAll();
@@ -759,6 +828,9 @@ function resolveSettingsDraftPayload(section, draft) {
   }
   if (section === 'availability_targets') {
     return applyAvailabilityTargetDraft(draft);
+  }
+  if (section === 'deploy') {
+    return sanitizeDeployDraft(draft);
   }
   return structuredClone(draft);
 }
@@ -1003,6 +1075,7 @@ function handlePipelineEvent(event) {
     state.counts = normalizeCounts(event.counts ?? {});
     state.sourceCounts = normalizeSourceCounts(event.source_counts ?? state.sourceCounts);
     state.retryContext = event.retry_context ?? state.retryContext ?? {};
+    state.deployment = event.deployment ?? state.deployment ?? {};
     state.artifactDir = event.artifact_dir ?? '';
     state.selectedRetryArtifactDir = state.artifactDir || state.selectedRetryArtifactDir;
     touchUpdate();
@@ -1104,6 +1177,7 @@ async function hydrateArtifactPreview() {
     state.outputFiles = result.outputFiles ?? [];
     state.nodeRows = result.nodeRows ?? [];
     state.retryContext = result.retry_context ?? state.retryContext ?? {};
+    state.deployment = result.deployment ?? state.deployment ?? {};
     renderAll();
   }
 }
@@ -1124,6 +1198,7 @@ async function hydrateLatestArtifact() {
     state.outputFiles = result.outputFiles ?? [];
     state.nodeRows = result.nodeRows ?? [];
     state.retryContext = result.retry_context ?? {};
+    state.deployment = result.deployment ?? {};
     state.runResult = result.run_status === 'success' ? 'success' : state.runResult;
     if (result.stage_status) {
       state.stageStatus = result.stage_status;

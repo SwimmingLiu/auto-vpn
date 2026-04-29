@@ -11,7 +11,7 @@ from vpn_automation.config.models import (
 from vpn_automation.config.store import ProfileStore, resolve_profile_path
 
 
-def make_profile(project_name: str = "vms-nodes", source_url: str = "https://a.example") -> AppProfile:
+def make_profile(project_name: str = "sub-nodes", source_url: str = "https://a.example") -> AppProfile:
     return AppProfile(
         sources={
             "leiting": SourceConfig(url=source_url, key="k1", enabled=True),
@@ -43,7 +43,7 @@ def test_profile_store_round_trip(tmp_path: Path) -> None:
     assert loaded.sources["leiting"].url == "https://a.example"
     assert loaded.sources["leiting"].area_min == 8
     assert loaded.sources["leiting"].area_max == 64
-    assert loaded.deploy.project_name == "vms-nodes"
+    assert loaded.deploy.project_name == "sub-nodes"
     assert "[sources.leiting]" in payload
     assert "area_min = 8" in payload
     assert "area_max = 64" in payload
@@ -59,7 +59,7 @@ def test_profile_store_load_or_create_returns_default_profile(tmp_path: Path) ->
     assert "workspace" not in profile.to_dict()
     assert store.path.name == "profile.toml"
     assert profile.sources["leiting"].enabled is True
-    assert profile.deploy.project_name == "vms-nodes"
+    assert profile.deploy.project_name == "sub-nodes"
     assert store.path.exists()
 
 
@@ -69,9 +69,12 @@ def test_create_default_profile_starts_with_editable_defaults(tmp_path: Path) ->
     assert profile.sources["leiting"].url == ""
     assert profile.sources["leiting"].key == ""
     assert all(source.max_iterations == 5000 for source in profile.sources.values())
-    assert profile.deploy.project_name == "vms-nodes"
+    assert profile.deploy.project_name == "sub-nodes"
     assert profile.deploy.subscription_url == "https://swimmingliu.xyz/179ba8dd-3854-4747-b853-fc1868ef3937"
     assert len(profile.speed_test.urls) == 3
+    assert profile.worker_build.environment_name == "production"
+    assert profile.worker_build.entry_filename == "_worker.js"
+    assert profile.worker_build.modules_subdir == "modules"
 
 
 def test_default_profile_has_editable_ai_availability_targets(tmp_path: Path) -> None:
@@ -207,7 +210,24 @@ def test_profile_store_migrates_legacy_pages_defaults(tmp_path: Path) -> None:
     profile = ProfileStore(runtime_profile).load_or_create(project_root)
     persisted = ProfileStore(runtime_profile).load()
 
-    assert profile.deploy.project_name == "vms-nodes"
-    assert profile.deploy.pages_project_url == "https://vms-nodes.pages.dev"
-    assert persisted.deploy.project_name == "vms-nodes"
-    assert persisted.deploy.pages_project_url == "https://vms-nodes.pages.dev"
+    assert profile.deploy.project_name == "sub-nodes"
+    assert profile.deploy.pages_project_url == "https://sub-nodes.pages.dev"
+    assert persisted.deploy.project_name == "sub-nodes"
+    assert persisted.deploy.pages_project_url == "https://sub-nodes.pages.dev"
+
+
+def test_profile_store_migrates_previous_pages_defaults(tmp_path: Path) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    runtime_profile = project_root / "state" / "profile.toml"
+    runtime_profile.parent.mkdir(parents=True, exist_ok=True)
+    previous_profile = make_profile(project_name="vms-nodes", source_url="https://legacy.example")
+    previous_profile.deploy.pages_project_url = "https://vms-nodes.pages.dev"
+    ProfileStore(runtime_profile).save(previous_profile)
+
+    profile = ProfileStore(runtime_profile).load_or_create(project_root)
+    persisted = ProfileStore(runtime_profile).load()
+
+    assert profile.deploy.project_name == "sub-nodes"
+    assert profile.deploy.pages_project_url == "https://sub-nodes.pages.dev"
+    assert persisted.deploy.project_name == "sub-nodes"
+    assert persisted.deploy.pages_project_url == "https://sub-nodes.pages.dev"

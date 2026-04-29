@@ -30,6 +30,7 @@ from vpn_automation.pipeline.speedtest import (
     test_vmess_link,
 )
 from vpn_automation.pipeline.vmess import parse_vmess_link
+from vpn_automation.pipeline.worker_build import build_worker_artifacts
 
 
 RETRYABLE_STAGES = (
@@ -80,7 +81,7 @@ def _build_artifact_retry_item(artifact_dir: Path) -> dict[str, Any]:
         retryable_stages.append("render")
     if (artifact_dir / "vmess_node.js").exists():
         retryable_stages.append("obfuscate")
-    if (artifact_dir / "vmess_node_worker.js").exists():
+    if (artifact_dir / "_worker.js").exists():
         retryable_stages.append("deploy")
     if stage_status.get("deploy") == "success":
         retryable_stages.append("verify")
@@ -178,7 +179,7 @@ def _seed_retry_artifact(
     if stage_name in {"obfuscate", "deploy", "verify"}:
         _copy_if_exists(source_artifact_dir / "vmess_node.js", retry_artifact_dir / "vmess_node.js")
     if stage_name in {"deploy", "verify"}:
-        _copy_if_exists(source_artifact_dir / "vmess_node_worker.js", retry_artifact_dir / "vmess_node_worker.js")
+        _copy_if_exists(source_artifact_dir / "_worker.js", retry_artifact_dir / "_worker.js")
     if stage_name == "verify":
         _copy_if_exists(source_artifact_dir / "pages_bundle" / "_worker.js", retry_artifact_dir / "pages_bundle" / "_worker.js")
 
@@ -432,7 +433,7 @@ def _retry_from_deploy(
 ) -> PipelineSummary:
     run_store = RunStore(retry_artifact_dir / "run.db")
     _seed_completed_stage_status(summary, run_store, "deploy")
-    obfuscated_path = retry_artifact_dir / "vmess_node_worker.js"
+    obfuscated_path = retry_artifact_dir / "_worker.js"
     if not obfuscated_path.exists():
         raise RuntimeError("No obfuscated worker available to retry deploy")
     return _continue_after_obfuscated_script(
@@ -615,12 +616,12 @@ def _continue_after_rendered_script(
     start_at: str = "render",
 ) -> PipelineSummary:
     set_stage("obfuscate", "running")
-    obfuscated_path = retry_artifact_dir / "vmess_node_worker.js"
+    obfuscated_path = retry_artifact_dir / "_worker.js"
     controller.obfuscator(rendered_path, obfuscated_path)
     if not obfuscated_path.exists():
         set_stage("obfuscate", "failed")
         summary.run_status = "failed"
-        summary.error = "RuntimeError: vmess_node_worker.js was not created by the obfuscation step"
+        summary.error = "RuntimeError: _worker.js was not created by the obfuscation step"
         controller._write_pipeline_report(retry_artifact_dir, summary)
         return summary
     set_stage("obfuscate", "success")
@@ -654,6 +655,10 @@ def _continue_after_obfuscated_script(
 ) -> PipelineSummary:
     set_stage("deploy", "running")
     bundle_dir = build_pages_bundle(obfuscated_path.read_text(encoding="utf-8"), retry_artifact_dir / "pages_bundle")
+    log(
+        f"[deploy] project={profile.deploy.project_name} "
+        f"bundle={bundle_dir} url={profile.deploy.pages_project_url}"
+    )
     deployment = controller.deployer(bundle_dir, profile.deploy, api_token)
     summary.deployment = deployment
     if deployment.get("returncode", 1) != 0:
@@ -662,6 +667,10 @@ def _continue_after_obfuscated_script(
         summary.error = f"RuntimeError: Cloudflare deployment failed: {deployment}"
         controller._write_pipeline_report(retry_artifact_dir, summary)
         return summary
+    log(
+        f"[deploy] returncode={deployment.get('returncode')} "
+        f"attempts={','.join(item['mode'] for item in deployment.get('attempts', []))}"
+    )
     set_stage("deploy", "success")
     return _run_verify_only(
         controller,
@@ -1236,20 +1245,41 @@ def continue_pipeline_session(
 
     set_stage("obfuscate", "running")
     controller._write_pipeline_report(artifact_dir, summary)
-    obfuscated_path = artifact_dir / "vmess_node_worker.js"
-    controller.obfuscator(rendered_path, obfuscated_path)
+    build_artifacts = build_worker_artifacts(
+        rendered_path.read_text(encoding="utf-8"),
+        profile.worker_build,
+        profile.deploy.secret_query,
+    )
+    transformed_path = artifact_dir / "worker_transformed.js"
+    transformed_path.write_text(build_artifacts.transformed_source, encoding="utf-8")
+    obfuscated_path = artifact_dir / profile.worker_build.entry_filename
+    controller.obfuscator(transformed_path, obfuscated_path)
     if not obfuscated_path.exists():
-        raise RuntimeError("vmess_node_worker.js was not created by the obfuscation step")
+        raise RuntimeError("_worker.js was not created by the obfuscation step")
+    summary.counts["worker_modules"] = len(build_artifacts.modules)
     set_stage("obfuscate", "success")
     controller._write_pipeline_report(artifact_dir, summary)
 
     set_stage("deploy", "running")
     controller._write_pipeline_report(artifact_dir, summary)
-    bundle_dir = build_pages_bundle(obfuscated_path.read_text(encoding="utf-8"), artifact_dir / "pages_bundle")
+    bundle_dir = build_pages_bundle(
+        obfuscated_path.read_text(encoding="utf-8"),
+        artifact_dir / profile.worker_build.bundle_subdir,
+        build_artifacts,
+        profile.worker_build,
+    )
+    log(
+        f"[deploy] project={profile.deploy.project_name} "
+        f"bundle={bundle_dir} url={profile.deploy.pages_project_url}"
+    )
     deployment = controller.deployer(bundle_dir, profile.deploy, api_token)
     summary.deployment = deployment
     if deployment.get("returncode", 1) != 0:
         raise RuntimeError(f"Cloudflare deployment failed: {deployment}")
+    log(
+        f"[deploy] returncode={deployment.get('returncode')} "
+        f"attempts={','.join(item['mode'] for item in deployment.get('attempts', []))}"
+    )
     set_stage("deploy", "success")
     controller._write_pipeline_report(artifact_dir, summary)
 

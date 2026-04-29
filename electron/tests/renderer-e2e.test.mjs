@@ -43,8 +43,8 @@ test('renderer hydrates the latest artifact on startup when backend has results'
           availability_targets: {},
           speed_test: { min_download_mb_s: 1, timeout_seconds: 20, concurrency: 3 },
           deploy: {
-            project_name: 'vpn-auto',
-            pages_project_url: 'https://vpn-auto.pages.dev',
+            project_name: 'sub-nodes',
+            pages_project_url: 'https://sub-nodes.pages.dev',
             subscription_url: 'https://vpn.example.top/sub'
           },
           paths: { project_root: '/Users/user/vpn-sub', artifacts_root: '/Users/user/vpn-sub/artifacts' }
@@ -187,8 +187,8 @@ test('renderer matches the six-page canvas redesign and supports page navigation
             }
           },
           deploy: {
-            project_name: 'vpn-auto',
-            pages_project_url: 'https://vpn-auto.pages.dev',
+            project_name: 'sub-nodes',
+            pages_project_url: 'https://sub-nodes.pages.dev',
             subscription_url: 'https://vpn.example.top/179ba8dd-3854-4747-b853-fc1868ef3937'
           },
           paths: {
@@ -408,10 +408,10 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     assert.match(settingsText, /数据源配置/);
     assert.match(settingsText, /测速配置/);
     assert.match(settingsText, /AI可达性检测/);
+    assert.match(settingsText, /部署配置/);
     assert.match(settingsText, /弹窗/);
     assert.doesNotMatch(settingsText, /右侧抽屉|顶部统一保存/);
-    assert.doesNotMatch(settingsText, /部署配置/);
-    assert.equal(await page.locator('.settings-overview-card').count(), 3);
+    assert.equal(await page.locator('.settings-overview-card').count(), 4);
     assert.equal(await page.locator('.settings-source-table').count(), 0);
     assert.equal(await page.locator('#pageActions [data-action="save-profile"]').count(), 0);
 
@@ -474,6 +474,42 @@ test('renderer matches the six-page canvas redesign and supports page navigation
         negative_phrases: ['blocked']
       }
     );
+
+    await page.locator('[data-settings-card="deploy"]').click();
+    await page.waitForSelector('#settingsDrawer[data-open="true"]');
+    assert.match(await page.locator('#settingsDrawerTitle').innerText(), /部署配置/);
+    assert.equal(
+      await page.locator('[data-drawer-path="deploy.project_name"]').inputValue(),
+      'sub-nodes'
+    );
+    assert.equal(
+      await page.locator('[data-drawer-path="deploy.pages_project_url"]').inputValue(),
+      'https://sub-nodes.pages.dev'
+    );
+    await page.locator('[data-drawer-path="deploy.project_name"]').fill('custom-pages');
+    assert.equal(
+      await page.locator('[data-drawer-path="deploy.pages_project_url"]').inputValue(),
+      'https://custom-pages.pages.dev'
+    );
+    await page.locator('[data-drawer-path="deploy.pages_project_url"]').fill('https://mirror.example.dev');
+    await page.locator('[data-drawer-path="deploy.project_name"]').fill('custom-pages-2');
+    assert.equal(
+      await page.locator('[data-drawer-path="deploy.pages_project_url"]').inputValue(),
+      'https://mirror.example.dev'
+    );
+    await page.locator('[data-drawer-save="save"]').click();
+    await page.waitForSelector('#settingsDrawer[data-open="false"]');
+    assert.deepEqual(
+      await page.evaluate(() => window.__savedProfiles.at(-1).deploy),
+      {
+        project_name: 'custom-pages-2',
+        pages_project_url: 'https://mirror.example.dev',
+        subscription_url: 'https://vpn.example.top/179ba8dd-3854-4747-b853-fc1868ef3937'
+      }
+    );
+    await page.locator('#navSubscriptions').click();
+    await page.waitForSelector('#subscriptionCards');
+    assert.match(await page.locator('.qr-image').getAttribute('src') ?? '', /^data:image\//);
 
     await page.locator('#navRuns').click();
     await page.waitForSelector('#runsWorkspace');
@@ -539,6 +575,56 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     const scrollWidth = await page.evaluate(() => document.documentElement.scrollWidth);
     const innerWidth = await page.evaluate(() => window.innerWidth);
     assert.ok(scrollWidth <= innerWidth + 2);
+  } finally {
+    await browser.close();
+    await server.close();
+  }
+});
+
+test('renderer shows deploy save toast with project and url details', async () => {
+  const server = await startStaticServer(path.join(__dirname, '..', 'renderer'));
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
+
+    await page.addInitScript(() => {
+      window.__savedProfiles = [];
+      window.vpnAutomation = {
+        loadProfile: async () => ({
+          sources: {
+            leiting: { url: 'https://capture.example/api', key: 'demo', enabled: true, max_iterations: 40 }
+          },
+          speed_test: { min_download_mb_s: 1, timeout_seconds: 20, concurrency: 3 },
+          availability_targets: {},
+          deploy: {
+            project_name: 'sub-nodes',
+            pages_project_url: 'https://sub-nodes.pages.dev',
+            subscription_url: 'https://vpn.example.top/sub'
+          },
+          paths: { project_root: '/Users/user/vpn-sub', artifacts_root: '/Users/user/vpn-sub/artifacts' }
+        }),
+        saveProfile: async (payload) => {
+          window.__savedProfiles.push(structuredClone(payload));
+          return { ok: true };
+        },
+        latestArtifact: async () => ({ ok: false, artifact_dir: '' }),
+        artifactList: async () => ({ ok: true, items: [] }),
+        generateQr: async () => ({ ok: true, dataUrl: 'data:image/mock;base64,toast' }),
+        onPipelineEvent: () => () => {}
+      };
+    });
+
+    await page.goto(`${server.origin}/index.html`);
+    await page.locator('#navSettings').click();
+    await page.locator('[data-settings-card="deploy"]').click();
+    await page.waitForSelector('#settingsDrawer');
+    await page.locator('[data-drawer-path="deploy.project_name"]').fill('review-sub-nodes');
+    await page.locator('[data-drawer-save="save"]').click();
+    await page.waitForSelector('[data-toast]');
+
+    const toastText = await page.locator('[data-toast]').innerText();
+    assert.match(toastText, /review-sub-nodes/);
+    assert.match(toastText, /https:\/\/review-sub-nodes\.pages\.dev/);
   } finally {
     await browser.close();
     await server.close();
