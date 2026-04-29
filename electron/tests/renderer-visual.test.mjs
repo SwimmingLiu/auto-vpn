@@ -14,10 +14,10 @@ const __dirname = path.dirname(__filename);
 const EXPECTED_DIGESTS = {
   dashboard: 'd6ae44e5597fac7b868a50b37455eb68548ac1e8943c5df780980fb43a1bc661',
   runs: '4618b9ed64072251b9015f768bcff9490d71773d1025db6b7779b3df7e988ed4',
-  results: 'cb2c5208c1240b4893822fe0559985351cd1f4ff690997521fbe61de4e3fd461',
+  results: 'bb8e09c9aafa0725ffb8eb50742904b69290f3ed373d101fa3fad80df535ab4c',
   subscriptions: 'dff9ceed2dd4d2a32b15747e7f552081b478d1233a4b65f19bd1a1c1214d8996',
   logs: '60ddf9af654b35e995d1beaffe907a746adb4833ffed0d318117e7760f2b51fb',
-  settings: 'beecf995b4007c392746889584f595c52c1bac25bb5179fbf8cd57b13ac14bc5'
+  settings: '3076b4d7d2b9c38265a41b957f87529eb8da448cce65777946d8c15c386314e7'
 };
 
 const VISUAL_CASES = [

@@ -24,8 +24,8 @@ const FALLBACK_PROFILE = {
     concurrency: 3
   },
   deploy: {
-    project_name: 'vpn-auto',
-    pages_project_url: 'https://vpn-auto.pages.dev',
+    project_name: 'sub-nodes',
+    pages_project_url: 'https://sub-nodes.pages.dev',
     subscription_url: 'https://vpn.example.top/179ba8dd-3854-4747-b853-fc1868ef3937',
     account_id: '',
     token: ''
@@ -143,6 +143,12 @@ export function buildViewModel(state, messages, language) {
   const selectedRetryStage = retryStageOptions.includes(state.selectedRetryStage)
     ? state.selectedRetryStage
     : retryStageOptions[0] ?? '';
+  const deployment = {
+    project_name: state.deployment?.project_name ?? profile.deploy.project_name ?? '',
+    pages_project_url: state.deployment?.pages_project_url ?? profile.deploy.pages_project_url ?? '',
+    worker_entry: state.deployment?.worker_entry ?? (artifactDir ? `${artifactDir}/pages_bundle/_worker.js` : ''),
+    module_manifest_path: state.deployment?.module_manifest_path ?? (artifactDir ? `${artifactDir}/pages_bundle/manifest.json` : '')
+  };
 
   return {
     profile,
@@ -171,6 +177,7 @@ export function buildViewModel(state, messages, language) {
     rawSourceMetricRows: buildSourceMetricRows(profile, sourceCounts, 'raw_links'),
     dedupedSourceMetricRows: buildSourceMetricRows(profile, sourceCounts, 'deduped_links'),
     retryContext: state.retryContext ?? {},
+    deployment,
     retryArtifacts,
     selectedRetryArtifact,
     selectedRetryArtifactDir: selectedRetryArtifact?.artifact_dir ?? '',
@@ -457,6 +464,8 @@ export function buildRunsCurrentStageMarkup(vm) {
 }
 
 function buildResultsPage(vm, messages) {
+  const deployStage = vm.stageRows.find((row) => row.name === 'deploy');
+  const verifyStage = vm.stageRows.find((row) => row.name === 'verify');
   return `
     <div id="resultsWorkspace" class="page-grid results-grid">
       <article class="panel wide-panel artifact-card">
@@ -483,6 +492,18 @@ function buildResultsPage(vm, messages) {
           </div>
         </article>
       ` : ''}
+
+      <article class="panel wide-panel">
+        <div class="panel-headline"><h3>本次 deploy 目标</h3><span class="panel-subcopy">部署摘要</span></div>
+        <div class="key-value-list">
+          <div class="key-value-row"><span>项目名称</span><strong>${escapeHtml(vm.deployment.project_name || '—')}</strong></div>
+          <div class="key-value-row"><span>Pages 地址</span><strong class="mono">${escapeHtml(vm.deployment.pages_project_url || '—')}</strong></div>
+          <div class="key-value-row"><span>入口文件</span><strong class="mono">${escapeHtml(vm.deployment.worker_entry || '—')}</strong></div>
+          <div class="key-value-row"><span>Manifest</span><strong class="mono">${escapeHtml(vm.deployment.module_manifest_path || '—')}</strong></div>
+          <div class="key-value-row"><span>deploy 状态</span><strong>${escapeHtml(stageLabel(deployStage?.status || 'pending'))}</strong></div>
+          <div class="key-value-row"><span>verify 状态</span><strong>${escapeHtml(stageLabel(verifyStage?.status || 'pending'))}</strong></div>
+        </div>
+      </article>
 
       <article class="panel wide-panel">
         <div class="panel-headline"><h3>区域统计</h3><span class="panel-subcopy">按最终节点名称中的区域码统计</span></div>
@@ -601,6 +622,7 @@ function buildSettingsPage(vm, messages) {
           ${buildSettingsCard('sources', '数据源配置', `已启用 ${vm.sourceRows.filter((row) => row.enabled).length} / ${vm.sourceRows.length} 个来源`, '管理抓取地址、密钥和启用状态')}
           ${buildSettingsCard('speed_test', '测速配置', `最低 ${vm.profile.speed_test.min_download_mb_s} MB/s · 并发 ${vm.profile.speed_test.concurrency}`, '控制测速阈值、超时和并发')}
           ${buildSettingsCard('availability_targets', 'AI可达性检测', `已启用 ${enabledAvailabilityTargetCount(vm.profile.availability_targets)} / ${Object.keys(vm.profile.availability_targets ?? {}).length} 个网站`, '配置 Gemini、ChatGPT、Claude 或自定义网站')}
+          ${buildSettingsCard('deploy', '部署配置', `项目 ${vm.profile.deploy.project_name || '未设置'}`, '项目名变化会自动联动默认 Pages 地址；手动修改 URL 后，后续不再自动覆盖')}
         </div>
       </article>
 
@@ -651,7 +673,8 @@ function buildSettingsDrawer(vm) {
   const title = {
     sources: '数据源配置',
     speed_test: '测速配置',
-    availability_targets: 'AI可达性检测'
+    availability_targets: 'AI可达性检测',
+    deploy: '部署配置'
   }[section] ?? '设置';
 
   const style = vm.modalTransform ? `style="transform: ${escapeHtml(vm.modalTransform)};"` : '';
@@ -769,6 +792,19 @@ function buildSettingsDrawerBody(section, draft) {
             `).join('')}
           </tbody>
         </table>
+      </div>
+    `;
+  }
+
+  if (section === 'deploy') {
+    return `
+      <div class="notice-card">
+        <strong>部署配置说明</strong>
+        <p>项目名变化会自动联动默认 Pages 地址；手动修改 URL 后，后续不再自动覆盖。</p>
+      </div>
+      <div class="form-grid compact-form-grid">
+        ${renderDrawerField('项目名称', 'text', draft.project_name, 'deploy.project_name')}
+        ${renderDrawerField('Pages 地址', 'text', draft.pages_project_url, 'deploy.pages_project_url')}
       </div>
     `;
   }

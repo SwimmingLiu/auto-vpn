@@ -17,6 +17,7 @@ NETWORK_ERROR_MARKERS = (
     "econnreset",
     "etimedout",
 )
+PAGES_PRODUCTION_BRANCH = "main"
 
 
 def build_pages_deploy_command(bundle_dir: Path, project_name: str) -> list[str]:
@@ -28,6 +29,8 @@ def build_pages_deploy_command(bundle_dir: Path, project_name: str) -> list[str]
         str(bundle_dir),
         "--project-name",
         project_name,
+        "--branch",
+        PAGES_PRODUCTION_BRANCH,
     ]
 
 
@@ -169,4 +172,9 @@ def deploy_pages_bundle(bundle_dir: Path, deploy: DeployConfig, api_token: str) 
         "stdout": result.stdout,
         "stderr": result.stderr,
         "attempts": attempt_log,
+        "project_name": deploy.project_name,
+        "pages_project_url": deploy.pages_project_url,
+        "bundle_dir": str(bundle_dir),
+        "worker_entry": str(bundle_dir / "_worker.js"),
+        "module_manifest_path": str(bundle_dir / "manifest.json"),
     }

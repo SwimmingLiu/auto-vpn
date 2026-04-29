@@ -15,8 +15,10 @@ from vpn_automation.config.models import (
 
 LEGACY_PAGES_PROJECT_NAME = "vmessnodes"
 LEGACY_PAGES_PROJECT_URL = "https://vmess2clash.pages.dev"
-CURRENT_PAGES_PROJECT_NAME = "vms-nodes"
-CURRENT_PAGES_PROJECT_URL = "https://vms-nodes.pages.dev"
+PREVIOUS_PAGES_PROJECT_NAME = "vms-nodes"
+PREVIOUS_PAGES_PROJECT_URL = "https://vms-nodes.pages.dev"
+CURRENT_PAGES_PROJECT_NAME = "sub-nodes"
+CURRENT_PAGES_PROJECT_URL = "https://sub-nodes.pages.dev"
 
 
 def resolve_profile_path(project_root: Path) -> Path:
@@ -119,6 +121,22 @@ def _render_profile_toml(profile: AppProfile) -> str:
     doc.add("deploy", deploy_table)
     doc.add(nl())
 
+    worker_build_table = table()
+    worker_build_table.add("environment_name", profile.worker_build.environment_name)
+    worker_build_table.add("entry_filename", profile.worker_build.entry_filename)
+    worker_build_table.add("bundle_subdir", profile.worker_build.bundle_subdir)
+    worker_build_table.add("modules_subdir", profile.worker_build.modules_subdir)
+    worker_build_table.add("manifest_filename", profile.worker_build.manifest_filename)
+    worker_build_table.add("variable_prefix", profile.worker_build.variable_prefix)
+    worker_build_table.add("comment_template", profile.worker_build.comment_template)
+    worker_build_table.add("random_noise_min_length", profile.worker_build.random_noise_min_length)
+    worker_build_table.add("random_noise_max_length", profile.worker_build.random_noise_max_length)
+    worker_build_table.add("enable_keyword_fragmentation", profile.worker_build.enable_keyword_fragmentation)
+    worker_build_table.add("enable_identifier_randomization", profile.worker_build.enable_identifier_randomization)
+    worker_build_table.add("emit_sidecar_modules", profile.worker_build.emit_sidecar_modules)
+    doc.add("worker_build", worker_build_table)
+    doc.add(nl())
+
     filters_table = table()
     filters_table.add("excluded_country_codes", profile.filters.excluded_country_codes)
     filters_table.add("per_country_limit", profile.filters.per_country_limit)
@@ -151,8 +169,14 @@ def _is_blank_profile(profile: AppProfile) -> bool:
 
 def _migrate_legacy_deploy_defaults(profile: AppProfile) -> bool:
     if (
-        profile.deploy.project_name == LEGACY_PAGES_PROJECT_NAME
-        and profile.deploy.pages_project_url == LEGACY_PAGES_PROJECT_URL
+        (
+            profile.deploy.project_name == LEGACY_PAGES_PROJECT_NAME
+            and profile.deploy.pages_project_url == LEGACY_PAGES_PROJECT_URL
+        )
+        or (
+            profile.deploy.project_name == PREVIOUS_PAGES_PROJECT_NAME
+            and profile.deploy.pages_project_url == PREVIOUS_PAGES_PROJECT_URL
+        )
     ):
         profile.deploy.project_name = CURRENT_PAGES_PROJECT_NAME
         profile.deploy.pages_project_url = CURRENT_PAGES_PROJECT_URL

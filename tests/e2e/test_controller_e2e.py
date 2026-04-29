@@ -66,6 +66,8 @@ def test_pipeline_controller_runs_end_to_end_with_fake_services(tmp_path: Path) 
     assert (Path(summary.artifact_dir) / "vpn_node_raw.txt").exists()
     assert (Path(summary.artifact_dir) / "vpn_api.runtime.json").exists()
     assert (Path(summary.artifact_dir) / "pages_bundle" / "_worker.js").exists()
+    assert (Path(summary.artifact_dir) / "pages_bundle" / "modules" / "guard.js").exists()
+    assert (Path(summary.artifact_dir) / "pages_bundle" / "manifest.json").exists()
     assert run_db.exists()
     assert summary.source_counts["leiting"]["raw_links"] == 2
 
