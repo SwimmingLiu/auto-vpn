@@ -29,7 +29,7 @@ def test_ensure_profile_json_bootstraps_missing_profile(tmp_path: Path) -> None:
     project_root = tmp_path / "vpn-subscription-automation"
     profile_json = ensure_profile_json(project_root)
     payload = json.loads(profile_json)
-    assert payload["deploy"]["project_name"] == "vms-nodes"
+    assert payload["deploy"]["project_name"] == "sub-nodes"
     assert "workspace" not in payload
 
 
@@ -144,7 +144,7 @@ def test_artifact_list_json_reports_retryable_stages_and_retry_context(tmp_path:
     (artifact_dir / "vpn_node_availability.txt").write_text(f"{vmess_link}\n", encoding="utf-8")
     (artifact_dir / "vpn_node_emoji.txt").write_text("US demo\n", encoding="utf-8")
     (artifact_dir / "vmess_node.js").write_text("rendered", encoding="utf-8")
-    (artifact_dir / "vmess_node_worker.js").write_text("obfuscated", encoding="utf-8")
+    (artifact_dir / "_worker.js").write_text("obfuscated", encoding="utf-8")
     (artifact_dir / "pipeline_report.json").write_text(
         json.dumps(
             {

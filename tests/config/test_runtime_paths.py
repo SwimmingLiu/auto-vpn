@@ -25,8 +25,8 @@ def test_create_default_profile_omits_workspace_and_keeps_defaults(tmp_path: Pat
     profile = create_default_profile(project_root)
 
     assert "workspace" not in profile.to_dict()
-    assert profile.deploy.project_name == "vms-nodes"
-    assert profile.deploy.pages_project_url == "https://vms-nodes.pages.dev"
+    assert profile.deploy.project_name == "sub-nodes"
+    assert profile.deploy.pages_project_url == "https://sub-nodes.pages.dev"
     assert profile.deploy.subscription_url == "https://swimmingliu.xyz/179ba8dd-3854-4747-b853-fc1868ef3937"
     assert profile.sources["leiting"].enabled is True
 
@@ -80,7 +80,7 @@ def test_profile_store_loads_canonical_source_names_from_profile_toml(tmp_path: 
             "startup_wait_seconds = 1.0\n"
             "max_download_candidates = 0\n\n"
             "[deploy]\n"
-            'project_name = "vms-nodes"\n'
+            'project_name = "sub-nodes"\n'
             'subscription_url = "https://example.com/sub"\n'
         ),
         encoding="utf-8",
