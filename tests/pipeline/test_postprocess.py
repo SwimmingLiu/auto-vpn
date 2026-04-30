@@ -4,11 +4,13 @@ import requests
 
 from vpn_automation.config.models import FilterConfig
 from vpn_automation.pipeline.postprocess import (
+    decorate_link_with_country,
     decorate_node_name,
     lookup_country_code,
     select_links_by_country_limit,
 )
 from vpn_automation.pipeline.speedtest import SpeedTestResult
+from vpn_automation.pipeline.vmess import generate_vmess_link, parse_vmess_link
 
 
 def test_decorate_node_name_prefixes_emoji_and_country() -> None:
@@ -80,7 +82,7 @@ def test_lookup_country_code_uses_secondary_service_after_primary_rate_limit(mon
     assert sleep_calls == [0.5, 1.0, 2.0]
 
 
-def test_lookup_country_code_returns_zz_when_both_geoip_services_fail(monkeypatch) -> None:
+def test_lookup_country_code_returns_us_when_both_geoip_services_fail(monkeypatch) -> None:
     primary_calls: list[str] = []
     secondary_calls: list[str] = []
     sleep_calls: list[float] = []
@@ -124,7 +126,31 @@ def test_lookup_country_code_returns_zz_when_both_geoip_services_fail(monkeypatc
     monkeypatch.setattr("vpn_automation.pipeline.postprocess.requests.Session", FakeSession)
     monkeypatch.setattr("vpn_automation.pipeline.postprocess.time.sleep", sleep_calls.append)
 
-    assert lookup_country_code("23.224.112.135") == "ZZ"
+    assert lookup_country_code("23.224.112.135") == "US"
     assert primary_calls == ["https://ipwho.is/23.224.112.135"] * 4
     assert secondary_calls == ["https://ipapi.co/23.224.112.135/json/"]
     assert sleep_calls == [0.5, 1.0, 2.0]
+
+
+def test_decorate_link_with_country_normalizes_invalid_codes_to_us() -> None:
+    link = generate_vmess_link(
+        {
+            "v": "2",
+            "ps": "sample-node",
+            "add": "1.1.1.1",
+            "port": "443",
+            "id": "418048af-a293-4b99-9b0c-98ca3580dd24",
+            "aid": "0",
+            "scy": "none",
+            "net": "ws",
+            "type": "dtls",
+            "host": "www.example.com",
+            "path": "/path/demo",
+            "tls": "tls",
+            "sni": "www.example.com",
+        }
+    )
+
+    updated = decorate_link_with_country(link, "ZZ")
+
+    assert parse_vmess_link(updated)["ps"] == "🇺🇸 US sample-node"

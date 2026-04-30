@@ -35,6 +35,7 @@ def test_profile_store_round_trip(tmp_path: Path) -> None:
     profile = make_profile()
     profile.sources["leiting"].area_min = 8
     profile.sources["leiting"].area_max = 64
+    profile.deploy.verify_subscription_url = "https://verify.example/sub"
     store.save(profile)
 
     loaded = store.load()
@@ -44,6 +45,7 @@ def test_profile_store_round_trip(tmp_path: Path) -> None:
     assert loaded.sources["leiting"].area_min == 8
     assert loaded.sources["leiting"].area_max == 64
     assert loaded.deploy.project_name == "sub-nodes"
+    assert loaded.deploy.verify_subscription_url == "https://verify.example/sub"
     assert "[sources.leiting]" in payload
     assert "area_min = 8" in payload
     assert "area_max = 64" in payload
@@ -71,6 +73,10 @@ def test_create_default_profile_starts_with_editable_defaults(tmp_path: Path) ->
     assert all(source.max_iterations == 5000 for source in profile.sources.values())
     assert profile.deploy.project_name == "sub-nodes"
     assert profile.deploy.subscription_url == "https://swimmingliu.xyz/179ba8dd-3854-4747-b853-fc1868ef3937"
+    assert (
+        profile.deploy.verify_subscription_url
+        == "https://www.swimmingliu.xyz/sub?token=8410fb43eb2176497f5beafc0c39f5bc"
+    )
     assert len(profile.speed_test.urls) == 3
     assert profile.worker_build.environment_name == "production"
     assert profile.worker_build.entry_filename == "_worker.js"

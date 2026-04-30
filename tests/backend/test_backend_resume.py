@@ -1,9 +1,11 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from vpn_automation.backend_resume import retry_pipeline_from_stage
+from vpn_automation.backend_resume import _default_verify, retry_pipeline_from_stage
+from vpn_automation.integrations.cloudflare import build_secret_url
 from vpn_automation.pipeline.run_store import RunStore
 
 
@@ -64,3 +66,30 @@ def test_retry_pipeline_marks_stage_failed_in_report_when_retry_stage_raises(
     assert report["stage_status"]["render"] == "failed"
     assert report["run_status"] == "failed"
     assert report["error"] == "RuntimeError: render boom"
+
+
+def test_backend_resume_default_verify_falls_back_to_subscription_url_when_verify_url_is_blank(monkeypatch) -> None:
+    seen_urls: list[str] = []
+
+    class FakeClient:
+        def __init__(self, api_token: str, account_id: str) -> None:
+            assert api_token == "token"
+            assert account_id == "account-id"
+
+        def verify_url(self, url: str, expected_fragment: str = "") -> bool:
+            seen_urls.append(url)
+            return True
+
+    monkeypatch.setattr("vpn_automation.backend_resume.CloudflareClient", FakeClient)
+    deploy = SimpleNamespace(
+        account_id="account-id",
+        secret_query="serect_key=swimmingliu",
+        pages_project_url="https://sub-nodes.pages.dev",
+        subscription_url="https://display.example/sub",
+        verify_subscription_url="",
+    )
+
+    result = _default_verify(deploy, "token")
+
+    assert result == {"secret_ok": True, "subscription_ok": True}
+    assert seen_urls == [build_secret_url(deploy), "https://display.example/sub"]

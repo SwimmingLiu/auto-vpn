@@ -48,13 +48,15 @@ EMOJI_MAP = {
 }
 
 UNKNOWN_COUNTRY_CODE = "ZZ"
+FALLBACK_COUNTRY_CODE = "US"
 PRIMARY_GEOIP_RETRY_DELAYS = (0.5, 1.0, 2.0)
 PRIMARY_GEOIP_COOLDOWN_SECONDS = 300.0
 _PRIMARY_GEOIP_BLOCKED_UNTIL = 0.0
 
 
 def country_to_emoji(country_code: str) -> str:
-    return EMOJI_MAP.get(country_code.upper(), "🏳️")
+    normalized = normalize_country_code(country_code)
+    return EMOJI_MAP.get(normalized, EMOJI_MAP[FALLBACK_COUNTRY_CODE])
 
 
 def decorate_node_name(original_name: str, country_code: str, emoji: str) -> str:
@@ -63,7 +65,12 @@ def decorate_node_name(original_name: str, country_code: str, emoji: str) -> str
 
 def decorate_link_with_country(link: str, country_code: str) -> str:
     payload = parse_vmess_link(link)
-    payload["ps"] = decorate_node_name(str(payload.get("ps", "")), country_code, country_to_emoji(country_code))
+    normalized_country = normalize_country_code(country_code)
+    payload["ps"] = decorate_node_name(
+        str(payload.get("ps", "")),
+        normalized_country,
+        country_to_emoji(normalized_country),
+    )
     return generate_vmess_link(payload)
 
 
@@ -77,14 +84,14 @@ def resolve_host_to_ip(host: str) -> str:
 
 def normalize_country_code(country_code: str) -> str:
     normalized = str(country_code or "").strip().upper()
-    if len(normalized) != 2 or not normalized.isalpha():
-        return UNKNOWN_COUNTRY_CODE
+    if len(normalized) != 2 or not normalized.isalpha() or normalized == UNKNOWN_COUNTRY_CODE:
+        return FALLBACK_COUNTRY_CODE
     return normalized
 
 
 def _require_country_code(country_code: str) -> str:
-    normalized = normalize_country_code(country_code)
-    if normalized == UNKNOWN_COUNTRY_CODE:
+    normalized = str(country_code or "").strip().upper()
+    if len(normalized) != 2 or not normalized.isalpha() or normalized == UNKNOWN_COUNTRY_CODE:
         raise ValueError("geoip response did not contain a valid country code")
     return normalized
 
@@ -162,7 +169,7 @@ def lookup_country_code(host: str) -> str:
     try:
         ip = resolve_host_to_ip(host)
     except OSError:
-        return UNKNOWN_COUNTRY_CODE
+        return FALLBACK_COUNTRY_CODE
     if not _primary_geoip_is_blocked():
         try:
             return _lookup_country_code_with_primary_retry(ip)
@@ -171,7 +178,7 @@ def lookup_country_code(host: str) -> str:
     try:
         return _lookup_country_code_from_ipapi(ip)
     except (ValueError, requests.RequestException):
-        return UNKNOWN_COUNTRY_CODE
+        return FALLBACK_COUNTRY_CODE
 
 
 def select_links_by_country_limit(
@@ -183,12 +190,13 @@ def select_links_by_country_limit(
     selected: list[str] = []
 
     for link, _result, country_code in ranked_links:
-        if country_code in filters.excluded_country_codes:
+        normalized_country = normalize_country_code(country_code)
+        if normalized_country in filters.excluded_country_codes:
             continue
-        if country_code in limits:
-            current = counters.get(country_code, 0)
-            if current >= limits[country_code]:
+        if normalized_country in limits:
+            current = counters.get(normalized_country, 0)
+            if current >= limits[normalized_country]:
                 continue
-            counters[country_code] = current + 1
+            counters[normalized_country] = current + 1
         selected.append(link)
     return selected

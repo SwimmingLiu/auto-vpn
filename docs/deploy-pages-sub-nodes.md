@@ -37,10 +37,12 @@
 
 ## 2. 设置页 deploy 配置规则
 
-设置页 deploy 抽屉当前只允许编辑：
+设置页 deploy 抽屉当前允许编辑：
 
 - `project_name`
 - `pages_project_url`
+- `subscription_url`
+- `verify_subscription_url`
 
 联动规则：
 
@@ -53,8 +55,15 @@
    - 不再覆盖手动值
 4. 保存 deploy 抽屉时：
    - 变更会写回 profile
-   - 同时刷新二维码使用的订阅 URL 派生结果，但不改变已有 `subscription_url`
+   - 修改 `subscription_url` 时会刷新二维码使用的订阅 URL 派生结果
+   - 修改 `verify_subscription_url` 时只影响 verify 阶段，不影响二维码展示
    - 保存成功 toast 会显式显示当前 `project_name` 与 `pages_project_url`
+
+默认 verify 地址：
+
+- `https://www.swimmingliu.xyz/sub?token=8410fb43eb2176497f5beafc0c39f5bc`
+
+如果 `verify_subscription_url` 为空，运行时会退回使用 `subscription_url`。
 
 ## 2.1 Worker build 配置规则
 
@@ -124,7 +133,8 @@
   - 继续以 `_worker.js` 作为部署入口
   - 同时额外输出 `modules/*.js` 与 `manifest.json`
 - Worker 模板注入形态：
-  - 当前项目仍以 `templates/vmess_node.js` 的 `MainData` 占位替换为准
+  - 当前项目仍以 `templates/vmess_node.js` 的 `__MAIN_DATA__` 占位替换为准
+  - 实际模板变量名已收敛为中性命名 `SUBSCRIPTION_PAYLOAD`
 - obfuscate 构建入口：
   - 仍由 `src/vpn_automation/integrations/node_tools.py` 统一生成 Wrangler / obfuscator 命令
 
@@ -139,6 +149,22 @@
 - 任何以规避识别、规避审查、反逆向为目的的构建技巧
 - 与当前最小订阅导出 Worker 无关的上游复杂路由逻辑
 - 会改变现有 profile / subscription / verify 语义的上游变量体系
+
+## 5.1 postprocess 区域降级规则
+
+postprocess 仍负责最终节点名上的国家码和国旗装饰。当前规则是：
+
+- 有效国家码保持原样
+- `ZZ`
+- 非法国家码
+- GeoIP 查询失败
+
+以上情况统一降级到：
+
+- `US`
+- 最终显示为 `🇺🇸 US ...`
+
+这样可以保证最终节点列表始终落到稳定分组，不会再出现“像是没有加国旗”的视觉误判。
 
 ## 6. 2026-04-29 真实环境验证
 

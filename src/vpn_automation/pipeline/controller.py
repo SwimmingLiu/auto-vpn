@@ -882,7 +882,7 @@ class PipelineController:
     def _default_verify(self, deploy: Any, api_token: str) -> dict[str, bool]:
         client = CloudflareClient(api_token=api_token, account_id=deploy.account_id)
         secret_ok = client.verify_url(build_secret_url(deploy))
-        subscription_ok = client.verify_url(deploy.subscription_url)
+        subscription_ok = client.verify_url(_resolve_verify_subscription_url(deploy))
         return {"secret_ok": secret_ok, "subscription_ok": subscription_ok}
 
     @staticmethod
@@ -910,3 +910,10 @@ class PipelineController:
             ),
             encoding="utf-8",
         )
+
+
+def _resolve_verify_subscription_url(deploy: Any) -> str:
+    verify_subscription_url = str(getattr(deploy, "verify_subscription_url", "") or "").strip()
+    if verify_subscription_url:
+        return verify_subscription_url
+    return str(deploy.subscription_url).strip()

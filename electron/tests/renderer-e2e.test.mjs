@@ -599,7 +599,8 @@ test('renderer shows deploy save toast with project and url details', async () =
           deploy: {
             project_name: 'sub-nodes',
             pages_project_url: 'https://sub-nodes.pages.dev',
-            subscription_url: 'https://vpn.example.top/sub'
+            subscription_url: 'https://vpn.example.top/sub',
+            verify_subscription_url: 'https://verify.example/sub'
           },
           paths: { project_root: '/Users/user/vpn-sub', artifacts_root: '/Users/user/vpn-sub/artifacts' }
         }),
@@ -619,12 +620,15 @@ test('renderer shows deploy save toast with project and url details', async () =
     await page.locator('[data-settings-card="deploy"]').click();
     await page.waitForSelector('#settingsDrawer');
     await page.locator('[data-drawer-path="deploy.project_name"]').fill('review-sub-nodes');
+    await page.locator('[data-drawer-path="deploy.verify_subscription_url"]').fill('https://verify.example/health');
     await page.locator('[data-drawer-save="save"]').click();
     await page.waitForSelector('[data-toast]');
 
     const toastText = await page.locator('[data-toast]').innerText();
     assert.match(toastText, /review-sub-nodes/);
     assert.match(toastText, /https:\/\/review-sub-nodes\.pages\.dev/);
+    const savedProfile = await page.evaluate(() => window.__savedProfiles.at(-1));
+    assert.equal(savedProfile.deploy.verify_subscription_url, 'https://verify.example/health');
   } finally {
     await browser.close();
     await server.close();

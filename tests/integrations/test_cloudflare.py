@@ -14,6 +14,10 @@ from vpn_automation.pipeline.package import build_pages_bundle as build_pages_bu
 from vpn_automation.pipeline.worker_build import build_worker_artifacts
 
 
+def _template_path() -> Path:
+    return Path(__file__).resolve().parents[2] / "templates" / "vmess_node.js"
+
+
 def test_build_pages_deploy_command_contains_project_name() -> None:
     command = build_pages_deploy_command(Path("/tmp/pages_bundle"), "sub-nodes")
     assert command[:4] == ["npx", "wrangler", "pages", "deploy"]
@@ -36,9 +40,7 @@ def test_build_secret_url_uses_pages_project_url_and_query() -> None:
 
 def test_build_pages_bundle_writes_modules_and_manifest(tmp_path) -> None:
     config = WorkerBuildConfig()
-    rendered = Path("/Users/swimmingliu/data/VPN/vpn-subscription-automation/templates/vmess_node.js").read_text(
-        encoding="utf-8"
-    ).replace("__MAIN_DATA__", "payload")
+    rendered = _template_path().read_text(encoding="utf-8").replace("__MAIN_DATA__", "payload")
     artifacts = build_worker_artifacts(rendered, config, "serect_key=swimmingliu")
 
     bundle_dir = build_pages_bundle_files("obfuscated", tmp_path / "pages_bundle", artifacts, config)
