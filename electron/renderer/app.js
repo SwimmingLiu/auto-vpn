@@ -82,7 +82,8 @@ const demoProfile = {
   deploy: {
     project_name: 'sub-nodes',
     pages_project_url: 'https://sub-nodes.pages.dev',
-    subscription_url: 'https://vpn.example.top/179ba8dd-3854-4747-b853-fc1868ef3937'
+    subscription_url: 'https://vpn.example.top/179ba8dd-3854-4747-b853-fc1868ef3937',
+    verify_subscription_url: 'https://www.swimmingliu.xyz/sub?token=8410fb43eb2176497f5beafc0c39f5bc'
   },
   paths: {
     project_root: '/Users/user/vpn-sub',

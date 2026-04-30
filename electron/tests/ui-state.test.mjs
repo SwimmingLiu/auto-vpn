@@ -279,7 +279,8 @@ test('settings page renders deploy card and drawer fields', () => {
       deploy: {
         project_name: 'sub-nodes',
         pages_project_url: 'https://sub-nodes.pages.dev',
-        subscription_url: 'https://vpn.example/sub'
+        subscription_url: 'https://vpn.example/sub',
+        verify_subscription_url: 'https://verify.example/sub'
       }
     },
     settingsDrawer: {
@@ -287,7 +288,8 @@ test('settings page renders deploy card and drawer fields', () => {
       draft: {
         project_name: 'sub-nodes',
         pages_project_url: 'https://sub-nodes.pages.dev',
-        subscription_url: 'https://vpn.example/sub'
+        subscription_url: 'https://vpn.example/sub',
+        verify_subscription_url: 'https://verify.example/sub'
       }
     }
   };
@@ -298,6 +300,9 @@ test('settings page renders deploy card and drawer fields', () => {
   assert.match(markup, /data-settings-card="deploy"/);
   assert.match(markup, /deploy\.project_name/);
   assert.match(markup, /deploy\.pages_project_url/);
+  assert.match(markup, /deploy\.subscription_url/);
+  assert.match(markup, /deploy\.verify_subscription_url/);
+  assert.match(markup, /verify 订阅地址/);
   assert.match(markup, /sub-nodes/);
 });
 

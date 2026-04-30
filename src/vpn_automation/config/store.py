@@ -114,6 +114,7 @@ def _render_profile_toml(profile: AppProfile) -> str:
     deploy_table = table()
     deploy_table.add("project_name", profile.deploy.project_name)
     deploy_table.add("subscription_url", profile.deploy.subscription_url)
+    deploy_table.add("verify_subscription_url", profile.deploy.verify_subscription_url)
     deploy_table.add("pages_project_url", profile.deploy.pages_project_url)
     deploy_table.add("secret_query", profile.deploy.secret_query)
     deploy_table.add("account_id", profile.deploy.account_id)

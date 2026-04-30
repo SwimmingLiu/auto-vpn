@@ -62,10 +62,10 @@ def _build_transformed_source(
     if config.enable_identifier_randomization:
         prefix = _stable_identifier_prefix(config.variable_prefix)
         replacements = {
-            "url_tag": f"{prefix}_url_tag",
-            "req_data": f"{prefix}_req_data",
-            "bytes": f"{prefix}_bytes",
-            "err": f"{prefix}_err",
+            "secretToken": f"{prefix}_secret_token",
+            "responsePayload": f"{prefix}_response_payload",
+            "randomBytes": f"{prefix}_random_bytes",
+            "error": f"{prefix}_error",
         }
         for old_name, new_name in replacements.items():
             source = re.sub(rf"\b{re.escape(old_name)}\b", new_name, source)
@@ -112,7 +112,10 @@ def _split_literal(value: str) -> list[str]:
 
 
 def _extract_main_data(rendered_source: str) -> str:
-    match = re.search(r"const MainData = `(?P<payload>[\s\S]*?)`;", rendered_source)
+    match = re.search(
+        r"const (?:MainData|SUBSCRIPTION_PAYLOAD) = `(?P<payload>[\s\S]*?)`;",
+        rendered_source,
+    )
     if not match:
         return ""
     return match.group("payload")

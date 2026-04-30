@@ -1,25 +1,27 @@
-const MainData = `__MAIN_DATA__`;
+const SUBSCRIPTION_PAYLOAD = `__MAIN_DATA__`;
 
-async function handleRequest(request) {
+function buildRandomPayload() {
+  const randomBytes = new Uint8Array(Math.floor(Math.random() * 100));
+  crypto.getRandomValues(randomBytes);
+  return String.fromCharCode.apply(null, randomBytes);
+}
+
+async function handleSubscriptionRequest(request) {
   try {
-    const url_tag = new URL(request.url).searchParams.get("serect_key");
-    let req_data = "";
-    if (url_tag === "swimmingliu") {
-      req_data = MainData;
-    } else {
-      const bytes = new Uint8Array(Math.floor(Math.random() * 100));
-      crypto.getRandomValues(bytes);
-      req_data = String.fromCharCode.apply(null, bytes);
-    }
-    return new Response(btoa(req_data));
-  } catch (err) {
-    console.log(err);
-    return new Response(err.toString());
+    const url = new URL(request.url);
+    const secretToken = url.searchParams.get("serect_key");
+    const responsePayload = secretToken === "swimmingliu"
+      ? SUBSCRIPTION_PAYLOAD
+      : buildRandomPayload();
+    return new Response(btoa(responsePayload));
+  } catch (error) {
+    console.log(error);
+    return new Response(error.toString());
   }
 }
 
 export default {
   async fetch(request) {
-    return handleRequest(request);
+    return handleSubscriptionRequest(request);
   },
 };

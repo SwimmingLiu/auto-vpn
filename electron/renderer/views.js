@@ -27,6 +27,7 @@ const FALLBACK_PROFILE = {
     project_name: 'sub-nodes',
     pages_project_url: 'https://sub-nodes.pages.dev',
     subscription_url: 'https://vpn.example.top/179ba8dd-3854-4747-b853-fc1868ef3937',
+    verify_subscription_url: 'https://www.swimmingliu.xyz/sub?token=8410fb43eb2176497f5beafc0c39f5bc',
     account_id: '',
     token: ''
   },
@@ -800,11 +801,13 @@ function buildSettingsDrawerBody(section, draft) {
     return `
       <div class="notice-card">
         <strong>部署配置说明</strong>
-        <p>项目名变化会自动联动默认 Pages 地址；手动修改 URL 后，后续不再自动覆盖。</p>
+        <p>项目名变化会自动联动默认 Pages 地址；手动修改 URL 后，后续不再自动覆盖。verify 订阅地址用于 deploy 后的健康检查，不影响页面展示二维码。</p>
       </div>
       <div class="form-grid compact-form-grid">
         ${renderDrawerField('项目名称', 'text', draft.project_name, 'deploy.project_name')}
         ${renderDrawerField('Pages 地址', 'text', draft.pages_project_url, 'deploy.pages_project_url')}
+        ${renderDrawerField('订阅地址', 'text', draft.subscription_url, 'deploy.subscription_url')}
+        ${renderDrawerField('verify 订阅地址', 'text', draft.verify_subscription_url, 'deploy.verify_subscription_url')}
       </div>
     `;
   }
