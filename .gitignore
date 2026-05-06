@@ -13,3 +13,4 @@ node_modules/
 dist/
 dist-electron/
 build/
+electron/runtime/bundled-profile.toml
