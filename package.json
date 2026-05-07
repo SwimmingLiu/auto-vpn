@@ -32,7 +32,8 @@
       "target": [
         "dir"
       ],
-      "category": "public.app-category.developer-tools"
+      "category": "public.app-category.developer-tools",
+      "icon": "electron/build/assets/app-icon.icns"
     }
   },
   "dependencies": {
