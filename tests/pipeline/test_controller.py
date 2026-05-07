@@ -239,6 +239,86 @@ def test_pipeline_controller_cleanup_deletes_primary_and_share_blocked_projects(
     assert deleted == ["sub-nodes", "sub-links-share-03"]
 
 
+def test_pipeline_controller_records_cleanup_response_details(tmp_path: Path) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    template_root = project_root / "templates"
+    template_root.mkdir(parents=True)
+    (template_root / "vmess_node.js").write_text(_template_path().read_text(encoding="utf-8"), encoding="utf-8")
+
+    profile = create_default_profile(project_root)
+    profile.sources = {"leiting": profile.sources["leiting"]}
+    profile.sources["leiting"].url = "https://example.com/api"
+    profile.sources["leiting"].key = "abcdabcdabcdabcd"
+
+    controller = PipelineController(
+        runtime_root_resolver=lambda _candidate: project_root,
+        artifacts_root_resolver=lambda root: root / "artifacts",
+        template_path_resolver=lambda root: root / "templates" / "vmess_node.js",
+        extractor=lambda source_name, source, progress_callback=None: [VMESS_LINK],
+        speedtester=lambda links, config, runtime_path="", progress_callback=None: [
+            SpeedTestResult(link=links[0], reachable=True, average_download_mb_s=2.5, latency_ms=50)
+        ],
+        availability_checker=lambda results, config, runtime_path="", progress_callback=None, targets=None: [
+            AvailabilityResult(
+                speed_result=results[0],
+                provider_results={"gemini": ProviderCheckResult(provider="gemini", passed=True, reason="ok")},
+            )
+        ],
+        country_lookup=lambda host: "US",
+        obfuscator=lambda input_path, output_path: output_path.write_text(
+            input_path.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        ),
+        deployer=lambda bundle_dir, deploy_config, api_token: {
+            "returncode": 0,
+            "stdout": "ok",
+            "stderr": "",
+            "attempts": [{"mode": "fallback-direct", "returncode": 0}],
+            "cleanup_blocked_project": "sub-nodes",
+            "share_project_cleanup_blocked_project": "sub-links-share-03",
+            "project_name": "sub-nodes-01",
+            "pages_project_url": "https://sub-nodes-01.pages.dev",
+            "share_project_name": "sub-links-share-04",
+            "share_project_sync_ok": True,
+            "bundle_dir": str(bundle_dir),
+            "worker_entry": str(bundle_dir / "_worker.js"),
+            "module_manifest_path": str(bundle_dir / "manifest.json"),
+        },
+        verifier=lambda deploy_config, api_token: {
+            "pages_domain_ok": True,
+            "secret_ok": True,
+            "subscription_ok": True,
+            "custom_domain_ok": False,
+            "custom_domain_subscription_ok": False,
+            "custom_domain_dns_ok": False,
+        },
+        env_loader=lambda _candidate: {"CLOUDFLARE_API_TOKEN": "token"},
+    )
+
+    class FakeClient:
+        def __init__(self, api_token: str, account_id: str = "") -> None:
+            _ = (api_token, account_id)
+
+        def delete_pages_project(self, project_name: str) -> dict[str, bool]:
+            if project_name == "sub-links-share-03":
+                import requests
+
+                response = requests.Response()
+                response.status_code = 400
+                response._content = b'{"errors":[{"message":"custom domain still attached"}]}'
+                raise requests.HTTPError("400 Client Error", response=response)
+            return {"success": True}
+
+    import vpn_automation.pipeline.controller as controller_module
+    controller_module.CloudflareClient = FakeClient
+
+    summary = controller.run(profile)
+
+    assert summary.stage_status["verify"] == "success"
+    assert summary.deployment["cleanup_deleted"] is True
+    assert any("custom domain still attached" in item for item in summary.deployment["cleanup_errors"])
+
+
 def test_run_extract_executes_enabled_sources_in_parallel(tmp_path: Path) -> None:
     project_root = tmp_path / "vpn-subscription-automation"
     artifact_dir = project_root / "artifacts" / "run"

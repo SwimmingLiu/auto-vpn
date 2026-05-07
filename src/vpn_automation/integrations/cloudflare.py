@@ -276,6 +276,11 @@ def derive_custom_domain_dns_target(deploy: DeployConfig | Any) -> str:
     return _pages_hostname_from_url(build_pages_project_root_url(deploy))
 
 
+def resolve_share_project_pages_dir() -> Path:
+    repo_root = Path(__file__).resolve().parents[3]
+    return repo_root.parent / "cloudflarevpn" / "edgetunnel" / "pages"
+
+
 def build_cloudflare_client(credentials: CloudflareCredentials) -> "CloudflareClient":
     if credentials.auth_mode == "global_key":
         return CloudflareClient(
@@ -671,6 +676,11 @@ def _sync_share_project_sub(
         env_key=env_key,
         sub_value=pages_project_url,
     )
+    share_bundle_dir = resolve_share_project_pages_dir()
+    share_custom_domains = [
+        _clean(item.get("name"))
+        for item in client.list_pages_domains(requested_name)
+    ] if hasattr(client, "list_pages_domains") else []
 
     def fallback_share_project(existing_names: set[str]) -> dict[str, Any]:
         fallback_base_name = derive_fallback_project_base_name(
@@ -687,11 +697,20 @@ def _sync_share_project_sub(
         client.create_pages_project(fallback_name)
         client.copy_pages_project_config(requested_name, fallback_name, runtime_env)
         client.update_pages_project(fallback_name, payload)
+        for domain in share_custom_domains:
+            if domain:
+                _ensure_custom_domain_bound(
+                    client,
+                    fallback_name,
+                    domain,
+                    previous_project_name=requested_name,
+                )
+                client.upsert_subdomain_cname(domain, f"{fallback_name}.pages.dev", proxied=False)
         redeploy_result, redeploy_attempts = _run_pages_deploy_attempts(
-            build_pages_deploy_command(bundle_dir, fallback_name),
+            build_pages_deploy_command(share_bundle_dir, fallback_name),
             build_wrangler_auth_env(credentials),
-            resolve_deploy_proxy_url(bundle_dir),
-            cwd=str(bundle_dir),
+            resolve_deploy_proxy_url(share_bundle_dir),
+            cwd=str(share_bundle_dir),
         )
         if redeploy_result.returncode != 0:
             result["share_project_sync_ok"] = False
@@ -714,10 +733,10 @@ def _sync_share_project_sub(
     try:
         client.update_pages_project(requested_name, payload)
         redeploy_result, redeploy_attempts = _run_pages_deploy_attempts(
-            build_pages_deploy_command(bundle_dir, requested_name),
+            build_pages_deploy_command(share_bundle_dir, requested_name),
             build_wrangler_auth_env(credentials),
-            resolve_deploy_proxy_url(bundle_dir),
-            cwd=str(bundle_dir),
+            resolve_deploy_proxy_url(share_bundle_dir),
+            cwd=str(share_bundle_dir),
         )
         if redeploy_result.returncode != 0:
             if share_auto_fallback and is_blocked_pages_error(redeploy_result.stdout, redeploy_result.stderr):

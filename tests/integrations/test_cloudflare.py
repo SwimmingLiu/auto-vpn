@@ -381,6 +381,9 @@ def test_deploy_pages_bundle_redeploys_share_project_after_sub_update(monkeypatc
 def test_deploy_pages_bundle_falls_back_when_share_redeploy_is_blocked(monkeypatch, tmp_path) -> None:
     bundle_dir = tmp_path / "artifacts" / "20260507-181500" / "pages_bundle"
     bundle_dir.mkdir(parents=True)
+    share_pages_dir = tmp_path / "share-pages"
+    share_pages_dir.mkdir()
+    (share_pages_dir / "_worker.js").write_text("share-worker", encoding="utf-8")
     deploy = DeployConfig(
         project_name="sub-nodes",
         subscription_url="https://swimmingliu.xyz/sub",
@@ -389,6 +392,10 @@ def test_deploy_pages_bundle_falls_back_when_share_redeploy_is_blocked(monkeypat
     )
 
     monkeypatch.setattr("vpn_automation.integrations.cloudflare.load_runtime_env", lambda _candidate: {})
+    monkeypatch.setattr(
+        "vpn_automation.integrations.cloudflare.resolve_share_project_pages_dir",
+        lambda: share_pages_dir,
+    )
     results = iter(
         [
             type("Result", (), {"returncode": 0, "stdout": "ok", "stderr": ""})(),
@@ -417,9 +424,16 @@ def test_deploy_pages_bundle_falls_back_when_share_redeploy_is_blocked(monkeypat
             self.created: list[str] = []
             self.updated: list[tuple[str, dict[str, object]]] = []
             self.copy_calls: list[tuple[str, str]] = []
+            self.attached: list[tuple[str, str]] = []
+            self.dns_calls: list[tuple[str, str, bool]] = []
 
         def list_pages_projects(self):
             return [{"name": "sub-links-share-03"}]
+
+        def list_pages_domains(self, project_name: str):
+            if project_name == "sub-links-share-03":
+                return [{"name": "www.swimmingliu.xyz"}]
+            return []
 
         def get_pages_project(self, project_name: str):
             return {
@@ -442,6 +456,18 @@ def test_deploy_pages_bundle_falls_back_when_share_redeploy_is_blocked(monkeypat
             self.copy_calls.append((source_project_name, target_project_name))
             return {"name": target_project_name}
 
+        def attach_custom_domain(self, project_name: str, domain: str):
+            self.attached.append((project_name, domain))
+            return {"name": domain}
+
+        def detach_custom_domain(self, project_name: str, domain: str):
+            self.attached.append((f"detach:{project_name}", domain))
+            return {"success": True}
+
+        def upsert_subdomain_cname(self, hostname: str, target: str, proxied: bool = True):
+            self.dns_calls.append((hostname, target, proxied))
+            return {"id": "dns-1", "name": hostname, "content": target, "proxied": proxied}
+
     fake_client = FakeClient("token")
     monkeypatch.setattr("vpn_automation.integrations.cloudflare.CloudflareClient", lambda api_token, account_id="": fake_client)
 
@@ -454,6 +480,9 @@ def test_deploy_pages_bundle_falls_back_when_share_redeploy_is_blocked(monkeypat
     assert result["share_project_cleanup_blocked_project"] == "sub-links-share-03"
     assert fake_client.created == ["sub-links-share-04"]
     assert fake_client.copy_calls == [("sub-links-share-03", "sub-links-share-04")]
+    assert fake_client.attached == [("sub-links-share-04", "www.swimmingliu.xyz")]
+    assert fake_client.dns_calls == [("www.swimmingliu.xyz", "sub-links-share-04.pages.dev", False)]
     assert len(run_calls) == 3
     assert run_calls[1][6] == "sub-links-share-03"
     assert run_calls[2][6] == "sub-links-share-04"
+    assert run_calls[2][4] == str(share_pages_dir)
