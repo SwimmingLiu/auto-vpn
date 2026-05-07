@@ -534,12 +534,18 @@ class CloudflareClient:
 
 
 def _resolve_pages_secret_value(secret_name: str, runtime_env: dict[str, str]) -> str:
+    if secret_name == "ADMIN":
+        configured_default = _clean(runtime_env.get("VPN_AUTOMATION_DEFAULT_PAGES_SECRET_ADMIN")) or "swimmingliu"
+    else:
+        configured_default = ""
     for key in (f"{PAGES_SECRET_ENV_PREFIX}{secret_name}", secret_name):
         value = _clean(runtime_env.get(key))
         if not value:
             value = _clean(os.environ.get(key))
         if value:
             return value
+    if configured_default:
+        return configured_default
     raise RuntimeError(
         f"Missing Pages secret value for {secret_name}; set {PAGES_SECRET_ENV_PREFIX}{secret_name} or {secret_name}"
     )
@@ -626,6 +632,8 @@ def _sync_share_project_sub(
     client: CloudflareClient,
     deploy: DeployConfig | Any,
     runtime_env: dict[str, str],
+    credentials: CloudflareCredentials,
+    bundle_dir: Path,
     *,
     pages_project_url: str,
 ) -> dict[str, Any]:
@@ -666,6 +674,16 @@ def _sync_share_project_sub(
 
     try:
         client.update_pages_project(requested_name, payload)
+        redeploy_result, redeploy_attempts = _run_pages_deploy_attempts(
+            build_pages_deploy_command(bundle_dir, requested_name),
+            build_wrangler_auth_env(credentials),
+            resolve_deploy_proxy_url(bundle_dir),
+            cwd=str(bundle_dir),
+        )
+        if redeploy_result.returncode != 0:
+            result["share_project_sync_ok"] = False
+            result["share_project_sync_error"] = redeploy_result.stderr or redeploy_result.stdout
+        result["share_project_redeploy_attempts"] = redeploy_attempts
         return result
     except Exception as exc:
         if not share_auto_fallback or not is_blocked_pages_error(str(exc), ""):
@@ -688,6 +706,15 @@ def _sync_share_project_sub(
     client.create_pages_project(fallback_name)
     client.copy_pages_project_config(requested_name, fallback_name, runtime_env)
     client.update_pages_project(fallback_name, payload)
+    redeploy_result, redeploy_attempts = _run_pages_deploy_attempts(
+        build_pages_deploy_command(bundle_dir, fallback_name),
+        build_wrangler_auth_env(credentials),
+        resolve_deploy_proxy_url(bundle_dir),
+        cwd=str(bundle_dir),
+    )
+    if redeploy_result.returncode != 0:
+        result["share_project_sync_ok"] = False
+        result["share_project_sync_error"] = redeploy_result.stderr or redeploy_result.stdout
     result.update(
         {
             "share_project_name": fallback_name,
@@ -696,6 +723,7 @@ def _sync_share_project_sub(
             "share_project_sync_ok": True,
             "share_project_sync_error": "",
             "share_project_fallback_last_used_suffix": used_suffix,
+            "share_project_redeploy_attempts": redeploy_attempts,
         }
     )
     return result
@@ -763,7 +791,10 @@ def deploy_pages_bundle(
     api_token: CloudflareCredentials | str,
 ) -> dict[str, Any]:
     requested_project_name = deploy.project_name
-    runtime_env = load_runtime_env(bundle_dir)
+    runtime_env = {
+        **load_runtime_env(bundle_dir),
+        "VPN_AUTOMATION_DEFAULT_PAGES_SECRET_ADMIN": _clean(getattr(deploy, "pages_secret_admin", "")) or "swimmingliu",
+    }
     credentials = _coerce_credentials(deploy, runtime_env, api_token)
     command = build_pages_deploy_command(bundle_dir, requested_project_name)
     base_env = build_wrangler_auth_env(credentials)
@@ -841,6 +872,8 @@ def deploy_pages_bundle(
             client,
             deploy,
             runtime_env,
+            credentials,
+            bundle_dir,
             pages_project_url=final_pages_project_url,
         )
         if not share_sync_result.get("share_project_sync_ok", False):

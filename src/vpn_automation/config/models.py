@@ -69,6 +69,7 @@ class DeployConfig:
     share_project_auto_fallback: bool = True
     share_project_fallback_prefix: str = "sub-links-share"
     share_project_sub_env_key: str = "SUB"
+    pages_secret_admin: str = "swimmingliu"
     fallback_last_used_suffix: int = 0
     share_project_fallback_last_used_suffix: int = 0
 

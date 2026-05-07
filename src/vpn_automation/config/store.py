@@ -130,6 +130,7 @@ def _render_profile_toml(profile: AppProfile) -> str:
     deploy_table.add("share_project_auto_fallback", profile.deploy.share_project_auto_fallback)
     deploy_table.add("share_project_fallback_prefix", profile.deploy.share_project_fallback_prefix)
     deploy_table.add("share_project_sub_env_key", profile.deploy.share_project_sub_env_key)
+    deploy_table.add("pages_secret_admin", profile.deploy.pages_secret_admin)
     deploy_table.add("fallback_last_used_suffix", profile.deploy.fallback_last_used_suffix)
     deploy_table.add(
         "share_project_fallback_last_used_suffix",
