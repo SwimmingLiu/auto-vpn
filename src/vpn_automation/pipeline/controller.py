@@ -1000,7 +1000,17 @@ def _cleanup_blocked_pages_project(deploy: Any, deployment: dict[str, Any], api_
             client.delete_pages_project(blocked_project)
             deleted_any = True
         except Exception as exc:
-            errors.append(str(exc))
+            message = str(exc)
+            response = getattr(exc, "response", None)
+            body = ""
+            if response is not None:
+                try:
+                    body = str(getattr(response, "text", "") or "")
+                except Exception:
+                    body = ""
+            if body:
+                message = f"{message}: {body}"
+            errors.append(message)
     if errors:
         return {"cleanup_deleted": deleted_any, "cleanup_errors": errors}
     try:
