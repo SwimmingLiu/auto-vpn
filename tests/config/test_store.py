@@ -89,6 +89,7 @@ def test_create_default_profile_starts_with_editable_defaults(tmp_path: Path) ->
     assert profile.deploy.share_project_sub_env_key == "SUB"
     assert profile.deploy.fallback_last_used_suffix == 0
     assert profile.deploy.share_project_fallback_last_used_suffix == 0
+    assert profile.deploy.pages_secret_admin == "swimmingliu"
 
 
 def test_profile_store_round_trip_pages_fallback_settings(tmp_path: Path) -> None:
@@ -99,6 +100,8 @@ def test_profile_store_round_trip_pages_fallback_settings(tmp_path: Path) -> Non
     profile.deploy.share_project_fallback_prefix = "sub-links-share"
     profile.deploy.fallback_last_used_suffix = 99
     profile.deploy.share_project_fallback_last_used_suffix = 12
+    profile.deploy.cloudflare_api_token = "cf-demo-token"
+    profile.deploy.pages_secret_admin = "admin-demo"
     store.save(profile)
 
     loaded = store.load()
@@ -109,8 +112,12 @@ def test_profile_store_round_trip_pages_fallback_settings(tmp_path: Path) -> Non
     assert loaded.deploy.share_project_fallback_prefix == "sub-links-share"
     assert loaded.deploy.fallback_last_used_suffix == 99
     assert loaded.deploy.share_project_fallback_last_used_suffix == 12
+    assert loaded.deploy.cloudflare_api_token == "cf-demo-token"
+    assert loaded.deploy.pages_secret_admin == "admin-demo"
     assert 'share_project_name = "sub-links-share-07"' in payload
     assert "fallback_last_used_suffix = 99" in payload
+    assert 'cloudflare_api_token = "cf-demo-token"' in payload
+    assert 'pages_secret_admin = "admin-demo"' in payload
 
 
 def test_default_profile_has_editable_ai_availability_targets(tmp_path: Path) -> None:

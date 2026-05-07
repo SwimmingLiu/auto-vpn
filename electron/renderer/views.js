@@ -29,7 +29,8 @@ const FALLBACK_PROFILE = {
     subscription_url: 'https://vpn.example.top/179ba8dd-3854-4747-b853-fc1868ef3937',
     verify_subscription_url: 'https://www.swimmingliu.xyz/sub?token=8410fb43eb2176497f5beafc0c39f5bc',
     account_id: '',
-    token: ''
+    cloudflare_api_token: '',
+    pages_secret_admin: 'swimmingliu'
   },
   paths: {
     project_root: '/Users/user/vpn-sub',
@@ -808,6 +809,8 @@ function buildSettingsDrawerBody(section, draft) {
         ${renderDrawerField('Pages 地址', 'text', draft.pages_project_url, 'deploy.pages_project_url')}
         ${renderDrawerField('订阅地址', 'text', draft.subscription_url, 'deploy.subscription_url')}
         ${renderDrawerField('verify 订阅地址', 'text', draft.verify_subscription_url, 'deploy.verify_subscription_url')}
+        ${renderDrawerField('Cloudflare Token', 'password', draft.cloudflare_api_token, 'deploy.cloudflare_api_token')}
+        ${renderDrawerField('Pages Secret ADMIN', 'password', draft.pages_secret_admin, 'deploy.pages_secret_admin')}
       </div>
     `;
   }

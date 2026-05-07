@@ -280,7 +280,9 @@ test('settings page renders deploy card and drawer fields', () => {
         project_name: 'sub-nodes',
         pages_project_url: 'https://sub-nodes.pages.dev',
         subscription_url: 'https://vpn.example/sub',
-        verify_subscription_url: 'https://verify.example/sub'
+        verify_subscription_url: 'https://verify.example/sub',
+        cloudflare_api_token: '',
+        pages_secret_admin: 'swimmingliu'
       }
     },
     settingsDrawer: {
@@ -289,7 +291,9 @@ test('settings page renders deploy card and drawer fields', () => {
         project_name: 'sub-nodes',
         pages_project_url: 'https://sub-nodes.pages.dev',
         subscription_url: 'https://vpn.example/sub',
-        verify_subscription_url: 'https://verify.example/sub'
+        verify_subscription_url: 'https://verify.example/sub',
+        cloudflare_api_token: '',
+        pages_secret_admin: 'swimmingliu'
       }
     }
   };
@@ -302,7 +306,12 @@ test('settings page renders deploy card and drawer fields', () => {
   assert.match(markup, /deploy\.pages_project_url/);
   assert.match(markup, /deploy\.subscription_url/);
   assert.match(markup, /deploy\.verify_subscription_url/);
+  assert.match(markup, /deploy\.cloudflare_api_token/);
+  assert.match(markup, /deploy\.pages_secret_admin/);
   assert.match(markup, /verify 订阅地址/);
+  assert.match(markup, /Cloudflare Token/);
+  assert.match(markup, /Pages Secret ADMIN/);
+  assert.match(markup, /type="password"/);
   assert.match(markup, /sub-nodes/);
 });
 

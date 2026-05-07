@@ -189,7 +189,9 @@ test('renderer matches the six-page canvas redesign and supports page navigation
           deploy: {
             project_name: 'sub-nodes',
             pages_project_url: 'https://sub-nodes.pages.dev',
-            subscription_url: 'https://vpn.example.top/179ba8dd-3854-4747-b853-fc1868ef3937'
+            subscription_url: 'https://vpn.example.top/179ba8dd-3854-4747-b853-fc1868ef3937',
+            cloudflare_api_token: '',
+            pages_secret_admin: 'swimmingliu'
           },
           paths: {
             project_root: '/Users/user/vpn-sub',
@@ -493,9 +495,19 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     );
     await page.locator('[data-drawer-path="deploy.pages_project_url"]').fill('https://mirror.example.dev');
     await page.locator('[data-drawer-path="deploy.project_name"]').fill('custom-pages-2');
+    await page.locator('[data-drawer-path="deploy.cloudflare_api_token"]').fill('cf-token-123');
+    await page.locator('[data-drawer-path="deploy.pages_secret_admin"]').fill('custom-admin');
     assert.equal(
       await page.locator('[data-drawer-path="deploy.pages_project_url"]').inputValue(),
       'https://mirror.example.dev'
+    );
+    assert.equal(
+      await page.locator('[data-drawer-path="deploy.cloudflare_api_token"]').getAttribute('type'),
+      'password'
+    );
+    assert.equal(
+      await page.locator('[data-drawer-path="deploy.pages_secret_admin"]').getAttribute('type'),
+      'password'
     );
     await page.locator('[data-drawer-save="save"]').click();
     await page.waitForSelector('#settingsDrawer[data-open="false"]');
@@ -504,7 +516,9 @@ test('renderer matches the six-page canvas redesign and supports page navigation
       {
         project_name: 'custom-pages-2',
         pages_project_url: 'https://mirror.example.dev',
-        subscription_url: 'https://vpn.example.top/179ba8dd-3854-4747-b853-fc1868ef3937'
+        subscription_url: 'https://vpn.example.top/179ba8dd-3854-4747-b853-fc1868ef3937',
+        cloudflare_api_token: 'cf-token-123',
+        pages_secret_admin: 'custom-admin'
       }
     );
     await page.locator('#navSubscriptions').click();
@@ -600,7 +614,9 @@ test('renderer shows deploy save toast with project and url details', async () =
             project_name: 'sub-nodes',
             pages_project_url: 'https://sub-nodes.pages.dev',
             subscription_url: 'https://vpn.example.top/sub',
-            verify_subscription_url: 'https://verify.example/sub'
+            verify_subscription_url: 'https://verify.example/sub',
+            cloudflare_api_token: '',
+            pages_secret_admin: 'swimmingliu'
           },
           paths: { project_root: '/Users/user/vpn-sub', artifacts_root: '/Users/user/vpn-sub/artifacts' }
         }),
@@ -629,6 +645,7 @@ test('renderer shows deploy save toast with project and url details', async () =
     assert.match(toastText, /https:\/\/review-sub-nodes\.pages\.dev/);
     const savedProfile = await page.evaluate(() => window.__savedProfiles.at(-1));
     assert.equal(savedProfile.deploy.verify_subscription_url, 'https://verify.example/health');
+    assert.equal(savedProfile.deploy.pages_secret_admin, 'swimmingliu');
   } finally {
     await browser.close();
     await server.close();
