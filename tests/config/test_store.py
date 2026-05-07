@@ -81,6 +81,36 @@ def test_create_default_profile_starts_with_editable_defaults(tmp_path: Path) ->
     assert profile.worker_build.environment_name == "production"
     assert profile.worker_build.entry_filename == "_worker.js"
     assert profile.worker_build.modules_subdir == "modules"
+    assert profile.deploy.auto_create_project_on_blocked is True
+    assert profile.deploy.fallback_project_prefix == ""
+    assert profile.deploy.share_project_name == "sub-links-share-03"
+    assert profile.deploy.share_project_auto_fallback is True
+    assert profile.deploy.share_project_fallback_prefix == "sub-links-share"
+    assert profile.deploy.share_project_sub_env_key == "SUB"
+    assert profile.deploy.fallback_last_used_suffix == 0
+    assert profile.deploy.share_project_fallback_last_used_suffix == 0
+
+
+def test_profile_store_round_trip_pages_fallback_settings(tmp_path: Path) -> None:
+    store = ProfileStore(tmp_path / "profile.toml")
+    profile = make_profile()
+    profile.deploy.share_project_name = "sub-links-share-07"
+    profile.deploy.fallback_project_prefix = "sub-nodes"
+    profile.deploy.share_project_fallback_prefix = "sub-links-share"
+    profile.deploy.fallback_last_used_suffix = 99
+    profile.deploy.share_project_fallback_last_used_suffix = 12
+    store.save(profile)
+
+    loaded = store.load()
+    payload = store.path.read_text(encoding="utf-8")
+
+    assert loaded.deploy.share_project_name == "sub-links-share-07"
+    assert loaded.deploy.fallback_project_prefix == "sub-nodes"
+    assert loaded.deploy.share_project_fallback_prefix == "sub-links-share"
+    assert loaded.deploy.fallback_last_used_suffix == 99
+    assert loaded.deploy.share_project_fallback_last_used_suffix == 12
+    assert 'share_project_name = "sub-links-share-07"' in payload
+    assert "fallback_last_used_suffix = 99" in payload
 
 
 def test_default_profile_has_editable_ai_availability_targets(tmp_path: Path) -> None:
