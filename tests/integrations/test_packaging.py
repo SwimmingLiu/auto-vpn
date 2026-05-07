@@ -18,6 +18,7 @@ def test_package_manifest_ships_backend_runtime_files() -> None:
     assert package_json["scripts"]["package:electron"] == "node electron/build/package.mjs"
     assert "electron/**/*" in build["files"]
     assert "src/**/*" in build["files"]
+    assert "templates/**/*" in build["files"]
     assert "pyproject.toml" in build["files"]
     assert build["asar"] is False
 

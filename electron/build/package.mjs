@@ -31,6 +31,17 @@ export function resolveRuntimePaths(projectRoot) {
   };
 }
 
+export function resolveShareWorkerPaths(projectRoot) {
+  const repoAnchor = resolveRepoAnchor(projectRoot);
+  const workspaceRoot = path.dirname(repoAnchor);
+  const runtimeDir = path.join(projectRoot, 'electron', 'runtime', 'share-worker');
+  return {
+    sourcePath: path.join(workspaceRoot, 'cloudflarevpn', 'edgetunnel', 'vpn.js'),
+    runtimeDir,
+    runtimePath: path.join(runtimeDir, 'vpn.js')
+  };
+}
+
 export function resolveIconPaths(projectRoot) {
   const outputDir = path.join(projectRoot, 'electron', 'build', 'assets');
   return {
@@ -102,6 +113,16 @@ export function prepareMacIcon(projectRoot) {
   return { outputIcns, iconsetDir, basePng };
 }
 
+export function stageShareWorkerRuntime(projectRoot) {
+  const { sourcePath, runtimeDir, runtimePath } = resolveShareWorkerPaths(projectRoot);
+  if (!fs.existsSync(sourcePath)) {
+    throw new Error(`share worker source not found: ${sourcePath}`);
+  }
+  fs.mkdirSync(runtimeDir, { recursive: true });
+  fs.copyFileSync(sourcePath, runtimePath);
+  return runtimePath;
+}
+
 export function runPackaging(projectRoot) {
   const { runtimeDir, defaultSeedPath, bundledSeedPath, liveProfilePath } = resolveRuntimePaths(projectRoot);
   fs.mkdirSync(runtimeDir, { recursive: true });
@@ -112,6 +133,7 @@ export function runPackaging(projectRoot) {
     fs.copyFileSync(defaultSeedPath, bundledSeedPath);
   }
 
+  stageShareWorkerRuntime(projectRoot);
   prepareMacIcon(projectRoot);
 
   return spawnSync('npx', ['electron-builder', '--mac', 'dir'], {

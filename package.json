@@ -22,6 +22,7 @@
     "files": [
       "electron/**/*",
       "src/**/*",
+      "templates/**/*",
       "pyproject.toml"
     ],
     "directories": {
