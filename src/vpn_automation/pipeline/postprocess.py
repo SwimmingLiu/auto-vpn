@@ -1,4 +1,5 @@
 import socket
+import re
 import time
 from functools import lru_cache
 
@@ -52,6 +53,7 @@ FALLBACK_COUNTRY_CODE = "US"
 PRIMARY_GEOIP_RETRY_DELAYS = (0.5, 1.0, 2.0)
 PRIMARY_GEOIP_COOLDOWN_SECONDS = 300.0
 _PRIMARY_GEOIP_BLOCKED_UNTIL = 0.0
+_LEADING_EMOJI_AND_COUNTRY_PATTERN = re.compile(r"^(?:\S+\s+)?([A-Za-z]{2})\s+(.*)$")
 
 
 def country_to_emoji(country_code: str) -> str:
@@ -60,7 +62,8 @@ def country_to_emoji(country_code: str) -> str:
 
 
 def decorate_node_name(original_name: str, country_code: str, emoji: str) -> str:
-    return f"{emoji} {country_code} {original_name}".strip()
+    cleaned_name = _strip_leading_country_prefix(original_name)
+    return f"{emoji} {country_code} {cleaned_name}".strip()
 
 
 def decorate_link_with_country(link: str, country_code: str) -> str:
@@ -87,6 +90,17 @@ def normalize_country_code(country_code: str) -> str:
     if len(normalized) != 2 or not normalized.isalpha() or normalized == UNKNOWN_COUNTRY_CODE:
         return FALLBACK_COUNTRY_CODE
     return normalized
+
+
+def _strip_leading_country_prefix(original_name: str) -> str:
+    name = str(original_name or "").strip()
+    if not name:
+        return ""
+    match = _LEADING_EMOJI_AND_COUNTRY_PATTERN.match(name)
+    if not match:
+        return name
+    _, remainder = match.groups()
+    return remainder.strip() or name
 
 
 def _require_country_code(country_code: str) -> str:
