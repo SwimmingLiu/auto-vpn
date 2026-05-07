@@ -18,6 +18,11 @@ def test_decorate_node_name_prefixes_emoji_and_country() -> None:
     assert updated == "🇺🇸 US Node-1"
 
 
+def test_decorate_node_name_replaces_existing_country_prefix() -> None:
+    updated = decorate_node_name("US 772", "US", "🇺🇸")
+    assert updated == "🇺🇸 US 772"
+
+
 def test_select_links_by_country_limit_filters_cn_and_limits_hk() -> None:
     ranked = [
         ("vmess://1", SpeedTestResult(link="vmess://1", reachable=True, average_download_mb_s=8.0, latency_ms=100), "HK"),
@@ -154,3 +159,27 @@ def test_decorate_link_with_country_normalizes_invalid_codes_to_us() -> None:
     updated = decorate_link_with_country(link, "ZZ")
 
     assert parse_vmess_link(updated)["ps"] == "🇺🇸 US sample-node"
+
+
+def test_decorate_link_with_country_replaces_unknown_prefix_with_us() -> None:
+    link = generate_vmess_link(
+        {
+            "v": "2",
+            "ps": "ZZ 772",
+            "add": "1.1.1.1",
+            "port": "443",
+            "id": "418048af-a293-4b99-9b0c-98ca3580dd24",
+            "aid": "0",
+            "scy": "none",
+            "net": "ws",
+            "type": "dtls",
+            "host": "www.example.com",
+            "path": "/path/demo",
+            "tls": "tls",
+            "sni": "www.example.com",
+        }
+    )
+
+    updated = decorate_link_with_country(link, "ZZ")
+
+    assert parse_vmess_link(updated)["ps"] == "🇺🇸 US 772"
