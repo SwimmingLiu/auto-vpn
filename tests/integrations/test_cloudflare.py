@@ -488,3 +488,68 @@ def test_deploy_pages_bundle_falls_back_when_share_redeploy_is_blocked(monkeypat
     assert result["share_project_bundle_dir"].endswith("/share_pages_bundle")
     assert result["share_project_worker_entry"].endswith("/share_pages_bundle/_worker.js")
     assert run_calls[2][4].endswith("/share_pages_bundle")
+
+
+def test_deploy_pages_bundle_recovers_latest_existing_share_project_when_requested_share_project_is_missing(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    bundle_dir = tmp_path / "artifacts" / "20260507-220500" / "pages_bundle"
+    bundle_dir.mkdir(parents=True)
+    deploy = DeployConfig(
+        project_name="sub-nodes-04",
+        subscription_url="https://swimmingliu.xyz/sub",
+        pages_project_url="https://sub-nodes-04.pages.dev",
+        share_project_name="sub-links-share-03",
+    )
+
+    monkeypatch.setattr("vpn_automation.integrations.cloudflare.load_runtime_env", lambda _candidate: {})
+    run_calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "vpn_automation.integrations.cloudflare.run_command",
+        lambda command, cwd=None, env=None: (
+            run_calls.append(command),
+            type("Result", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()
+        )[1],
+    )
+
+    class FakeClient:
+        def __init__(self, api_token: str, account_id: str = "") -> None:
+            self.updated: list[tuple[str, dict[str, object]]] = []
+
+        def list_pages_projects(self):
+            return [{"name": "sub-nodes-04"}, {"name": "sub-links-share-05"}]
+
+        def get_pages_project(self, project_name: str):
+            if project_name == "sub-links-share-03":
+                raise RuntimeError("Cloudflare Pages project not found: sub-links-share-03")
+            assert project_name == "sub-links-share-05"
+            return {
+                "name": project_name,
+                "deployment_configs": {
+                    "preview": {"env_vars": {"SUB": {"type": "plain_text", "value": "https://old.pages.dev"}}},
+                    "production": {"env_vars": {"SUB": {"type": "plain_text", "value": "https://old.pages.dev"}}},
+                },
+            }
+
+        def list_pages_domains(self, project_name: str):
+            assert project_name == "sub-links-share-05"
+            return []
+
+        def update_pages_project(self, project_name: str, payload: dict[str, object]):
+            self.updated.append((project_name, payload))
+            return {"name": project_name}
+
+    fake_client = FakeClient("token")
+    monkeypatch.setattr("vpn_automation.integrations.cloudflare.CloudflareClient", lambda api_token, account_id="": fake_client)
+
+    result = deploy_pages_bundle(bundle_dir, deploy, "token")
+
+    assert result["returncode"] == 0
+    assert result["share_project_sync_ok"] is True
+    assert result["share_project_name"] == "sub-links-share-05"
+    assert result["share_project_requested_name"] == "sub-links-share-03"
+    assert fake_client.updated[0][0] == "sub-links-share-05"
+    assert fake_client.updated[0][1]["deployment_configs"]["preview"]["env_vars"]["SUB"]["value"] == "https://sub-nodes-04.pages.dev"
+    assert len(run_calls) == 2
+    assert run_calls[1][6] == "sub-links-share-05"

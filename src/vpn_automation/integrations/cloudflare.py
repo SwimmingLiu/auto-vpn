@@ -196,6 +196,25 @@ def generate_fallback_project_name(
         next_suffix += 1
 
 
+def resolve_latest_existing_project_name(base_name: str, existing_names: set[str]) -> str:
+    normalized = _clean(base_name)
+    if not normalized:
+        return ""
+    if normalized in existing_names:
+        return normalized
+
+    latest_name = ""
+    latest_suffix = 0
+    for existing_name in existing_names:
+        existing_prefix, existing_suffix = _split_project_suffix(existing_name, normalized)
+        if existing_prefix != normalized or existing_suffix <= 0:
+            continue
+        if existing_suffix > latest_suffix:
+            latest_name = existing_name
+            latest_suffix = existing_suffix
+    return latest_name
+
+
 def resolve_cloudflare_credentials(
     deploy: DeployConfig | Any,
     runtime_env: dict[str, str],
@@ -671,9 +690,27 @@ def _sync_share_project_sub(
     try:
         source_project = client.get_pages_project(requested_name)
     except Exception as exc:
-        result["share_project_sync_ok"] = False
-        result["share_project_sync_error"] = str(exc)
-        return result
+        error_message = str(exc)
+        if not share_auto_fallback or "not found" not in error_message.lower():
+            result["share_project_sync_ok"] = False
+            result["share_project_sync_error"] = error_message
+            return result
+
+        existing_names = {project["name"] for project in client.list_pages_projects()}
+        recovered_name = resolve_latest_existing_project_name(
+            derive_fallback_project_base_name(
+                _clean(getattr(deploy, "share_project_fallback_prefix", "")),
+                requested_name,
+            ),
+            existing_names,
+        )
+        if not recovered_name:
+            result["share_project_sync_ok"] = False
+            result["share_project_sync_error"] = error_message
+            return result
+        requested_name = recovered_name
+        result["share_project_name"] = recovered_name
+        source_project = client.get_pages_project(requested_name)
 
     payload = _build_share_project_update_payload(
         source_project,
