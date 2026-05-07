@@ -280,6 +280,61 @@ def test_retry_stage_emits_summary_for_retry_run(
     assert "final_links=2" in captured.out
 
 
+def test_retry_stage_does_not_overwrite_profile_saved_by_retry_runner(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    artifact_dir = project_root / "artifacts" / "20260507-141218"
+    artifact_dir.mkdir(parents=True)
+    store = ProfileStore(project_root / "state" / "profile.toml")
+    store.save(
+        AppProfile(
+            sources={"leiting": SourceConfig(url="https://example.com/api", key="demo", enabled=True)},
+            speed_test=SpeedTestConfig(min_download_mb_s=1.0, timeout_seconds=20, concurrency=3, urls=[]),
+            deploy=DeployConfig(project_name="sub-nodes-04", subscription_url="https://example.com/sub"),
+        )
+    )
+
+    def fake_retry(artifact_dir_arg, *, stage_name, project_root, log_callback=None, stage_callback=None, event_callback=None):
+        assert artifact_dir_arg == artifact_dir
+        assert stage_name == "deploy"
+        updated = store.load()
+        updated.deploy.project_name = "sub-nodes-04"
+        updated.deploy.pages_project_url = "https://sub-nodes-04.pages.dev"
+        updated.deploy.share_project_name = "sub-links-share-05"
+        store.save(updated)
+        return SimpleNamespace(
+            artifact_dir=str(project_root / "artifacts" / "20260507-215128"),
+            stage_status={"deploy": "success", "verify": "success"},
+            counts={"final_links": 2},
+            source_counts={},
+            deployment={
+                "project_name": "sub-nodes-04",
+                "pages_project_url": "https://sub-nodes-04.pages.dev",
+                "share_project_name": "sub-links-share-05",
+            },
+            retry_context={"source_artifact_dir": str(artifact_dir), "start_stage": "deploy"},
+            run_status="success",
+            error="",
+        )
+
+    monkeypatch.setattr("vpn_automation.backend.retry_pipeline_from_stage", fake_retry)
+
+    code = retry_stage(
+        project_root,
+        artifact_dir=artifact_dir,
+        stage_name="deploy",
+        output_format="human",
+    )
+
+    saved = store.load()
+    assert code == 0
+    assert saved.deploy.project_name == "sub-nodes-04"
+    assert saved.deploy.pages_project_url == "https://sub-nodes-04.pages.dev"
+    assert saved.deploy.share_project_name == "sub-links-share-05"
+
+
 def test_run_pipeline_can_write_event_log_and_human_output(
     tmp_path: Path,
     monkeypatch,
@@ -473,6 +528,71 @@ def test_resume_pipeline_appends_summary_for_continued_stages(
     assert "[availability] kept 2 links" in captured.out
     payloads = [json.loads(line) for line in event_log.read_text(encoding="utf-8").splitlines()]
     assert [payload["type"] for payload in payloads] == ["log", "stage", "summary"]
+
+
+def test_resume_pipeline_does_not_overwrite_profile_saved_by_resume_runner(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    session_dir = tmp_path / "manual-runs" / "20260424-120000"
+    artifact_dir = project_root / "artifacts" / "20260424-120000"
+    session_dir.mkdir(parents=True)
+    artifact_dir.mkdir(parents=True)
+    (session_dir / "session.json").write_text(
+        json.dumps(
+            {
+                "artifact_dir": str(artifact_dir),
+                "event_log": str(session_dir / "events.jsonl"),
+                "human_log": str(session_dir / "human.log"),
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    store = ProfileStore(project_root / "state" / "profile.toml")
+    store.save(
+        AppProfile(
+            sources={"leiting": SourceConfig(url="https://example.com/api", key="demo", enabled=True)},
+            speed_test=SpeedTestConfig(min_download_mb_s=1.0, timeout_seconds=20, concurrency=3, urls=[]),
+            deploy=DeployConfig(project_name="sub-nodes-04", subscription_url="https://example.com/sub"),
+        )
+    )
+
+    def fake_continue(session_dir_arg, *, project_root, log_callback=None, stage_callback=None, event_callback=None):
+        assert session_dir_arg == session_dir
+        updated = store.load()
+        updated.deploy.project_name = "sub-nodes-04"
+        updated.deploy.pages_project_url = "https://sub-nodes-04.pages.dev"
+        updated.deploy.share_project_name = "sub-links-share-05"
+        store.save(updated)
+        return SimpleNamespace(
+            artifact_dir=str(artifact_dir),
+            stage_status={"deploy": "success", "verify": "success"},
+            counts={"final_links": 2},
+            source_counts={},
+            deployment={
+                "project_name": "sub-nodes-04",
+                "pages_project_url": "https://sub-nodes-04.pages.dev",
+                "share_project_name": "sub-links-share-05",
+            },
+            run_status="success",
+            error="",
+        )
+
+    monkeypatch.setattr("vpn_automation.backend.continue_pipeline_session", fake_continue)
+
+    code = resume_pipeline(
+        project_root,
+        session_dir=session_dir,
+        output_format="human",
+    )
+
+    saved = store.load()
+    assert code == 0
+    assert saved.deploy.project_name == "sub-nodes-04"
+    assert saved.deploy.pages_project_url == "https://sub-nodes-04.pages.dev"
+    assert saved.deploy.share_project_name == "sub-links-share-05"
 
 
 def test_run_pipeline_resume_latest_uses_latest_run_db(
