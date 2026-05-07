@@ -672,6 +672,45 @@ def _sync_share_project_sub(
         sub_value=pages_project_url,
     )
 
+    def fallback_share_project(existing_names: set[str]) -> dict[str, Any]:
+        fallback_base_name = derive_fallback_project_base_name(
+            _clean(getattr(deploy, "share_project_fallback_prefix", "")),
+            requested_name,
+        )
+        fallback_name, used_suffix = generate_fallback_project_name(
+            fallback_base_name,
+            existing_names,
+            current_project_name=requested_name,
+            last_used_suffix=share_last_used_suffix,
+        )
+        result["share_project_fallback_candidate_names"] = [fallback_name]
+        client.create_pages_project(fallback_name)
+        client.copy_pages_project_config(requested_name, fallback_name, runtime_env)
+        client.update_pages_project(fallback_name, payload)
+        redeploy_result, redeploy_attempts = _run_pages_deploy_attempts(
+            build_pages_deploy_command(bundle_dir, fallback_name),
+            build_wrangler_auth_env(credentials),
+            resolve_deploy_proxy_url(bundle_dir),
+            cwd=str(bundle_dir),
+        )
+        if redeploy_result.returncode != 0:
+            result["share_project_sync_ok"] = False
+            result["share_project_sync_error"] = redeploy_result.stderr or redeploy_result.stdout
+            result["share_project_redeploy_attempts"] = redeploy_attempts
+            return result
+        result.update(
+            {
+                "share_project_name": fallback_name,
+                "share_project_fallback_used": True,
+                "share_project_cleanup_blocked_project": requested_name,
+                "share_project_sync_ok": True,
+                "share_project_sync_error": "",
+                "share_project_fallback_last_used_suffix": used_suffix,
+                "share_project_redeploy_attempts": redeploy_attempts,
+            }
+        )
+        return result
+
     try:
         client.update_pages_project(requested_name, payload)
         redeploy_result, redeploy_attempts = _run_pages_deploy_attempts(
@@ -681,6 +720,9 @@ def _sync_share_project_sub(
             cwd=str(bundle_dir),
         )
         if redeploy_result.returncode != 0:
+            if share_auto_fallback and is_blocked_pages_error(redeploy_result.stdout, redeploy_result.stderr):
+                existing_names = {project["name"] for project in client.list_pages_projects()}
+                return fallback_share_project(existing_names)
             result["share_project_sync_ok"] = False
             result["share_project_sync_error"] = redeploy_result.stderr or redeploy_result.stdout
         result["share_project_redeploy_attempts"] = redeploy_attempts
@@ -692,41 +734,7 @@ def _sync_share_project_sub(
             return result
 
     existing_names = {project["name"] for project in client.list_pages_projects()}
-    fallback_base_name = derive_fallback_project_base_name(
-        _clean(getattr(deploy, "share_project_fallback_prefix", "")),
-        requested_name,
-    )
-    fallback_name, used_suffix = generate_fallback_project_name(
-        fallback_base_name,
-        existing_names,
-        current_project_name=requested_name,
-        last_used_suffix=share_last_used_suffix,
-    )
-    result["share_project_fallback_candidate_names"] = [fallback_name]
-    client.create_pages_project(fallback_name)
-    client.copy_pages_project_config(requested_name, fallback_name, runtime_env)
-    client.update_pages_project(fallback_name, payload)
-    redeploy_result, redeploy_attempts = _run_pages_deploy_attempts(
-        build_pages_deploy_command(bundle_dir, fallback_name),
-        build_wrangler_auth_env(credentials),
-        resolve_deploy_proxy_url(bundle_dir),
-        cwd=str(bundle_dir),
-    )
-    if redeploy_result.returncode != 0:
-        result["share_project_sync_ok"] = False
-        result["share_project_sync_error"] = redeploy_result.stderr or redeploy_result.stdout
-    result.update(
-        {
-            "share_project_name": fallback_name,
-            "share_project_fallback_used": True,
-            "share_project_cleanup_blocked_project": requested_name,
-            "share_project_sync_ok": True,
-            "share_project_sync_error": "",
-            "share_project_fallback_last_used_suffix": used_suffix,
-            "share_project_redeploy_attempts": redeploy_attempts,
-        }
-    )
-    return result
+    return fallback_share_project(existing_names)
 
 
 def _run_pages_deploy_attempts(
