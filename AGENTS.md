@@ -32,3 +32,10 @@ If a task changes files in this repository, including coding, refactoring, confi
 6. Merge the PR only after the required tests pass and the review feedback is resolved.
 
 After the PR is merged, package the application into a runnable binary/app or installable package.
+
+For packaged app branding, follow these requirements every time:
+
+- Never ship the default Electron icon or any placeholder/non-project icon asset.
+- The packaged app icon/logo must come from a logo asset checked into this repository. Default to `/Users/swimmingliu/data/VPN/vpn-subscription-automation/electron/renderer/assets/vpn-auto-logo-v2-minimal.svg` unless the user explicitly selects another in-repo logo asset.
+- The source logo and any generated packaging icon assets must preserve a transparent background. Do not flatten the logo onto a white, black, or other opaque background.
+- Packaging verification must explicitly confirm that the build no longer reports `default Electron icon is used` and that the packaged app contains the project-derived icon resource.

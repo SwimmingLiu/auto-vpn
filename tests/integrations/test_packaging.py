@@ -20,3 +20,11 @@ def test_package_manifest_ships_backend_runtime_files() -> None:
     assert "src/**/*" in build["files"]
     assert "pyproject.toml" in build["files"]
     assert build["asar"] is False
+
+
+def test_package_manifest_declares_mac_icon() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    package_json = json.loads((repo_root / "package.json").read_text(encoding="utf-8"))
+    build = package_json["build"]
+
+    assert build["mac"]["icon"] == "electron/build/assets/app-icon.icns"
