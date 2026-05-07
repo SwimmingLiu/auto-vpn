@@ -790,6 +790,23 @@ def _merge_deploy_verification_target(deploy: Any, deployment: dict[str, Any]) -
     return SimpleNamespace(**merged)
 
 
+def _apply_deployment_to_profile(profile: Any, deployment: dict[str, Any]) -> None:
+    if not getattr(profile, "deploy", None):
+        return
+    if deployment.get("project_name"):
+        profile.deploy.project_name = deployment["project_name"]
+    if deployment.get("pages_project_url"):
+        profile.deploy.pages_project_url = deployment["pages_project_url"]
+    if deployment.get("share_project_name"):
+        profile.deploy.share_project_name = deployment["share_project_name"]
+    if "fallback_last_used_suffix" in deployment:
+        profile.deploy.fallback_last_used_suffix = int(deployment.get("fallback_last_used_suffix") or 0)
+    if "share_project_fallback_last_used_suffix" in deployment:
+        profile.deploy.share_project_fallback_last_used_suffix = int(
+            deployment.get("share_project_fallback_last_used_suffix") or 0
+        )
+
+
 def _is_verify_success(verification: dict[str, bool]) -> bool:
     pages_domain_ok = verification.get("pages_domain_ok")
     if pages_domain_ok is None:
@@ -890,7 +907,8 @@ def retry_pipeline_from_stage(
     if stage_name not in source_item["retryable_stages"]:
         raise RuntimeError(f"Stage is not retryable for artifact: {stage_name}")
 
-    profile = ProfileStore(resolve_profile_path(project_root)).load_or_create(project_root)
+    store = ProfileStore(resolve_profile_path(project_root))
+    profile = store.load_or_create(project_root)
     controller = PipelineController(
         availability_checker=check_link_availability_batch,
         country_lookup=lookup_country_code,
@@ -956,7 +974,7 @@ def retry_pipeline_from_stage(
     log(f"[retry] source={source_artifact_dir.name} stage={stage_name}")
     try:
         if stage_name == "speedtest":
-            return _retry_from_speedtest(
+            summary = _retry_from_speedtest(
                 controller,
                 profile,
                 retry_artifact_dir,
@@ -966,8 +984,12 @@ def retry_pipeline_from_stage(
                 set_stage,
                 event_callback=event_callback,
             )
+            if summary.run_status == "success" and hasattr(profile, "sources"):
+                _apply_deployment_to_profile(profile, summary.deployment)
+                store.save(profile)
+            return summary
         if stage_name == "availability":
-            return _retry_from_availability(
+            summary = _retry_from_availability(
                 controller,
                 profile,
                 retry_artifact_dir,
@@ -977,8 +999,12 @@ def retry_pipeline_from_stage(
                 set_stage,
                 event_callback=event_callback,
             )
+            if summary.run_status == "success" and hasattr(profile, "sources"):
+                _apply_deployment_to_profile(profile, summary.deployment)
+                store.save(profile)
+            return summary
         if stage_name == "postprocess":
-            return _retry_from_postprocess(
+            summary = _retry_from_postprocess(
                 controller,
                 profile,
                 retry_artifact_dir,
@@ -987,8 +1013,12 @@ def retry_pipeline_from_stage(
                 log,
                 set_stage,
             )
+            if summary.run_status == "success" and hasattr(profile, "sources"):
+                _apply_deployment_to_profile(profile, summary.deployment)
+                store.save(profile)
+            return summary
         if stage_name == "render":
-            return _retry_from_render(
+            summary = _retry_from_render(
                 controller,
                 profile,
                 retry_artifact_dir,
@@ -997,8 +1027,12 @@ def retry_pipeline_from_stage(
                 log,
                 set_stage,
             )
+            if summary.run_status == "success" and hasattr(profile, "sources"):
+                _apply_deployment_to_profile(profile, summary.deployment)
+                store.save(profile)
+            return summary
         if stage_name == "obfuscate":
-            return _retry_from_obfuscate(
+            summary = _retry_from_obfuscate(
                 controller,
                 profile,
                 retry_artifact_dir,
@@ -1007,8 +1041,12 @@ def retry_pipeline_from_stage(
                 log,
                 set_stage,
             )
+            if summary.run_status == "success" and hasattr(profile, "sources"):
+                _apply_deployment_to_profile(profile, summary.deployment)
+                store.save(profile)
+            return summary
         if stage_name == "deploy":
-            return _retry_from_deploy(
+            summary = _retry_from_deploy(
                 controller,
                 profile,
                 retry_artifact_dir,
@@ -1018,7 +1056,11 @@ def retry_pipeline_from_stage(
                 set_stage,
                 api_token=api_token,
             )
-        return _retry_from_verify(
+            if summary.run_status == "success" and hasattr(profile, "sources"):
+                _apply_deployment_to_profile(profile, summary.deployment)
+                store.save(profile)
+            return summary
+        summary = _retry_from_verify(
             controller,
             profile,
             retry_artifact_dir,
@@ -1027,6 +1069,10 @@ def retry_pipeline_from_stage(
             set_stage,
             api_token=api_token,
         )
+        if summary.run_status == "success" and hasattr(profile, "sources"):
+            _apply_deployment_to_profile(profile, summary.deployment)
+            store.save(profile)
+        return summary
     except Exception as exc:
         if current_stage and summary.stage_status.get(current_stage) == "running":
             set_stage(current_stage, "failed")
