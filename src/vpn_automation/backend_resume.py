@@ -5,11 +5,20 @@ import sqlite3
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable
 
 from vpn_automation.config.runtime import load_runtime_env
 from vpn_automation.config.store import ProfileStore, resolve_profile_path
-from vpn_automation.integrations.cloudflare import CloudflareClient, build_secret_url
+from vpn_automation.integrations.cloudflare import (
+    CloudflareClient,
+    build_custom_domain_root_url,
+    build_custom_domain_subscription_url,
+    build_pages_project_root_url,
+    build_secret_url,
+    derive_custom_domain_dns_target,
+    resolve_cloudflare_credentials,
+)
 from vpn_automation.integrations.node_tools import obfuscate_javascript
 from vpn_automation.pipeline.availability import check_link_availability_batch
 from vpn_automation.pipeline.controller import PipelineController, PipelineSummary
@@ -150,7 +159,7 @@ def _seed_retry_artifact(
         "stage_status": {stage: "pending" for stage in DEFAULT_STAGES},
         "counts": dict(source_report.get("counts", {})),
         "source_counts": dict(source_report.get("source_counts", {})),
-        "deployment": {},
+        "deployment": dict(source_report.get("deployment", {})),
         "retry_context": retry_context,
     }
     (retry_artifact_dir / "pipeline_report.json").write_text(
@@ -626,9 +635,7 @@ def _continue_after_rendered_script(
         return summary
     set_stage("obfuscate", "success")
     env = controller.env_loader(Path(profile.workspace.project_root or __file__))
-    api_token = env.get("CLOUDFLARE_API_TOKEN", "")
-    if not api_token:
-        raise RuntimeError("CLOUDFLARE_API_TOKEN is missing")
+    api_token = resolve_cloudflare_credentials(profile.deploy, env)
     return _continue_after_obfuscated_script(
         controller,
         profile,
@@ -650,7 +657,7 @@ def _continue_after_obfuscated_script(
     set_stage: Callable[[str, str], None],
     obfuscated_path: Path,
     *,
-    api_token: str,
+    api_token: Any,
     start_at: str = "obfuscate",
 ) -> PipelineSummary:
     set_stage("deploy", "running")
@@ -691,18 +698,24 @@ def _run_verify_only(
     log: Callable[[str], None],
     set_stage: Callable[[str, str], None],
     *,
-    api_token: str,
+    api_token: Any,
 ) -> PipelineSummary:
     set_stage("verify", "running")
-    verification = controller.verifier(profile.deploy, api_token)
-    if not (verification.get("secret_ok") and verification.get("subscription_ok")):
+    verification_target = _merge_deploy_verification_target(profile.deploy, summary.deployment)
+    verification = controller.verifier(
+        verification_target,
+        api_token,
+    )
+    if not _is_verify_success(verification):
         summary.deployment.update(verification)
         set_stage("verify", "failed")
         summary.run_status = "failed"
         summary.error = f"RuntimeError: Verification failed: {verification}"
         controller._write_pipeline_report(retry_artifact_dir, summary)
         return summary
+    cleanup = _cleanup_blocked_pages_project(verification_target, summary.deployment, api_token)
     summary.deployment.update(verification)
+    summary.deployment.update(cleanup)
     set_stage("verify", "success")
     summary.run_status = "success"
     summary.error = ""
@@ -722,11 +735,36 @@ def _load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def _default_verify(deploy: Any, api_token: str) -> dict[str, bool]:
-    client = CloudflareClient(api_token=api_token, account_id=deploy.account_id)
+def _default_verify(deploy: Any, api_token: Any) -> dict[str, bool]:
+    if isinstance(api_token, str):
+        credentials = resolve_cloudflare_credentials(deploy, {}, explicit_api_token=api_token)
+    else:
+        credentials = api_token
+    client = _build_cloudflare_client(credentials)
+    pages_domain_url = build_pages_project_root_url(deploy)
+    pages_domain_ok = client.verify_url(pages_domain_url) if pages_domain_url else False
     secret_ok = client.verify_url(build_secret_url(deploy))
     subscription_ok = client.verify_url(_resolve_verify_subscription_url(deploy))
-    return {"secret_ok": secret_ok, "subscription_ok": subscription_ok}
+    custom_domain_url = build_custom_domain_root_url(deploy)
+    custom_domain_ok = client.verify_url(custom_domain_url) if custom_domain_url else False
+    custom_domain_subscription_url = _resolve_custom_domain_verify_subscription_url(deploy)
+    custom_domain_subscription_ok = (
+        client.verify_url(custom_domain_subscription_url) if custom_domain_subscription_url else False
+    )
+    custom_domain_dns_target = derive_custom_domain_dns_target(deploy)
+    custom_domain_dns_ok = (
+        client.verify_subdomain_cname(str(deploy.custom_domain), custom_domain_dns_target)
+        if custom_domain_url and custom_domain_dns_target
+        else False
+    )
+    return {
+        "pages_domain_ok": pages_domain_ok,
+        "secret_ok": secret_ok,
+        "subscription_ok": subscription_ok,
+        "custom_domain_ok": custom_domain_ok,
+        "custom_domain_subscription_ok": custom_domain_subscription_ok,
+        "custom_domain_dns_ok": custom_domain_dns_ok,
+    }
 
 
 def _resolve_verify_subscription_url(deploy: Any) -> str:
@@ -734,6 +772,80 @@ def _resolve_verify_subscription_url(deploy: Any) -> str:
     if verify_subscription_url:
         return verify_subscription_url
     return str(deploy.subscription_url).strip()
+
+
+def _resolve_custom_domain_verify_subscription_url(deploy: Any) -> str:
+    return build_custom_domain_subscription_url(deploy).strip()
+
+
+def _merge_deploy_verification_target(deploy: Any, deployment: dict[str, Any]) -> Any:
+    merged = dict(vars(deploy))
+    merged.update(
+        {
+            key: value
+            for key, value in deployment.items()
+            if key in {"project_name", "pages_project_url", "custom_domain"}
+        }
+    )
+    return SimpleNamespace(**merged)
+
+
+def _is_verify_success(verification: dict[str, bool]) -> bool:
+    pages_domain_ok = verification.get("pages_domain_ok")
+    if pages_domain_ok is None:
+        pages_domain_ok = True
+    if not (pages_domain_ok and verification.get("secret_ok") and verification.get("subscription_ok")):
+        return False
+    if verification.get("custom_domain_ok") and not verification.get("custom_domain_subscription_ok", True):
+        return False
+    if verification.get("custom_domain_ok") and not verification.get("custom_domain_dns_ok", True):
+        return False
+    return True
+
+
+def _cleanup_blocked_pages_project(deploy: Any, deployment: dict[str, Any], api_token: Any) -> dict[str, Any]:
+    final_project = str(getattr(deploy, "project_name", "") or "").strip()
+    cleanup_candidates = []
+    for key in ("cleanup_blocked_project", "share_project_cleanup_blocked_project"):
+        candidate = str(deployment.get(key, "") or "").strip()
+        if not candidate or candidate == final_project or candidate in cleanup_candidates:
+            continue
+        cleanup_candidates.append(candidate)
+    if not cleanup_candidates:
+        return {"cleanup_deleted": False, "cleanup_errors": deployment.get("cleanup_errors", [])}
+    if isinstance(api_token, str):
+        credentials = resolve_cloudflare_credentials(deploy, {}, explicit_api_token=api_token)
+    else:
+        credentials = api_token
+    deleted_any = False
+    errors: list[str] = []
+    client = _build_cloudflare_client(credentials)
+    for blocked_project in cleanup_candidates:
+        try:
+            client.delete_pages_project(blocked_project)
+            deleted_any = True
+        except Exception as exc:
+            errors.append(str(exc))
+    if errors:
+        return {"cleanup_deleted": deleted_any, "cleanup_errors": errors}
+    try:
+        return {"cleanup_deleted": deleted_any, "cleanup_errors": []}
+    except Exception as exc:
+        return {"cleanup_deleted": deleted_any, "cleanup_errors": [str(exc)]}
+
+
+def _build_cloudflare_client(credentials: Any) -> CloudflareClient:
+    if getattr(credentials, "auth_mode", "api_token") == "global_key":
+        return CloudflareClient(
+            account_id=credentials.account_id,
+            auth_mode="global_key",
+            global_api_key=credentials.global_api_key,
+            email=credentials.email,
+        )
+    return CloudflareClient(
+        api_token=credentials.api_token,
+        account_id=credentials.account_id,
+    )
 
 
 def list_artifacts_with_retry_stages(project_root: Path, *, limit: int = 20) -> list[dict[str, Any]]:
@@ -818,9 +930,9 @@ def retry_pipeline_from_stage(
         controller._write_pipeline_report(retry_artifact_dir, summary)
 
     env = controller.env_loader(Path(profile.workspace.project_root or __file__))
-    api_token = env.get("CLOUDFLARE_API_TOKEN", "")
-    if stage_name in {"deploy", "verify"} and not api_token:
-        raise RuntimeError("CLOUDFLARE_API_TOKEN is missing")
+    api_token = None
+    if stage_name in {"deploy", "verify"}:
+        api_token = resolve_cloudflare_credentials(profile.deploy, env)
 
     _emit_event(
         event_callback,
@@ -1197,9 +1309,7 @@ def continue_pipeline_session(
     log(f"[resume] continue pipeline from speedtest_links={len(fast_results)}")
 
     env = controller.env_loader(Path(profile.workspace.project_root or __file__))
-    api_token = env.get("CLOUDFLARE_API_TOKEN", "")
-    if not api_token:
-        raise RuntimeError("CLOUDFLARE_API_TOKEN is missing")
+    api_token = resolve_cloudflare_credentials(profile.deploy, env)
 
     set_stage("availability", "running")
     controller._write_pipeline_report(artifact_dir, summary)
@@ -1292,10 +1402,16 @@ def continue_pipeline_session(
 
     set_stage("verify", "running")
     controller._write_pipeline_report(artifact_dir, summary)
-    verification = controller.verifier(profile.deploy, api_token)
-    if not (verification.get("secret_ok") and verification.get("subscription_ok")):
+    verification_target = _merge_deploy_verification_target(profile.deploy, deployment)
+    verification = controller.verifier(
+        verification_target,
+        api_token,
+    )
+    if not _is_verify_success(verification):
         raise RuntimeError(f"Verification failed: {verification}")
+    cleanup = _cleanup_blocked_pages_project(verification_target, deployment, api_token)
     summary.deployment.update(verification)
+    summary.deployment.update(cleanup)
     set_stage("verify", "success")
 
     summary.run_status = "success"

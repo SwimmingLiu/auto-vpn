@@ -116,9 +116,25 @@ def _render_profile_toml(profile: AppProfile) -> str:
     deploy_table.add("subscription_url", profile.deploy.subscription_url)
     deploy_table.add("verify_subscription_url", profile.deploy.verify_subscription_url)
     deploy_table.add("pages_project_url", profile.deploy.pages_project_url)
+    deploy_table.add("custom_domain", profile.deploy.custom_domain)
     deploy_table.add("secret_query", profile.deploy.secret_query)
+    deploy_table.add("cloudflare_auth_mode", profile.deploy.cloudflare_auth_mode)
+    deploy_table.add("cloudflare_api_token", profile.deploy.cloudflare_api_token)
+    deploy_table.add("cloudflare_global_key", profile.deploy.cloudflare_global_key)
+    deploy_table.add("cloudflare_email", profile.deploy.cloudflare_email)
     deploy_table.add("account_id", profile.deploy.account_id)
     deploy_table.add("use_wrangler", profile.deploy.use_wrangler)
+    deploy_table.add("auto_create_project_on_blocked", profile.deploy.auto_create_project_on_blocked)
+    deploy_table.add("fallback_project_prefix", profile.deploy.fallback_project_prefix)
+    deploy_table.add("share_project_name", profile.deploy.share_project_name)
+    deploy_table.add("share_project_auto_fallback", profile.deploy.share_project_auto_fallback)
+    deploy_table.add("share_project_fallback_prefix", profile.deploy.share_project_fallback_prefix)
+    deploy_table.add("share_project_sub_env_key", profile.deploy.share_project_sub_env_key)
+    deploy_table.add("fallback_last_used_suffix", profile.deploy.fallback_last_used_suffix)
+    deploy_table.add(
+        "share_project_fallback_last_used_suffix",
+        profile.deploy.share_project_fallback_last_used_suffix,
+    )
     doc.add("deploy", deploy_table)
     doc.add(nl())
 

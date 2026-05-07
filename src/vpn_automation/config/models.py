@@ -55,9 +55,22 @@ class DeployConfig:
     subscription_url: str
     verify_subscription_url: str = "https://www.swimmingliu.xyz/sub?token=8410fb43eb2176497f5beafc0c39f5bc"
     pages_project_url: str = "https://sub-nodes.pages.dev"
+    custom_domain: str = ""
     secret_query: str = "serect_key=swimmingliu"
+    cloudflare_auth_mode: str = "api_token"
+    cloudflare_api_token: str = ""
+    cloudflare_global_key: str = ""
+    cloudflare_email: str = ""
     account_id: str = "e743286b4304e96ee8795d62917052aa"
     use_wrangler: bool = True
+    auto_create_project_on_blocked: bool = True
+    fallback_project_prefix: str = ""
+    share_project_name: str = "sub-links-share-03"
+    share_project_auto_fallback: bool = True
+    share_project_fallback_prefix: str = "sub-links-share"
+    share_project_sub_env_key: str = "SUB"
+    fallback_last_used_suffix: int = 0
+    share_project_fallback_last_used_suffix: int = 0
 
 
 @dataclass
