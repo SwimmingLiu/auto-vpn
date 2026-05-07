@@ -47,6 +47,22 @@ def test_save_profile_json_persists_toml_backed_changes(tmp_path: Path) -> None:
     assert json.loads(saved_json)["sources"]["leiting"]["url"] == "https://example.com/api"
 
 
+def test_save_profile_payload_persists_updated_deploy_project_names(tmp_path: Path) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    payload = json.loads(ensure_profile_json(project_root))
+    payload["deploy"]["project_name"] = "sub-nodes-04"
+    payload["deploy"]["pages_project_url"] = "https://sub-nodes-04.pages.dev"
+    payload["deploy"]["share_project_name"] = "sub-links-share-05"
+
+    saved_json = save_profile_json(project_root, json.dumps(payload, ensure_ascii=False))
+
+    stored = (project_root / "state" / "profile.toml").read_text(encoding="utf-8")
+    assert 'project_name = "sub-nodes-04"' in stored
+    assert 'pages_project_url = "https://sub-nodes-04.pages.dev"' in stored
+    assert 'share_project_name = "sub-links-share-05"' in stored
+    assert json.loads(saved_json)["deploy"]["share_project_name"] == "sub-links-share-05"
+
+
 def test_ensure_profile_json_prefers_env_profile_path(tmp_path: Path, monkeypatch) -> None:
     project_root = tmp_path / "vpn-subscription-automation"
     profile_path = tmp_path / "runtime" / "profile.toml"
@@ -359,6 +375,51 @@ def test_run_pipeline_persists_structured_stage_events(
     payloads = [json.loads(line) for line in event_log.read_text(encoding="utf-8").splitlines()]
     assert code == 0
     assert "extract_request_result" in [payload["type"] for payload in payloads]
+
+
+def test_run_pipeline_persists_updated_deploy_names_after_success(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    store = ProfileStore(project_root / "state" / "profile.toml")
+    profile = AppProfile(
+        sources={"leiting": SourceConfig(url="https://example.com/api", key="demo", enabled=True)},
+        speed_test=SpeedTestConfig(min_download_mb_s=1.0, timeout_seconds=20, concurrency=3, urls=[]),
+        deploy=DeployConfig(project_name="sub-nodes", subscription_url="https://example.com/sub"),
+    )
+    store.save(profile)
+
+    class FakeController:
+        def run(self, profile, **kwargs):
+            profile.deploy.project_name = "sub-nodes-04"
+            profile.deploy.pages_project_url = "https://sub-nodes-04.pages.dev"
+            profile.deploy.share_project_name = "sub-links-share-05"
+            return SimpleNamespace(
+                artifact_dir=str(project_root / "artifacts" / "20260507-203610"),
+                stage_status={"deploy": "success", "verify": "success"},
+                counts={"final_links": 2},
+                source_counts={},
+                deployment={
+                    "project_name": "sub-nodes-04",
+                    "pages_project_url": "https://sub-nodes-04.pages.dev",
+                    "share_project_name": "sub-links-share-05",
+                },
+                run_status="success",
+                error="",
+            )
+
+    monkeypatch.setattr("vpn_automation.backend.PipelineController", FakeController)
+
+    code = run_pipeline(
+        project_root,
+        skip_deploy=False,
+        skip_verify=False,
+        output_format="human",
+    )
+
+    saved = store.load()
+    assert code == 0
+    assert saved.deploy.project_name == "sub-nodes-04"
+    assert saved.deploy.pages_project_url == "https://sub-nodes-04.pages.dev"
+    assert saved.deploy.share_project_name == "sub-links-share-05"
 
 
 def test_resume_pipeline_appends_summary_for_continued_stages(

@@ -8,6 +8,7 @@ from urllib.parse import urlsplit, urlunsplit
 import requests
 
 from vpn_automation.config.models import DeployConfig
+from vpn_automation.config.store import resolve_profile_path
 from vpn_automation.config.runtime import load_runtime_env
 from vpn_automation.integrations.commands import run_command
 
@@ -276,9 +277,13 @@ def derive_custom_domain_dns_target(deploy: DeployConfig | Any) -> str:
     return _pages_hostname_from_url(build_pages_project_root_url(deploy))
 
 
-def resolve_share_project_pages_dir() -> Path:
-    repo_root = Path(__file__).resolve().parents[3]
-    return repo_root.parent / "cloudflarevpn" / "edgetunnel" / "pages"
+def resolve_share_project_worker_source_path() -> Path:
+    profile_anchor = resolve_profile_path(Path(__file__)).parents[1]
+    return profile_anchor.parent / "cloudflarevpn" / "edgetunnel" / "vpn.js"
+
+
+def build_share_project_bundle_dir(source_path: Path) -> Path:
+    return source_path.parent / "share_pages_bundle"
 
 
 def build_cloudflare_client(credentials: CloudflareCredentials) -> "CloudflareClient":
@@ -676,7 +681,14 @@ def _sync_share_project_sub(
         env_key=env_key,
         sub_value=pages_project_url,
     )
-    share_bundle_dir = resolve_share_project_pages_dir()
+    share_worker_source_path = resolve_share_project_worker_source_path()
+    share_bundle_dir = build_share_project_bundle_dir(share_worker_source_path)
+    share_bundle_dir.mkdir(parents=True, exist_ok=True)
+    share_worker_entry = share_bundle_dir / "_worker.js"
+    share_worker_entry.write_text(share_worker_source_path.read_text(encoding="utf-8"), encoding="utf-8")
+    result["share_project_source_path"] = str(share_worker_source_path)
+    result["share_project_bundle_dir"] = str(share_bundle_dir)
+    result["share_project_worker_entry"] = str(share_worker_entry)
     share_custom_domains = [
         _clean(item.get("name"))
         for item in client.list_pages_domains(requested_name)

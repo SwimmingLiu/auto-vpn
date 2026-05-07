@@ -240,12 +240,15 @@ def run_pipeline(
         )
 
     _ = runtime_candidate
-    return _run_with_streams(
+    code = _run_with_streams(
         output_format=output_format,
         event_log_path=event_log_path,
         human_log_path=human_log_path,
         runner=runner,
     )
+    if code == 0 and hasattr(store, "save"):
+        store.save(profile)
+    return code
 
 
 def run_pipeline_resume_latest(
@@ -318,6 +321,8 @@ def resume_pipeline(
     event_log_path: Path | None = None,
     human_log_path: Path | None = None,
 ) -> int:
+    store = ProfileStore(resolve_profile_path(project_root))
+    profile = store.load_or_create(project_root)
     resolved_event_log, resolved_human_log = load_session_paths(
         session_dir,
         event_log_path=event_log_path,
@@ -339,12 +344,15 @@ def resume_pipeline(
             event_callback=emit,
         )
 
-    return _run_with_streams(
+    code = _run_with_streams(
         output_format=output_format,
         event_log_path=resolved_event_log,
         human_log_path=resolved_human_log,
         runner=runner,
     )
+    if code == 0 and hasattr(store, "save"):
+        store.save(profile)
+    return code
 
 
 def retry_stage(
@@ -356,6 +364,8 @@ def retry_stage(
     event_log_path: Path | None = None,
     human_log_path: Path | None = None,
 ) -> int:
+    store = ProfileStore(resolve_profile_path(project_root))
+    profile = store.load_or_create(project_root)
     def runner(emit: Callable[[str, dict[str, Any]], None]) -> Any:
         def log(message: str) -> None:
             emit("log", {"message": message})
@@ -372,12 +382,15 @@ def retry_stage(
             event_callback=emit,
         )
 
-    return _run_with_streams(
+    code = _run_with_streams(
         output_format=output_format,
         event_log_path=event_log_path,
         human_log_path=human_log_path,
         runner=runner,
     )
+    if code == 0 and hasattr(store, "save"):
+        store.save(profile)
+    return code
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -406,6 +406,21 @@ test('renderer matches the six-page canvas redesign and supports page navigation
 
     await page.locator('#navSettings').click();
     await page.waitForSelector('#settingsWorkspace');
+    await page.evaluate(() => {
+      window.__emitPipelineEvent({
+        type: 'summary',
+        artifact_dir: '/Users/user/vpn-sub/artifacts/20260507-203610',
+        run_status: 'success',
+        stage_status: { deploy: 'success', verify: 'success' },
+        counts: { raw_links: 3, deduped_links: 2, speedtest_links: 1, availability_links: 1, final_links: 1 },
+        source_counts: { leiting: { raw_links: 3 } },
+        deployment: {
+          project_name: 'sub-nodes-04',
+          pages_project_url: 'https://sub-nodes-04.pages.dev',
+          share_project_name: 'sub-links-share-05'
+        }
+      });
+    });
     const settingsText = await page.locator('#settingsWorkspace').innerText();
     assert.match(settingsText, /数据源配置/);
     assert.match(settingsText, /测速配置/);
@@ -482,11 +497,11 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     assert.match(await page.locator('#settingsDrawerTitle').innerText(), /部署配置/);
     assert.equal(
       await page.locator('[data-drawer-path="deploy.project_name"]').inputValue(),
-      'sub-nodes'
+      'sub-nodes-04'
     );
     assert.equal(
       await page.locator('[data-drawer-path="deploy.pages_project_url"]').inputValue(),
-      'https://sub-nodes.pages.dev'
+      'https://sub-nodes-04.pages.dev'
     );
     await page.locator('[data-drawer-path="deploy.project_name"]').fill('custom-pages');
     assert.equal(
@@ -518,7 +533,8 @@ test('renderer matches the six-page canvas redesign and supports page navigation
         pages_project_url: 'https://mirror.example.dev',
         subscription_url: 'https://vpn.example.top/179ba8dd-3854-4747-b853-fc1868ef3937',
         cloudflare_api_token: 'cf-token-123',
-        pages_secret_admin: 'custom-admin'
+        pages_secret_admin: 'custom-admin',
+        share_project_name: 'sub-links-share-05'
       }
     );
     await page.locator('#navSubscriptions').click();
