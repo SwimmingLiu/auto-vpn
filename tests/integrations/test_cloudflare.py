@@ -381,9 +381,8 @@ def test_deploy_pages_bundle_redeploys_share_project_after_sub_update(monkeypatc
 def test_deploy_pages_bundle_falls_back_when_share_redeploy_is_blocked(monkeypatch, tmp_path) -> None:
     bundle_dir = tmp_path / "artifacts" / "20260507-181500" / "pages_bundle"
     bundle_dir.mkdir(parents=True)
-    share_pages_dir = tmp_path / "share-pages"
-    share_pages_dir.mkdir()
-    (share_pages_dir / "_worker.js").write_text("share-worker", encoding="utf-8")
+    share_worker_source = tmp_path / "vpn.js"
+    share_worker_source.write_text("export default { async fetch() { return new Response('login'); } }", encoding="utf-8")
     deploy = DeployConfig(
         project_name="sub-nodes",
         subscription_url="https://swimmingliu.xyz/sub",
@@ -393,8 +392,8 @@ def test_deploy_pages_bundle_falls_back_when_share_redeploy_is_blocked(monkeypat
 
     monkeypatch.setattr("vpn_automation.integrations.cloudflare.load_runtime_env", lambda _candidate: {})
     monkeypatch.setattr(
-        "vpn_automation.integrations.cloudflare.resolve_share_project_pages_dir",
-        lambda: share_pages_dir,
+        "vpn_automation.integrations.cloudflare.resolve_share_project_worker_source_path",
+        lambda: share_worker_source,
     )
     results = iter(
         [
@@ -485,4 +484,7 @@ def test_deploy_pages_bundle_falls_back_when_share_redeploy_is_blocked(monkeypat
     assert len(run_calls) == 3
     assert run_calls[1][6] == "sub-links-share-03"
     assert run_calls[2][6] == "sub-links-share-04"
-    assert run_calls[2][4] == str(share_pages_dir)
+    assert result["share_project_source_path"] == str(share_worker_source)
+    assert result["share_project_bundle_dir"].endswith("/share_pages_bundle")
+    assert result["share_project_worker_entry"].endswith("/share_pages_bundle/_worker.js")
+    assert run_calls[2][4].endswith("/share_pages_bundle")

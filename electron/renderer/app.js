@@ -1079,6 +1079,17 @@ function handlePipelineEvent(event) {
     state.sourceCounts = normalizeSourceCounts(event.source_counts ?? state.sourceCounts);
     state.retryContext = event.retry_context ?? state.retryContext ?? {};
     state.deployment = event.deployment ?? state.deployment ?? {};
+    if (state.profile?.deploy && event.deployment) {
+      if (event.deployment.project_name) {
+        state.profile.deploy.project_name = event.deployment.project_name;
+      }
+      if (event.deployment.pages_project_url) {
+        state.profile.deploy.pages_project_url = event.deployment.pages_project_url;
+      }
+      if (event.deployment.share_project_name) {
+        state.profile.deploy.share_project_name = event.deployment.share_project_name;
+      }
+    }
     state.artifactDir = event.artifact_dir ?? '';
     state.selectedRetryArtifactDir = state.artifactDir || state.selectedRetryArtifactDir;
     touchUpdate();
