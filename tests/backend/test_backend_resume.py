@@ -216,3 +216,119 @@ def test_retry_verify_stage_cleans_up_primary_and_share_blocked_projects(tmp_pat
 
     assert summary.run_status == "success"
     assert deleted == ["sub-nodes", "sub-links-share-03"]
+
+
+def test_retry_deploy_stage_persists_updated_deploy_names(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    source_artifact_dir = project_root / "artifacts" / "20260507-203610"
+    retry_artifact_dir = project_root / "artifacts" / "20260507-211958"
+    source_artifact_dir.mkdir(parents=True)
+    retry_artifact_dir.mkdir(parents=True)
+    (project_root / "pyproject.toml").write_text("[project]\nname='test'\nversion='0.0.0'\n", encoding="utf-8")
+    (source_artifact_dir / "_worker.js").write_text("obfuscated", encoding="utf-8")
+    (source_artifact_dir / "pipeline_report.json").write_text(
+        json.dumps(
+            {
+                "artifact_dir": str(source_artifact_dir),
+                "run_status": "failed",
+                "stage_status": {
+                    "doctor": "success",
+                    "extract": "success",
+                    "dedupe": "success",
+                    "speedtest": "success",
+                    "availability": "success",
+                    "postprocess": "success",
+                    "render": "success",
+                    "obfuscate": "success",
+                    "deploy": "failed",
+                },
+                "deployment": {},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    RunStore(source_artifact_dir / "run.db").initialize(artifact_dir=str(source_artifact_dir))
+
+    monkeypatch.setattr(
+        "vpn_automation.backend_resume._create_retry_artifact_dir",
+        lambda project_root: retry_artifact_dir,
+    )
+    monkeypatch.setattr(
+        "vpn_automation.backend_resume._build_artifact_retry_item",
+        lambda artifact_dir: {
+            "artifact_dir": str(artifact_dir),
+            "artifact_name": artifact_dir.name,
+            "retryable_stages": ["deploy"],
+            "stage_status": {"deploy": "failed"},
+        },
+    )
+
+    from vpn_automation.config.models import AppProfile, DeployConfig, SourceConfig, SpeedTestConfig
+    from vpn_automation.config.store import ProfileStore
+
+    store = ProfileStore(project_root / "state" / "profile.toml")
+    profile = AppProfile(
+        sources={"leiting": SourceConfig(url="https://example.com/api", key="demo", enabled=True)},
+        speed_test=SpeedTestConfig(min_download_mb_s=1.0, timeout_seconds=20, concurrency=3, urls=[]),
+        deploy=DeployConfig(project_name="sub-nodes", subscription_url="https://example.com/sub"),
+    )
+    store.save(profile)
+
+    monkeypatch.setattr(
+        "vpn_automation.backend_resume.resolve_cloudflare_credentials",
+        lambda deploy, env, explicit_api_token="": SimpleNamespace(
+            auth_mode="api_token",
+            api_token="token",
+            account_id="account-id",
+            email="",
+            global_api_key="",
+        ),
+    )
+    monkeypatch.setattr(
+        "vpn_automation.backend_resume.build_pages_bundle",
+        lambda worker_source, bundle_dir: bundle_dir,
+    )
+
+    class FakeController:
+        def __init__(self, **kwargs):
+            self.env_loader = lambda _candidate: {"CLOUDFLARE_API_TOKEN": "token"}
+            self.verifier = lambda deploy, token: {
+                "pages_domain_ok": True,
+                "secret_ok": True,
+                "subscription_ok": True,
+                "custom_domain_ok": False,
+                "custom_domain_subscription_ok": False,
+                "custom_domain_dns_ok": False,
+            }
+            self.obfuscator = lambda *_args, **_kwargs: None
+            self.deployer = lambda bundle_dir, deploy, api_token: {
+                "returncode": 0,
+                "attempts": [{"mode": "direct", "returncode": 0}],
+                "project_name": "sub-nodes-04",
+                "pages_project_url": "https://sub-nodes-04.pages.dev",
+                "share_project_name": "sub-links-share-05",
+                "bundle_dir": str(bundle_dir),
+                "worker_entry": str(bundle_dir / "_worker.js"),
+                "module_manifest_path": str(bundle_dir / "manifest.json"),
+            }
+
+        def stage_names(self):
+            return ["doctor", "extract", "dedupe", "speedtest", "availability", "postprocess", "render", "obfuscate", "deploy", "verify"]
+
+        def _write_pipeline_report(self, artifact_dir, summary):
+            return None
+
+    monkeypatch.setattr("vpn_automation.backend_resume.PipelineController", FakeController)
+
+    summary = retry_pipeline_from_stage(
+        source_artifact_dir,
+        stage_name="deploy",
+        project_root=project_root,
+    )
+
+    saved = store.load()
+    assert summary.run_status == "success"
+    assert saved.deploy.project_name == "sub-nodes-04"
+    assert saved.deploy.pages_project_url == "https://sub-nodes-04.pages.dev"
+    assert saved.deploy.share_project_name == "sub-links-share-05"
