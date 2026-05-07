@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
 
-from vpn_automation.config.runtime import load_runtime_env
+from vpn_automation.config.runtime import load_runtime_env, resolve_template_file
 from vpn_automation.config.store import ProfileStore, resolve_profile_path
 from vpn_automation.integrations.cloudflare import (
     CloudflareClient,
@@ -1410,7 +1410,13 @@ def continue_pipeline_session(
 
     set_stage("render", "running")
     controller._write_pipeline_report(artifact_dir, summary)
-    template_path = Path(profile.workspace.edgetunnel_root) / "vmess_node.js"
+    template_path = resolve_template_file(Path(profile.workspace.project_root or __file__))
+    if not template_path.exists():
+        compat_root = str(getattr(profile.workspace, "edgetunnel_root", "")).strip()
+        if compat_root:
+            fallback = Path(compat_root) / "vmess_node.js"
+            if fallback.exists():
+                template_path = fallback
     rendered = replace_main_data(template_path.read_text(encoding="utf-8"), decorated_links)
     rendered_path = artifact_dir / "vmess_node.js"
     rendered_path.write_text(rendered, encoding="utf-8")

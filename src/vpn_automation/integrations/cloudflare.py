@@ -7,8 +7,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import requests
 
-from vpn_automation.config.models import DeployConfig
-from vpn_automation.config.store import resolve_profile_path
+from vpn_automation.config.models import DeployConfig, resolve_repo_anchor
 from vpn_automation.config.runtime import load_runtime_env
 from vpn_automation.integrations.commands import run_command
 
@@ -297,8 +296,32 @@ def derive_custom_domain_dns_target(deploy: DeployConfig | Any) -> str:
 
 
 def resolve_share_project_worker_source_path() -> Path:
-    profile_anchor = resolve_profile_path(Path(__file__)).parents[1]
-    return profile_anchor.parent / "cloudflarevpn" / "edgetunnel" / "vpn.js"
+    candidates: list[Path] = []
+    explicit_path = _clean(os.environ.get("VPN_AUTOMATION_SHARE_WORKER_PATH"))
+    if explicit_path:
+        candidates.append(Path(explicit_path).expanduser())
+
+    repo_root = resolve_repo_anchor(Path(__file__))
+    candidates.append(repo_root.parent / "cloudflarevpn" / "edgetunnel" / "vpn.js")
+    candidates.append(repo_root / "electron" / "runtime" / "share-worker" / "vpn.js")
+
+    seen: set[str] = set()
+    unique_candidates: list[Path] = []
+    for candidate in candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_candidates.append(candidate)
+
+    for candidate in unique_candidates:
+        if candidate.exists():
+            return candidate.resolve()
+
+    raise FileNotFoundError(
+        "share worker source not found; tried: "
+        + ", ".join(str(candidate) for candidate in unique_candidates)
+    )
 
 
 def build_share_project_bundle_dir(source_path: Path) -> Path:

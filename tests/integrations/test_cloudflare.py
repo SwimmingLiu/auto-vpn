@@ -10,6 +10,7 @@ from vpn_automation.integrations.cloudflare import (
     deploy_pages_bundle,
     generate_fallback_project_name,
     resolve_deploy_proxy_url,
+    resolve_share_project_worker_source_path,
 )
 from vpn_automation.pipeline.package import build_pages_bundle as build_pages_bundle_files
 from vpn_automation.pipeline.worker_build import build_worker_artifacts
@@ -175,6 +176,23 @@ def test_generate_fallback_project_name_respects_current_suffix_and_grows_width(
 
     assert name == "sub-nodes-100"
     assert suffix == 100
+
+
+def test_resolve_share_project_worker_source_path_falls_back_to_packaged_runtime_copy(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    runtime_copy = project_root / "electron" / "runtime" / "share-worker" / "vpn.js"
+    runtime_copy.parent.mkdir(parents=True)
+    runtime_copy.write_text("export default { async fetch() { return new Response('runtime'); } }", encoding="utf-8")
+
+    monkeypatch.delenv("VPN_AUTOMATION_SHARE_WORKER_PATH", raising=False)
+    monkeypatch.setattr("vpn_automation.integrations.cloudflare.resolve_repo_anchor", lambda _candidate: project_root)
+
+    resolved = resolve_share_project_worker_source_path()
+
+    assert resolved == runtime_copy.resolve()
 
 
 def test_deploy_pages_bundle_syncs_share_project_sub_to_final_pages_url(monkeypatch, tmp_path) -> None:
