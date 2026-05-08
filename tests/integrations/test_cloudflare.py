@@ -265,14 +265,14 @@ def test_deploy_pages_bundle_syncs_share_project_sub_to_final_pages_url(monkeypa
     assert result["pages_project_url"] == "https://sub-nodes-01.pages.dev"
     assert result["share_project_sync_ok"] is True
     assert result["share_project_name"] == "sub-links-share-03"
-    assert result["share_project_sub_value"] == "https://sub-nodes-01.pages.dev"
+    assert result["share_project_sub_value"] == "https://sub-nodes-01.pages.dev/?serect_key=swimmingliu"
     assert result["fallback_last_used_suffix"] == 1
     assert fake_client.created == ["sub-nodes-01"]
     assert len(fake_client.updated) == 1
     project_name, payload = fake_client.updated[0]
     assert project_name == "sub-links-share-03"
-    assert payload["deployment_configs"]["preview"]["env_vars"]["SUB"]["value"] == "https://sub-nodes-01.pages.dev"
-    assert payload["deployment_configs"]["production"]["env_vars"]["SUB"]["value"] == "https://sub-nodes-01.pages.dev"
+    assert payload["deployment_configs"]["preview"]["env_vars"]["SUB"]["value"] == "https://sub-nodes-01.pages.dev/?serect_key=swimmingliu"
+    assert payload["deployment_configs"]["production"]["env_vars"]["SUB"]["value"] == "https://sub-nodes-01.pages.dev/?serect_key=swimmingliu"
 
 
 def test_deploy_pages_bundle_falls_back_share_project_when_share_project_is_blocked(monkeypatch, tmp_path) -> None:
@@ -339,7 +339,7 @@ def test_deploy_pages_bundle_falls_back_share_project_when_share_project_is_bloc
     assert fake_client.updated[0][0] == "sub-links-share-04"
     assert (
         fake_client.updated[0][1]["deployment_configs"]["preview"]["env_vars"]["SUB"]["value"]
-        == "https://sub-nodes.pages.dev"
+        == "https://sub-nodes.pages.dev/?serect_key=swimmingliu"
     )
 
 
@@ -568,6 +568,6 @@ def test_deploy_pages_bundle_recovers_latest_existing_share_project_when_request
     assert result["share_project_name"] == "sub-links-share-05"
     assert result["share_project_requested_name"] == "sub-links-share-03"
     assert fake_client.updated[0][0] == "sub-links-share-05"
-    assert fake_client.updated[0][1]["deployment_configs"]["preview"]["env_vars"]["SUB"]["value"] == "https://sub-nodes-04.pages.dev"
+    assert fake_client.updated[0][1]["deployment_configs"]["preview"]["env_vars"]["SUB"]["value"] == "https://sub-nodes-04.pages.dev/?serect_key=swimmingliu"
     assert len(run_calls) == 2
     assert run_calls[1][6] == "sub-links-share-05"

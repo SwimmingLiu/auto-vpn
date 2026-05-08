@@ -691,6 +691,21 @@ def _sync_share_project_sub(
 ) -> dict[str, Any]:
     requested_name = _clean(getattr(deploy, "share_project_name", ""))
     env_key = _clean(getattr(deploy, "share_project_sub_env_key", "")) or "SUB"
+    sub_value = build_secret_url(
+        DeployConfig(
+            project_name=_clean(getattr(deploy, "project_name", "")) or "",
+            subscription_url=_clean(getattr(deploy, "subscription_url", "")) or pages_project_url,
+            verify_subscription_url=_clean(getattr(deploy, "verify_subscription_url", "")),
+            pages_project_url=pages_project_url,
+            custom_domain=_clean(getattr(deploy, "custom_domain", "")),
+            secret_query=_clean(getattr(deploy, "secret_query", "")) or "serect_key=swimmingliu",
+            cloudflare_auth_mode=_clean(getattr(deploy, "cloudflare_auth_mode", "")) or "api_token",
+            cloudflare_api_token=_clean(getattr(deploy, "cloudflare_api_token", "")),
+            cloudflare_global_key=_clean(getattr(deploy, "cloudflare_global_key", "")),
+            cloudflare_email=_clean(getattr(deploy, "cloudflare_email", "")),
+            account_id=_clean(getattr(deploy, "account_id", "")),
+        )
+    )
     share_auto_fallback = bool(getattr(deploy, "share_project_auto_fallback", True))
     share_last_used_suffix = _coerce_non_negative_int(
         getattr(deploy, "share_project_fallback_last_used_suffix", 0)
@@ -701,7 +716,7 @@ def _sync_share_project_sub(
         "share_project_name": requested_name,
         "share_project_fallback_used": False,
         "share_project_cleanup_blocked_project": "",
-        "share_project_sub_value": pages_project_url if requested_name else "",
+        "share_project_sub_value": sub_value if requested_name else "",
         "share_project_sync_ok": True,
         "share_project_sync_error": "",
         "share_project_fallback_candidate_names": [],
@@ -739,7 +754,7 @@ def _sync_share_project_sub(
         source_project,
         runtime_env,
         env_key=env_key,
-        sub_value=pages_project_url,
+        sub_value=sub_value,
     )
     share_worker_source_path = resolve_share_project_worker_source_path()
     share_bundle_dir = build_share_project_bundle_dir(share_worker_source_path)
