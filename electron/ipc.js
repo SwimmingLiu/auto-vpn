@@ -7,13 +7,35 @@ import QRCode from 'qrcode';
 
 import { mergeLatestArtifactPreview, previewArtifactDirectory } from './lib/artifact-preview.js';
 import { buildBackendInvocation, parseBackendEventLine } from './lib/backend.js';
+import { signalProcessTree } from './lib/process-lifecycle.js';
 import { resolveStateProfilePath } from './paths.js';
+
+const IPC_CHANNELS = [
+  'profile:load',
+  'profile:save',
+  'shell:open-path',
+  'clipboard:write-text',
+  'logs:export',
+  'pipeline:run',
+  'pipeline:stop',
+  'external:open-url',
+  'external:open-path',
+  'artifact:preview',
+  'artifact:latest',
+  'artifact:list',
+  'pipeline:retry-stage',
+  'qr:generate'
+];
 
 function profilePath(projectRoot, runtimeProfilePath) {
   return runtimeProfilePath || resolveStateProfilePath(projectRoot);
 }
 
 export function registerIpcHandlers({ mainWindow, projectRoot, runtimeProfilePath = '', bundledProfilePath = '' }) {
+  for (const channel of IPC_CHANNELS) {
+    ipcMain.removeHandler(channel);
+  }
+
   let activePipelineChild = null;
   let stopRequested = false;
   let stopTimer = null;
@@ -22,6 +44,37 @@ export function registerIpcHandlers({ mainWindow, projectRoot, runtimeProfilePat
     if (!mainWindow.isDestroyed()) {
       mainWindow.webContents.send('pipeline:event', payload);
     }
+  }
+
+  function clearStopTimer() {
+    if (stopTimer) {
+      clearTimeout(stopTimer);
+      stopTimer = null;
+    }
+  }
+
+  function stopActivePipeline() {
+    if (!activePipelineChild) {
+      return { ok: false, requested: false };
+    }
+
+    stopRequested = true;
+    const child = activePipelineChild;
+    const signaled = signalProcessTree(child, 'SIGTERM');
+
+    if (!signaled) {
+      return { ok: false, requested: true };
+    }
+
+    clearStopTimer();
+    stopTimer = setTimeout(() => {
+      if (activePipelineChild === child) {
+        signalProcessTree(child, 'SIGKILL');
+      }
+    }, 4000);
+    stopTimer.unref?.();
+
+    return { ok: true, requested: true };
   }
 
   ipcMain.handle('profile:load', async () => {
@@ -114,10 +167,7 @@ export function registerIpcHandlers({ mainWindow, projectRoot, runtimeProfilePat
     });
 
     child.on('error', (error) => {
-      if (stopTimer) {
-        clearTimeout(stopTimer);
-        stopTimer = null;
-      }
+      clearStopTimer();
       activePipelineChild = null;
       emit({
         type: 'finished',
@@ -130,10 +180,7 @@ export function registerIpcHandlers({ mainWindow, projectRoot, runtimeProfilePat
     });
 
     child.on('close', (code, signal) => {
-      if (stopTimer) {
-        clearTimeout(stopTimer);
-        stopTimer = null;
-      }
+      clearStopTimer();
       activePipelineChild = null;
       const stopped = stopRequested || signal === 'SIGTERM' || signal === 'SIGKILL';
       emit({
@@ -151,28 +198,7 @@ export function registerIpcHandlers({ mainWindow, projectRoot, runtimeProfilePat
   });
 
   ipcMain.handle('pipeline:stop', async () => {
-    if (!activePipelineChild) {
-      return { ok: false, requested: false };
-    }
-
-    stopRequested = true;
-    const child = activePipelineChild;
-    const signaled = child.kill('SIGTERM');
-
-    if (!signaled) {
-      return { ok: false, requested: true };
-    }
-
-    if (stopTimer) {
-      clearTimeout(stopTimer);
-    }
-    stopTimer = setTimeout(() => {
-      if (activePipelineChild === child && !child.killed) {
-        child.kill('SIGKILL');
-      }
-    }, 4000);
-
-    return { ok: true, requested: true };
+    return stopActivePipeline();
   });
 
   ipcMain.handle('external:open-url', async (_event, url) => {
@@ -267,10 +293,7 @@ export function registerIpcHandlers({ mainWindow, projectRoot, runtimeProfilePat
     });
 
     child.on('error', (error) => {
-      if (stopTimer) {
-        clearTimeout(stopTimer);
-        stopTimer = null;
-      }
+      clearStopTimer();
       activePipelineChild = null;
       emit({
         type: 'finished',
@@ -283,10 +306,7 @@ export function registerIpcHandlers({ mainWindow, projectRoot, runtimeProfilePat
     });
 
     child.on('close', (code, signal) => {
-      if (stopTimer) {
-        clearTimeout(stopTimer);
-        stopTimer = null;
-      }
+      clearStopTimer();
       activePipelineChild = null;
       const stopped = stopRequested || signal === 'SIGTERM' || signal === 'SIGKILL';
       emit({
@@ -312,6 +332,15 @@ export function registerIpcHandlers({ mainWindow, projectRoot, runtimeProfilePat
       color: { dark: '#111826', light: '#ffffff' }
     })
   }));
+
+  return {
+    stopActivePipeline,
+    dispose() {
+      for (const channel of IPC_CHANNELS) {
+        ipcMain.removeHandler(channel);
+      }
+    }
+  };
 }
 
 function runCommand(commands, args, cwd, runtimeProfilePath = '', bundledProfilePath = '', input = '') {

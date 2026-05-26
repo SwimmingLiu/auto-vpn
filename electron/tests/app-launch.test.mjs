@@ -47,3 +47,21 @@ test('electron app exposes preload bridge and renders the real saved profile', a
     await app.close();
   }
 });
+
+test('electron app can close the only window and reopen on macOS activate', async () => {
+  const app = await electron.launch({ args: [projectRoot] });
+
+  try {
+    const page = await app.firstWindow();
+    await page.waitForSelector('#pageContent');
+    await page.close();
+
+    await app.evaluate(({ app }) => app.emit('activate'));
+    const reopenedPage = await app.firstWindow();
+    await reopenedPage.waitForSelector('#pageContent');
+
+    assert.equal(await reopenedPage.locator('#pageTitle').innerText(), '概览');
+  } finally {
+    await app.close();
+  }
+});

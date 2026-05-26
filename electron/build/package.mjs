@@ -123,6 +123,14 @@ export function stageShareWorkerRuntime(projectRoot) {
   return runtimePath;
 }
 
+export function buildElectronBuilderArgs(targets = ['dmg']) {
+  const normalizedTargets = Array.isArray(targets)
+    ? targets
+    : String(targets).split(',');
+  const buildTargets = normalizedTargets.map((target) => String(target).trim()).filter(Boolean);
+  return ['electron-builder', '--mac', ...buildTargets];
+}
+
 export function runPackaging(projectRoot) {
   const { runtimeDir, defaultSeedPath, bundledSeedPath, liveProfilePath } = resolveRuntimePaths(projectRoot);
   fs.mkdirSync(runtimeDir, { recursive: true });
@@ -136,7 +144,7 @@ export function runPackaging(projectRoot) {
   stageShareWorkerRuntime(projectRoot);
   prepareMacIcon(projectRoot);
 
-  return spawnSync('npx', ['electron-builder', '--mac', 'dir'], {
+  return spawnSync('npx', buildElectronBuilderArgs(), {
     cwd: projectRoot,
     stdio: 'inherit',
     shell: process.platform === 'win32'

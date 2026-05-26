@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
+  buildElectronBuilderArgs,
   resolveIconPaths,
   resolveLiveProfilePath,
   resolveShareWorkerPaths,
@@ -31,6 +32,19 @@ test('resolveIconPaths points packaging to generated icns and source svg', () =>
   assert.equal(iconPaths.outputDir, '/tmp/project/electron/build/assets');
   assert.equal(iconPaths.outputIcns, '/tmp/project/electron/build/assets/app-icon.icns');
   assert.equal(iconPaths.iconsetDir, '/tmp/project/electron/build/assets/app-icon.iconset');
+});
+
+test('buildElectronBuilderArgs builds a macOS DMG installer by default', () => {
+  assert.deepEqual(buildElectronBuilderArgs(), ['electron-builder', '--mac', 'dmg']);
+});
+
+test('package configuration uses DMG as the macOS distribution target', () => {
+  const packageJson = JSON.parse(
+    fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf-8')
+  );
+
+  assert.deepEqual(packageJson.build.mac.target, ['dmg']);
+  assert.equal(packageJson.build.dmg.artifactName, '${productName}-${version}-${arch}.${ext}');
 });
 
 test('resolveShareWorkerPaths points packaging to the source vpn.js and bundled runtime copy', () => {

@@ -1,7 +1,9 @@
 from vpn_automation.config.models import SpeedTestConfig
 from vpn_automation.pipeline.proxy_runtime import (
+    _register_active_proxy_runtime,
     build_mihomo_runtime_config,
     build_runtime_env,
+    terminate_active_proxy_runtimes,
 )
 from vpn_automation.pipeline.speedtest import (
     ProbeResult,
@@ -47,6 +49,39 @@ def test_build_runtime_env_strips_proxy_variables(monkeypatch) -> None:
     assert "HTTP_PROXY" not in env
     assert "HTTPS_PROXY" not in env
     assert "ALL_PROXY" not in env
+
+
+def test_terminate_active_proxy_runtimes_terminates_process_and_unlinks_config(tmp_path) -> None:
+    class DummyProcess:
+        def __init__(self) -> None:
+            self.terminated = False
+            self.killed = False
+            self.waited = False
+
+        def poll(self):
+            return None
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+        def wait(self, timeout=None) -> None:
+            self.waited = True
+
+        def kill(self) -> None:
+            self.killed = True
+
+    config_path = tmp_path / "runtime.json"
+    config_path.write_text("{}", encoding="utf-8")
+    process = DummyProcess()
+    _register_active_proxy_runtime(process, config_path)
+
+    cleaned = terminate_active_proxy_runtimes()
+
+    assert cleaned == 1
+    assert process.terminated is True
+    assert process.waited is True
+    assert process.killed is False
+    assert not config_path.exists()
 
 
 def test_aggregate_speed_measurements_uses_average_of_successful_sources() -> None:

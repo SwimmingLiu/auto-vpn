@@ -31,10 +31,13 @@
     "asar": false,
     "mac": {
       "target": [
-        "dir"
+        "dmg"
       ],
       "category": "public.app-category.developer-tools",
       "icon": "electron/build/assets/app-icon.icns"
+    },
+    "dmg": {
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
     }
   },
   "dependencies": {

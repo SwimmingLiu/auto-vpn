@@ -1,9 +1,11 @@
 import json
 import os
+import signal
 import shutil
 import socket
 import subprocess
 import tempfile
+import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -36,6 +38,12 @@ PROXY_ENV_KEYS = (
     "NO_PROXY",
     "no_proxy",
 )
+
+
+_ACTIVE_RUNTIMES: list[tuple[subprocess.Popen[str], Path]] = []
+_ACTIVE_RUNTIMES_LOCK = threading.Lock()
+_SIGNAL_HANDLERS_INSTALLED = False
+
 
 def resolve_mihomo_binary(explicit_path: str = "") -> str:
     candidates = [
@@ -107,6 +115,53 @@ def build_runtime_env() -> dict[str, str]:
         env.pop(key, None)
     return env
 
+
+def _register_active_proxy_runtime(process: subprocess.Popen[str], config_path: Path) -> tuple[subprocess.Popen[str], Path]:
+    token = (process, config_path)
+    with _ACTIVE_RUNTIMES_LOCK:
+        _ACTIVE_RUNTIMES.append(token)
+    return token
+
+
+def _unregister_active_proxy_runtime(token: tuple[subprocess.Popen[str], Path]) -> None:
+    with _ACTIVE_RUNTIMES_LOCK:
+        if token in _ACTIVE_RUNTIMES:
+            _ACTIVE_RUNTIMES.remove(token)
+
+
+def _terminate_proxy_runtime_process(process: subprocess.Popen[str], config_path: Path) -> None:
+    if process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            process.kill()
+    config_path.unlink(missing_ok=True)
+
+
+def terminate_active_proxy_runtimes() -> int:
+    with _ACTIVE_RUNTIMES_LOCK:
+        runtimes = list(_ACTIVE_RUNTIMES)
+        _ACTIVE_RUNTIMES.clear()
+
+    for process, config_path in runtimes:
+        _terminate_proxy_runtime_process(process, config_path)
+    return len(runtimes)
+
+
+def _handle_proxy_runtime_shutdown_signal(signum: int, _frame: object) -> None:
+    terminate_active_proxy_runtimes()
+    raise SystemExit(128 + signum)
+
+
+def install_proxy_runtime_signal_handlers() -> None:
+    global _SIGNAL_HANDLERS_INSTALLED
+    if _SIGNAL_HANDLERS_INSTALLED or threading.current_thread() is not threading.main_thread():
+        return
+    signal.signal(signal.SIGTERM, _handle_proxy_runtime_shutdown_signal)
+    signal.signal(signal.SIGINT, _handle_proxy_runtime_shutdown_signal)
+    _SIGNAL_HANDLERS_INSTALLED = True
+
 def select_mihomo_proxy(controller_url: str, proxy_name: str, timeout_seconds: float) -> None:
     if not controller_url:
         return
@@ -167,6 +222,7 @@ def open_proxy_runtime(
     startup_wait_seconds: float,
     runtime_path: str = "",
 ) -> Iterator[ProxyRuntime]:
+    install_proxy_runtime_signal_handlers()
     payload = parse_vmess_link(link)
     binary = resolve_mihomo_binary(runtime_path)
     http_port = _find_free_port()
@@ -191,6 +247,7 @@ def open_proxy_runtime(
         text=True,
         env=build_runtime_env(),
     )
+    runtime_token = _register_active_proxy_runtime(process, config_path)
     session = requests.Session()
     session.trust_env = False
     proxies = {
@@ -212,9 +269,8 @@ def open_proxy_runtime(
         )
     finally:
         session.close()
-        process.terminate()
-        try:
-            process.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            process.kill()
-        config_path.unlink(missing_ok=True)
+        _unregister_active_proxy_runtime(runtime_token)
+        _terminate_proxy_runtime_process(process, config_path)
+
+
+install_proxy_runtime_signal_handlers()
