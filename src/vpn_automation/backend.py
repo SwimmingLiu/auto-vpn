@@ -51,7 +51,17 @@ def render_human_event(event: dict[str, Any]) -> str:
 def ensure_profile_json(project_root: Path) -> str:
     store = ProfileStore(resolve_profile_path(project_root))
     profile = store.load_or_create(project_root)
-    return json.dumps(profile.to_dict(), ensure_ascii=False)
+    payload = profile.to_dict()
+    artifacts_root = resolve_artifacts_root(project_root)
+    paths = {
+        "project_root": str(project_root),
+        "artifacts_root": str(artifacts_root),
+        "state_root": str(resolve_profile_path(project_root).parent),
+        "profile_path": str(resolve_profile_path(project_root)),
+    }
+    payload["paths"] = paths
+    payload["workspace"] = paths
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def artifact_latest_json(project_root: Path) -> str:
@@ -96,7 +106,7 @@ def save_profile_payload(project_root: Path, payload: dict[str, Any]) -> str:
     store = ProfileStore(resolve_profile_path(project_root))
     profile = AppProfile.from_dict(payload)
     store.save(profile)
-    return json.dumps(profile.to_dict(), ensure_ascii=False)
+    return ensure_profile_json(project_root)
 
 
 def save_profile_json(project_root: Path, payload: str) -> str:
@@ -183,6 +193,33 @@ def _emit_summary(emit: Callable[[str, dict[str, Any]], None], summary: Any) -> 
     )
 
 
+def _failure_summary(error: str) -> Any:
+    return type(
+        "FailureSummary",
+        (),
+        {
+            "artifact_dir": "",
+            "stage_status": {
+                "doctor": "failed",
+                "extract": "pending",
+                "dedupe": "pending",
+                "speedtest": "pending",
+                "availability": "pending",
+                "postprocess": "pending",
+                "render": "pending",
+                "obfuscate": "pending",
+                "deploy": "pending",
+                "verify": "pending",
+            },
+            "counts": {},
+            "source_counts": {},
+            "deployment": {},
+            "run_status": "failed",
+            "error": error,
+        },
+    )()
+
+
 def _run_with_streams(
     *,
     output_format: str,
@@ -203,7 +240,10 @@ def _run_with_streams(
                 return 1
             return 0
         except Exception as exc:
-            emit("run_failed", {"error": f"{exc.__class__.__name__}: {exc}"})
+            error = f"{exc.__class__.__name__}: {exc}"
+            emit("log", {"message": f"[doctor] configuration failed: {error}"})
+            _emit_summary(emit, _failure_summary(error))
+            emit("run_failed", {"error": error})
             return 1
 
 

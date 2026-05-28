@@ -31,7 +31,13 @@ function profilePath(projectRoot, runtimeProfilePath) {
   return runtimeProfilePath || resolveStateProfilePath(projectRoot);
 }
 
-export function registerIpcHandlers({ mainWindow, projectRoot, runtimeProfilePath = '', bundledProfilePath = '' }) {
+export function registerIpcHandlers({
+  mainWindow,
+  projectRoot,
+  runtimeProfilePath = '',
+  bundledProfilePath = '',
+  runtimeArtifactsPath = ''
+}) {
   for (const channel of IPC_CHANNELS) {
     ipcMain.removeHandler(channel);
   }
@@ -84,7 +90,9 @@ export function registerIpcHandlers({ mainWindow, projectRoot, runtimeProfilePat
       invocation.args,
       projectRoot,
       runtimeProfilePath,
-      bundledProfilePath
+      bundledProfilePath,
+      '',
+      runtimeArtifactsPath
     );
     return JSON.parse(output.stdout);
   });
@@ -97,7 +105,8 @@ export function registerIpcHandlers({ mainWindow, projectRoot, runtimeProfilePat
       projectRoot,
       runtimeProfilePath,
       bundledProfilePath,
-      JSON.stringify(payload)
+      JSON.stringify(payload),
+      runtimeArtifactsPath
     );
     return { ok: true };
   });
@@ -140,7 +149,7 @@ export function registerIpcHandlers({ mainWindow, projectRoot, runtimeProfilePat
     }
     const child = spawn(command, runArgs, {
       cwd: projectRoot,
-      env: buildBackendEnv(projectRoot, runtimeProfilePath, bundledProfilePath),
+      env: buildBackendEnv(projectRoot, runtimeProfilePath, bundledProfilePath, runtimeArtifactsPath),
       detached: true,
       stdio: ['ignore', 'pipe', 'pipe']
     });
@@ -225,7 +234,9 @@ export function registerIpcHandlers({ mainWindow, projectRoot, runtimeProfilePat
       invocation.args,
       projectRoot,
       runtimeProfilePath,
-      bundledProfilePath
+      bundledProfilePath,
+      '',
+      runtimeArtifactsPath
     );
     const report = JSON.parse(output.stdout);
     if (!report?.ok) {
@@ -241,7 +252,9 @@ export function registerIpcHandlers({ mainWindow, projectRoot, runtimeProfilePat
       invocation.args,
       projectRoot,
       runtimeProfilePath,
-      bundledProfilePath
+      bundledProfilePath,
+      '',
+      runtimeArtifactsPath
     );
     return JSON.parse(output.stdout);
   });
@@ -266,7 +279,7 @@ export function registerIpcHandlers({ mainWindow, projectRoot, runtimeProfilePat
     const command = selectBackendCommand(invocation.commands);
     const child = spawn(command, invocation.args, {
       cwd: projectRoot,
-      env: buildBackendEnv(projectRoot, runtimeProfilePath, bundledProfilePath),
+      env: buildBackendEnv(projectRoot, runtimeProfilePath, bundledProfilePath, runtimeArtifactsPath),
       detached: true,
       stdio: ['ignore', 'pipe', 'pipe']
     });
@@ -343,12 +356,20 @@ export function registerIpcHandlers({ mainWindow, projectRoot, runtimeProfilePat
   };
 }
 
-function runCommand(commands, args, cwd, runtimeProfilePath = '', bundledProfilePath = '', input = '') {
+function runCommand(
+  commands,
+  args,
+  cwd,
+  runtimeProfilePath = '',
+  bundledProfilePath = '',
+  input = '',
+  runtimeArtifactsPath = ''
+) {
   return new Promise((resolve, reject) => {
     const command = selectBackendCommand(commands);
     const child = spawn(command, args, {
       cwd,
-      env: buildBackendEnv(cwd, runtimeProfilePath, bundledProfilePath),
+      env: buildBackendEnv(cwd, runtimeProfilePath, bundledProfilePath, runtimeArtifactsPath),
       stdio: ['pipe', 'pipe', 'pipe']
     });
 

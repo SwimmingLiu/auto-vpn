@@ -12,6 +12,7 @@ from vpn_automation.pipeline.availability import (
     fetch_provider_result,
     evaluate_provider_response,
     normalize_provider_targets,
+    resolve_node_module_dir,
     resolve_node_binary,
 )
 from vpn_automation.config.models import AvailabilityTargetConfig, SpeedTestConfig
@@ -199,7 +200,7 @@ def test_check_link_availability_batch_downgrades_runtime_errors_to_failed_node(
     good = SpeedTestResult(link="vmess://good", reachable=True, average_download_mb_s=2.0, latency_ms=50)
     bad = SpeedTestResult(link="vmess://bad", reachable=True, average_download_mb_s=2.0, latency_ms=50)
 
-    def fake_check(speed_result, config, *, runtime_path=""):
+    def fake_check(speed_result, config, *, runtime_path="", targets=None):
         if speed_result.link == "vmess://bad":
             raise RuntimeError("proxy bootstrap failed")
         return AvailabilityResult(
@@ -282,6 +283,14 @@ def test_resolve_node_binary_falls_back_when_path_does_not_find_node(
     monkeypatch.setattr("vpn_automation.pipeline.availability.shutil.which", lambda _name: None)
 
     assert resolve_node_binary(extra_candidates=(str(bundled_node),)) == str(bundled_node)
+
+
+def test_resolve_node_module_dir_prefers_bundled_runtime_vendor(tmp_path) -> None:
+    project_root = tmp_path / "app"
+    vendor_modules = project_root / "electron" / "runtime" / "node-vendor" / "node_modules"
+    (vendor_modules / "playwright").mkdir(parents=True)
+
+    assert resolve_node_module_dir(str(project_root)) == str(vendor_modules)
 
 
 def test_check_link_availability_preserves_primary_results_when_browser_fallback_fails(
@@ -394,7 +403,7 @@ def test_check_link_availability_batch_emits_link_events(
 
     monkeypatch.setattr(
         "vpn_automation.pipeline.availability.check_link_availability",
-        lambda speed_result, config, *, runtime_path="": AvailabilityResult(
+        lambda speed_result, config, *, runtime_path="", targets=None: AvailabilityResult(
             speed_result=speed_result,
             provider_results={
                 "gemini": ProviderCheckResult(provider="gemini", passed=True, reason="ok"),

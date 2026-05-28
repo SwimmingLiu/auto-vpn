@@ -11,10 +11,13 @@ import {
   buildPythonCandidates,
   parseBackendEventLine,
   resolveBackendPython,
+  resolveBundledChromiumPath,
+  resolvePlaywrightBrowsersPath,
   resolvePythonVendorPath
 } from '../lib/backend.js';
 import {
   findProjectRoot,
+  resolveRuntimeArtifactsPath,
   resolveBundledProfilePath,
   resolveProjectRoot,
   resolveStateProfilePath
@@ -130,6 +133,42 @@ test('resolveStateProfilePath switches to userData when packaged', () => {
     resolveStateProfilePath('/repo', { isPackaged: true, userDataPath: '/Users/demo/Library/Application Support/VPN' }),
     '/Users/demo/Library/Application Support/VPN/state/profile.toml'
   );
+});
+
+test('resolveRuntimeArtifactsPath switches to userData when packaged', () => {
+  assert.equal(
+    resolveRuntimeArtifactsPath('/repo', { isPackaged: true, userDataPath: '/Users/demo/Library/Application Support/VPN' }),
+    '/Users/demo/Library/Application Support/VPN/artifacts'
+  );
+});
+
+test('buildBackendEnv exposes packaged runtime artifacts path to Python backend', () => {
+  const env = buildBackendEnv('/repo', '/profile.toml', '/bundled.toml', '/runtime/artifacts');
+
+  assert.equal(env.VPN_AUTOMATION_ARTIFACTS_ROOT, '/runtime/artifacts');
+});
+
+test('buildBackendEnv points Playwright at bundled Chromium headless shell when packaged browser exists', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vpn-playwright-browser-'));
+  const projectRoot = path.join(root, 'app');
+  const chromiumPath = path.join(
+    projectRoot,
+    'electron',
+    'runtime',
+    'playwright-browsers',
+    'chromium_headless_shell-1217',
+    'chrome-headless-shell-mac-arm64',
+    'chrome-headless-shell'
+  );
+  fs.mkdirSync(path.dirname(chromiumPath), { recursive: true });
+  fs.writeFileSync(chromiumPath, '', 'utf-8');
+
+  const env = buildBackendEnv(projectRoot, '/profile.toml', '/bundled.toml', '/runtime/artifacts');
+
+  assert.equal(resolvePlaywrightBrowsersPath(projectRoot), path.join(projectRoot, 'electron', 'runtime', 'playwright-browsers'));
+  assert.equal(resolveBundledChromiumPath(projectRoot), chromiumPath);
+  assert.equal(env.PLAYWRIGHT_BROWSERS_PATH, resolvePlaywrightBrowsersPath(projectRoot));
+  assert.equal(env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH, chromiumPath);
 });
 
 test('resolveBundledProfilePath points at the packaged runtime seed file', () => {

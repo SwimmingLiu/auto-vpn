@@ -889,6 +889,14 @@ async function runPipeline() {
   }
 
   const messages = getMessages(state.language);
+  const runOptions = collectRunOptions();
+  const preflightError = validateRunPreflight(runOptions);
+  if (preflightError) {
+    showToast({ tone: 'danger', message: preflightError, durationMs: 5200 });
+    appendLog(`[界面] ${preflightError}`, { level: 'error' });
+    return;
+  }
+
   state.runState = 'running';
   state.runResult = 'running';
   state.stageStatus = {};
@@ -904,7 +912,6 @@ async function runPipeline() {
   renderAll();
   appendLog(messages.pipelineStarted);
 
-  const runOptions = collectRunOptions();
   if (runOptions.saveBeforeRun) {
     await saveProfile({ silent: true });
   }
@@ -998,6 +1005,26 @@ function collectRunOptions() {
     options[input.dataset.runOption] = Boolean(input.checked);
   }
   return options;
+}
+
+function validateRunPreflight(runOptions) {
+  if (runOptions.skipDeploy) {
+    return '';
+  }
+
+  const deploy = state.profile?.deploy ?? {};
+  const authMode = String(deploy.cloudflare_auth_mode || 'api_token').trim() || 'api_token';
+  if (authMode === 'global_key') {
+    if (String(deploy.cloudflare_email || '').trim() && String(deploy.cloudflare_global_key || '').trim()) {
+      return '';
+    }
+    return getMessages(state.language).deployCredentialsMissing;
+  }
+
+  if (String(deploy.cloudflare_api_token || '').trim()) {
+    return '';
+  }
+  return getMessages(state.language).deployCredentialsMissing;
 }
 
 async function stopPipeline() {

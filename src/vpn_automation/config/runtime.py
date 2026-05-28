@@ -35,6 +35,9 @@ def load_runtime_env(candidate: Path) -> dict[str, str]:
 
 
 def resolve_artifacts_root(candidate: Path) -> Path:
+    artifacts_override = os.environ.get("VPN_AUTOMATION_ARTIFACTS_ROOT", "").strip()
+    if artifacts_override:
+        return Path(artifacts_override).expanduser().resolve()
     return resolve_runtime_root(candidate) / "artifacts"
 
 

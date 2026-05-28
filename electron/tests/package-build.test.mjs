@@ -6,6 +6,10 @@ import path from 'node:path';
 
 import {
   buildElectronBuilderArgs,
+  buildNodeVendorInstallArgs,
+  buildPlaywrightBrowserInstallArgs,
+  resolveNodeVendorRuntimePaths,
+  resolvePlaywrightBrowserRuntimePaths,
   buildPythonVendorInstallArgs,
   resolveIconPaths,
   resolveLiveProfilePath,
@@ -60,6 +64,37 @@ test('resolvePythonVendorRuntimePaths stores packaged dependencies under electro
   assert.deepEqual(resolvePythonVendorRuntimePaths('/tmp/project'), {
     vendorDir: '/tmp/project/electron/runtime/python-vendor'
   });
+});
+
+test('resolveNodeVendorRuntimePaths stores packaged browser probe dependencies under electron runtime', () => {
+  assert.deepEqual(resolveNodeVendorRuntimePaths('/tmp/project'), {
+    vendorDir: '/tmp/project/electron/runtime/node-vendor'
+  });
+});
+
+test('resolvePlaywrightBrowserRuntimePaths stores bundled Chromium under electron runtime', () => {
+  assert.deepEqual(resolvePlaywrightBrowserRuntimePaths('/tmp/project'), {
+    browserDir: '/tmp/project/electron/runtime/playwright-browsers'
+  });
+});
+
+test('buildNodeVendorInstallArgs installs Playwright runtime dependencies into vendor dir', () => {
+  assert.deepEqual(buildNodeVendorInstallArgs('/tmp/vendor'), [
+    'install',
+    '--omit=dev',
+    '--ignore-scripts',
+    '--prefix',
+    '/tmp/vendor',
+    'playwright@1.59.1'
+  ]);
+});
+
+test('buildPlaywrightBrowserInstallArgs installs only the Chromium headless shell', () => {
+  assert.deepEqual(buildPlaywrightBrowserInstallArgs(), [
+    'playwright',
+    'install',
+    'chromium-headless-shell'
+  ]);
 });
 
 test('selectRunnablePythonCandidate skips missing commands on PATH', () => {

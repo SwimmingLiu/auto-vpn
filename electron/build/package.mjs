@@ -12,6 +12,9 @@ const RUNTIME_PYTHON_DEPENDENCIES = [
   'requests>=2.32.0',
   'tomlkit>=0.13.2'
 ];
+const RUNTIME_NODE_DEPENDENCIES = [
+  'playwright@1.59.1'
+];
 
 export function resolveRepoAnchor(projectRoot) {
   const normalized = path.resolve(projectRoot);
@@ -51,6 +54,18 @@ export function resolveShareWorkerPaths(projectRoot) {
 export function resolvePythonVendorRuntimePaths(projectRoot) {
   return {
     vendorDir: path.join(projectRoot, 'electron', 'runtime', 'python-vendor')
+  };
+}
+
+export function resolveNodeVendorRuntimePaths(projectRoot) {
+  return {
+    vendorDir: path.join(projectRoot, 'electron', 'runtime', 'node-vendor')
+  };
+}
+
+export function resolvePlaywrightBrowserRuntimePaths(projectRoot) {
+  return {
+    browserDir: path.join(projectRoot, 'electron', 'runtime', 'playwright-browsers')
   };
 }
 
@@ -127,6 +142,25 @@ export function buildPythonVendorInstallArgs(vendorDir) {
   ];
 }
 
+export function buildNodeVendorInstallArgs(vendorDir) {
+  return [
+    'install',
+    '--omit=dev',
+    '--ignore-scripts',
+    '--prefix',
+    vendorDir,
+    ...RUNTIME_NODE_DEPENDENCIES
+  ];
+}
+
+export function buildPlaywrightBrowserInstallArgs() {
+  return [
+    'playwright',
+    'install',
+    'chromium-headless-shell'
+  ];
+}
+
 function renderSvgToPng(sourceSvg, outputPng) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vpn-auto-icon-'));
   try {
@@ -191,6 +225,26 @@ export function stagePythonVendorRuntime(projectRoot) {
   return vendorDir;
 }
 
+export function stageNodeVendorRuntime(projectRoot) {
+  const { vendorDir } = resolveNodeVendorRuntimePaths(projectRoot);
+  ensureCleanDir(vendorDir);
+  runOrThrow('npm', buildNodeVendorInstallArgs(vendorDir), { cwd: projectRoot });
+  return vendorDir;
+}
+
+export function stagePlaywrightBrowserRuntime(projectRoot) {
+  const { browserDir } = resolvePlaywrightBrowserRuntimePaths(projectRoot);
+  ensureCleanDir(browserDir);
+  runOrThrow('npx', buildPlaywrightBrowserInstallArgs(), {
+    cwd: projectRoot,
+    env: {
+      ...process.env,
+      PLAYWRIGHT_BROWSERS_PATH: browserDir
+    }
+  });
+  return browserDir;
+}
+
 export function buildElectronBuilderArgs(targets = ['dmg']) {
   const normalizedTargets = Array.isArray(targets)
     ? targets
@@ -211,6 +265,8 @@ export function runPackaging(projectRoot) {
 
   stageShareWorkerRuntime(projectRoot);
   stagePythonVendorRuntime(projectRoot);
+  stageNodeVendorRuntime(projectRoot);
+  stagePlaywrightBrowserRuntime(projectRoot);
   prepareMacIcon(projectRoot);
 
   return spawnSync('npx', buildElectronBuilderArgs(), {

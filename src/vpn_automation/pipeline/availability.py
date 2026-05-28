@@ -123,6 +123,8 @@ NODE_BINARY_CANDIDATES = (
     "/usr/bin/node",
 )
 
+NODE_MODULE_DIR_ENV = "VPN_AUTOMATION_NODE_MODULE_DIR"
+
 
 def _emit_event(
     event_callback: Callable[[str, dict[str, Any]], None] | None,
@@ -285,6 +287,22 @@ def resolve_node_binary(extra_candidates: tuple[str, ...] = ()) -> str:
     raise FileNotFoundError("node binary not found")
 
 
+def resolve_node_module_dir(project_root: str = "") -> str:
+    env_value = os.environ.get(NODE_MODULE_DIR_ENV, "").strip()
+    if env_value and (Path(env_value) / "playwright").exists():
+        return env_value
+
+    if project_root:
+        candidates = [
+            Path(project_root) / "electron" / "runtime" / "node-vendor" / "node_modules",
+            Path(project_root) / "node_modules",
+        ]
+        for bundled_modules in candidates:
+            if (bundled_modules / "playwright").exists():
+                return str(bundled_modules)
+    return ""
+
+
 def fetch_provider_results_with_browser(
     proxies: dict[str, str],
     targets: tuple[ProviderTarget, ...],
@@ -297,11 +315,17 @@ def fetch_provider_results_with_browser(
 
     repo_root = Path(project_root) if project_root else resolve_repo_anchor(Path(__file__))
     script = r"""
-import { chromium } from 'playwright';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+const { chromium } = require('playwright');
 const proxyServer = process.argv[1];
 const timeoutMs = Number(process.argv[2]);
 const targets = JSON.parse(process.argv[3]);
-const browser = await chromium.launch({ headless: true, proxy: { server: proxyServer } });
+const launchOptions = { headless: true, proxy: { server: proxyServer } };
+if (process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH) {
+  launchOptions.executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
+}
+const browser = await chromium.launch(launchOptions);
 const context = await browser.newContext({
   userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
   locale: 'en-US',
@@ -332,11 +356,16 @@ await browser.close();
 """
     target_payload = json.dumps([{"name": target.name, "url": target.url} for target in targets], ensure_ascii=False)
     timeout_budget = max(timeout_seconds * len(targets) + 45, 60)
+    node_env = dict(os.environ)
+    node_module_dir = resolve_node_module_dir(str(repo_root))
+    if node_module_dir:
+        node_env["NODE_PATH"] = node_module_dir
     result = subprocess.run(
         [resolve_node_binary(), "--input-type=module", "-e", script, proxy_server, str(timeout_seconds * 1000), target_payload],
         cwd=str(repo_root),
         capture_output=True,
         text=True,
+        env=node_env,
         timeout=timeout_budget,
         check=False,
     )
@@ -416,6 +445,7 @@ def check_link_availability(
                         runtime.proxies,
                         fallback_targets,
                         config.timeout_seconds,
+                        project_root=runtime_path,
                     )
                     provider_results.update(browser_results)
                 except Exception as exc:

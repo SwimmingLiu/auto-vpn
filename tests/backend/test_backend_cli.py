@@ -30,7 +30,9 @@ def test_ensure_profile_json_bootstraps_missing_profile(tmp_path: Path) -> None:
     profile_json = ensure_profile_json(project_root)
     payload = json.loads(profile_json)
     assert payload["deploy"]["project_name"] == "sub-nodes"
-    assert "workspace" not in payload
+    assert payload["paths"]["project_root"] == str(project_root)
+    assert payload["paths"]["artifacts_root"] == str(project_root / "artifacts")
+    assert payload["workspace"] == payload["paths"]
 
 
 def test_save_profile_json_persists_toml_backed_changes(tmp_path: Path) -> None:
@@ -140,6 +142,32 @@ def test_artifact_latest_json_returns_latest_reported_artifact(tmp_path: Path) -
     assert payload["artifact_dir"] == str(latest_dir)
     assert payload["counts"]["availability_links"] == 2
     assert payload["source_counts"]["leiting"]["raw_links"] == 3
+
+
+def test_artifact_latest_json_uses_runtime_artifacts_override(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    runtime_artifacts_root = tmp_path / "Application Support" / "vpn-subscription-automation" / "artifacts"
+    latest_dir = runtime_artifacts_root / "20260528-150000"
+    latest_dir.mkdir(parents=True)
+    (latest_dir / "pipeline_report.json").write_text(
+        json.dumps(
+            {
+                "artifact_dir": str(latest_dir),
+                "run_status": "failed",
+                "stage_status": {"doctor": "failed"},
+                "error": "RuntimeError: Cloudflare API token is missing",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("VPN_AUTOMATION_ARTIFACTS_ROOT", str(runtime_artifacts_root))
+
+    payload = json.loads(artifact_latest_json(project_root))
+
+    assert payload["ok"] is True
+    assert payload["artifact_dir"] == str(latest_dir)
+    assert payload["error"] == "RuntimeError: Cloudflare API token is missing"
 
 
 def test_artifact_latest_json_returns_empty_when_no_artifact_exists(tmp_path: Path) -> None:
@@ -430,6 +458,51 @@ def test_run_pipeline_persists_structured_stage_events(
     payloads = [json.loads(line) for line in event_log.read_text(encoding="utf-8").splitlines()]
     assert code == 0
     assert "extract_request_result" in [payload["type"] for payload in payloads]
+
+
+def test_run_pipeline_emits_log_and_summary_when_configuration_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    event_log = tmp_path / "events.jsonl"
+
+    class FakeStore:
+        def __init__(self, path: Path) -> None:
+            self.path = path
+
+        def load_or_create(self, project_root: Path):
+            return SimpleNamespace()
+
+    class FakeController:
+        def run(self, profile, **kwargs):
+            raise RuntimeError("Cloudflare API token is missing")
+
+    monkeypatch.setattr("vpn_automation.backend.ProfileStore", FakeStore)
+    monkeypatch.setattr("vpn_automation.backend.PipelineController", FakeController)
+
+    code = run_pipeline(
+        project_root,
+        skip_deploy=False,
+        skip_verify=False,
+        output_format="jsonl",
+        event_log_path=event_log,
+    )
+
+    payloads = [json.loads(line) for line in event_log.read_text(encoding="utf-8").splitlines()]
+    assert code == 1
+    assert payloads[0] == {
+        "type": "log",
+        "message": "[doctor] configuration failed: RuntimeError: Cloudflare API token is missing",
+    }
+    assert payloads[1]["type"] == "summary"
+    assert payloads[1]["run_status"] == "failed"
+    assert payloads[1]["stage_status"]["doctor"] == "failed"
+    assert payloads[1]["error"] == "RuntimeError: Cloudflare API token is missing"
+    assert payloads[2] == {
+        "type": "run_failed",
+        "error": "RuntimeError: Cloudflare API token is missing",
+    }
 
 
 def test_run_pipeline_persists_updated_deploy_names_after_success(tmp_path: Path, monkeypatch) -> None:

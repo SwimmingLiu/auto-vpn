@@ -99,6 +99,7 @@ const ZH_MESSAGES = {
   profileSaved: '[界面] 配置已保存',
   profileReset: '[界面] 已恢复到上次保存的配置',
   pipelineStarted: '[界面] 流水线已启动',
+  deployCredentialsMissing: '部署配置不完整：请填写 Cloudflare Token，或勾选“跳过部署”后仅执行本地生成。',
   pipelineStopping: '[界面] 已请求停止当前流水线',
   pipelineStopped: '[界面] 流水线已停止',
   pipelineFinished: '[界面] 流水线结束，退出码：{code}',

@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
 
-from vpn_automation.config.runtime import load_runtime_env, resolve_template_file
+from vpn_automation.config.runtime import load_runtime_env, resolve_artifacts_root, resolve_template_file
 from vpn_automation.config.store import ProfileStore, resolve_profile_path
 from vpn_automation.integrations.cloudflare import (
     CloudflareClient,
@@ -117,7 +117,7 @@ def _is_retry_artifact_dir(path: Path) -> bool:
 
 
 def _create_retry_artifact_dir(project_root: Path) -> Path:
-    root = project_root / "artifacts"
+    root = resolve_artifacts_root(project_root)
     root.mkdir(parents=True, exist_ok=True)
     artifact_dir = root / datetime.now().strftime("%Y%m%d-%H%M%S")
     artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -876,7 +876,7 @@ def _build_cloudflare_client(credentials: Any) -> CloudflareClient:
 
 
 def list_artifacts_with_retry_stages(project_root: Path, *, limit: int = 20) -> list[dict[str, Any]]:
-    artifacts_root = project_root / "artifacts"
+    artifacts_root = resolve_artifacts_root(project_root)
     if not artifacts_root.exists():
         return []
 
@@ -941,6 +941,11 @@ def retry_pipeline_from_stage(
     run_store = RunStore(retry_artifact_dir / "run.db")
     current_stage = ""
 
+    def finalize(summary: PipelineSummary) -> PipelineSummary:
+        if summary.run_status in {"success", "failed", "stopped"}:
+            run_store.mark_run_status(summary.run_status)
+        return summary
+
     def log(message: str) -> None:
         if log_callback:
             log_callback(message)
@@ -987,7 +992,7 @@ def retry_pipeline_from_stage(
             if summary.run_status == "success" and hasattr(profile, "sources"):
                 _apply_deployment_to_profile(profile, summary.deployment)
                 store.save(profile)
-            return summary
+            return finalize(summary)
         if stage_name == "availability":
             summary = _retry_from_availability(
                 controller,
@@ -1002,7 +1007,7 @@ def retry_pipeline_from_stage(
             if summary.run_status == "success" and hasattr(profile, "sources"):
                 _apply_deployment_to_profile(profile, summary.deployment)
                 store.save(profile)
-            return summary
+            return finalize(summary)
         if stage_name == "postprocess":
             summary = _retry_from_postprocess(
                 controller,
@@ -1016,7 +1021,7 @@ def retry_pipeline_from_stage(
             if summary.run_status == "success" and hasattr(profile, "sources"):
                 _apply_deployment_to_profile(profile, summary.deployment)
                 store.save(profile)
-            return summary
+            return finalize(summary)
         if stage_name == "render":
             summary = _retry_from_render(
                 controller,
@@ -1030,7 +1035,7 @@ def retry_pipeline_from_stage(
             if summary.run_status == "success" and hasattr(profile, "sources"):
                 _apply_deployment_to_profile(profile, summary.deployment)
                 store.save(profile)
-            return summary
+            return finalize(summary)
         if stage_name == "obfuscate":
             summary = _retry_from_obfuscate(
                 controller,
@@ -1044,7 +1049,7 @@ def retry_pipeline_from_stage(
             if summary.run_status == "success" and hasattr(profile, "sources"):
                 _apply_deployment_to_profile(profile, summary.deployment)
                 store.save(profile)
-            return summary
+            return finalize(summary)
         if stage_name == "deploy":
             summary = _retry_from_deploy(
                 controller,
@@ -1059,7 +1064,7 @@ def retry_pipeline_from_stage(
             if summary.run_status == "success" and hasattr(profile, "sources"):
                 _apply_deployment_to_profile(profile, summary.deployment)
                 store.save(profile)
-            return summary
+            return finalize(summary)
         summary = _retry_from_verify(
             controller,
             profile,
@@ -1072,13 +1077,14 @@ def retry_pipeline_from_stage(
         if summary.run_status == "success" and hasattr(profile, "sources"):
             _apply_deployment_to_profile(profile, summary.deployment)
             store.save(profile)
-        return summary
+        return finalize(summary)
     except Exception as exc:
         if current_stage and summary.stage_status.get(current_stage) == "running":
             set_stage(current_stage, "failed")
         summary.run_status = "failed"
         summary.error = f"{exc.__class__.__name__}: {exc}"
         controller._write_pipeline_report(retry_artifact_dir, summary)
+        run_store.mark_run_status("failed")
         raise
 
 
