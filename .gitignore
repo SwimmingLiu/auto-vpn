@@ -15,3 +15,4 @@ dist-electron/
 build/
 electron/runtime/bundled-profile.toml
 electron/runtime/share-worker/
+electron/runtime/python-vendor/

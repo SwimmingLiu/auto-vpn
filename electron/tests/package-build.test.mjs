@@ -6,9 +6,12 @@ import path from 'node:path';
 
 import {
   buildElectronBuilderArgs,
+  buildPythonVendorInstallArgs,
   resolveIconPaths,
   resolveLiveProfilePath,
+  resolvePythonVendorRuntimePaths,
   resolveShareWorkerPaths,
+  selectRunnablePythonCandidate,
   stageShareWorkerRuntime
 } from '../build/package.mjs';
 
@@ -36,6 +39,34 @@ test('resolveIconPaths points packaging to generated icns and source svg', () =>
 
 test('buildElectronBuilderArgs builds a macOS DMG installer by default', () => {
   assert.deepEqual(buildElectronBuilderArgs(), ['electron-builder', '--mac', 'dmg']);
+});
+
+test('buildPythonVendorInstallArgs installs runtime Python dependencies into vendor dir', () => {
+  assert.deepEqual(buildPythonVendorInstallArgs('/tmp/vendor'), [
+    '-m',
+    'pip',
+    'install',
+    '--disable-pip-version-check',
+    '--target',
+    '/tmp/vendor',
+    'cryptography>=45.0.0',
+    'python-dotenv>=1.0.1',
+    'requests>=2.32.0',
+    'tomlkit>=0.13.2'
+  ]);
+});
+
+test('resolvePythonVendorRuntimePaths stores packaged dependencies under electron runtime', () => {
+  assert.deepEqual(resolvePythonVendorRuntimePaths('/tmp/project'), {
+    vendorDir: '/tmp/project/electron/runtime/python-vendor'
+  });
+});
+
+test('selectRunnablePythonCandidate skips missing commands on PATH', () => {
+  assert.equal(
+    selectRunnablePythonCandidate(['python3.12', 'python3'], (candidate) => candidate === 'python3'),
+    'python3'
+  );
 });
 
 test('package configuration uses DMG as the macOS distribution target', () => {

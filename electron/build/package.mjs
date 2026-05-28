@@ -6,6 +6,12 @@ import os from 'node:os';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const RUNTIME_PYTHON_DEPENDENCIES = [
+  'cryptography>=45.0.0',
+  'python-dotenv>=1.0.1',
+  'requests>=2.32.0',
+  'tomlkit>=0.13.2'
+];
 
 export function resolveRepoAnchor(projectRoot) {
   const normalized = path.resolve(projectRoot);
@@ -42,6 +48,12 @@ export function resolveShareWorkerPaths(projectRoot) {
   };
 }
 
+export function resolvePythonVendorRuntimePaths(projectRoot) {
+  return {
+    vendorDir: path.join(projectRoot, 'electron', 'runtime', 'python-vendor')
+  };
+}
+
 export function resolveIconPaths(projectRoot) {
   const outputDir = path.join(projectRoot, 'electron', 'build', 'assets');
   return {
@@ -68,6 +80,51 @@ function runOrThrow(command, args, options = {}) {
 function ensureCleanDir(targetDir) {
   fs.rmSync(targetDir, { recursive: true, force: true });
   fs.mkdirSync(targetDir, { recursive: true });
+}
+
+function canRunCommand(command) {
+  const result = spawnSync(command, ['-c', 'pass'], { stdio: 'ignore' });
+  return !result.error && result.status === 0;
+}
+
+export function selectRunnablePythonCandidate(candidates, canRun = canRunCommand) {
+  for (const candidate of candidates) {
+    if (candidate.startsWith('/') && !fs.existsSync(candidate)) {
+      continue;
+    }
+    if (!candidate.startsWith('/') && !canRun(candidate)) {
+      continue;
+    }
+    return candidate;
+  }
+  throw new Error(`No Python runtime found in candidates: ${candidates.join(', ')}`);
+}
+
+function selectPythonForVendorInstall(projectRoot) {
+  const candidates = [
+    path.join(projectRoot, '.venv', 'bin', 'python'),
+    path.join(projectRoot, '.venv', 'bin', 'python3'),
+    '/opt/homebrew/bin/python3.14',
+    '/opt/homebrew/bin/python3.12',
+    '/usr/local/bin/python3.14',
+    '/usr/local/bin/python3.12',
+    'python3.12',
+    'python3'
+  ];
+
+  return selectRunnablePythonCandidate(candidates);
+}
+
+export function buildPythonVendorInstallArgs(vendorDir) {
+  return [
+    '-m',
+    'pip',
+    'install',
+    '--disable-pip-version-check',
+    '--target',
+    vendorDir,
+    ...RUNTIME_PYTHON_DEPENDENCIES
+  ];
 }
 
 function renderSvgToPng(sourceSvg, outputPng) {
@@ -123,6 +180,17 @@ export function stageShareWorkerRuntime(projectRoot) {
   return runtimePath;
 }
 
+export function stagePythonVendorRuntime(projectRoot) {
+  const { vendorDir } = resolvePythonVendorRuntimePaths(projectRoot);
+  ensureCleanDir(vendorDir);
+  runOrThrow(
+    selectPythonForVendorInstall(projectRoot),
+    buildPythonVendorInstallArgs(vendorDir),
+    { cwd: projectRoot }
+  );
+  return vendorDir;
+}
+
 export function buildElectronBuilderArgs(targets = ['dmg']) {
   const normalizedTargets = Array.isArray(targets)
     ? targets
@@ -142,6 +210,7 @@ export function runPackaging(projectRoot) {
   }
 
   stageShareWorkerRuntime(projectRoot);
+  stagePythonVendorRuntime(projectRoot);
   prepareMacIcon(projectRoot);
 
   return spawnSync('npx', buildElectronBuilderArgs(), {

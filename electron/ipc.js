@@ -6,7 +6,7 @@ import { clipboard, ipcMain, shell } from 'electron';
 import QRCode from 'qrcode';
 
 import { mergeLatestArtifactPreview, previewArtifactDirectory } from './lib/artifact-preview.js';
-import { buildBackendInvocation, parseBackendEventLine } from './lib/backend.js';
+import { buildBackendEnv, buildBackendInvocation, parseBackendEventLine } from './lib/backend.js';
 import { signalProcessTree } from './lib/process-lifecycle.js';
 import { resolveStateProfilePath } from './paths.js';
 
@@ -373,15 +373,6 @@ function runCommand(commands, args, cwd, runtimeProfilePath = '', bundledProfile
       resolve({ stdout, stderr, code });
     });
   });
-}
-
-function buildBackendEnv(projectRoot, runtimeProfilePath = '', bundledProfilePath = '') {
-  return {
-    ...process.env,
-    PYTHONPATH: path.join(projectRoot, 'src'),
-    VPN_AUTOMATION_PROFILE_PATH: runtimeProfilePath,
-    VPN_AUTOMATION_BUNDLED_PROFILE_PATH: bundledProfilePath
-  };
 }
 
 async function openPathWithShell(targetPath, { strictExists = false } = {}) {
