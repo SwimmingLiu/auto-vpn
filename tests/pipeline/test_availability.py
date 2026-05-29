@@ -58,6 +58,97 @@ def test_evaluate_provider_response_rejects_redirect_outside_allowed_hosts() -> 
     assert result.reason == "unexpected_host"
 
 
+def test_fetch_provider_result_uses_chatgpt_unlock_probe() -> None:
+    target = ProviderTarget(
+        name="chatgpt",
+        url="https://chatgpt.com/",
+        allowed_hosts=("chatgpt.com", "chat.openai.com"),
+        negative_phrases=("unsupported country",),
+    )
+
+    class FakeResponse:
+        def __init__(self, url: str, text: str, status_code: int = 200) -> None:
+            self.url = url
+            self.text = text
+            self.status_code = status_code
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def get(self, url: str, **_kwargs):
+            self.calls.append(url)
+            if url == "https://chat.openai.com/cdn-cgi/trace":
+                return FakeResponse(url, "loc=US\n")
+            if url == "https://api.openai.com/compliance/cookie_requirements":
+                return FakeResponse(url, '{"reason":"unsupported_country"}')
+            return FakeResponse(url, "<html>ChatGPT</html>")
+
+    session = FakeSession()
+
+    result = fetch_provider_result(session, {"https": "http://127.0.0.1:18080"}, target, 20)
+
+    assert session.calls == [
+        "https://chat.openai.com/cdn-cgi/trace",
+        "https://api.openai.com/compliance/cookie_requirements",
+    ]
+    assert result.passed is False
+    assert result.reason == "unsupported_region"
+    assert result.matched_phrase == "unsupported_country"
+    assert result.final_url == "https://api.openai.com/compliance/cookie_requirements"
+
+
+def test_fetch_provider_result_uses_claude_trace_blocklist() -> None:
+    target = ProviderTarget(
+        name="claude",
+        url="https://claude.ai/",
+        allowed_hosts=("claude.ai",),
+        negative_phrases=("unavailable in your region",),
+    )
+
+    class FakeResponse:
+        url = "https://claude.ai/cdn-cgi/trace"
+        status_code = 200
+        text = "loc=CN\n"
+
+    class FakeSession:
+        def get(self, url: str, **_kwargs):
+            assert url == "https://claude.ai/cdn-cgi/trace"
+            return FakeResponse()
+
+    result = fetch_provider_result(FakeSession(), {"https": "http://127.0.0.1:18080"}, target, 20)
+
+    assert result.passed is False
+    assert result.reason == "unsupported_region"
+    assert result.matched_phrase == "CN"
+    assert result.final_url == "https://claude.ai/cdn-cgi/trace"
+
+
+def test_fetch_provider_result_uses_gemini_region_marker() -> None:
+    target = ProviderTarget(
+        name="gemini",
+        url="https://gemini.google.com/",
+        allowed_hosts=("gemini.google.com", "accounts.google.com"),
+        negative_phrases=("not available in your country",),
+    )
+
+    class FakeResponse:
+        url = "https://gemini.google.com/"
+        status_code = 200
+        text = '<script>window.bootstrap=",2,1,200,\\"CHN\\"";</script>'
+
+    class FakeSession:
+        def get(self, url: str, **_kwargs):
+            assert url == "https://gemini.google.com/"
+            return FakeResponse()
+
+    result = fetch_provider_result(FakeSession(), {"https": "http://127.0.0.1:18080"}, target, 20)
+
+    assert result.passed is False
+    assert result.reason == "unsupported_region"
+    assert result.matched_phrase == "CHN"
+
+
 def test_availability_result_requires_all_providers_to_pass() -> None:
     speed = SpeedTestResult(link="vmess://node", reachable=True, average_download_mb_s=3.5, latency_ms=80)
     result = AvailabilityResult(
@@ -179,7 +270,12 @@ def test_fetch_provider_result_uses_tls_verification(monkeypatch: pytest.MonkeyP
     result = fetch_provider_result(
         FakeSession(),
         {"https": "http://127.0.0.1:18080"},
-        PROVIDER_TARGETS[0],
+        ProviderTarget(
+            name="custom",
+            url="https://custom.example/",
+            allowed_hosts=("custom.example",),
+            negative_phrases=(),
+        ),
         20,
     )
 
