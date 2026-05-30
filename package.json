@@ -1,7 +1,7 @@
 {
   "name": "vpn-subscription-automation",
   "version": "0.2.0",
-  "description": "Electron desktop app for VPN subscription automation",
+  "description": "AutoVPN Electron desktop app for VPN subscription automation",
   "author": "SwimmingLiu",
   "main": "electron/main.js",
   "type": "module",
@@ -18,7 +18,7 @@
   },
   "build": {
     "appId": "com.swimmingliu.vpnautomation",
-    "productName": "VPN Subscription Automation",
+    "productName": "AutoVPN",
     "files": [
       "electron/**/*",
       "src/**/*",
@@ -31,10 +31,13 @@
     "asar": false,
     "mac": {
       "target": [
-        "dir"
+        "dmg"
       ],
       "category": "public.app-category.developer-tools",
       "icon": "electron/build/assets/app-icon.icns"
+    },
+    "dmg": {
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
     }
   },
   "dependencies": {

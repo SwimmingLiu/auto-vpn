@@ -64,10 +64,10 @@ test('findProjectRoot climbs out of packaged output to repo root', () => {
     projectRoot,
     'dist-electron',
     'mac-arm64',
-    'VPN Subscription Automation.app',
+    'AutoVPN.app',
     'Contents',
     'MacOS',
-    'VPN Subscription Automation'
+    'AutoVPN'
   );
   fs.mkdirSync(path.dirname(execPath), { recursive: true });
   fs.writeFileSync(execPath, '', 'utf-8');
