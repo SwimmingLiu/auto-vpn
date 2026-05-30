@@ -1,8 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import os from 'node:os';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -161,15 +160,78 @@ export function buildPlaywrightBrowserInstallArgs() {
   ];
 }
 
-function renderSvgToPng(sourceSvg, outputPng) {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vpn-auto-icon-'));
-  try {
-    runOrThrow('qlmanage', ['-t', '-s', '1024', '-o', tempDir, sourceSvg]);
-    const renderedPng = path.join(tempDir, `${path.basename(sourceSvg)}.png`);
-    fs.copyFileSync(renderedPng, outputPng);
-  } finally {
-    fs.rmSync(tempDir, { recursive: true, force: true });
-  }
+export function buildSvgIconRenderHtml(svgMarkup, size = 1024) {
+  const encodedSvg = Buffer.from(svgMarkup, 'utf8').toString('base64');
+  return `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <style>
+      html,
+      body {
+        margin: 0;
+        width: ${size}px;
+        height: ${size}px;
+        overflow: hidden;
+        background: transparent;
+      }
+
+      img {
+        display: block;
+        width: ${size}px;
+        height: ${size}px;
+      }
+    </style>
+  </head>
+  <body>
+    <img alt="" src="data:image/svg+xml;base64,${encodedSvg}">
+  </body>
+</html>`;
+}
+
+function renderSvgToPng(projectRoot, sourceSvg, outputPng, size = 1024) {
+  const renderScript = `
+    import fs from 'node:fs';
+    import { chromium } from 'playwright';
+    import { buildSvgIconRenderHtml } from ${JSON.stringify(pathToFileURL(__filename).href)};
+
+    const sourceSvg = ${JSON.stringify(sourceSvg)};
+    const outputPng = ${JSON.stringify(outputPng)};
+    const size = ${JSON.stringify(size)};
+    const svgMarkup = fs.readFileSync(sourceSvg, 'utf8');
+    const browser = await chromium.launch({ headless: true });
+    try {
+      const page = await browser.newPage({
+        viewport: { width: size, height: size },
+        deviceScaleFactor: 1
+      });
+      await page.setContent(buildSvgIconRenderHtml(svgMarkup, size), { waitUntil: 'load' });
+      await page.locator('img').evaluate(async (img) => {
+        if (img.decode) {
+          await img.decode();
+        }
+      });
+      await page.screenshot({
+        path: outputPng,
+        omitBackground: true,
+        animations: 'disabled'
+      });
+    } finally {
+      await browser.close();
+    }
+  `;
+
+  runOrThrow(
+    process.execPath,
+    ['--input-type=module', '--eval', renderScript],
+    {
+      cwd: projectRoot,
+      env: {
+        ...process.env,
+        PLAYWRIGHT_BROWSERS_PATH: resolvePlaywrightBrowserRuntimePaths(projectRoot).browserDir
+      }
+    }
+  );
 }
 
 function buildIconset(basePng, iconsetDir) {
@@ -197,7 +259,7 @@ export function prepareMacIcon(projectRoot) {
   ensureCleanDir(iconsetDir);
 
   const basePng = path.join(outputDir, 'app-icon-1024.png');
-  renderSvgToPng(sourceSvg, basePng);
+  renderSvgToPng(projectRoot, sourceSvg, basePng);
   buildIconset(basePng, iconsetDir);
   runOrThrow('iconutil', ['-c', 'icns', iconsetDir, '-o', outputIcns]);
 

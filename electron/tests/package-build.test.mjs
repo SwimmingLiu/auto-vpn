@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
+  buildSvgIconRenderHtml,
   buildElectronBuilderArgs,
   buildNodeVendorInstallArgs,
   buildPlaywrightBrowserInstallArgs,
@@ -39,6 +40,15 @@ test('resolveIconPaths points packaging to generated icns and source svg', () =>
   assert.equal(iconPaths.outputDir, '/tmp/project/electron/build/assets');
   assert.equal(iconPaths.outputIcns, '/tmp/project/electron/build/assets/app-icon.icns');
   assert.equal(iconPaths.iconsetDir, '/tmp/project/electron/build/assets/app-icon.iconset');
+});
+
+test('buildSvgIconRenderHtml renders the app icon on a transparent canvas', () => {
+  const html = buildSvgIconRenderHtml('<svg viewBox="0 0 10 10"></svg>', 1024);
+
+  assert.match(html, /background:\s*transparent/);
+  assert.match(html, /width:\s*1024px/);
+  assert.match(html, /height:\s*1024px/);
+  assert.match(html, /data:image\/svg\+xml;base64,/);
 });
 
 test('buildElectronBuilderArgs builds a macOS DMG installer by default', () => {
