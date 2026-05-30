@@ -33,28 +33,41 @@ test('resolveIconPaths points packaging to generated icns and source svg', () =>
   assert.equal(iconPaths.iconsetDir, '/tmp/project/electron/build/assets/app-icon.iconset');
 });
 
+test('package configuration uses DMG as the macOS distribution target', () => {
+  const packageJson = JSON.parse(
+    fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf-8')
+  );
+
+  assert.equal(packageJson.build.productName, 'AutoVPN');
+  assert.deepEqual(packageJson.build.mac.target, ['dmg']);
+  assert.equal(packageJson.build.dmg.artifactName, '${productName}-${version}-${arch}.${ext}');
+});
+
 test('resolveShareWorkerPaths points packaging to the source vpn.js and bundled runtime copy', () => {
   const projectRoot = '/tmp/workspace/vpn-subscription-automation';
   const shareWorkerPaths = resolveShareWorkerPaths(projectRoot);
 
   assert.equal(
     shareWorkerPaths.sourcePath,
-    '/tmp/workspace/cloudflarevpn/edgetunnel/vpn.js'
+    '/tmp/workspace/vpn-subscription-automation/templates/share-worker/vpn.js'
   );
+  assert.deepEqual(shareWorkerPaths.sourceCandidates, [
+    '/tmp/workspace/vpn-subscription-automation/templates/share-worker/vpn.js',
+    '/tmp/workspace/cloudflarevpn/edgetunnel/vpn.js'
+  ]);
   assert.equal(
     shareWorkerPaths.runtimePath,
     '/tmp/workspace/vpn-subscription-automation/electron/runtime/share-worker/vpn.js'
   );
 });
 
-test('stageShareWorkerRuntime copies vpn.js into the packaged runtime tree', () => {
+test('stageShareWorkerRuntime copies repo template vpn.js into the packaged runtime tree', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vpn-share-worker-'));
   const workspaceRoot = path.join(root, 'workspace');
   const projectRoot = path.join(workspaceRoot, 'vpn-subscription-automation');
-  const shareWorkerSource = path.join(workspaceRoot, 'cloudflarevpn', 'edgetunnel', 'vpn.js');
+  const shareWorkerSource = path.join(projectRoot, 'templates', 'share-worker', 'vpn.js');
 
   fs.mkdirSync(path.dirname(shareWorkerSource), { recursive: true });
-  fs.mkdirSync(projectRoot, { recursive: true });
   fs.writeFileSync(shareWorkerSource, "export default { async fetch() { return new Response('login'); } }", 'utf-8');
 
   const runtimePath = stageShareWorkerRuntime(projectRoot);

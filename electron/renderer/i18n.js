@@ -3,8 +3,8 @@ export const LANGUAGE_STORAGE_KEY = 'vpn-automation-language';
 
 const ZH_MESSAGES = {
   locale: 'zh-CN',
-  appTitle: 'VPN 订阅自动化部署工具',
-  sidebarTitle: 'VPN Auto',
+  appTitle: 'AutoVPN',
+  sidebarTitle: 'AutoVPN',
   sidebarVersion: 'v2.1.0',
   brandSubtitle: '概览、运行、结果、订阅、日志、设置统一管理',
   languageLabel: '',

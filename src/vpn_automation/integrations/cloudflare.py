@@ -302,8 +302,9 @@ def resolve_share_project_worker_source_path() -> Path:
         candidates.append(Path(explicit_path).expanduser())
 
     repo_root = resolve_repo_anchor(Path(__file__))
-    candidates.append(repo_root.parent / "cloudflarevpn" / "edgetunnel" / "vpn.js")
     candidates.append(repo_root / "electron" / "runtime" / "share-worker" / "vpn.js")
+    candidates.append(repo_root / "templates" / "share-worker" / "vpn.js")
+    candidates.append(repo_root.parent / "cloudflarevpn" / "edgetunnel" / "vpn.js")
 
     seen: set[str] = set()
     unique_candidates: list[Path] = []
@@ -325,7 +326,8 @@ def resolve_share_project_worker_source_path() -> Path:
 
 
 def build_share_project_bundle_dir(source_path: Path) -> Path:
-    return source_path.parent / "share_pages_bundle"
+    repo_root = resolve_repo_anchor(Path(__file__))
+    return repo_root / "electron" / "runtime" / "share-worker" / "share_pages_bundle"
 
 
 def build_cloudflare_client(credentials: CloudflareCredentials) -> "CloudflareClient":

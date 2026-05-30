@@ -7,6 +7,7 @@ from vpn_automation.integrations.cloudflare import (
     CloudflareClient,
     build_pages_deploy_command,
     build_secret_url,
+    build_share_project_bundle_dir,
     deploy_pages_bundle,
     generate_fallback_project_name,
     resolve_deploy_proxy_url,
@@ -193,6 +194,34 @@ def test_resolve_share_project_worker_source_path_falls_back_to_packaged_runtime
     resolved = resolve_share_project_worker_source_path()
 
     assert resolved == runtime_copy.resolve()
+
+
+def test_resolve_share_project_worker_source_path_uses_repo_template_without_sibling_reference(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    repo_template = project_root / "templates" / "share-worker" / "vpn.js"
+    repo_template.parent.mkdir(parents=True)
+    repo_template.write_text("export default { async fetch() { return new Response('template'); } }", encoding="utf-8")
+
+    monkeypatch.delenv("VPN_AUTOMATION_SHARE_WORKER_PATH", raising=False)
+    monkeypatch.setattr("vpn_automation.integrations.cloudflare.resolve_repo_anchor", lambda _candidate: project_root)
+
+    resolved = resolve_share_project_worker_source_path()
+
+    assert resolved == repo_template.resolve()
+
+
+def test_build_share_project_bundle_dir_uses_ignored_runtime_tree(monkeypatch, tmp_path) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    source_path = project_root / "templates" / "share-worker" / "vpn.js"
+
+    monkeypatch.setattr("vpn_automation.integrations.cloudflare.resolve_repo_anchor", lambda _candidate: project_root)
+
+    assert build_share_project_bundle_dir(source_path) == (
+        project_root / "electron" / "runtime" / "share-worker" / "share_pages_bundle"
+    )
 
 
 def test_deploy_pages_bundle_syncs_share_project_sub_to_final_pages_url(monkeypatch, tmp_path) -> None:
