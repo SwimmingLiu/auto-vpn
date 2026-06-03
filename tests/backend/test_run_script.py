@@ -7,7 +7,10 @@ from pathlib import Path
 def test_run_backend_pipeline_dry_run_creates_session_metadata(tmp_path: Path) -> None:
     repo_root = tmp_path / "vpn-subscription-automation"
     (repo_root / "artifacts" / "manual-runs").mkdir(parents=True)
-    script_path = Path("/Users/swimmingliu/data/VPN/vpn-subscription-automation/scripts/run_backend_pipeline.sh")
+    project_root = Path(__file__).resolve().parents[2]
+    script_path = project_root / "scripts" / "run_backend_pipeline.sh"
+
+    assert script_path.is_file()
 
     result = subprocess.run(
         [str(script_path), "--dry-run", str(repo_root)],
