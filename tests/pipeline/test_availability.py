@@ -19,24 +19,24 @@ from vpn_automation.config.models import AvailabilityTargetConfig, SpeedTestConf
 from vpn_automation.pipeline.speedtest import SpeedTestResult
 
 
-def test_evaluate_provider_response_rejects_region_block_page() -> None:
+def test_evaluate_provider_response_rejects_challenge_page() -> None:
     target = ProviderTarget(
-        name="chatgpt",
-        url="https://chatgpt.com/",
-        allowed_hosts=("chatgpt.com", "chat.openai.com"),
-        negative_phrases=("unsupported country",),
+        name="custom",
+        url="https://custom.example/",
+        allowed_hosts=("custom.example",),
+        negative_phrases=(),
     )
 
     result = evaluate_provider_response(
         target,
-        final_url="https://chatgpt.com/",
+        final_url="https://custom.example/",
         status_code=200,
-        title="ChatGPT",
-        body="OpenAI services are not available in your unsupported country",
+        title="Just a moment",
+        body="Checking your browser before accessing this site.",
     )
 
     assert result.passed is False
-    assert result.reason == "negative_phrase"
+    assert result.reason == "challenge_page"
 
 
 def test_evaluate_provider_response_rejects_redirect_outside_allowed_hosts() -> None:
@@ -65,7 +65,7 @@ def test_availability_result_requires_all_providers_to_pass() -> None:
         speed_result=speed,
         provider_results={
             "gemini": ProviderCheckResult(provider="gemini", passed=True, reason="ok"),
-            "chatgpt": ProviderCheckResult(provider="chatgpt", passed=False, reason="negative_phrase"),
+            "chatgpt_web": ProviderCheckResult(provider="chatgpt_web", passed=False, reason="unsupported_region"),
             "claude": ProviderCheckResult(provider="claude", passed=True, reason="ok"),
         },
     )
@@ -95,7 +95,7 @@ def test_normalize_provider_targets_uses_custom_profile_targets() -> None:
     assert [target.name for target in targets] == ["tmailor"]
     assert targets[0].url == "https://tmailor.example/"
     assert targets[0].allowed_hosts == ("tmailor.example",)
-    assert targets[0].negative_phrases == ("not supported",)
+    assert targets[0].negative_phrases == ()
 
 
 def test_check_link_availability_only_checks_enabled_targets(
@@ -164,7 +164,134 @@ def test_check_link_availability_only_checks_enabled_targets(
     assert result.all_passed is True
 
 
-def test_fetch_provider_result_uses_tls_verification(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fetch_provider_result_uses_chatgpt_ios_unlock_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[tuple[str, dict]] = []
+
+    class FakeResponse:
+        def __init__(self, url: str, text: str, status_code: int = 200) -> None:
+            self.url = url
+            self.text = text
+            self.status_code = status_code
+
+    class FakeSession:
+        def get(self, url, **kwargs):
+            captured.append((url, kwargs))
+            if url == "https://chat.openai.com/cdn-cgi/trace":
+                return FakeResponse(url, "loc=US\n")
+            assert url == "https://ios.chat.openai.com/"
+            return FakeResponse(url, "request is not allowed. please try again later.")
+
+    result = fetch_provider_result(
+        FakeSession(),
+        {"https": "http://127.0.0.1:18080"},
+        ProviderTarget(
+            name="chatgpt_ios",
+            url="https://ios.chat.openai.com/",
+            allowed_hosts=("ios.chat.openai.com",),
+            negative_phrases=(),
+        ),
+        20,
+    )
+
+    assert result.passed is True
+    assert result.reason == "ok"
+    assert result.final_url == "https://ios.chat.openai.com/"
+    assert result.matched_phrase == "US"
+    assert [item[0] for item in captured] == [
+        "https://chat.openai.com/cdn-cgi/trace",
+        "https://ios.chat.openai.com/",
+    ]
+    assert all(item[1]["verify"] is True for item in captured)
+
+
+def test_fetch_provider_result_uses_chatgpt_web_unlock_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[str] = []
+
+    class FakeResponse:
+        def __init__(self, url: str, text: str, status_code: int = 200) -> None:
+            self.url = url
+            self.text = text
+            self.status_code = status_code
+
+    class FakeSession:
+        def get(self, url, **kwargs):
+            captured.append(url)
+            if url == "https://chat.openai.com/cdn-cgi/trace":
+                return FakeResponse(url, "loc=HK\n")
+            assert url == "https://api.openai.com/compliance/cookie_requirements"
+            return FakeResponse(url, '{"unsupported_country":true}')
+
+    result = fetch_provider_result(
+        FakeSession(),
+        {"https": "http://127.0.0.1:18080"},
+        ProviderTarget(
+            name="chatgpt_web",
+            url="https://api.openai.com/compliance/cookie_requirements",
+            allowed_hosts=("api.openai.com",),
+            negative_phrases=(),
+        ),
+        20,
+    )
+
+    assert result.passed is False
+    assert result.reason == "unsupported_region"
+    assert result.final_url == "https://api.openai.com/compliance/cookie_requirements"
+    assert result.matched_phrase == "HK"
+    assert captured == [
+        "https://chat.openai.com/cdn-cgi/trace",
+        "https://api.openai.com/compliance/cookie_requirements",
+    ]
+
+
+def test_fetch_provider_result_uses_claude_trace_blocklist(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeSession:
+        def get(self, url, **kwargs):
+            assert url == "https://claude.ai/cdn-cgi/trace"
+            return SimpleNamespace(url=url, status_code=200, text="loc=CN\n")
+
+    result = fetch_provider_result(
+        FakeSession(),
+        {"https": "http://127.0.0.1:18080"},
+        ProviderTarget(
+            name="claude",
+            url="https://claude.ai/cdn-cgi/trace",
+            allowed_hosts=("claude.ai",),
+            negative_phrases=(),
+        ),
+        20,
+    )
+
+    assert result.passed is False
+    assert result.reason == "unsupported_region"
+    assert result.final_url == "https://claude.ai/cdn-cgi/trace"
+    assert result.matched_phrase == "CN"
+
+
+def test_fetch_provider_result_uses_gemini_region_marker(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeSession:
+        def get(self, url, **kwargs):
+            assert url == "https://gemini.google.com"
+            return SimpleNamespace(url=url, status_code=200, text='prefix,2,1,200,"CHN" suffix')
+
+    result = fetch_provider_result(
+        FakeSession(),
+        {"https": "http://127.0.0.1:18080"},
+        ProviderTarget(
+            name="gemini",
+            url="https://gemini.google.com",
+            allowed_hosts=("gemini.google.com",),
+            negative_phrases=(),
+        ),
+        20,
+    )
+
+    assert result.passed is False
+    assert result.reason == "unsupported_region"
+    assert result.final_url == "https://gemini.google.com"
+    assert result.matched_phrase == "CHN"
+
+
+def test_fetch_custom_provider_result_uses_tls_verification(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
     class FakeSession:
@@ -180,7 +307,12 @@ def test_fetch_provider_result_uses_tls_verification(monkeypatch: pytest.MonkeyP
     result = fetch_provider_result(
         FakeSession(),
         {"https": "http://127.0.0.1:18080"},
-        PROVIDER_TARGETS[0],
+        ProviderTarget(
+            name="custom",
+            url="https://custom.example/",
+            allowed_hosts=("custom.example",),
+            negative_phrases=(),
+        ),
         20,
     )
 
@@ -207,7 +339,7 @@ def test_check_link_availability_batch_downgrades_runtime_errors_to_failed_node(
             speed_result=speed_result,
             provider_results={
                 "gemini": ProviderCheckResult(provider="gemini", passed=True, reason="ok"),
-                "chatgpt": ProviderCheckResult(provider="chatgpt", passed=True, reason="ok"),
+                "chatgpt_web": ProviderCheckResult(provider="chatgpt_web", passed=True, reason="ok"),
                 "claude": ProviderCheckResult(provider="claude", passed=True, reason="ok"),
             },
         )
@@ -244,18 +376,21 @@ def test_check_link_availability_uses_browser_fallback_for_http_errors(
         def __exit__(self, exc_type, exc, tb):
             return False
 
+    target = ProviderTarget(
+        name="custom",
+        url="https://custom.example/",
+        allowed_hosts=("custom.example",),
+        negative_phrases=(),
+    )
     primary_results = {
-        "gemini": ProviderCheckResult(provider="gemini", passed=True, reason="ok", status_code=200, final_url="https://gemini.google.com/"),
-        "chatgpt": ProviderCheckResult(provider="chatgpt", passed=False, reason="http_error", status_code=403, final_url="https://chatgpt.com/"),
-        "claude": ProviderCheckResult(provider="claude", passed=False, reason="http_error", status_code=403, final_url="https://claude.ai/"),
+        "custom": ProviderCheckResult(provider="custom", passed=False, reason="http_error", status_code=403, final_url="https://custom.example/"),
     }
 
     def fake_fetch_provider_result(session, proxies, target, timeout_seconds):
         return primary_results[target.name]
 
     browser_results = {
-        "chatgpt": ProviderCheckResult(provider="chatgpt", passed=True, reason="ok", status_code=200, final_url="https://chatgpt.com/"),
-        "claude": ProviderCheckResult(provider="claude", passed=True, reason="ok", status_code=200, final_url="https://claude.ai/login"),
+        "custom": ProviderCheckResult(provider="custom", passed=True, reason="ok", status_code=200, final_url="https://custom.example/"),
     }
 
     monkeypatch.setattr("vpn_automation.pipeline.availability.open_proxy_runtime", lambda *args, **kwargs: DummyRuntime())
@@ -265,11 +400,10 @@ def test_check_link_availability_uses_browser_fallback_for_http_errors(
         lambda proxies, targets, timeout_seconds, project_root='': browser_results,
     )
 
-    result = check_link_availability(speed, config)
+    result = check_link_availability(speed, config, targets=(target,))
 
     assert result.all_passed is True
-    assert result.provider_results["chatgpt"].passed is True
-    assert result.provider_results["claude"].passed is True
+    assert result.provider_results["custom"].passed is True
 
 
 def test_resolve_node_binary_falls_back_when_path_does_not_find_node(
@@ -315,10 +449,14 @@ def test_check_link_availability_preserves_primary_results_when_browser_fallback
         def __exit__(self, exc_type, exc, tb):
             return False
 
+    target = ProviderTarget(
+        name="custom",
+        url="https://custom.example/",
+        allowed_hosts=("custom.example",),
+        negative_phrases=(),
+    )
     primary_results = {
-        "gemini": ProviderCheckResult(provider="gemini", passed=True, reason="ok", status_code=200, final_url="https://gemini.google.com/"),
-        "chatgpt": ProviderCheckResult(provider="chatgpt", passed=False, reason="http_error", status_code=403, final_url="https://chatgpt.com/"),
-        "claude": ProviderCheckResult(provider="claude", passed=False, reason="unexpected_host", status_code=200, final_url="https://claude.com/app-unavailable-in-region"),
+        "custom": ProviderCheckResult(provider="custom", passed=False, reason="http_error", status_code=403, final_url="https://custom.example/"),
     }
 
     monkeypatch.setattr("vpn_automation.pipeline.availability.open_proxy_runtime", lambda *args, **kwargs: DummyRuntime())
@@ -331,13 +469,10 @@ def test_check_link_availability_preserves_primary_results_when_browser_fallback
         lambda *args, **kwargs: (_ for _ in ()).throw(FileNotFoundError("node binary not found")),
     )
 
-    result = check_link_availability(speed, config)
+    result = check_link_availability(speed, config, targets=(target,))
 
-    assert result.provider_results["gemini"].passed is True
-    assert result.provider_results["gemini"].reason == "ok"
-    assert result.provider_results["chatgpt"].reason == "browser_probe_error"
-    assert result.provider_results["claude"].reason == "browser_probe_error"
-    assert result.provider_results["chatgpt"].matched_phrase == "node binary not found"
+    assert result.provider_results["custom"].reason == "browser_probe_error"
+    assert result.provider_results["custom"].matched_phrase == "node binary not found"
 
 
 def test_check_link_availability_uses_runtime_proxy_session(

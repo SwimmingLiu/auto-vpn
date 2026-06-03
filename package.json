@@ -17,9 +17,10 @@
   },
   "build": {
     "appId": "com.swimmingliu.vpnautomation",
-    "productName": "VPN Subscription Automation",
+    "productName": "AutoVPN",
     "files": [
       "electron/**/*",
+      "!electron/tests/**/*",
       "src/**/*",
       "templates/**/*",
       "pyproject.toml"

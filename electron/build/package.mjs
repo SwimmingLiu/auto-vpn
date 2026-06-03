@@ -39,6 +39,44 @@ export function resolveRuntimePaths(projectRoot) {
   };
 }
 
+export function sanitizeBundledProfileToml(payload) {
+  const normalizedPayload = payload.replaceAll('VPN Subscription Automation', 'AutoVPN');
+  const availabilityBlock = `[availability_targets]
+[availability_targets.gemini]
+url = "https://gemini.google.com"
+enabled = true
+
+[availability_targets.chatgpt_ios]
+url = "https://ios.chat.openai.com/"
+enabled = true
+
+[availability_targets.chatgpt_web]
+url = "https://api.openai.com/compliance/cookie_requirements"
+enabled = true
+
+[availability_targets.claude]
+url = "https://claude.ai/cdn-cgi/trace"
+enabled = true`;
+  const availabilityStart = normalizedPayload.indexOf('[availability_targets]');
+  if (availabilityStart === -1) {
+    return `${normalizedPayload.trimEnd()}\n\n${availabilityBlock}\n`;
+  }
+
+  const afterAvailability = normalizedPayload.slice(availabilityStart + '[availability_targets]'.length);
+  const nextTopLevelMatch = afterAvailability.match(/\n\[[^\].\n]+]/);
+  if (nextTopLevelMatch?.index === undefined) {
+    return `${normalizedPayload.slice(0, availabilityStart).trimEnd()}\n\n${availabilityBlock}\n`;
+  }
+
+  const availabilityEnd = availabilityStart + '[availability_targets]'.length + nextTopLevelMatch.index;
+  return `${normalizedPayload.slice(0, availabilityStart).trimEnd()}\n\n${availabilityBlock}\n\n${normalizedPayload.slice(availabilityEnd).trimStart()}`;
+}
+
+function stageBundledProfile(sourcePath, bundledSeedPath) {
+  const payload = fs.readFileSync(sourcePath, 'utf8');
+  fs.writeFileSync(bundledSeedPath, sanitizeBundledProfileToml(payload), 'utf8');
+}
+
 export function resolveShareWorkerPaths(projectRoot) {
   const repoAnchor = resolveRepoAnchor(projectRoot);
   const workspaceRoot = path.dirname(repoAnchor);
@@ -315,14 +353,19 @@ export function buildElectronBuilderArgs(targets = ['dmg']) {
   return ['electron-builder', '--mac', ...buildTargets];
 }
 
+export function cleanElectronOutputDir(projectRoot) {
+  fs.rmSync(path.join(projectRoot, 'dist-electron'), { recursive: true, force: true });
+}
+
 export function runPackaging(projectRoot) {
   const { runtimeDir, defaultSeedPath, bundledSeedPath, liveProfilePath } = resolveRuntimePaths(projectRoot);
+  cleanElectronOutputDir(projectRoot);
   fs.mkdirSync(runtimeDir, { recursive: true });
 
   if (fs.existsSync(liveProfilePath)) {
-    fs.copyFileSync(liveProfilePath, bundledSeedPath);
+    stageBundledProfile(liveProfilePath, bundledSeedPath);
   } else if (fs.existsSync(defaultSeedPath)) {
-    fs.copyFileSync(defaultSeedPath, bundledSeedPath);
+    stageBundledProfile(defaultSeedPath, bundledSeedPath);
   }
 
   stageShareWorkerRuntime(projectRoot);

@@ -208,25 +208,20 @@ test('source iteration draft applies one max_iterations and area range to all so
 test('availability target draft supports add edit and delete', () => {
   const draft = buildAvailabilityTargetDraft({
     gemini: {
-      url: 'https://gemini.google.com/',
+      url: 'https://gemini.google.com',
       enabled: true,
-      allowed_hosts: ['gemini.google.com'],
-      negative_phrases: ['not available']
+      allowed_hosts: ['gemini.google.com']
     }
   });
 
   addAvailabilityTargetDraft(draft, 'tmailor');
   draft.targets[1].url = 'https://tmailor.example/';
-  draft.targets[1].allowed_hosts = 'tmailor.example, mail.tmailor.example';
-  draft.targets[1].negative_phrases = 'blocked\nunsupported';
   removeAvailabilityTargetDraft(draft, 0);
 
   assert.deepEqual(applyAvailabilityTargetDraft(draft), {
     tmailor: {
       url: 'https://tmailor.example/',
-      enabled: true,
-      allowed_hosts: ['tmailor.example', 'mail.tmailor.example'],
-      negative_phrases: ['blocked', 'unsupported']
+      enabled: true
     }
   });
 });
@@ -238,10 +233,8 @@ test('settings page renders AI availability target card and drawer table', () =>
       sources: {},
       availability_targets: {
         gemini: {
-          url: 'https://gemini.google.com/',
-          enabled: true,
-          allowed_hosts: ['gemini.google.com'],
-          negative_phrases: ['not available']
+          url: 'https://gemini.google.com',
+          enabled: true
         }
       },
       speed_test: { min_download_mb_s: 1, timeout_seconds: 20, concurrency: 3 },
@@ -251,10 +244,8 @@ test('settings page renders AI availability target card and drawer table', () =>
       section: 'availability_targets',
       draft: buildAvailabilityTargetDraft({
         gemini: {
-          url: 'https://gemini.google.com/',
-          enabled: true,
-          allowed_hosts: ['gemini.google.com'],
-          negative_phrases: ['not available']
+          url: 'https://gemini.google.com',
+          enabled: true
         }
       })
     }
@@ -265,7 +256,10 @@ test('settings page renders AI availability target card and drawer table', () =>
   assert.match(markup, /AI可达性检测/);
   assert.match(markup, /data-settings-card="availability_targets"/);
   assert.match(markup, /data-availability-action="add"/);
-  assert.match(markup, /data-availability-key="allowed_hosts"/);
+  assert.doesNotMatch(markup, /data-availability-key="allowed_hosts"/);
+  assert.doesNotMatch(markup, /允许域名/);
+  assert.doesNotMatch(markup, /data-availability-key="negative_phrases"/);
+  assert.doesNotMatch(markup, /屏蔽短语/);
   assert.match(markup, /gemini\.google\.com/);
 });
 

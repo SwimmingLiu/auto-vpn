@@ -123,12 +123,11 @@ def test_profile_store_round_trip_pages_fallback_settings(tmp_path: Path) -> Non
 def test_default_profile_has_editable_ai_availability_targets(tmp_path: Path) -> None:
     profile = create_default_profile(tmp_path / "vpn-subscription-automation")
 
-    assert list(profile.availability_targets) == ["gemini", "chatgpt", "claude"]
+    assert list(profile.availability_targets) == ["gemini", "chatgpt_ios", "chatgpt_web", "claude"]
     assert all(target.enabled for target in profile.availability_targets.values())
-    assert profile.availability_targets["gemini"].url == "https://gemini.google.com/"
-    assert "gemini.google.com" in profile.availability_targets["gemini"].allowed_hosts
-    assert profile.availability_targets["chatgpt"].url == "https://chatgpt.com/"
-    assert "claude.ai" in profile.availability_targets["claude"].allowed_hosts
+    assert profile.availability_targets["gemini"].url == "https://gemini.google.com"
+    assert profile.availability_targets["chatgpt_ios"].url == "https://ios.chat.openai.com/"
+    assert profile.availability_targets["chatgpt_web"].url == "https://api.openai.com/compliance/cookie_requirements"
 
 
 def test_profile_store_round_trips_custom_availability_target(tmp_path: Path) -> None:
@@ -150,8 +149,49 @@ def test_profile_store_round_trips_custom_availability_target(tmp_path: Path) ->
     assert "[availability_targets.tmailor]" in payload
     assert loaded.availability_targets["claude"].enabled is False
     assert loaded.availability_targets["tmailor"].url == "https://tmailor.example/"
-    assert loaded.availability_targets["tmailor"].allowed_hosts == ["tmailor.example"]
-    assert loaded.availability_targets["tmailor"].negative_phrases == ["blocked in your region"]
+    assert loaded.availability_targets["tmailor"].allowed_hosts == []
+    assert loaded.availability_targets["tmailor"].negative_phrases == []
+    assert "allowed_hosts" not in payload
+    assert "negative_phrases" not in payload
+
+
+def test_profile_store_migrates_legacy_chatgpt_availability_target(tmp_path: Path) -> None:
+    profile = make_profile()
+    profile.availability_targets = {
+        "gemini": AvailabilityTargetConfig(
+            url="https://gemini.google.com/",
+            enabled=True,
+            allowed_hosts=["gemini.google.com", "accounts.google.com"],
+            negative_phrases=["not available"],
+        ),
+        "chatgpt": AvailabilityTargetConfig(
+            url="https://chatgpt.com/",
+            enabled=False,
+            allowed_hosts=["chatgpt.com"],
+            negative_phrases=["unsupported region"],
+        ),
+        "claude": AvailabilityTargetConfig(
+            url="https://claude.ai/",
+            enabled=True,
+            allowed_hosts=["claude.ai"],
+            negative_phrases=["unavailable in your region"],
+        ),
+    }
+    store = ProfileStore(tmp_path / "profile.toml")
+    store.save(profile)
+
+    loaded = store.load()
+    store.save(loaded)
+    payload = store.path.read_text(encoding="utf-8")
+
+    assert list(loaded.availability_targets) == ["gemini", "claude", "chatgpt_ios", "chatgpt_web"]
+    assert loaded.availability_targets["chatgpt_ios"].url == "https://ios.chat.openai.com/"
+    assert loaded.availability_targets["chatgpt_web"].url == "https://api.openai.com/compliance/cookie_requirements"
+    assert loaded.availability_targets["chatgpt_ios"].enabled is False
+    assert loaded.availability_targets["chatgpt_web"].enabled is False
+    assert "[availability_targets.chatgpt]" not in payload
+    assert "allowed_hosts" not in payload
+    assert "negative_phrases" not in payload
 
 
 def test_resolve_profile_path_prefers_repo_anchor_state_when_running_from_worktree(tmp_path: Path) -> None:

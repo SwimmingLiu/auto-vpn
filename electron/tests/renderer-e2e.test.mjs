@@ -229,22 +229,20 @@ test('renderer matches the six-page canvas redesign and supports page navigation
           },
           availability_targets: {
             gemini: {
-              url: 'https://gemini.google.com/',
-              enabled: true,
-              allowed_hosts: ['gemini.google.com'],
-              negative_phrases: ['not available']
+              url: 'https://gemini.google.com',
+              enabled: true
             },
-            chatgpt: {
-              url: 'https://chatgpt.com/',
-              enabled: true,
-              allowed_hosts: ['chatgpt.com'],
-              negative_phrases: ['unsupported region']
+            chatgpt_ios: {
+              url: 'https://ios.chat.openai.com/',
+              enabled: true
+            },
+            chatgpt_web: {
+              url: 'https://api.openai.com/compliance/cookie_requirements',
+              enabled: true
             },
             claude: {
-              url: 'https://claude.ai/',
-              enabled: true,
-              allowed_hosts: ['claude.ai'],
-              negative_phrases: ['unavailable in your region']
+              url: 'https://claude.ai/cdn-cgi/trace',
+              enabled: true
             }
           },
           deploy: {
@@ -533,23 +531,21 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     await page.locator('[data-settings-card="availability_targets"]').click();
     await page.waitForSelector('#settingsDrawer[data-open="true"]');
     assert.match(await page.locator('#settingsDrawerTitle').innerText(), /AI可达性检测/);
-    assert.equal(await page.locator('.availability-target-table tbody tr').count(), 3);
+    assert.equal(await page.locator('.availability-target-table tbody tr').count(), 4);
     await page.locator('[data-availability-action="add"]').click();
-    await page.waitForFunction(() => document.querySelectorAll('.availability-target-table tbody tr').length === 4);
+    await page.waitForFunction(() => document.querySelectorAll('.availability-target-table tbody tr').length === 5);
     const lastRow = page.locator('.availability-target-table tbody tr').last();
     await lastRow.locator('[data-availability-key="name"]').fill('tmailor');
     await lastRow.locator('[data-availability-key="url"]').fill('https://tmailor.example/');
-    await lastRow.locator('[data-availability-key="allowed_hosts"]').fill('tmailor.example');
-    await lastRow.locator('[data-availability-key="negative_phrases"]').fill('blocked');
+    assert.equal(await lastRow.locator('[data-availability-key="allowed_hosts"]').count(), 0);
+    assert.equal(await lastRow.locator('[data-availability-key="negative_phrases"]').count(), 0);
     await page.locator('[data-drawer-save="save"]').click();
     await page.waitForSelector('#settingsDrawer[data-open="false"]');
     assert.deepEqual(
       await page.evaluate(() => window.__savedProfiles.at(-1).availability_targets.tmailor),
       {
         url: 'https://tmailor.example/',
-        enabled: true,
-        allowed_hosts: ['tmailor.example'],
-        negative_phrases: ['blocked']
+        enabled: true
       }
     );
 

@@ -310,7 +310,7 @@ npm run package:electron
 
 默认打包输出：
 
-- `dist-electron/mac-arm64/VPN Subscription Automation.app`
+- `dist-electron/mac-arm64/AutoVPN.app`
 
 ## Notes
 

@@ -12,9 +12,11 @@ import {
   resolveNodeVendorRuntimePaths,
   resolvePlaywrightBrowserRuntimePaths,
   buildPythonVendorInstallArgs,
+  cleanElectronOutputDir,
   resolveIconPaths,
   resolveLiveProfilePath,
   resolvePythonVendorRuntimePaths,
+  sanitizeBundledProfileToml,
   resolveShareWorkerPaths,
   selectRunnablePythonCandidate,
   stageShareWorkerRuntime
@@ -40,6 +42,46 @@ test('resolveIconPaths points packaging to generated icns and source svg', () =>
   assert.equal(iconPaths.outputDir, '/tmp/project/electron/build/assets');
   assert.equal(iconPaths.outputIcns, '/tmp/project/electron/build/assets/app-icon.icns');
   assert.equal(iconPaths.iconsetDir, '/tmp/project/electron/build/assets/app-icon.iconset');
+});
+
+test('sanitizeBundledProfileToml removes deprecated availability host and phrase fields', () => {
+  const payload = `
+# VPN Subscription Automation runtime profile
+[availability_targets]
+[availability_targets.gemini]
+url = "https://gemini.google.com/"
+enabled = true
+allowed_hosts = ["gemini.google.com", "accounts.google.com"]
+negative_phrases = ["not available in your country"]
+
+[availability_targets.chatgpt]
+url = "https://chatgpt.com/"
+enabled = true
+allowed_hosts = ["chatgpt.com"]
+negative_phrases = ["unsupported region"]
+`;
+
+  const sanitized = sanitizeBundledProfileToml(payload);
+
+  assert.match(sanitized, /\[availability_targets\.chatgpt_ios\]/);
+  assert.match(sanitized, /url = "https:\/\/ios\.chat\.openai\.com\/"/);
+  assert.match(sanitized, /\[availability_targets\.chatgpt_web\]/);
+  assert.doesNotMatch(sanitized, /allowed_hosts/);
+  assert.doesNotMatch(sanitized, /negative_phrases/);
+  assert.doesNotMatch(sanitized, /\[availability_targets\.chatgpt\]/);
+  assert.doesNotMatch(sanitized, /VPN Subscription Automation/);
+  assert.match(sanitized, /# AutoVPN runtime profile/);
+});
+
+test('sanitizeBundledProfileToml preserves following top-level tables when availability is empty', () => {
+  const sanitized = sanitizeBundledProfileToml(`[availability_targets]
+[deploy]
+project_name = "sub-links-auto"
+`);
+
+  assert.match(sanitized, /\[availability_targets\.chatgpt_ios\]/);
+  assert.match(sanitized, /\[deploy\]/);
+  assert.match(sanitized, /project_name = "sub-links-auto"/);
 });
 
 test('buildSvgIconRenderHtml renders the app icon on a transparent canvas', () => {
@@ -119,8 +161,23 @@ test('package configuration uses DMG as the macOS distribution target', () => {
     fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf-8')
   );
 
+  assert.equal(packageJson.build.productName, 'AutoVPN');
   assert.deepEqual(packageJson.build.mac.target, ['dmg']);
   assert.equal(packageJson.build.dmg.artifactName, '${productName}-${version}-${arch}.${ext}');
+  assert.ok(packageJson.build.files.includes('!electron/tests/**/*'));
+});
+
+test('cleanElectronOutputDir removes stale packaged app artifacts before packaging', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vpn-package-output-'));
+  const projectRoot = path.join(root, 'vpn-subscription-automation');
+  const outputDir = path.join(projectRoot, 'dist-electron');
+  fs.mkdirSync(outputDir, { recursive: true });
+  fs.writeFileSync(path.join(outputDir, 'VPN Subscription Automation-0.2.0-arm64.dmg'), '', 'utf-8');
+  fs.writeFileSync(path.join(outputDir, 'builder-effective-config.yaml'), 'productName: old', 'utf-8');
+
+  cleanElectronOutputDir(projectRoot);
+
+  assert.equal(fs.existsSync(outputDir), false);
 });
 
 test('resolveShareWorkerPaths points packaging to the source vpn.js and bundled runtime copy', () => {

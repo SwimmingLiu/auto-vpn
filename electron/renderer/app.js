@@ -61,22 +61,20 @@ const demoProfile = {
   },
   availability_targets: {
     gemini: {
-      url: 'https://gemini.google.com/',
-      enabled: true,
-      allowed_hosts: ['gemini.google.com', 'accounts.google.com'],
-      negative_phrases: ['not available in your country', 'not available in your region']
+      url: 'https://gemini.google.com',
+      enabled: true
     },
-    chatgpt: {
-      url: 'https://chatgpt.com/',
-      enabled: true,
-      allowed_hosts: ['chatgpt.com', 'chat.openai.com'],
-      negative_phrases: ['unsupported country', 'unsupported region']
+    chatgpt_ios: {
+      url: 'https://ios.chat.openai.com/',
+      enabled: true
+    },
+    chatgpt_web: {
+      url: 'https://api.openai.com/compliance/cookie_requirements',
+      enabled: true
     },
     claude: {
-      url: 'https://claude.ai/',
-      enabled: true,
-      allowed_hosts: ['claude.ai'],
-      negative_phrases: ['unavailable in your region']
+      url: 'https://claude.ai/cdn-cgi/trace',
+      enabled: true
     }
   },
   deploy: {
