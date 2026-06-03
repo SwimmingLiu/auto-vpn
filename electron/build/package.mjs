@@ -80,9 +80,14 @@ function stageBundledProfile(sourcePath, bundledSeedPath) {
 export function resolveShareWorkerPaths(projectRoot) {
   const repoAnchor = resolveRepoAnchor(projectRoot);
   const workspaceRoot = path.dirname(repoAnchor);
+  const sourceCandidates = [
+    path.join(projectRoot, 'templates', 'share-worker', 'vpn.js'),
+    path.join(workspaceRoot, 'cloudflarevpn', 'edgetunnel', 'vpn.js')
+  ];
   const runtimeDir = path.join(projectRoot, 'electron', 'runtime', 'share-worker');
   return {
-    sourcePath: path.join(workspaceRoot, 'cloudflarevpn', 'edgetunnel', 'vpn.js'),
+    sourcePath: sourceCandidates[0],
+    sourceCandidates,
     runtimeDir,
     runtimePath: path.join(runtimeDir, 'vpn.js')
   };
@@ -305,9 +310,10 @@ export function prepareMacIcon(projectRoot) {
 }
 
 export function stageShareWorkerRuntime(projectRoot) {
-  const { sourcePath, runtimeDir, runtimePath } = resolveShareWorkerPaths(projectRoot);
-  if (!fs.existsSync(sourcePath)) {
-    throw new Error(`share worker source not found: ${sourcePath}`);
+  const { sourceCandidates, runtimeDir, runtimePath } = resolveShareWorkerPaths(projectRoot);
+  const sourcePath = sourceCandidates.find((candidate) => fs.existsSync(candidate));
+  if (!sourcePath) {
+    throw new Error(`share worker source not found; tried: ${sourceCandidates.join(', ')}`);
   }
   fs.mkdirSync(runtimeDir, { recursive: true });
   fs.copyFileSync(sourcePath, runtimePath);

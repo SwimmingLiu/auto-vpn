@@ -1,7 +1,7 @@
 {
   "name": "vpn-subscription-automation",
   "version": "0.2.0",
-  "description": "Electron desktop app for VPN subscription automation",
+  "description": "AutoVPN Electron desktop app for VPN subscription automation",
   "author": "SwimmingLiu",
   "main": "electron/main.js",
   "type": "module",
