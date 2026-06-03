@@ -51,7 +51,7 @@ test('release workflow packages AutoVPN after a GitHub Release is published', ()
     'npm ci',
     'python -m pip install -e .[dev]',
     './scripts/run_pytest.sh tests -v',
-    'npx playwright install chromium',
+    'npx playwright install chromium-headless-shell',
     'test_files = sorted(glob.glob("electron/tests/*.test.mjs"))',
     'process.wait(timeout=600)',
     'Electron tests timed out after 600 seconds.',
