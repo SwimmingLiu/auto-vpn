@@ -36,8 +36,11 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -e .[dev]
 
-      - name: Run tests
-        run: npm run test:all
+      - name: Run Python tests
+        run: ./scripts/run_pytest.sh tests -v
+
+      - name: Run Electron tests
+        run: node --test --test-timeout=600000 electron/tests/*.test.mjs
 
       - name: Package Electron app
         run: |
