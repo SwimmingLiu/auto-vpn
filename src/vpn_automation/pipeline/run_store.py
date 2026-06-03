@@ -176,6 +176,17 @@ class RunStore:
                 (stage_name, status),
             )
 
+    def mark_run_status(self, status: str) -> None:
+        with sqlite3.connect(self.path) as connection:
+            connection.execute(
+                """
+                UPDATE runs
+                SET status = ?
+                WHERE run_id = (SELECT MAX(run_id) FROM runs)
+                """,
+                (status,),
+            )
+
     def record_raw_link(self, source_name: str, link: str) -> bool:
         key = self._canonical_link_key(link)
         with sqlite3.connect(self.path) as connection:
@@ -376,11 +387,25 @@ class RunStore:
         )
         for db_path in candidates:
             store = RunStore(db_path)
+            if store.fetch_run_status() in {"success", "failed", "stopped"}:
+                continue
             stage_status = store.fetch_stage_status()
             if stage_status.get("verify") == "success":
                 continue
             return db_path
         return None
+
+    def fetch_run_status(self) -> str:
+        with sqlite3.connect(self.path) as connection:
+            row = connection.execute(
+                """
+                SELECT status
+                FROM runs
+                ORDER BY run_id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        return str(row[0]) if row else ""
 
     @staticmethod
     def find_latest_artifact_dir(artifacts_root: Path) -> Path | None:

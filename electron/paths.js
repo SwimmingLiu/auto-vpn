@@ -66,6 +66,14 @@ export function resolveStateProfilePath(projectRoot, options = {}) {
   return anchorPath;
 }
 
+export function resolveRuntimeArtifactsPath(projectRoot, options = {}) {
+  const { isPackaged = false, userDataPath = '' } = options;
+  if (isPackaged && userDataPath) {
+    return path.join(userDataPath, 'artifacts');
+  }
+  return path.join(path.resolve(projectRoot), 'artifacts');
+}
+
 export function resolveBundledProfilePath(projectRoot) {
   const localRoot = path.resolve(projectRoot);
   return path.join(localRoot, 'electron', 'runtime', 'bundled-profile.toml');

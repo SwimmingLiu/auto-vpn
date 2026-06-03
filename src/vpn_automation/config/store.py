@@ -64,7 +64,7 @@ def _ordered_availability_target_names(profile: AppProfile) -> list[str]:
 
 def _render_profile_toml(profile: AppProfile) -> str:
     doc = document()
-    doc.add(comment("VPN Subscription Automation runtime profile"))
+    doc.add(comment("AutoVPN runtime profile"))
     doc.add(comment("Edit this file directly or save changes from the Electron UI."))
     doc.add(nl())
 
@@ -105,8 +105,6 @@ def _render_profile_toml(profile: AppProfile) -> str:
         target_table = table()
         target_table.add("url", target.url)
         target_table.add("enabled", target.enabled)
-        target_table.add("allowed_hosts", target.allowed_hosts)
-        target_table.add("negative_phrases", target.negative_phrases)
         availability_table.add(target_name, target_table)
     doc.add("availability_targets", availability_table)
     doc.add(nl())

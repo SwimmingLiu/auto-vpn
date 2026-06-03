@@ -6,14 +6,42 @@ import { clipboard, ipcMain, shell } from 'electron';
 import QRCode from 'qrcode';
 
 import { mergeLatestArtifactPreview, previewArtifactDirectory } from './lib/artifact-preview.js';
-import { buildBackendInvocation, parseBackendEventLine } from './lib/backend.js';
+import { buildBackendEnv, buildBackendInvocation, parseBackendEventLine } from './lib/backend.js';
+import { signalProcessTree } from './lib/process-lifecycle.js';
 import { resolveStateProfilePath } from './paths.js';
+
+const IPC_CHANNELS = [
+  'profile:load',
+  'profile:save',
+  'shell:open-path',
+  'clipboard:write-text',
+  'logs:export',
+  'pipeline:run',
+  'pipeline:stop',
+  'external:open-url',
+  'external:open-path',
+  'artifact:preview',
+  'artifact:latest',
+  'artifact:list',
+  'pipeline:retry-stage',
+  'qr:generate'
+];
 
 function profilePath(projectRoot, runtimeProfilePath) {
   return runtimeProfilePath || resolveStateProfilePath(projectRoot);
 }
 
-export function registerIpcHandlers({ mainWindow, projectRoot, runtimeProfilePath = '', bundledProfilePath = '' }) {
+export function registerIpcHandlers({
+  mainWindow,
+  projectRoot,
+  runtimeProfilePath = '',
+  bundledProfilePath = '',
+  runtimeArtifactsPath = ''
+}) {
+  for (const channel of IPC_CHANNELS) {
+    ipcMain.removeHandler(channel);
+  }
+
   let activePipelineChild = null;
   let stopRequested = false;
   let stopTimer = null;
@@ -24,6 +52,37 @@ export function registerIpcHandlers({ mainWindow, projectRoot, runtimeProfilePat
     }
   }
 
+  function clearStopTimer() {
+    if (stopTimer) {
+      clearTimeout(stopTimer);
+      stopTimer = null;
+    }
+  }
+
+  function stopActivePipeline() {
+    if (!activePipelineChild) {
+      return { ok: false, requested: false };
+    }
+
+    stopRequested = true;
+    const child = activePipelineChild;
+    const signaled = signalProcessTree(child, 'SIGTERM');
+
+    if (!signaled) {
+      return { ok: false, requested: true };
+    }
+
+    clearStopTimer();
+    stopTimer = setTimeout(() => {
+      if (activePipelineChild === child) {
+        signalProcessTree(child, 'SIGKILL');
+      }
+    }, 4000);
+    stopTimer.unref?.();
+
+    return { ok: true, requested: true };
+  }
+
   ipcMain.handle('profile:load', async () => {
     const invocation = buildBackendInvocation(projectRoot, 'profile');
     const output = await runCommand(
@@ -31,7 +90,9 @@ export function registerIpcHandlers({ mainWindow, projectRoot, runtimeProfilePat
       invocation.args,
       projectRoot,
       runtimeProfilePath,
-      bundledProfilePath
+      bundledProfilePath,
+      '',
+      runtimeArtifactsPath
     );
     return JSON.parse(output.stdout);
   });
@@ -44,7 +105,8 @@ export function registerIpcHandlers({ mainWindow, projectRoot, runtimeProfilePat
       projectRoot,
       runtimeProfilePath,
       bundledProfilePath,
-      JSON.stringify(payload)
+      JSON.stringify(payload),
+      runtimeArtifactsPath
     );
     return { ok: true };
   });
@@ -87,7 +149,7 @@ export function registerIpcHandlers({ mainWindow, projectRoot, runtimeProfilePat
     }
     const child = spawn(command, runArgs, {
       cwd: projectRoot,
-      env: buildBackendEnv(projectRoot, runtimeProfilePath, bundledProfilePath),
+      env: buildBackendEnv(projectRoot, runtimeProfilePath, bundledProfilePath, runtimeArtifactsPath),
       detached: true,
       stdio: ['ignore', 'pipe', 'pipe']
     });
@@ -114,10 +176,7 @@ export function registerIpcHandlers({ mainWindow, projectRoot, runtimeProfilePat
     });
 
     child.on('error', (error) => {
-      if (stopTimer) {
-        clearTimeout(stopTimer);
-        stopTimer = null;
-      }
+      clearStopTimer();
       activePipelineChild = null;
       emit({
         type: 'finished',
@@ -130,10 +189,7 @@ export function registerIpcHandlers({ mainWindow, projectRoot, runtimeProfilePat
     });
 
     child.on('close', (code, signal) => {
-      if (stopTimer) {
-        clearTimeout(stopTimer);
-        stopTimer = null;
-      }
+      clearStopTimer();
       activePipelineChild = null;
       const stopped = stopRequested || signal === 'SIGTERM' || signal === 'SIGKILL';
       emit({
@@ -151,28 +207,7 @@ export function registerIpcHandlers({ mainWindow, projectRoot, runtimeProfilePat
   });
 
   ipcMain.handle('pipeline:stop', async () => {
-    if (!activePipelineChild) {
-      return { ok: false, requested: false };
-    }
-
-    stopRequested = true;
-    const child = activePipelineChild;
-    const signaled = child.kill('SIGTERM');
-
-    if (!signaled) {
-      return { ok: false, requested: true };
-    }
-
-    if (stopTimer) {
-      clearTimeout(stopTimer);
-    }
-    stopTimer = setTimeout(() => {
-      if (activePipelineChild === child && !child.killed) {
-        child.kill('SIGKILL');
-      }
-    }, 4000);
-
-    return { ok: true, requested: true };
+    return stopActivePipeline();
   });
 
   ipcMain.handle('external:open-url', async (_event, url) => {
@@ -199,7 +234,9 @@ export function registerIpcHandlers({ mainWindow, projectRoot, runtimeProfilePat
       invocation.args,
       projectRoot,
       runtimeProfilePath,
-      bundledProfilePath
+      bundledProfilePath,
+      '',
+      runtimeArtifactsPath
     );
     const report = JSON.parse(output.stdout);
     if (!report?.ok) {
@@ -215,7 +252,9 @@ export function registerIpcHandlers({ mainWindow, projectRoot, runtimeProfilePat
       invocation.args,
       projectRoot,
       runtimeProfilePath,
-      bundledProfilePath
+      bundledProfilePath,
+      '',
+      runtimeArtifactsPath
     );
     return JSON.parse(output.stdout);
   });
@@ -240,7 +279,7 @@ export function registerIpcHandlers({ mainWindow, projectRoot, runtimeProfilePat
     const command = selectBackendCommand(invocation.commands);
     const child = spawn(command, invocation.args, {
       cwd: projectRoot,
-      env: buildBackendEnv(projectRoot, runtimeProfilePath, bundledProfilePath),
+      env: buildBackendEnv(projectRoot, runtimeProfilePath, bundledProfilePath, runtimeArtifactsPath),
       detached: true,
       stdio: ['ignore', 'pipe', 'pipe']
     });
@@ -267,10 +306,7 @@ export function registerIpcHandlers({ mainWindow, projectRoot, runtimeProfilePat
     });
 
     child.on('error', (error) => {
-      if (stopTimer) {
-        clearTimeout(stopTimer);
-        stopTimer = null;
-      }
+      clearStopTimer();
       activePipelineChild = null;
       emit({
         type: 'finished',
@@ -283,10 +319,7 @@ export function registerIpcHandlers({ mainWindow, projectRoot, runtimeProfilePat
     });
 
     child.on('close', (code, signal) => {
-      if (stopTimer) {
-        clearTimeout(stopTimer);
-        stopTimer = null;
-      }
+      clearStopTimer();
       activePipelineChild = null;
       const stopped = stopRequested || signal === 'SIGTERM' || signal === 'SIGKILL';
       emit({
@@ -312,14 +345,31 @@ export function registerIpcHandlers({ mainWindow, projectRoot, runtimeProfilePat
       color: { dark: '#111826', light: '#ffffff' }
     })
   }));
+
+  return {
+    stopActivePipeline,
+    dispose() {
+      for (const channel of IPC_CHANNELS) {
+        ipcMain.removeHandler(channel);
+      }
+    }
+  };
 }
 
-function runCommand(commands, args, cwd, runtimeProfilePath = '', bundledProfilePath = '', input = '') {
+function runCommand(
+  commands,
+  args,
+  cwd,
+  runtimeProfilePath = '',
+  bundledProfilePath = '',
+  input = '',
+  runtimeArtifactsPath = ''
+) {
   return new Promise((resolve, reject) => {
     const command = selectBackendCommand(commands);
     const child = spawn(command, args, {
       cwd,
-      env: buildBackendEnv(cwd, runtimeProfilePath, bundledProfilePath),
+      env: buildBackendEnv(cwd, runtimeProfilePath, bundledProfilePath, runtimeArtifactsPath),
       stdio: ['pipe', 'pipe', 'pipe']
     });
 
@@ -344,15 +394,6 @@ function runCommand(commands, args, cwd, runtimeProfilePath = '', bundledProfile
       resolve({ stdout, stderr, code });
     });
   });
-}
-
-function buildBackendEnv(projectRoot, runtimeProfilePath = '', bundledProfilePath = '') {
-  return {
-    ...process.env,
-    PYTHONPATH: path.join(projectRoot, 'src'),
-    VPN_AUTOMATION_PROFILE_PATH: runtimeProfilePath,
-    VPN_AUTOMATION_BUNDLED_PROFILE_PATH: bundledProfilePath
-  };
 }
 
 async function openPathWithShell(targetPath, { strictExists = false } = {}) {

@@ -160,7 +160,7 @@ class PipelineController:
 
         try:
             env = self.env_loader(runtime_root)
-            credentials = resolve_cloudflare_credentials(profile.deploy, env)
+            credentials = None if skip_deploy else resolve_cloudflare_credentials(profile.deploy, env)
 
             set_stage("doctor", "running")
             set_stage("doctor", "success")
@@ -271,6 +271,7 @@ class PipelineController:
 
             summary.run_status = "success"
             self._write_pipeline_report(artifact_dir, summary)
+            run_store.mark_run_status("success")
             return summary
         except Exception as exc:
             if current_stage and stage_status.get(current_stage) == "running":
@@ -278,6 +279,7 @@ class PipelineController:
             summary.run_status = "failed"
             summary.error = f"{exc.__class__.__name__}: {exc}"
             self._write_pipeline_report(artifact_dir, summary)
+            run_store.mark_run_status("failed")
             raise
 
     def _create_artifact_dir(self, runtime_root: Path) -> Path:

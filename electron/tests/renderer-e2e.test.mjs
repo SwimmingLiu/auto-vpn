@@ -138,6 +138,67 @@ test('renderer hydrates the latest artifact on startup when backend has results'
   }
 });
 
+test('renderer blocks deploy runs when Cloudflare credentials are missing', async () => {
+  const server = await startStaticServer(path.join(__dirname, '..', 'renderer'));
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage({ viewport: { width: 1280, height: 820 } });
+    await page.addInitScript(() => {
+      window.__runCalls = 0;
+      window.__savedProfiles = [];
+      window.vpnAutomation = {
+        loadProfile: async () => ({
+          sources: {
+            leiting: { url: 'https://capture.example/api', key: 'demo', enabled: true, max_iterations: 40 }
+          },
+          speed_test: { min_download_mb_s: 1, timeout_seconds: 20, concurrency: 3 },
+          availability_targets: {},
+          deploy: {
+            project_name: 'sub-nodes',
+            pages_project_url: 'https://sub-nodes.pages.dev',
+            subscription_url: 'https://vpn.example.top/sub',
+            cloudflare_auth_mode: 'api_token',
+            cloudflare_api_token: '',
+            cloudflare_global_key: '',
+            cloudflare_email: ''
+          },
+          paths: { project_root: '/Users/user/vpn-sub', artifacts_root: '/Users/user/vpn-sub/artifacts' }
+        }),
+        saveProfile: async (payload) => {
+          window.__savedProfiles.push(structuredClone(payload));
+          return { ok: true };
+        },
+        latestArtifact: async () => ({ ok: false, artifact_dir: '' }),
+        artifactList: async () => ({ ok: true, items: [] }),
+        runPipeline: async () => {
+          window.__runCalls += 1;
+          return { ok: true, pid: 1 };
+        },
+        generateQr: async () => ({ ok: true, dataUrl: 'data:image/mock;base64,preflight' }),
+        onPipelineEvent: () => () => {}
+      };
+    });
+
+    await page.goto(`${server.origin}/index.html`);
+    await page.locator('#navRuns').click();
+    await page.waitForSelector('#runsWorkspace');
+    await page.locator('#runsWorkspace [data-run-action="start"]').click();
+    await page.waitForSelector('[data-toast]');
+
+    const toastText = await page.locator('[data-toast]').innerText();
+    await page.locator('#navLogs').click();
+    await page.waitForSelector('#logCenterTable');
+    const logText = await page.locator('#logCenterTable').innerText();
+    assert.match(toastText, /Cloudflare Token/);
+    assert.match(logText, /部署配置不完整/);
+    assert.equal(await page.evaluate(() => window.__runCalls), 0);
+    assert.equal(await page.evaluate(() => window.__savedProfiles.length), 0);
+  } finally {
+    await browser.close();
+    await server.close();
+  }
+});
+
 test('renderer matches the six-page canvas redesign and supports page navigation', async () => {
   const server = await startStaticServer(path.join(__dirname, '..', 'renderer'));
   const browser = await chromium.launch();
@@ -168,22 +229,20 @@ test('renderer matches the six-page canvas redesign and supports page navigation
           },
           availability_targets: {
             gemini: {
-              url: 'https://gemini.google.com/',
-              enabled: true,
-              allowed_hosts: ['gemini.google.com'],
-              negative_phrases: ['not available']
+              url: 'https://gemini.google.com',
+              enabled: true
             },
-            chatgpt: {
-              url: 'https://chatgpt.com/',
-              enabled: true,
-              allowed_hosts: ['chatgpt.com'],
-              negative_phrases: ['unsupported region']
+            chatgpt_ios: {
+              url: 'https://ios.chat.openai.com/',
+              enabled: true
+            },
+            chatgpt_web: {
+              url: 'https://api.openai.com/compliance/cookie_requirements',
+              enabled: true
             },
             claude: {
-              url: 'https://claude.ai/',
-              enabled: true,
-              allowed_hosts: ['claude.ai'],
-              negative_phrases: ['unavailable in your region']
+              url: 'https://claude.ai/cdn-cgi/trace',
+              enabled: true
             }
           },
           deploy: {
@@ -472,23 +531,21 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     await page.locator('[data-settings-card="availability_targets"]').click();
     await page.waitForSelector('#settingsDrawer[data-open="true"]');
     assert.match(await page.locator('#settingsDrawerTitle').innerText(), /AI可达性检测/);
-    assert.equal(await page.locator('.availability-target-table tbody tr').count(), 3);
+    assert.equal(await page.locator('.availability-target-table tbody tr').count(), 4);
     await page.locator('[data-availability-action="add"]').click();
-    await page.waitForFunction(() => document.querySelectorAll('.availability-target-table tbody tr').length === 4);
+    await page.waitForFunction(() => document.querySelectorAll('.availability-target-table tbody tr').length === 5);
     const lastRow = page.locator('.availability-target-table tbody tr').last();
     await lastRow.locator('[data-availability-key="name"]').fill('tmailor');
     await lastRow.locator('[data-availability-key="url"]').fill('https://tmailor.example/');
-    await lastRow.locator('[data-availability-key="allowed_hosts"]').fill('tmailor.example');
-    await lastRow.locator('[data-availability-key="negative_phrases"]').fill('blocked');
+    assert.equal(await lastRow.locator('[data-availability-key="allowed_hosts"]').count(), 0);
+    assert.equal(await lastRow.locator('[data-availability-key="negative_phrases"]').count(), 0);
     await page.locator('[data-drawer-save="save"]').click();
     await page.waitForSelector('#settingsDrawer[data-open="false"]');
     assert.deepEqual(
       await page.evaluate(() => window.__savedProfiles.at(-1).availability_targets.tmailor),
       {
         url: 'https://tmailor.example/',
-        enabled: true,
-        allowed_hosts: ['tmailor.example'],
-        negative_phrases: ['blocked']
+        enabled: true
       }
     );
 

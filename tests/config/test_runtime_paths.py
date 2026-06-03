@@ -2,7 +2,7 @@ from pathlib import Path
 
 from vpn_automation.app import resolve_source_root
 from vpn_automation.config.models import create_default_profile, resolve_repo_anchor
-from vpn_automation.config.runtime import resolve_env_file
+from vpn_automation.config.runtime import resolve_artifacts_root, resolve_env_file
 from vpn_automation.config.store import ProfileStore
 
 
@@ -112,6 +112,17 @@ def test_resolve_env_file_prefers_main_repo_env_from_worktree(tmp_path: Path) ->
     resolved = resolve_env_file(module_file)
 
     assert resolved == env_path
+
+
+def test_resolve_artifacts_root_prefers_runtime_override(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    app_support_root = tmp_path / "Application Support" / "vpn-subscription-automation"
+    project_root.mkdir(parents=True)
+    monkeypatch.setenv("VPN_AUTOMATION_ARTIFACTS_ROOT", str(app_support_root / "artifacts"))
+
+    resolved = resolve_artifacts_root(project_root)
+
+    assert resolved == app_support_root / "artifacts"
 
 
 def test_resolve_source_root_keeps_active_worktree_root(tmp_path: Path) -> None:

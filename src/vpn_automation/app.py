@@ -9,6 +9,7 @@ from vpn_automation.integrations.packaging import package_application
 def build_app_metadata() -> dict[str, str]:
     return {
         "name": "vpn-subscription-automation",
+        "display_name": "AutoVPN",
         "version": "0.2.0",
     }
 

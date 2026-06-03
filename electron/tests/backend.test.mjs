@@ -5,9 +5,19 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { mergeLatestArtifactPreview, parseVmessLinkForPreview, previewArtifactDirectory } from '../lib/artifact-preview.js';
-import { buildBackendInvocation, parseBackendEventLine, resolveBackendPython } from '../lib/backend.js';
+import {
+  buildBackendEnv,
+  buildBackendInvocation,
+  buildPythonCandidates,
+  parseBackendEventLine,
+  resolveBackendPython,
+  resolveBundledChromiumPath,
+  resolvePlaywrightBrowsersPath,
+  resolvePythonVendorPath
+} from '../lib/backend.js';
 import {
   findProjectRoot,
+  resolveRuntimeArtifactsPath,
   resolveBundledProfilePath,
   resolveProjectRoot,
   resolveStateProfilePath
@@ -22,7 +32,7 @@ test('qrcode package is available for real subscription QR images', async () => 
 
 test('buildBackendInvocation returns python module command', () => {
   const invocation = buildBackendInvocation('/repo', 'run');
-  assert.deepEqual(invocation.commands, ['python3.12', 'python3']);
+  assert.deepEqual(invocation.commands, resolveBackendPython('/repo'));
   assert.deepEqual(invocation.args, ['-m', 'vpn_automation.backend', 'run', '--project-root', '/repo']);
 });
 
@@ -34,7 +44,7 @@ test('buildBackendInvocation appends extra args for retry-stage style commands',
     'deploy'
   ]);
 
-  assert.deepEqual(invocation.commands, ['python3.12', 'python3']);
+  assert.deepEqual(invocation.commands, resolveBackendPython('/repo'));
   assert.deepEqual(invocation.args, [
     '-m',
     'vpn_automation.backend',
@@ -46,6 +56,29 @@ test('buildBackendInvocation appends extra args for retry-stage style commands',
     '--stage',
     'deploy'
   ]);
+});
+
+test('buildPythonCandidates prefers project venv and Homebrew Python before generic python', () => {
+  const candidates = buildPythonCandidates('/repo');
+
+  assert.equal(candidates[0], '/repo/.venv/bin/python');
+  assert.equal(candidates[1], '/repo/.venv/bin/python3');
+  assert.ok(candidates.indexOf('/opt/homebrew/bin/python3.14') < candidates.indexOf('python3'));
+  assert.ok(candidates.indexOf('/opt/homebrew/bin/python3.12') < candidates.indexOf('python3'));
+});
+
+test('buildBackendEnv exposes bundled python vendor packages to packaged app backend', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vpn-python-vendor-'));
+  const projectRoot = path.join(root, 'app');
+  const vendorPath = path.join(projectRoot, 'electron', 'runtime', 'python-vendor');
+  fs.mkdirSync(vendorPath, { recursive: true });
+
+  const env = buildBackendEnv(projectRoot, '/profile.toml', '/bundled.toml');
+
+  assert.equal(resolvePythonVendorPath(projectRoot), vendorPath);
+  assert.equal(env.PYTHONPATH, [path.join(projectRoot, 'src'), vendorPath].join(path.delimiter));
+  assert.equal(env.VPN_AUTOMATION_PROFILE_PATH, '/profile.toml');
+  assert.equal(env.VPN_AUTOMATION_BUNDLED_PROFILE_PATH, '/bundled.toml');
 });
 
 test('parseBackendEventLine decodes backend json line', () => {
@@ -102,6 +135,42 @@ test('resolveStateProfilePath switches to userData when packaged', () => {
   );
 });
 
+test('resolveRuntimeArtifactsPath switches to userData when packaged', () => {
+  assert.equal(
+    resolveRuntimeArtifactsPath('/repo', { isPackaged: true, userDataPath: '/Users/demo/Library/Application Support/VPN' }),
+    '/Users/demo/Library/Application Support/VPN/artifacts'
+  );
+});
+
+test('buildBackendEnv exposes packaged runtime artifacts path to Python backend', () => {
+  const env = buildBackendEnv('/repo', '/profile.toml', '/bundled.toml', '/runtime/artifacts');
+
+  assert.equal(env.VPN_AUTOMATION_ARTIFACTS_ROOT, '/runtime/artifacts');
+});
+
+test('buildBackendEnv points Playwright at bundled Chromium headless shell when packaged browser exists', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vpn-playwright-browser-'));
+  const projectRoot = path.join(root, 'app');
+  const chromiumPath = path.join(
+    projectRoot,
+    'electron',
+    'runtime',
+    'playwright-browsers',
+    'chromium_headless_shell-1217',
+    'chrome-headless-shell-mac-arm64',
+    'chrome-headless-shell'
+  );
+  fs.mkdirSync(path.dirname(chromiumPath), { recursive: true });
+  fs.writeFileSync(chromiumPath, '', 'utf-8');
+
+  const env = buildBackendEnv(projectRoot, '/profile.toml', '/bundled.toml', '/runtime/artifacts');
+
+  assert.equal(resolvePlaywrightBrowsersPath(projectRoot), path.join(projectRoot, 'electron', 'runtime', 'playwright-browsers'));
+  assert.equal(resolveBundledChromiumPath(projectRoot), chromiumPath);
+  assert.equal(env.PLAYWRIGHT_BROWSERS_PATH, resolvePlaywrightBrowsersPath(projectRoot));
+  assert.equal(env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH, chromiumPath);
+});
+
 test('resolveBundledProfilePath points at the packaged runtime seed file', () => {
   assert.equal(resolveBundledProfilePath('/repo'), '/repo/electron/runtime/bundled-profile.toml');
 });
@@ -113,7 +182,10 @@ test('resolveBackendPython prefers a project virtualenv when present', () => {
   fs.mkdirSync(path.dirname(venvPython), { recursive: true });
   fs.writeFileSync(venvPython, '', 'utf-8');
 
-  assert.deepEqual(resolveBackendPython(root), [venvPython, 'python3.12', 'python3']);
+  const candidates = resolveBackendPython(root);
+  assert.equal(candidates[0], venvPython);
+  assert.ok(candidates.includes('python3.12'));
+  assert.ok(candidates.includes('python3'));
 });
 
 test('parseVmessLinkForPreview decodes node fields for results page', () => {

@@ -164,6 +164,26 @@ def test_run_store_finds_latest_incomplete_run(tmp_path: Path) -> None:
     assert latest == second_dir / "run.db"
 
 
+def test_run_store_ignores_failed_runs_when_resuming_latest(tmp_path: Path) -> None:
+    artifacts_root = tmp_path / "artifacts"
+    failed_dir = artifacts_root / "20260423-010101"
+    running_dir = artifacts_root / "20260423-020202"
+    failed_dir.mkdir(parents=True)
+    running_dir.mkdir(parents=True)
+
+    failed = RunStore(failed_dir / "run.db")
+    failed.initialize(artifact_dir=str(failed_dir))
+    failed.mark_run_status("failed")
+
+    running = RunStore(running_dir / "run.db")
+    running.initialize(artifact_dir=str(running_dir))
+    running.record_stage_event("availability", "running")
+
+    latest = RunStore.find_latest_incomplete_run(artifacts_root)
+
+    assert latest == running_dir / "run.db"
+
+
 def test_run_store_restores_source_resume_state(tmp_path: Path) -> None:
     store = RunStore(tmp_path / "run.db")
     store.initialize(artifact_dir=str(tmp_path / "artifacts"))

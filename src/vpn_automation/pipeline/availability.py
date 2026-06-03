@@ -65,38 +65,38 @@ class AvailabilityResult:
 PROVIDER_TARGETS: tuple[ProviderTarget, ...] = (
     ProviderTarget(
         name="gemini",
-        url="https://gemini.google.com/",
-        allowed_hosts=("gemini.google.com", "accounts.google.com"),
-        negative_phrases=(
-            "not available in your country",
-            "not available in your country or territory",
-            "isn't available in your country",
-            "not available in your region",
-        ),
+        url="https://gemini.google.com",
+        allowed_hosts=("gemini.google.com",),
+        negative_phrases=(),
     ),
     ProviderTarget(
-        name="chatgpt",
-        url="https://chatgpt.com/",
-        allowed_hosts=("chatgpt.com", "chat.openai.com", "auth.openai.com", "login.openai.com"),
-        negative_phrases=(
-            "unsupported country",
-            "unsupported region",
-            "country, region, or territory",
-            "not available in your country",
-        ),
+        name="chatgpt_ios",
+        url="https://ios.chat.openai.com/",
+        allowed_hosts=("ios.chat.openai.com",),
+        negative_phrases=(),
+    ),
+    ProviderTarget(
+        name="chatgpt_web",
+        url="https://api.openai.com/compliance/cookie_requirements",
+        allowed_hosts=("api.openai.com",),
+        negative_phrases=(),
     ),
     ProviderTarget(
         name="claude",
-        url="https://claude.ai/",
-        allowed_hosts=("claude.ai", "support.anthropic.com"),
-        negative_phrases=(
-            "unavailable in your region",
-            "supported regions",
-            "physically located in one of our supported regions",
-            "outside of our supported locations",
-        ),
+        url="https://claude.ai/cdn-cgi/trace",
+        allowed_hosts=("claude.ai",),
+        negative_phrases=(),
     ),
 )
+
+CHATGPT_TRACE_URL = "https://chat.openai.com/cdn-cgi/trace"
+CHATGPT_IOS_URL = "https://ios.chat.openai.com/"
+CHATGPT_WEB_URL = "https://api.openai.com/compliance/cookie_requirements"
+CLAUDE_TRACE_URL = "https://claude.ai/cdn-cgi/trace"
+GEMINI_URL = "https://gemini.google.com"
+GEMINI_REGION_MARKERS = (',2,1,200,"', ',2,1,200,\\"')
+CLAUDE_BLOCKED_CODES = {"AF", "BY", "CN", "CU", "HK", "IR", "KP", "MO", "RU", "SY"}
+GEMINI_BLOCKED_CODES = {"CHN", "RUS", "BLR", "CUB", "IRN", "PRK", "SYR", "HKG", "MAC"}
 
 BROWSER_LIKE_HEADERS = {
     "User-Agent": (
@@ -117,15 +117,13 @@ CHALLENGE_PHRASES = (
     "enable javascript and cookies",
 )
 
-CLAUDE_BLOCKED_CODES = {"AF", "BY", "CN", "CU", "HK", "IR", "KP", "MO", "RU", "SY"}
-GEMINI_BLOCKED_CODES = {"CHN", "RUS", "BLR", "CUB", "IRN", "PRK", "SYR", "HKG", "MAC"}
-GEMINI_REGION_MARKERS = (',2,1,200,"', ',2,1,200,\\"')
-
 NODE_BINARY_CANDIDATES = (
     "/opt/homebrew/bin/node",
     "/usr/local/bin/node",
     "/usr/bin/node",
 )
+
+NODE_MODULE_DIR_ENV = "VPN_AUTOMATION_NODE_MODULE_DIR"
 
 
 def _emit_event(
@@ -140,6 +138,208 @@ def _emit_event(
 def _host_is_allowed(hostname: str, allowed_hosts: tuple[str, ...]) -> bool:
     host = hostname.lower()
     return any(host == allowed or host.endswith(f".{allowed}") for allowed in allowed_hosts)
+
+
+def _target_key(target: ProviderTarget) -> str:
+    return target.name.strip().lower().replace("-", "_").replace(" ", "_")
+
+
+def _request_provider_url(
+    session: requests.Session,
+    proxies: dict[str, str],
+    url: str,
+    timeout_seconds: int,
+):
+    return session.get(
+        url,
+        proxies=proxies,
+        timeout=timeout_seconds,
+        verify=True,
+        allow_redirects=True,
+        headers=BROWSER_LIKE_HEADERS,
+    )
+
+
+def _response_text(response: Any) -> str:
+    text = getattr(response, "text", "")
+    return text() if callable(text) else str(text)
+
+
+def _response_status_code(response: Any) -> int:
+    return int(getattr(response, "status_code", 0) or 0)
+
+
+def _response_url(response: Any, fallback_url: str) -> str:
+    return str(getattr(response, "url", fallback_url) or fallback_url)
+
+
+def _extract_trace_loc(body: str) -> str:
+    for line in body.splitlines():
+        if line.startswith("loc="):
+            return line[4:].strip().upper()
+    return ""
+
+
+def _fetch_chatgpt_region(
+    session: requests.Session,
+    proxies: dict[str, str],
+    timeout_seconds: int,
+) -> str:
+    try:
+        response = _request_provider_url(session, proxies, CHATGPT_TRACE_URL, timeout_seconds)
+    except requests.RequestException:
+        return ""
+    return _extract_trace_loc(_response_text(response))
+
+
+def _build_provider_result(
+    target: ProviderTarget,
+    *,
+    passed: bool,
+    reason: str,
+    response: Any | None = None,
+    final_url: str | None = None,
+    matched_phrase: str = "",
+) -> ProviderCheckResult:
+    return ProviderCheckResult(
+        provider=target.name,
+        passed=passed,
+        reason=reason,
+        status_code=_response_status_code(response) if response is not None else 0,
+        final_url=final_url or (_response_url(response, target.url) if response is not None else target.url),
+        matched_phrase=matched_phrase,
+    )
+
+
+def _request_error_result(target: ProviderTarget, exc: requests.RequestException) -> ProviderCheckResult:
+    return ProviderCheckResult(
+        provider=target.name,
+        passed=False,
+        reason=exc.__class__.__name__.lower(),
+        final_url=target.url,
+    )
+
+
+def _check_chatgpt_ios_unlock(
+    session: requests.Session,
+    proxies: dict[str, str],
+    target: ProviderTarget,
+    timeout_seconds: int,
+) -> ProviderCheckResult:
+    region = _fetch_chatgpt_region(session, proxies, timeout_seconds)
+    try:
+        response = _request_provider_url(session, proxies, CHATGPT_IOS_URL, timeout_seconds)
+    except requests.RequestException as exc:
+        return _request_error_result(target, exc)
+
+    body_lower = _response_text(response).lower()
+    if "you may be connected to a disallowed isp" in body_lower:
+        return _build_provider_result(target, passed=False, reason="disallowed_isp", response=response, matched_phrase=region)
+    if "request is not allowed. please try again later." in body_lower:
+        return _build_provider_result(target, passed=True, reason="ok", response=response, matched_phrase=region)
+    if "sorry, you have been blocked" in body_lower:
+        return _build_provider_result(target, passed=False, reason="blocked", response=response, matched_phrase=region)
+    return _build_provider_result(target, passed=False, reason="unlock_failed", response=response, matched_phrase=region)
+
+
+def _check_chatgpt_web_unlock(
+    session: requests.Session,
+    proxies: dict[str, str],
+    target: ProviderTarget,
+    timeout_seconds: int,
+) -> ProviderCheckResult:
+    region = _fetch_chatgpt_region(session, proxies, timeout_seconds)
+    try:
+        response = _request_provider_url(session, proxies, CHATGPT_WEB_URL, timeout_seconds)
+    except requests.RequestException as exc:
+        return _request_error_result(target, exc)
+
+    body_lower = _response_text(response).lower()
+    if "unsupported_country" in body_lower:
+        return _build_provider_result(
+            target,
+            passed=False,
+            reason="unsupported_region",
+            response=response,
+            matched_phrase=region if region and _target_key(target) != "chatgpt" else "unsupported_country",
+        )
+    return _build_provider_result(target, passed=True, reason="ok", response=response, matched_phrase=region)
+
+
+def _check_claude_unlock(
+    session: requests.Session,
+    proxies: dict[str, str],
+    target: ProviderTarget,
+    timeout_seconds: int,
+) -> ProviderCheckResult:
+    try:
+        response = _request_provider_url(session, proxies, CLAUDE_TRACE_URL, timeout_seconds)
+    except requests.RequestException as exc:
+        return _request_error_result(target, exc)
+
+    country_code = _extract_trace_loc(_response_text(response))
+    if not country_code:
+        return _build_provider_result(target, passed=False, reason="unlock_failed", response=response)
+    return _build_provider_result(
+        target,
+        passed=country_code not in CLAUDE_BLOCKED_CODES,
+        reason="unsupported_region" if country_code in CLAUDE_BLOCKED_CODES else "ok",
+        response=response,
+        matched_phrase=country_code,
+    )
+
+
+def _extract_gemini_country_code(body: str) -> str:
+    for marker in GEMINI_REGION_MARKERS:
+        index = body.find(marker)
+        if index < 0:
+            continue
+        start = index + len(marker)
+        country_code = body[start:start + 3]
+        if len(country_code) == 3 and country_code.isascii() and country_code.isupper():
+            return country_code
+    return ""
+
+
+def _check_gemini_unlock(
+    session: requests.Session,
+    proxies: dict[str, str],
+    target: ProviderTarget,
+    timeout_seconds: int,
+) -> ProviderCheckResult:
+    try:
+        response = _request_provider_url(session, proxies, GEMINI_URL, timeout_seconds)
+    except requests.RequestException as exc:
+        return _request_error_result(target, exc)
+
+    country_code = _extract_gemini_country_code(_response_text(response))
+    if not country_code:
+        return _build_provider_result(target, passed=False, reason="unlock_failed", response=response)
+    return _build_provider_result(
+        target,
+        passed=country_code not in GEMINI_BLOCKED_CODES,
+        reason="unsupported_region" if country_code in GEMINI_BLOCKED_CODES else "ok",
+        response=response,
+        matched_phrase=country_code,
+    )
+
+
+def _fetch_unlock_provider_result(
+    session: requests.Session,
+    proxies: dict[str, str],
+    target: ProviderTarget,
+    timeout_seconds: int,
+) -> ProviderCheckResult | None:
+    key = _target_key(target)
+    if key == "chatgpt_ios":
+        return _check_chatgpt_ios_unlock(session, proxies, target, timeout_seconds)
+    if key in {"chatgpt", "chatgpt_web"}:
+        return _check_chatgpt_web_unlock(session, proxies, target, timeout_seconds)
+    if key == "claude":
+        return _check_claude_unlock(session, proxies, target, timeout_seconds)
+    if key == "gemini":
+        return _check_gemini_unlock(session, proxies, target, timeout_seconds)
+    return None
 
 
 def normalize_provider_targets(
@@ -172,11 +372,7 @@ def normalize_provider_targets(
                 name=str(name),
                 url=url,
                 allowed_hosts=allowed_hosts,
-                negative_phrases=tuple(
-                    str(phrase).strip()
-                    for phrase in getattr(config, "negative_phrases", [])
-                    if str(phrase).strip()
-                ),
+                negative_phrases=(),
             )
         )
     return tuple(normalized_targets)
@@ -241,242 +437,6 @@ def evaluate_provider_response(
     )
 
 
-def _target_key(target: ProviderTarget) -> str:
-    return target.name.strip().lower().replace("-", "_").replace(" ", "_")
-
-
-def _request_provider_url(
-    session: requests.Session,
-    proxies: dict[str, str],
-    url: str,
-    timeout_seconds: int,
-):
-    return session.get(
-        url,
-        proxies=proxies,
-        timeout=timeout_seconds,
-        verify=True,
-        allow_redirects=True,
-        headers=BROWSER_LIKE_HEADERS,
-    )
-
-
-def _response_text(response: Any) -> str:
-    return str(getattr(response, "text", "") or "")
-
-
-def _response_status_code(response: Any) -> int:
-    return int(getattr(response, "status_code", 0) or 0)
-
-
-def _response_url(response: Any, fallback: str) -> str:
-    return str(getattr(response, "url", "") or fallback)
-
-
-def _extract_trace_loc(body: str) -> str:
-    for line in body.splitlines():
-        if line.startswith("loc="):
-            return line.removeprefix("loc=").strip().upper()
-    return ""
-
-
-def _build_provider_result(
-    target: ProviderTarget,
-    *,
-    passed: bool,
-    reason: str,
-    status_code: int = 0,
-    final_url: str = "",
-    matched_phrase: str = "",
-) -> ProviderCheckResult:
-    return ProviderCheckResult(
-        provider=target.name,
-        passed=passed,
-        reason=reason,
-        status_code=status_code,
-        final_url=final_url,
-        matched_phrase=matched_phrase,
-    )
-
-
-def _request_error_result(
-    target: ProviderTarget,
-    url: str,
-    exc: requests.RequestException,
-) -> ProviderCheckResult:
-    return _build_provider_result(
-        target,
-        passed=False,
-        reason=exc.__class__.__name__.lower(),
-        final_url=url,
-    )
-
-
-def _check_chatgpt_unlock(
-    session: requests.Session,
-    proxies: dict[str, str],
-    target: ProviderTarget,
-    timeout_seconds: int,
-) -> ProviderCheckResult:
-    trace_url = "https://chat.openai.com/cdn-cgi/trace"
-    try:
-        _request_provider_url(session, proxies, trace_url, timeout_seconds)
-    except requests.RequestException:
-        pass
-
-    web_url = "https://api.openai.com/compliance/cookie_requirements"
-    try:
-        response = _request_provider_url(session, proxies, web_url, timeout_seconds)
-    except requests.RequestException as exc:
-        return _request_error_result(target, web_url, exc)
-
-    status_code = _response_status_code(response)
-    final_url = _response_url(response, web_url)
-    body_lower = _response_text(response).lower()
-    if "unsupported_country" in body_lower:
-        return _build_provider_result(
-            target,
-            passed=False,
-            reason="unsupported_region",
-            status_code=status_code,
-            final_url=final_url,
-            matched_phrase="unsupported_country",
-        )
-
-    if status_code >= 500:
-        return _build_provider_result(
-            target,
-            passed=False,
-            reason="http_error",
-            status_code=status_code,
-            final_url=final_url,
-        )
-
-    return _build_provider_result(
-        target,
-        passed=True,
-        reason="ok",
-        status_code=status_code,
-        final_url=final_url,
-    )
-
-
-def _check_claude_unlock(
-    session: requests.Session,
-    proxies: dict[str, str],
-    target: ProviderTarget,
-    timeout_seconds: int,
-) -> ProviderCheckResult:
-    trace_url = "https://claude.ai/cdn-cgi/trace"
-    try:
-        response = _request_provider_url(session, proxies, trace_url, timeout_seconds)
-    except requests.RequestException as exc:
-        return _request_error_result(target, trace_url, exc)
-
-    status_code = _response_status_code(response)
-    final_url = _response_url(response, trace_url)
-    country_code = _extract_trace_loc(_response_text(response))
-    if not country_code:
-        return _build_provider_result(
-            target,
-            passed=False,
-            reason="parse_error",
-            status_code=status_code,
-            final_url=final_url,
-        )
-
-    if country_code in CLAUDE_BLOCKED_CODES:
-        return _build_provider_result(
-            target,
-            passed=False,
-            reason="unsupported_region",
-            status_code=status_code,
-            final_url=final_url,
-            matched_phrase=country_code,
-        )
-
-    return _build_provider_result(
-        target,
-        passed=True,
-        reason="ok",
-        status_code=status_code,
-        final_url=final_url,
-        matched_phrase=country_code,
-    )
-
-
-def _extract_gemini_country_code(body: str) -> str:
-    for marker in GEMINI_REGION_MARKERS:
-        index = body.find(marker)
-        if index == -1:
-            continue
-        start = index + len(marker)
-        country_code = body[start:start + 3]
-        if len(country_code) == 3 and country_code.isascii() and country_code.isupper():
-            return country_code
-    return ""
-
-
-def _check_gemini_unlock(
-    session: requests.Session,
-    proxies: dict[str, str],
-    target: ProviderTarget,
-    timeout_seconds: int,
-) -> ProviderCheckResult:
-    url = "https://gemini.google.com/"
-    try:
-        response = _request_provider_url(session, proxies, url, timeout_seconds)
-    except requests.RequestException as exc:
-        return _request_error_result(target, url, exc)
-
-    status_code = _response_status_code(response)
-    final_url = _response_url(response, url)
-    country_code = _extract_gemini_country_code(_response_text(response))
-    if not country_code:
-        return _build_provider_result(
-            target,
-            passed=False,
-            reason="parse_error",
-            status_code=status_code,
-            final_url=final_url,
-        )
-
-    if country_code in GEMINI_BLOCKED_CODES:
-        return _build_provider_result(
-            target,
-            passed=False,
-            reason="unsupported_region",
-            status_code=status_code,
-            final_url=final_url,
-            matched_phrase=country_code,
-        )
-
-    return _build_provider_result(
-        target,
-        passed=True,
-        reason="ok",
-        status_code=status_code,
-        final_url=final_url,
-        matched_phrase=country_code,
-    )
-
-
-def _fetch_unlock_provider_result(
-    session: requests.Session,
-    proxies: dict[str, str],
-    target: ProviderTarget,
-    timeout_seconds: int,
-) -> ProviderCheckResult | None:
-    key = _target_key(target)
-    if key in {"chatgpt", "chatgpt_web"}:
-        return _check_chatgpt_unlock(session, proxies, target, timeout_seconds)
-    if key == "claude":
-        return _check_claude_unlock(session, proxies, target, timeout_seconds)
-    if key == "gemini":
-        return _check_gemini_unlock(session, proxies, target, timeout_seconds)
-    return None
-
-
 def fetch_provider_result(
     session: requests.Session,
     proxies: dict[str, str],
@@ -510,7 +470,9 @@ def fetch_provider_result(
         )
 
 
-def should_retry_with_browser(result: ProviderCheckResult) -> bool:
+def should_retry_with_browser(target: ProviderTarget, result: ProviderCheckResult) -> bool:
+    if _target_key(target) in {"gemini", "chatgpt", "chatgpt_ios", "chatgpt_web", "claude"}:
+        return False
     return result.reason in {"http_error", "challenge_page", "unexpected_host"}
 
 
@@ -527,6 +489,22 @@ def resolve_node_binary(extra_candidates: tuple[str, ...] = ()) -> str:
     raise FileNotFoundError("node binary not found")
 
 
+def resolve_node_module_dir(project_root: str = "") -> str:
+    env_value = os.environ.get(NODE_MODULE_DIR_ENV, "").strip()
+    if env_value and (Path(env_value) / "playwright").exists():
+        return env_value
+
+    if project_root:
+        candidates = [
+            Path(project_root) / "electron" / "runtime" / "node-vendor" / "node_modules",
+            Path(project_root) / "node_modules",
+        ]
+        for bundled_modules in candidates:
+            if (bundled_modules / "playwright").exists():
+                return str(bundled_modules)
+    return ""
+
+
 def fetch_provider_results_with_browser(
     proxies: dict[str, str],
     targets: tuple[ProviderTarget, ...],
@@ -539,11 +517,17 @@ def fetch_provider_results_with_browser(
 
     repo_root = Path(project_root) if project_root else resolve_repo_anchor(Path(__file__))
     script = r"""
-import { chromium } from 'playwright';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+const { chromium } = require('playwright');
 const proxyServer = process.argv[1];
 const timeoutMs = Number(process.argv[2]);
 const targets = JSON.parse(process.argv[3]);
-const browser = await chromium.launch({ headless: true, proxy: { server: proxyServer } });
+const launchOptions = { headless: true, proxy: { server: proxyServer } };
+if (process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH) {
+  launchOptions.executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
+}
+const browser = await chromium.launch(launchOptions);
 const context = await browser.newContext({
   userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
   locale: 'en-US',
@@ -574,11 +558,16 @@ await browser.close();
 """
     target_payload = json.dumps([{"name": target.name, "url": target.url} for target in targets], ensure_ascii=False)
     timeout_budget = max(timeout_seconds * len(targets) + 45, 60)
+    node_env = dict(os.environ)
+    node_module_dir = resolve_node_module_dir(str(repo_root))
+    if node_module_dir:
+        node_env["NODE_PATH"] = node_module_dir
     result = subprocess.run(
         [resolve_node_binary(), "--input-type=module", "-e", script, proxy_server, str(timeout_seconds * 1000), target_payload],
         cwd=str(repo_root),
         capture_output=True,
         text=True,
+        env=node_env,
         timeout=timeout_budget,
         check=False,
     )
@@ -650,7 +639,7 @@ def check_link_availability(
                 for target in active_targets
             }
             fallback_targets = tuple(
-                target for target in active_targets if should_retry_with_browser(provider_results[target.name])
+                target for target in active_targets if should_retry_with_browser(target, provider_results[target.name])
             )
             if fallback_targets:
                 try:
@@ -658,6 +647,7 @@ def check_link_availability(
                         runtime.proxies,
                         fallback_targets,
                         config.timeout_seconds,
+                        project_root=runtime_path,
                     )
                     provider_results.update(browser_results)
                 except Exception as exc:

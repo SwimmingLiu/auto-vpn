@@ -1251,7 +1251,7 @@ body[data-page="logs"] #logCenterTable {
 
 .settings-col-name,
 .availability-col-name {
-  width: 112px;
+  width: 142px;
 }
 
 .settings-col-url {
@@ -1263,12 +1263,7 @@ body[data-page="logs"] #logCenterTable {
 }
 
 .availability-col-url {
-  width: 28%;
-}
-
-.availability-col-hosts,
-.availability-col-phrases {
-  width: 22%;
+  width: auto;
 }
 
 .availability-col-actions {
@@ -1372,6 +1367,11 @@ body[data-page="logs"] #logCenterTable {
   opacity: 0;
   transition: transform 0.2s ease, opacity 0.2s ease;
   position: relative;
+}
+
+.settings-drawer-shell[data-section="availability_targets"] .settings-drawer-panel {
+  width: min(960px, calc(100vw - 48px));
+  max-width: 960px;
 }
 
 .settings-drawer-shell[data-open="true"] .settings-drawer-panel {

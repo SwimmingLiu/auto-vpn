@@ -11,7 +11,7 @@ DEFAULT_SOURCE_ORDER = [
     "xuanfeng-all-area",
 ]
 
-DEFAULT_AVAILABILITY_TARGET_ORDER = ["gemini", "chatgpt", "claude"]
+DEFAULT_AVAILABILITY_TARGET_ORDER = ["gemini", "chatgpt_ios", "chatgpt_web", "claude"]
 
 
 @dataclass
@@ -147,6 +147,7 @@ class AppProfile:
                 name: _normalize_availability_target_config(name, value)
                 for name, value in data.get("availability_targets", {}).items()
             }
+            availability_targets = _migrate_default_availability_targets(availability_targets)
         else:
             availability_targets = default_availability_targets()
         profile = cls(
@@ -215,37 +216,28 @@ def default_sources() -> dict[str, SourceConfig]:
 def _default_availability_target_config(target_name: str) -> AvailabilityTargetConfig:
     target_defaults = {
         "gemini": AvailabilityTargetConfig(
-            url="https://gemini.google.com/",
+            url="https://gemini.google.com",
             enabled=True,
-            allowed_hosts=["gemini.google.com", "accounts.google.com"],
-            negative_phrases=[
-                "not available in your country",
-                "not available in your country or territory",
-                "isn't available in your country",
-                "not available in your region",
-            ],
+            allowed_hosts=["gemini.google.com"],
+            negative_phrases=[],
         ),
-        "chatgpt": AvailabilityTargetConfig(
-            url="https://chatgpt.com/",
+        "chatgpt_ios": AvailabilityTargetConfig(
+            url="https://ios.chat.openai.com/",
             enabled=True,
-            allowed_hosts=["chatgpt.com", "chat.openai.com", "auth.openai.com", "login.openai.com"],
-            negative_phrases=[
-                "unsupported country",
-                "unsupported region",
-                "country, region, or territory",
-                "not available in your country",
-            ],
+            allowed_hosts=["ios.chat.openai.com"],
+            negative_phrases=[],
+        ),
+        "chatgpt_web": AvailabilityTargetConfig(
+            url="https://api.openai.com/compliance/cookie_requirements",
+            enabled=True,
+            allowed_hosts=["api.openai.com"],
+            negative_phrases=[],
         ),
         "claude": AvailabilityTargetConfig(
-            url="https://claude.ai/",
+            url="https://claude.ai/cdn-cgi/trace",
             enabled=True,
-            allowed_hosts=["claude.ai", "support.anthropic.com"],
-            negative_phrases=[
-                "unavailable in your region",
-                "supported regions",
-                "physically located in one of our supported regions",
-                "outside of our supported locations",
-            ],
+            allowed_hosts=["claude.ai"],
+            negative_phrases=[],
         ),
     }
     return target_defaults[target_name]
@@ -256,6 +248,33 @@ def default_availability_targets() -> dict[str, AvailabilityTargetConfig]:
         name: _default_availability_target_config(name)
         for name in DEFAULT_AVAILABILITY_TARGET_ORDER
     }
+
+
+def _migrate_default_availability_targets(
+    targets: dict[str, AvailabilityTargetConfig],
+) -> dict[str, AvailabilityTargetConfig]:
+    migrated = dict(targets)
+    legacy_chatgpt = migrated.pop("chatgpt", None)
+    if legacy_chatgpt is not None:
+        chatgpt_ios_default = _default_availability_target_config("chatgpt_ios")
+        chatgpt_web_default = _default_availability_target_config("chatgpt_web")
+        migrated.setdefault(
+            "chatgpt_ios",
+            AvailabilityTargetConfig(
+                url=chatgpt_ios_default.url,
+                enabled=legacy_chatgpt.enabled,
+            ),
+        )
+        migrated.setdefault(
+            "chatgpt_web",
+            AvailabilityTargetConfig(
+                url=chatgpt_web_default.url,
+                enabled=legacy_chatgpt.enabled,
+            ),
+        )
+    for name in DEFAULT_AVAILABILITY_TARGET_ORDER:
+        migrated.setdefault(name, _default_availability_target_config(name))
+    return migrated
 
 
 def _normalize_source_config(source_name: str, payload: dict) -> SourceConfig:
@@ -292,12 +311,8 @@ def _normalize_availability_target_config(target_name: str, payload: dict) -> Av
     normalized = dict(payload)
     normalized.setdefault("url", defaults.url)
     normalized.setdefault("enabled", defaults.enabled)
-    normalized["allowed_hosts"] = _normalize_string_list(
-        normalized.get("allowed_hosts", defaults.allowed_hosts)
-    )
-    normalized["negative_phrases"] = _normalize_string_list(
-        normalized.get("negative_phrases", defaults.negative_phrases)
-    )
+    normalized["allowed_hosts"] = []
+    normalized["negative_phrases"] = []
     return AvailabilityTargetConfig(**normalized)
 
 

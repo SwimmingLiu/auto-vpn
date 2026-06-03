@@ -82,37 +82,20 @@ const STAGE_DISPLAY_NAMES = {
 };
 const DEFAULT_AVAILABILITY_TARGETS = {
   gemini: {
-    url: 'https://gemini.google.com/',
-    enabled: true,
-    allowed_hosts: ['gemini.google.com', 'accounts.google.com'],
-    negative_phrases: [
-      'not available in your country',
-      'not available in your country or territory',
-      "isn't available in your country",
-      'not available in your region'
-    ]
+    url: 'https://gemini.google.com',
+    enabled: true
   },
-  chatgpt: {
-    url: 'https://chatgpt.com/',
-    enabled: true,
-    allowed_hosts: ['chatgpt.com', 'chat.openai.com', 'auth.openai.com', 'login.openai.com'],
-    negative_phrases: [
-      'unsupported country',
-      'unsupported region',
-      'country, region, or territory',
-      'not available in your country'
-    ]
+  chatgpt_ios: {
+    url: 'https://ios.chat.openai.com/',
+    enabled: true
+  },
+  chatgpt_web: {
+    url: 'https://api.openai.com/compliance/cookie_requirements',
+    enabled: true
   },
   claude: {
-    url: 'https://claude.ai/',
-    enabled: true,
-    allowed_hosts: ['claude.ai', 'support.anthropic.com'],
-    negative_phrases: [
-      'unavailable in your region',
-      'supported regions',
-      'physically located in one of our supported regions',
-      'outside of our supported locations'
-    ]
+    url: 'https://claude.ai/cdn-cgi/trace',
+    enabled: true
   }
 };
 
@@ -682,7 +665,7 @@ function buildSettingsDrawer(vm) {
   const style = vm.modalTransform ? `style="transform: ${escapeHtml(vm.modalTransform)};"` : '';
 
   return `
-    <div id="settingsDrawer" class="settings-drawer-shell" data-open="${isOpen ? 'true' : 'false'}">
+    <div id="settingsDrawer" class="settings-drawer-shell" data-open="${isOpen ? 'true' : 'false'}" data-section="${escapeHtml(section)}">
       <button class="settings-drawer-backdrop" data-drawer-dismiss="backdrop" type="button" aria-label="关闭设置弹窗"></button>
       <aside class="settings-drawer-panel" ${style}>
         <div class="settings-drawer-head">
@@ -774,11 +757,9 @@ function buildSettingsDrawerBody(section, draft) {
             <col class="availability-col-enabled" />
             <col class="availability-col-name" />
             <col class="availability-col-url" />
-            <col class="availability-col-hosts" />
-            <col class="availability-col-phrases" />
             <col class="availability-col-actions" />
           </colgroup>
-          <thead><tr><th>启用</th><th>名称</th><th>URL</th><th>允许域名</th><th>屏蔽短语</th><th>操作</th></tr></thead>
+          <thead><tr><th>启用</th><th>名称</th><th>URL</th><th>操作</th></tr></thead>
           <tbody>
             ${(draft?.targets ?? []).map((target, index) => `
               <tr>
@@ -787,8 +768,6 @@ function buildSettingsDrawerBody(section, draft) {
                 <td>
                   <textarea class="table-textarea mono" rows="3" data-availability-index="${index}" data-availability-key="url">${escapeHtml(target.url ?? '')}</textarea>
                 </td>
-                <td><textarea class="table-textarea mono" rows="4" data-availability-index="${index}" data-availability-key="allowed_hosts">${escapeHtml(target.allowed_hosts ?? '')}</textarea></td>
-                <td><textarea class="table-textarea mono" rows="4" data-availability-index="${index}" data-availability-key="negative_phrases">${escapeHtml(target.negative_phrases ?? '')}</textarea></td>
                 <td><button class="btn btn-secondary small" data-availability-action="remove" data-availability-index="${index}" type="button">删除</button></td>
               </tr>
             `).join('')}
@@ -970,9 +949,7 @@ export function buildAvailabilityTargetDraft(targets = {}) {
     targets: Object.entries(targets).map(([name, target]) => ({
       name,
       url: target?.url ?? '',
-      enabled: target?.enabled !== false,
-      allowed_hosts: normalizeEditableList(target?.allowed_hosts).join('\n'),
-      negative_phrases: normalizeEditableList(target?.negative_phrases).join('\n')
+      enabled: target?.enabled !== false
     }))
   };
 }
@@ -991,9 +968,7 @@ export function addAvailabilityTargetDraft(draft, preferredName = 'custom') {
   draft.targets.push({
     name,
     url: '',
-    enabled: true,
-    allowed_hosts: '',
-    negative_phrases: ''
+    enabled: true
   });
 }
 
@@ -1014,9 +989,7 @@ export function applyAvailabilityTargetDraft(draft = {}) {
     }
     result[name] = {
       url,
-      enabled: target.enabled !== false,
-      allowed_hosts: splitEditableList(target.allowed_hosts),
-      negative_phrases: splitEditableList(target.negative_phrases)
+      enabled: target.enabled !== false
     };
   }
   return result;
