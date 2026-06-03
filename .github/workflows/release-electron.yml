@@ -40,7 +40,28 @@ jobs:
         run: ./scripts/run_pytest.sh tests -v
 
       - name: Run Electron tests
-        run: node --test --test-timeout=600000 electron/tests/*.test.mjs
+        run: |
+          python - <<'PY'
+          import glob
+          import os
+          import signal
+          import subprocess
+          import sys
+
+          test_files = sorted(glob.glob("electron/tests/*.test.mjs"))
+          command = ["node", "--test", "--test-timeout=600000", *test_files]
+          process = subprocess.Popen(command, start_new_session=True)
+          try:
+              raise SystemExit(process.wait(timeout=600))
+          except subprocess.TimeoutExpired:
+              print("Electron tests timed out after 600 seconds.", file=sys.stderr)
+              os.killpg(process.pid, signal.SIGTERM)
+              try:
+                  process.wait(timeout=10)
+              except subprocess.TimeoutExpired:
+                  os.killpg(process.pid, signal.SIGKILL)
+              raise SystemExit(124)
+          PY
 
       - name: Package Electron app
         run: |
