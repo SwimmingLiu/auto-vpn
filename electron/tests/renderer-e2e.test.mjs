@@ -30,8 +30,9 @@ const REMOVED_NAV = [
 
 test('renderer hydrates the latest artifact on startup when backend has results', async () => {
   const server = await startStaticServer(path.join(__dirname, '..', 'renderer'));
-  const browser = await chromium.launch();
+  let browser;
   try {
+    browser = await chromium.launch();
     const page = await browser.newPage({ viewport: { width: 1280, height: 820 } });
     await page.addInitScript(() => {
       window.__latestCalls = 0;
@@ -133,15 +134,16 @@ test('renderer hydrates the latest artifact on startup when backend has results'
     assert.match(resultsText, /latest-node/);
     assert.match(resultsText, /6\.6\.6\.6/);
   } finally {
-    await browser.close();
+    await browser?.close();
     await server.close();
   }
 });
 
 test('renderer blocks deploy runs when Cloudflare credentials are missing', async () => {
   const server = await startStaticServer(path.join(__dirname, '..', 'renderer'));
-  const browser = await chromium.launch();
+  let browser;
   try {
+    browser = await chromium.launch();
     const page = await browser.newPage({ viewport: { width: 1280, height: 820 } });
     await page.addInitScript(() => {
       window.__runCalls = 0;
@@ -194,15 +196,16 @@ test('renderer blocks deploy runs when Cloudflare credentials are missing', asyn
     assert.equal(await page.evaluate(() => window.__runCalls), 0);
     assert.equal(await page.evaluate(() => window.__savedProfiles.length), 0);
   } finally {
-    await browser.close();
+    await browser?.close();
     await server.close();
   }
 });
 
 test('renderer matches the six-page canvas redesign and supports page navigation', async () => {
   const server = await startStaticServer(path.join(__dirname, '..', 'renderer'));
-  const browser = await chromium.launch();
+  let browser;
   try {
+    browser = await chromium.launch();
     const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
     const target = `${server.origin}/index.html`;
 
@@ -663,15 +666,16 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     const innerWidth = await page.evaluate(() => window.innerWidth);
     assert.ok(scrollWidth <= innerWidth + 2);
   } finally {
-    await browser.close();
+    await browser?.close();
     await server.close();
   }
 });
 
 test('renderer shows deploy save toast with project and url details', async () => {
   const server = await startStaticServer(path.join(__dirname, '..', 'renderer'));
-  const browser = await chromium.launch();
+  let browser;
   try {
+    browser = await chromium.launch();
     const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
 
     await page.addInitScript(() => {
@@ -720,7 +724,7 @@ test('renderer shows deploy save toast with project and url details', async () =
     assert.equal(savedProfile.deploy.verify_subscription_url, 'https://verify.example/health');
     assert.equal(savedProfile.deploy.pages_secret_admin, 'swimmingliu');
   } finally {
-    await browser.close();
+    await browser?.close();
     await server.close();
   }
 });
