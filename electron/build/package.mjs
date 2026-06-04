@@ -351,6 +351,10 @@ export function stagePlaywrightBrowserRuntime(projectRoot) {
   return browserDir;
 }
 
+export function buildPackageArchList() {
+  return ['x64', 'arm64', 'armv7l'];
+}
+
 export function buildElectronBuilderArgs(targets = ['dmg']) {
   const normalizedTargets = Array.isArray(targets)
     ? targets
