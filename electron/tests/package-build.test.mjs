@@ -21,6 +21,7 @@ import {
   sanitizeBundledProfileToml,
   resolveShareWorkerPaths,
   buildCommandSpawnOptions,
+  retryOperation,
   selectRunnablePythonCandidate,
   stageShareWorkerRuntime
 } from '../build/package.mjs';
@@ -94,6 +95,20 @@ test('buildSvgIconRenderHtml renders the app icon on a transparent canvas', () =
   assert.match(html, /width:\s*1024px/);
   assert.match(html, /height:\s*1024px/);
   assert.match(html, /data:image\/svg\+xml;base64,/);
+});
+
+test('retryOperation reruns transient icon rendering operations', async () => {
+  let attempts = 0;
+  const result = await retryOperation(async () => {
+    attempts += 1;
+    if (attempts === 1) {
+      throw new Error('transient screenshot failure');
+    }
+    return 'rendered';
+  }, { retries: 2, delayMs: 0 });
+
+  assert.equal(result, 'rendered');
+  assert.equal(attempts, 2);
 });
 
 test('buildPackagePlatformList defaults to the host platform', () => {

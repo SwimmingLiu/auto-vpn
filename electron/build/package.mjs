@@ -240,11 +240,26 @@ export function buildSvgIconRenderHtml(svgMarkup, size = 1024) {
 </html>`;
 }
 
+export async function retryOperation(operation, { retries = 3, delayMs = 250 } = {}) {
+  let lastError;
+  for (let attempt = 1; attempt <= retries; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      if (attempt < retries && delayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+  }
+  throw lastError;
+}
+
 function renderSvgToPng(projectRoot, sourceSvg, outputPng, size = 1024) {
   const renderScript = `
     import fs from 'node:fs';
     import { chromium } from 'playwright';
-    import { buildSvgIconRenderHtml } from ${JSON.stringify(pathToFileURL(__filename).href)};
+    import { buildSvgIconRenderHtml, retryOperation } from ${JSON.stringify(pathToFileURL(__filename).href)};
 
     const sourceSvg = ${JSON.stringify(sourceSvg)};
     const outputPng = ${JSON.stringify(outputPng)};
@@ -262,11 +277,14 @@ function renderSvgToPng(projectRoot, sourceSvg, outputPng, size = 1024) {
           await img.decode();
         }
       });
-      await page.screenshot({
-        path: outputPng,
-        omitBackground: true,
-        animations: 'disabled'
-      });
+      await retryOperation(
+        () => page.screenshot({
+          path: outputPng,
+          omitBackground: true,
+          animations: 'disabled'
+        }),
+        { retries: 3, delayMs: 250 }
+      );
     } finally {
       await browser.close();
     }
