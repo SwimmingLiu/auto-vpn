@@ -355,12 +355,19 @@ export function buildPackageArchList() {
   return ['x64', 'arm64', 'armv7l'];
 }
 
-export function buildElectronBuilderArgs(targets = ['dmg']) {
+export function buildElectronBuilderArgs(targets = ['dmg'], architectures = []) {
   const normalizedTargets = Array.isArray(targets)
     ? targets
     : String(targets).split(',');
   const buildTargets = normalizedTargets.map((target) => String(target).trim()).filter(Boolean);
-  return ['electron-builder', '--mac', ...buildTargets];
+  const normalizedArchitectures = Array.isArray(architectures)
+    ? architectures
+    : String(architectures).split(',');
+  const archFlags = normalizedArchitectures
+    .map((architecture) => String(architecture).trim())
+    .filter(Boolean)
+    .map((architecture) => `--${architecture}`);
+  return ['electron-builder', '--mac', ...buildTargets, ...archFlags];
 }
 
 export function cleanElectronOutputDir(projectRoot) {

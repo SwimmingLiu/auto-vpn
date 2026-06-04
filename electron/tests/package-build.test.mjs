@@ -98,6 +98,17 @@ test('buildElectronBuilderArgs builds a macOS DMG installer by default', () => {
   assert.deepEqual(buildElectronBuilderArgs(), ['electron-builder', '--mac', 'dmg']);
 });
 
+test('buildElectronBuilderArgs can target every supported package architecture explicitly', () => {
+  assert.deepEqual(buildElectronBuilderArgs(['dmg'], buildPackageArchList()), [
+    'electron-builder',
+    '--mac',
+    'dmg',
+    '--x64',
+    '--arm64',
+    '--armv7l'
+  ]);
+});
+
 test('buildPackageArchList includes every Electron builder package architecture', () => {
   assert.deepEqual(buildPackageArchList(), ['x64', 'arm64', 'armv7l']);
 });
