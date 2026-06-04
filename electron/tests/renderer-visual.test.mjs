@@ -31,8 +31,9 @@ const VISUAL_CASES = [
 
 test('renderer visual hashes match the full mockup-driven workspace', async () => {
   const server = await startStaticServer(path.join(__dirname, '..', 'renderer'));
-  const browser = await chromium.launch();
+  let browser;
   try {
+    browser = await chromium.launch();
     const page = await browser.newPage({ viewport: { width: 1440, height: 960 }, deviceScaleFactor: 1 });
     const target = `${server.origin}/index.html`;
 
@@ -61,7 +62,7 @@ test('renderer visual hashes match the full mockup-driven workspace', async () =
 
     assert.deepEqual(digests, EXPECTED_DIGESTS);
   } finally {
-    await browser.close();
+    await browser?.close();
     await server.close();
   }
 });

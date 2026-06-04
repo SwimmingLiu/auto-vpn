@@ -135,7 +135,7 @@ npm run package:electron
 Default local output:
 
 - `dist-electron/mac-arm64/AutoVPN.app`
-- `dist-electron/AutoVPN-0.2.0-arm64.dmg`
+- `dist-electron/AutoVPN-1.0.0-arm64.dmg`
 
 ## ⚙️ Runtime Configuration
 
