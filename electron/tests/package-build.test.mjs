@@ -21,6 +21,7 @@ import {
   sanitizeBundledProfileToml,
   resolveShareWorkerPaths,
   buildCommandSpawnOptions,
+  retryOperation,
   selectRunnablePythonCandidate,
   stageShareWorkerRuntime
 } from '../build/package.mjs';
@@ -94,6 +95,51 @@ test('buildSvgIconRenderHtml renders the app icon on a transparent canvas', () =
   assert.match(html, /width:\s*1024px/);
   assert.match(html, /height:\s*1024px/);
   assert.match(html, /data:image\/svg\+xml;base64,/);
+});
+
+test('retryOperation reruns transient icon rendering operations', async () => {
+  let attempts = 0;
+  const result = await retryOperation(async () => {
+    attempts += 1;
+    if (attempts === 1) {
+      throw new Error('transient screenshot failure');
+    }
+    return 'rendered';
+  }, { retries: 2, delayMs: 0 });
+
+  assert.equal(result, 'rendered');
+  assert.equal(attempts, 2);
+});
+
+test('retryOperation requires at least one retry attempt', async () => {
+  let attempts = 0;
+  await assert.rejects(
+    () => retryOperation(async () => {
+      attempts += 1;
+      return 'rendered';
+    }, { retries: 0, delayMs: 0 }),
+    {
+      name: 'TypeError',
+      message: 'retryOperation retries must be a positive integer'
+    }
+  );
+  assert.equal(attempts, 0);
+});
+
+test('retryOperation rethrows the last failed attempt', async () => {
+  let attempts = 0;
+  const firstError = new Error('first screenshot failure');
+  const lastError = new Error('final screenshot failure');
+
+  await assert.rejects(
+    () => retryOperation(async () => {
+      attempts += 1;
+      throw attempts === 1 ? firstError : lastError;
+    }, { retries: 2, delayMs: 0 }),
+    lastError
+  );
+
+  assert.equal(attempts, 2);
 });
 
 test('buildPackagePlatformList defaults to the host platform', () => {
