@@ -241,6 +241,10 @@ export function buildSvgIconRenderHtml(svgMarkup, size = 1024) {
 }
 
 export async function retryOperation(operation, { retries = 3, delayMs = 250 } = {}) {
+  if (!Number.isInteger(retries) || retries < 1) {
+    throw new TypeError('retryOperation retries must be a positive integer');
+  }
+
   let lastError;
   for (let attempt = 1; attempt <= retries; attempt += 1) {
     try {

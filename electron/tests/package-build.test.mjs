@@ -111,6 +111,37 @@ test('retryOperation reruns transient icon rendering operations', async () => {
   assert.equal(attempts, 2);
 });
 
+test('retryOperation requires at least one retry attempt', async () => {
+  let attempts = 0;
+  await assert.rejects(
+    () => retryOperation(async () => {
+      attempts += 1;
+      return 'rendered';
+    }, { retries: 0, delayMs: 0 }),
+    {
+      name: 'TypeError',
+      message: 'retryOperation retries must be a positive integer'
+    }
+  );
+  assert.equal(attempts, 0);
+});
+
+test('retryOperation rethrows the last failed attempt', async () => {
+  let attempts = 0;
+  const firstError = new Error('first screenshot failure');
+  const lastError = new Error('final screenshot failure');
+
+  await assert.rejects(
+    () => retryOperation(async () => {
+      attempts += 1;
+      throw attempts === 1 ? firstError : lastError;
+    }, { retries: 2, delayMs: 0 }),
+    lastError
+  );
+
+  assert.equal(attempts, 2);
+});
+
 test('buildPackagePlatformList defaults to the host platform', () => {
   assert.deepEqual(buildPackagePlatformList({}, 'darwin'), ['mac']);
   assert.deepEqual(buildPackagePlatformList({}, 'linux'), ['linux']);
