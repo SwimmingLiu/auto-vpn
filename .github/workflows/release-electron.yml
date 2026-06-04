@@ -69,18 +69,22 @@ jobs:
 
       - name: Install Playwright browsers for tests
         run: |
-          for attempt in 1 2; do
-            if timeout 300 npx playwright install chromium-headless-shell; then
-              exit 0
-            fi
-            if [ "${attempt}" -lt 2 ]; then
-              echo "Playwright browser install attempt ${attempt} failed; retrying."
-              sleep 15
-            fi
-          done
-          echo "Playwright browser install failed after retry."
-          exit 1
-        shell: bash
+          python - <<'PY'
+          import subprocess
+          import time
+
+          for attempt in range(1, 3):
+              try:
+                  subprocess.run(["npx", "playwright", "install", "chromium-headless-shell"], timeout=300, check=True)
+                  raise SystemExit(0)
+              except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+                  if attempt == 2:
+                      print(f"Playwright browser install failed after retry: {exc}")
+                      raise SystemExit(1)
+
+                  print(f"Playwright browser install attempt {attempt} failed; retrying: {exc}")
+                  time.sleep(15)
+          PY
 
       - name: Run Electron tests
         run: |
