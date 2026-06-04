@@ -32,7 +32,7 @@ test('renderer hydrates the latest artifact on startup when backend has results'
   const server = await startStaticServer(path.join(__dirname, '..', 'renderer'));
   let browser;
   try {
-    browser = await chromium.launch();
+    browser = await chromium.launch({ channel: 'chromium' });
     const page = await browser.newPage({ viewport: { width: 1280, height: 820 } });
     await page.addInitScript(() => {
       window.__latestCalls = 0;
@@ -143,7 +143,7 @@ test('renderer blocks deploy runs when Cloudflare credentials are missing', asyn
   const server = await startStaticServer(path.join(__dirname, '..', 'renderer'));
   let browser;
   try {
-    browser = await chromium.launch();
+    browser = await chromium.launch({ channel: 'chromium' });
     const page = await browser.newPage({ viewport: { width: 1280, height: 820 } });
     await page.addInitScript(() => {
       window.__runCalls = 0;
@@ -205,7 +205,7 @@ test('renderer matches the six-page canvas redesign and supports page navigation
   const server = await startStaticServer(path.join(__dirname, '..', 'renderer'));
   let browser;
   try {
-    browser = await chromium.launch();
+    browser = await chromium.launch({ channel: 'chromium' });
     const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
     const target = `${server.origin}/index.html`;
 
@@ -675,7 +675,7 @@ test('renderer shows deploy save toast with project and url details', async () =
   const server = await startStaticServer(path.join(__dirname, '..', 'renderer'));
   let browser;
   try {
-    browser = await chromium.launch();
+    browser = await chromium.launch({ channel: 'chromium' });
     const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
 
     await page.addInitScript(() => {

@@ -119,7 +119,10 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
     'python -m pip install -e .[dev]',
     './scripts/run_pytest.sh tests -v',
     'for attempt in range(1, 3)',
-    'subprocess.run(["npx", "playwright", "install", "chromium-headless-shell"], timeout=300, check=True)',
+    'command = ["npx", "playwright", "install", "chromium", "--no-shell"]',
+    'subprocess.Popen(command, start_new_session=True)',
+    'os.killpg(process.pid, signal.SIGTERM)',
+    'os.killpg(process.pid, signal.SIGKILL)',
     'Playwright browser install failed after retry:',
     'Playwright browser install attempt {attempt} failed; retrying:',
     'test_files = sorted(glob.glob("electron/tests/*.test.mjs"))',
@@ -155,6 +158,18 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
 
   assert.doesNotMatch(workflow, /dist-electron\/\*\*\/\*\.zip/);
   assert.doesNotMatch(workflow, /dist-electron\/\*\*\/\*\.yml/);
+});
+
+test('release renderer tests use the full Chromium browser installed by the workflow', () => {
+  const workflow = readProjectFile('.github', 'workflows', 'release-electron.yml');
+  assert.ok(workflow.includes('command = ["npx", "playwright", "install", "chromium", "--no-shell"]'));
+  assert.doesNotMatch(workflow, /command = \["npx", "playwright", "install", "chromium-headless-shell"\]/);
+
+  for (const testFile of ['renderer-e2e.test.mjs', 'renderer-visual.test.mjs']) {
+    const source = readProjectFile('electron', 'tests', testFile);
+    assert.ok(source.includes("channel: 'chromium'"), `${testFile} should launch full Chromium`);
+    assert.doesNotMatch(source, /chromium\.launch\(\)/, `${testFile} should not rely on headless shell default launch`);
+  }
 });
 
 test('release workflow accepts short minor tags only for zero patch releases', () => {
