@@ -68,7 +68,19 @@ jobs:
         run: ./scripts/run_pytest.sh tests -v
 
       - name: Install Playwright browsers for tests
-        run: npx playwright install chromium-headless-shell
+        run: |
+          for attempt in 1 2; do
+            if timeout 300 npx playwright install chromium-headless-shell; then
+              exit 0
+            fi
+            if [ "${attempt}" -lt 2 ]; then
+              echo "Playwright browser install attempt ${attempt} failed; retrying."
+              sleep 15
+            fi
+          done
+          echo "Playwright browser install failed after retry."
+          exit 1
+        shell: bash
 
       - name: Run Electron tests
         run: |
