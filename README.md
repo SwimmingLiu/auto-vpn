@@ -147,7 +147,7 @@ AUTOVPN_PACKAGE_PLATFORM=win AUTOVPN_PACKAGE_ARCH=arm64 npm run package:electron
 Default local macOS output:
 
 - `dist-electron/mac-<arch>/AutoVPN.app`
-- `dist-electron/AutoVPN-1.0.0-<arch>.dmg`
+- `dist-electron/AutoVPN-<version>-<arch>.dmg`
 
 ## ⚙️ Runtime Configuration
 
