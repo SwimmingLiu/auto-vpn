@@ -116,18 +116,15 @@ export function resolveIconPaths(projectRoot) {
   return {
     sourceSvg: path.join(projectRoot, 'electron', 'renderer', 'assets', 'vpn-auto-logo-v2-minimal.svg'),
     outputDir,
+    outputPng: path.join(outputDir, 'app-icon-1024.png'),
+    outputIco: path.join(outputDir, 'app-icon.ico'),
     outputIcns: path.join(outputDir, 'app-icon.icns'),
     iconsetDir: path.join(outputDir, 'app-icon.iconset')
   };
 }
 
 function runOrThrow(command, args, options = {}) {
-  const result = spawnSync(command, args, {
-    stdio: 'pipe',
-    encoding: 'utf8',
-    shell: process.platform === 'win32',
-    ...options
-  });
+  const result = spawnSync(command, args, buildCommandSpawnOptions(command, options));
   if (result.status !== 0) {
     const detail = [result.stdout, result.stderr].filter(Boolean).join('\n').trim();
     throw new Error(`${command} ${args.join(' ')} failed${detail ? `: ${detail}` : ''}`);
@@ -137,6 +134,16 @@ function runOrThrow(command, args, options = {}) {
 function ensureCleanDir(targetDir) {
   fs.rmSync(targetDir, { recursive: true, force: true });
   fs.mkdirSync(targetDir, { recursive: true });
+}
+
+export function buildCommandSpawnOptions(command, options = {}, platform = process.platform) {
+  const needsWindowsShell = platform === 'win32' && ['npm', 'npx'].includes(command);
+  return {
+    stdio: 'pipe',
+    encoding: 'utf8',
+    shell: needsWindowsShell,
+    ...options
+  };
 }
 
 function canRunCommand(command) {
@@ -166,7 +173,8 @@ function selectPythonForVendorInstall(projectRoot) {
     '/usr/local/bin/python3.14',
     '/usr/local/bin/python3.12',
     'python3.12',
-    'python3'
+    'python3',
+    'python'
   ];
 
   return selectRunnablePythonCandidate(candidates);
@@ -296,17 +304,68 @@ function buildIconset(basePng, iconsetDir) {
   }
 }
 
-export function prepareMacIcon(projectRoot) {
-  const { sourceSvg, outputDir, outputIcns, iconsetDir } = resolveIconPaths(projectRoot);
+function writePngIco(pngPath, icoPath) {
+  const png = fs.readFileSync(pngPath);
+  const header = Buffer.alloc(6);
+  header.writeUInt16LE(0, 0);
+  header.writeUInt16LE(1, 2);
+  header.writeUInt16LE(1, 4);
+
+  const entry = Buffer.alloc(16);
+  entry.writeUInt8(0, 0);
+  entry.writeUInt8(0, 1);
+  entry.writeUInt8(0, 2);
+  entry.writeUInt8(0, 3);
+  entry.writeUInt16LE(1, 4);
+  entry.writeUInt16LE(32, 6);
+  entry.writeUInt32LE(png.length, 8);
+  entry.writeUInt32LE(header.length + entry.length, 12);
+
+  fs.writeFileSync(icoPath, Buffer.concat([header, entry, png]));
+}
+
+export function preparePngIcon(projectRoot, size = 1024) {
+  const { sourceSvg, outputDir, outputPng } = resolveIconPaths(projectRoot);
   fs.mkdirSync(outputDir, { recursive: true });
+  const basePng = size === 1024
+    ? outputPng
+    : path.join(outputDir, `app-icon-${size}.png`);
+  renderSvgToPng(projectRoot, sourceSvg, basePng, size);
+  return basePng;
+}
+
+export function prepareMacIcon(projectRoot) {
+  const { outputIcns, iconsetDir } = resolveIconPaths(projectRoot);
   ensureCleanDir(iconsetDir);
 
-  const basePng = path.join(outputDir, 'app-icon-1024.png');
-  renderSvgToPng(projectRoot, sourceSvg, basePng);
+  const basePng = preparePngIcon(projectRoot);
   buildIconset(basePng, iconsetDir);
   runOrThrow('iconutil', ['-c', 'icns', iconsetDir, '-o', outputIcns]);
 
   return { outputIcns, iconsetDir, basePng };
+}
+
+export function prepareWindowsIcon(projectRoot) {
+  const { outputIco } = resolveIconPaths(projectRoot);
+  const png256 = preparePngIcon(projectRoot, 256);
+  writePngIco(png256, outputIco);
+  return { outputIco, png256 };
+}
+
+export function preparePackageIcons(projectRoot, platforms = buildPackagePlatformList()) {
+  const requestedPlatforms = new Set(platforms);
+  const prepared = {
+    png: preparePngIcon(projectRoot)
+  };
+
+  if (requestedPlatforms.has('mac')) {
+    prepared.mac = prepareMacIcon(projectRoot);
+  }
+  if (requestedPlatforms.has('win')) {
+    prepared.win = prepareWindowsIcon(projectRoot);
+  }
+
+  return prepared;
 }
 
 export function stageShareWorkerRuntime(projectRoot) {
@@ -351,27 +410,89 @@ export function stagePlaywrightBrowserRuntime(projectRoot) {
   return browserDir;
 }
 
-export function buildPackageArchList() {
-  return ['x64', 'arm64', 'armv7l'];
+function splitList(value) {
+  if (Array.isArray(value)) {
+    return value;
+  }
+  return String(value ?? '').split(',');
 }
 
-function isMacPackageArchitecture(architecture) {
-  return ['x64', 'arm64', 'universal'].includes(architecture);
+function normalizePackagePlatform(value) {
+  const normalized = String(value).trim().toLowerCase();
+  if (['mac', 'macos', 'darwin', 'osx'].includes(normalized)) return 'mac';
+  if (['linux'].includes(normalized)) return 'linux';
+  if (['win', 'windows', 'win32'].includes(normalized)) return 'win';
+  throw new Error(`Unsupported package platform: ${value}`);
 }
 
-export function buildElectronBuilderArgs(targets = ['dmg'], architectures = []) {
-  const normalizedTargets = Array.isArray(targets)
-    ? targets
-    : String(targets).split(',');
-  const buildTargets = normalizedTargets.map((target) => String(target).trim()).filter(Boolean);
-  const normalizedArchitectures = Array.isArray(architectures)
-    ? architectures
-    : String(architectures).split(',');
-  const archFlags = normalizedArchitectures
-    .map((architecture) => String(architecture).trim())
-    .filter(isMacPackageArchitecture)
-    .map((architecture) => `--${architecture}`);
-  return ['electron-builder', '--mac', ...buildTargets, ...archFlags];
+function normalizePackageArch(value) {
+  const normalized = String(value).trim().toLowerCase();
+  if (['x64', 'amd64'].includes(normalized)) return 'x64';
+  if (['arm64', 'aarch64'].includes(normalized)) return 'arm64';
+  if (['ia32', 'x86'].includes(normalized)) return 'ia32';
+  if (['armv7l', 'armv7', 'armhf'].includes(normalized)) return 'armv7l';
+  throw new Error(`Unsupported package architecture: ${value}`);
+}
+
+function isPackageArchSupportedByPlatform(platform, arch) {
+  const supportedArchs = {
+    mac: ['x64', 'arm64', 'universal'],
+    linux: ['x64', 'arm64', 'armv7l'],
+    win: ['x64', 'arm64', 'ia32']
+  };
+  return supportedArchs[platform].includes(arch);
+}
+
+export function buildPackagePlatformList(env = process.env, hostPlatform = process.platform) {
+  const requested = env.AUTOVPN_PACKAGE_PLATFORM || env.npm_config_platform;
+  if (requested) {
+    return splitList(requested).map(normalizePackagePlatform);
+  }
+  return [normalizePackagePlatform(hostPlatform)];
+}
+
+export function buildPackageArchList(env = process.env, hostArch = process.arch) {
+  const requested = env.AUTOVPN_PACKAGE_ARCH || env.npm_config_arch;
+  if (requested) {
+    return splitList(requested).map(normalizePackageArch);
+  }
+  return [normalizePackageArch(hostArch)];
+}
+
+export function buildElectronBuilderArgs(options = ['dmg'], architectures = []) {
+  if (!options || Array.isArray(options) || typeof options === 'string') {
+    const normalizedTargets = Array.isArray(options)
+      ? options
+      : String(options).split(',');
+    const buildTargets = normalizedTargets.map((target) => String(target).trim()).filter(Boolean);
+    const normalizedArchitectures = splitList(architectures)
+      .map(normalizePackageArch)
+      .filter((arch) => isPackageArchSupportedByPlatform('mac', arch))
+      .map((arch) => `--${arch}`);
+    return ['electron-builder', '--mac', ...buildTargets, ...normalizedArchitectures];
+  }
+
+  const targetByPlatform = {
+    mac: ['--mac', 'dmg'],
+    linux: ['--linux', 'AppImage', 'deb', 'rpm'],
+    win: ['--win', 'nsis', 'portable']
+  };
+  const platforms = options.platforms ?? buildPackagePlatformList();
+  const archs = options.archs ?? buildPackageArchList();
+  const args = ['electron-builder'];
+
+  for (const platform of platforms) {
+    const normalizedPlatform = normalizePackagePlatform(platform);
+    args.push(...targetByPlatform[normalizedPlatform]);
+  }
+  for (const arch of archs) {
+    const normalizedArch = normalizePackageArch(arch);
+    if (platforms.every((platform) => isPackageArchSupportedByPlatform(normalizePackagePlatform(platform), normalizedArch))) {
+      args.push(`--${normalizedArch}`);
+    }
+  }
+
+  return args;
 }
 
 export function cleanElectronOutputDir(projectRoot) {
@@ -380,6 +501,8 @@ export function cleanElectronOutputDir(projectRoot) {
 
 export function runPackaging(projectRoot) {
   const { runtimeDir, defaultSeedPath, bundledSeedPath, liveProfilePath } = resolveRuntimePaths(projectRoot);
+  const platforms = buildPackagePlatformList();
+  const archs = buildPackageArchList();
   cleanElectronOutputDir(projectRoot);
   fs.mkdirSync(runtimeDir, { recursive: true });
 
@@ -393,13 +516,12 @@ export function runPackaging(projectRoot) {
   stagePythonVendorRuntime(projectRoot);
   stageNodeVendorRuntime(projectRoot);
   stagePlaywrightBrowserRuntime(projectRoot);
-  prepareMacIcon(projectRoot);
+  preparePackageIcons(projectRoot, platforms);
 
-  return spawnSync('npx', buildElectronBuilderArgs(), {
+  return spawnSync('npx', buildElectronBuilderArgs({ platforms, archs }), buildCommandSpawnOptions('npx', {
     cwd: projectRoot,
-    stdio: 'inherit',
-    shell: process.platform === 'win32'
-  });
+    stdio: 'inherit'
+  }));
 }
 
 if (process.argv[1] === __filename) {

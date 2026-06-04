@@ -8,8 +8,8 @@ permissions:
   contents: write
 
 jobs:
-  package-macos:
-    name: Package AutoVPN for macOS
+  test:
+    name: Test AutoVPN release inputs
     runs-on: macos-latest
 
     steps:
@@ -17,12 +17,33 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
+
+      - name: Check release tag and package version
+        env:
+          TAG_NAME: ${{ github.event.release.tag_name }}
+        run: |
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          EXPECTED_TAG="v${PKG_VERSION}"
+          if [ "${TAG_NAME}" != "${EXPECTED_TAG}" ]; then
+            echo "Release tag ${TAG_NAME} does not match package.json version ${PKG_VERSION}."
+            echo "Expected ${EXPECTED_TAG}."
+            exit 1
+          fi
+
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          TAG_COMMIT="$(git rev-list -n 1 "${TAG_NAME}")"
+          if ! git merge-base --is-ancestor "${TAG_COMMIT}" origin/main; then
+            echo "Release tag ${TAG_NAME} is not contained in origin/main."
+            exit 1
+          fi
+        shell: bash
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -66,10 +87,78 @@ jobs:
               raise SystemExit(124)
           PY
 
+  package-electron:
+    name: Package AutoVPN for ${{ matrix.label }}
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: macOS Apple Silicon
+            os: macos-latest
+            package_platform: mac
+            package_arch: arm64
+          - label: macOS Intel
+            os: macos-15-intel
+            package_platform: mac
+            package_arch: x64
+          - label: Linux x64
+            os: ubuntu-24.04
+            package_platform: linux
+            package_arch: x64
+          - label: Linux ARM64
+            os: ubuntu-24.04-arm
+            package_platform: linux
+            package_arch: arm64
+          - label: Windows x64
+            os: windows-2025
+            package_platform: win
+            package_arch: x64
+          - label: Windows ARM64
+            os: windows-11-arm
+            package_platform: win
+            package_arch: arm64
+
+    steps:
+      - name: Checkout release ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Linux packaging dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm fakeroot
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          python -m pip install --upgrade pip
+          python -m pip install -e .[dev]
+
       - name: Package Electron app
+        env:
+          AUTOVPN_PACKAGE_PLATFORM: ${{ matrix.package_platform }}
+          AUTOVPN_PACKAGE_ARCH: ${{ matrix.package_arch }}
         run: |
           set -o pipefail
           npm run package:electron 2>&1 | tee packaging.log
+        shell: bash
 
       - name: Verify project icon was packaged
         run: |
@@ -79,13 +168,74 @@ jobs:
           fi
 
           test -f electron/renderer/assets/vpn-auto-logo-v2-minimal.svg
-          test -f electron/build/assets/app-icon.icns
+          test -f electron/build/assets/app-icon-1024.png
 
-          app_icon_count="$(find "dist-electron/mac-"*"/AutoVPN.app/Contents/Resources" -name "*.icns" -print | wc -l | tr -d ' ')"
-          if [ "${app_icon_count}" -eq 0 ]; then
-            echo "No .icns resource found under AutoVPN.app/Contents/Resources."
+          case "${{ matrix.package_platform }}" in
+            mac)
+              test -f electron/build/assets/app-icon.icns
+              app_icon_count="$(find "dist-electron/mac-"*"/AutoVPN.app/Contents/Resources" -name "*.icns" -print | wc -l | tr -d ' ')"
+              if [ "${app_icon_count}" -eq 0 ]; then
+                echo "No .icns resource found under AutoVPN.app/Contents/Resources."
+                exit 1
+              fi
+              ;;
+            win)
+              test -f electron/build/assets/app-icon.ico
+              ;;
+          esac
+        shell: bash
+
+      - name: Verify release artifacts exist
+        run: |
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+
+          case "${{ matrix.package_platform }}-${{ matrix.package_arch }}" in
+            mac-arm64|mac-x64)
+              required_artifacts=(
+                "dist-electron/AutoVPN-${PKG_VERSION}-${{ matrix.package_arch }}.dmg"
+                "dist-electron/AutoVPN-${PKG_VERSION}-${{ matrix.package_arch }}.dmg.blockmap"
+              )
+              ;;
+            linux-x64)
+              required_artifacts=(
+                "dist-electron/AutoVPN-${PKG_VERSION}-x86_64.AppImage"
+                "dist-electron/AutoVPN-${PKG_VERSION}-amd64.deb"
+                "dist-electron/AutoVPN-${PKG_VERSION}-x86_64.rpm"
+              )
+              ;;
+            linux-arm64)
+              required_artifacts=(
+                "dist-electron/AutoVPN-${PKG_VERSION}-arm64.AppImage"
+                "dist-electron/AutoVPN-${PKG_VERSION}-arm64.deb"
+                "dist-electron/AutoVPN-${PKG_VERSION}-aarch64.rpm"
+              )
+              ;;
+            win-x64|win-arm64)
+              required_artifacts=(
+                "dist-electron/AutoVPN-${PKG_VERSION}-${{ matrix.package_arch }}-setup.exe"
+                "dist-electron/AutoVPN-${PKG_VERSION}-${{ matrix.package_arch }}-portable.exe"
+              )
+              ;;
+            *)
+              echo "Unsupported package target ${{ matrix.package_platform }}-${{ matrix.package_arch }}."
+              exit 1
+              ;;
+          esac
+
+          missing=0
+          for artifact in "${required_artifacts[@]}"; do
+            if [ ! -f "${artifact}" ]; then
+              echo "Missing release artifact: ${artifact}"
+              missing=1
+            fi
+          done
+
+          if [ "${missing}" -ne 0 ]; then
+            find dist-electron -maxdepth 3 -type f -print
             exit 1
           fi
+          printf '%s\n' "${required_artifacts[@]}"
+        shell: bash
 
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
@@ -93,4 +243,8 @@ jobs:
           tag_name: ${{ github.event.release.tag_name }}
           files: |
             dist-electron/**/*.dmg
+            dist-electron/**/*.AppImage
+            dist-electron/**/*.deb
+            dist-electron/**/*.rpm
+            dist-electron/**/*.exe
             dist-electron/**/*.blockmap

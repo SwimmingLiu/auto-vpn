@@ -1,9 +1,9 @@
 # AutoVPN
 
-[![Release](https://img.shields.io/github/v/release/SwimmingLiu/vpn-subscription-automation?style=flat-square&color=0e7490)](https://github.com/SwimmingLiu/vpn-subscription-automation/releases)
-[![Downloads](https://img.shields.io/github/downloads/SwimmingLiu/vpn-subscription-automation/total?style=flat-square&color=0e7490)](https://github.com/SwimmingLiu/vpn-subscription-automation/releases)
-[![Platform](https://img.shields.io/badge/platform-macOS-0e7490?style=flat-square)]()
-[![CI](https://github.com/SwimmingLiu/vpn-subscription-automation/actions/workflows/release-electron.yml/badge.svg)](https://github.com/SwimmingLiu/vpn-subscription-automation/actions)
+[![Release](https://img.shields.io/github/v/release/SwimmingLiu/auto-vpn?style=flat-square&color=0e7490)](https://github.com/SwimmingLiu/auto-vpn/releases)
+[![Downloads](https://img.shields.io/github/downloads/SwimmingLiu/auto-vpn/total?style=flat-square&color=0e7490)](https://github.com/SwimmingLiu/auto-vpn/releases)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-0e7490?style=flat-square)]()
+[![CI](https://github.com/SwimmingLiu/auto-vpn/actions/workflows/release-electron.yml/badge.svg)](https://github.com/SwimmingLiu/auto-vpn/actions)
 
 ![AutoVPN desktop screenshot](assets/vpn-sub-所有页面.png)
 
@@ -16,7 +16,7 @@ AutoVPN is a local-first Electron desktop app for collecting VPN nodes, testing 
 - **Cloudflare Pages deployment**: Renders `vmess_node.js`, transforms and obfuscates the worker, packages sidecar modules, deploys to the `sub-nodes` Pages project, and verifies the final subscription URL.
 - **Runtime recovery**: Stores checkpoints in SQLite `run.db`, resumes unfinished runs, and exposes script-based monitoring for long backend jobs.
 - **Configurable worker build**: Uses `state/profile.toml` as the canonical runtime profile, including `[worker_build]` options for entry filenames, module output, identifier randomization, and keyword fragmentation.
-- **Packaged macOS app**: Builds a DMG with a project-derived transparent icon from `electron/renderer/assets/vpn-auto-logo-v2-minimal.svg`.
+- **Packaged desktop app**: Builds macOS, Linux, and Windows installers with project-derived transparent icon assets from `electron/renderer/assets/vpn-auto-logo-v2-minimal.svg`.
 
 ## ✨ Tech Stack
 
@@ -27,24 +27,29 @@ AutoVPN is a local-first Electron desktop app for collecting VPN nodes, testing 
 | Backend | Python 3.12 package under `src/vpn_automation` |
 | Runtime config | TOML profile + SQLite checkpoints |
 | Automation | Xray, Playwright, Cloudflare Wrangler |
-| Packaging | electron-builder DMG |
+| Packaging | electron-builder DMG / AppImage / DEB / RPM / NSIS / portable |
 | Tests | pytest, node:test, Playwright-powered Electron tests |
 | CI release | GitHub Actions on `release.published` |
 
 ## 📦 Installation
 
-### macOS Release Build
+### Release Builds
 
-Download the latest `AutoVPN-<version>-<arch>.dmg` from [Releases](https://github.com/SwimmingLiu/vpn-subscription-automation/releases), open it, and drag `AutoVPN.app` into `Applications`.
+Download the latest installer for your operating system and CPU from [Releases](https://github.com/SwimmingLiu/auto-vpn/releases):
 
-Current release builds target macOS. The packaging script uses macOS icon tools (`qlmanage`, `sips`, and `iconutil`) and emits a DMG through electron-builder.
+- macOS Apple Silicon: `AutoVPN-<version>-arm64.dmg`
+- macOS Intel: `AutoVPN-<version>-x64.dmg`
+- Linux x64: `AutoVPN-<version>-x86_64.AppImage`, `AutoVPN-<version>-amd64.deb`, or `AutoVPN-<version>-x86_64.rpm`
+- Linux ARM64: `AutoVPN-<version>-arm64.AppImage`, `AutoVPN-<version>-arm64.deb`, or `AutoVPN-<version>-aarch64.rpm`
+- Windows x64: `AutoVPN-<version>-x64-setup.exe` or `AutoVPN-<version>-x64-portable.exe`
+- Windows ARM64: `AutoVPN-<version>-arm64-setup.exe` or `AutoVPN-<version>-arm64-portable.exe`
 
-The current DMG packages the Electron desktop shell and project runtime seed files. Pipeline execution still shells out to a host Python (`python3.12` or `python3`) with this project's Python dependencies installed, and it also expects external runtime tools such as `xray` and Cloudflare Wrangler/npm tooling to be available.
+The installer packages the Electron desktop shell, project runtime seed files, Python dependencies, browser probe runtime, and the share-worker template. Pipeline execution still expects external runtime tools such as `xray` and Cloudflare Wrangler/npm tooling to be available where those stages are used.
 
 ### Local Development Install
 
 ```bash
-cd /Users/swimmingliu/data/VPN/vpn-subscription-automation
+cd ~/data/VPN/vpn-subscription-automation
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .[dev]
@@ -53,7 +58,7 @@ npx playwright install chromium
 brew install xray
 ```
 
-Create `/Users/swimmingliu/data/VPN/vpn-subscription-automation/.env` with the Cloudflare token used by deploy stages:
+Create `~/data/VPN/vpn-subscription-automation/.env` with the Cloudflare token used by deploy stages:
 
 ```env
 CLOUDFLARE_API_TOKEN=...
@@ -84,64 +89,71 @@ vpn-subscription-automation/
 Run the desktop app:
 
 ```bash
-cd /Users/swimmingliu/data/VPN/vpn-subscription-automation
+cd ~/data/VPN/vpn-subscription-automation
 npm run electron:dev
 ```
 
 Run the backend pipeline without Electron:
 
 ```bash
-cd /Users/swimmingliu/data/VPN/vpn-subscription-automation
+cd ~/data/VPN/vpn-subscription-automation
 ./scripts/run_backend_pipeline.sh
 ```
 
 Preview the backend plan without starting network work:
 
 ```bash
-cd /Users/swimmingliu/data/VPN/vpn-subscription-automation
+cd ~/data/VPN/vpn-subscription-automation
 ./scripts/run_backend_pipeline.sh --dry-run
 ```
 
 Deploy and verify the subscription worker:
 
 ```bash
-cd /Users/swimmingliu/data/VPN/vpn-subscription-automation
+cd ~/data/VPN/vpn-subscription-automation
 ./scripts/run_backend_pipeline.sh --with-deploy --with-verify
 ```
 
 Monitor the latest run:
 
 ```bash
-cd /Users/swimmingliu/data/VPN/vpn-subscription-automation
+cd ~/data/VPN/vpn-subscription-automation
 ./scripts/monitor_run.sh --once
 ```
 
 Run tests:
 
 ```bash
-cd /Users/swimmingliu/data/VPN/vpn-subscription-automation
+cd ~/data/VPN/vpn-subscription-automation
 ./scripts/run_pytest.sh tests -v
 npm run test:electron
 npm run test:all
 ```
 
-Package the macOS desktop app:
+Package the desktop app for the current host OS and CPU:
 
 ```bash
-cd /Users/swimmingliu/data/VPN/vpn-subscription-automation
+cd ~/data/VPN/vpn-subscription-automation
 npm run package:electron
 ```
 
-Default local output:
+Override the target platform and CPU when the host can build that target:
 
-- `dist-electron/mac-arm64/AutoVPN.app`
-- `dist-electron/AutoVPN-1.0.0-arm64.dmg`
+```bash
+AUTOVPN_PACKAGE_PLATFORM=linux AUTOVPN_PACKAGE_ARCH=x64 npm run package:electron
+AUTOVPN_PACKAGE_PLATFORM=win AUTOVPN_PACKAGE_ARCH=arm64 npm run package:electron
+```
+
+Default local macOS output:
+
+- `dist-electron/mac-<arch>/AutoVPN.app`
+- `dist-electron/AutoVPN-1.0.0-<arch>.dmg`
 
 ## ⚙️ Runtime Configuration
 
 AutoVPN uses one canonical runtime profile:
 
-- `/Users/swimmingliu/data/VPN/vpn-subscription-automation/state/profile.toml`
+- `~/data/VPN/vpn-subscription-automation/state/profile.toml`
 
 The file is local runtime state and is ignored by git. Electron and the Python backend both read and write this TOML profile. When running from `.worktrees/`, profile resolution still anchors to the main repository `state/profile.toml`.
 
@@ -167,7 +179,7 @@ The explicit `--branch main` is required because `https://sub-nodes.pages.dev` f
 
 ## 🚢 Release Packaging
 
-`.github/workflows/release-electron.yml` runs after a GitHub Release is published. It checks out the release tag, installs Node.js 24 and Python 3.12, runs the full test suite, builds the Electron DMG, verifies the packaged app icon, and uploads `dist-electron` assets back to the release.
+`.github/workflows/release-electron.yml` runs after a GitHub Release is published. It checks out the release tag, installs Node.js 24 and Python 3.12, runs the full test suite once, then builds native installer matrices for macOS Apple Silicon, macOS Intel, Linux x64, Linux ARM64, Windows x64, and Windows ARM64. Each matrix job uploads its `dist-electron` assets back to the release.
 
 The CI packaging path intentionally uses the same command as local builds:
 
@@ -175,13 +187,15 @@ The CI packaging path intentionally uses the same command as local builds:
 npm run package:electron
 ```
 
+Matrix jobs select their target with `AUTOVPN_PACKAGE_PLATFORM` and `AUTOVPN_PACKAGE_ARCH`, mirroring the local override variables.
+
 The build must not report `default Electron icon is used`. The icon source is `electron/renderer/assets/vpn-auto-logo-v2-minimal.svg`, and generated icon resources must preserve the transparent background.
 
 ## 😇 Trust & Security
 
 - **Local-first runtime**: The desktop app runs the pipeline locally and stores runtime config in `state/profile.toml`.
 - **Explicit deploy credentials**: Cloudflare deployment requires `CLOUDFLARE_API_TOKEN`; without it, deploy stages are blocked.
-- **Auditable release builds**: Release packaging runs in GitHub Actions and uploads the generated DMG to the matching release.
+- **Auditable release builds**: Release packaging runs in GitHub Actions and uploads generated macOS, Linux, and Windows installers to the matching release.
 - **Project-derived branding**: The packaged app icon is generated from an in-repo SVG, never from the default Electron placeholder.
 
 ## 📜 License
