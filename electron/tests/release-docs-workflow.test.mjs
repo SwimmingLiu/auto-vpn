@@ -1,12 +1,42 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 const projectRoot = process.cwd();
 
 function readProjectFile(...segments) {
   return fs.readFileSync(path.join(projectRoot, ...segments), 'utf-8');
+}
+
+function extractReleaseTagValidationScript(workflow) {
+  const startMarker = 'PKG_VERSION="$(node -p "require(\'./package.json\').version")"';
+  const start = workflow.indexOf(startMarker);
+  const end = workflow.indexOf('git fetch --no-tags origin main:refs/remotes/origin/main', start);
+
+  assert.notEqual(start, -1, 'workflow should define package version lookup before tag validation');
+  assert.notEqual(end, -1, 'workflow should fetch origin/main after tag validation');
+
+  return workflow.slice(start, end).replace(/^          /gm, '').trim();
+}
+
+function runReleaseTagValidation(script, { version, tagName }) {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-release-tag-'));
+  try {
+    fs.writeFileSync(path.join(tempDir, 'package.json'), JSON.stringify({ version }), 'utf-8');
+    return spawnSync('bash', ['-euo', 'pipefail', '-c', script], {
+      cwd: tempDir,
+      env: {
+        ...process.env,
+        TAG_NAME: tagName
+      },
+      encoding: 'utf-8'
+    });
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
 }
 
 test('README follows the AutoVPN desktop app structure', () => {
@@ -122,4 +152,26 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
 
   assert.doesNotMatch(workflow, /dist-electron\/\*\*\/\*\.zip/);
   assert.doesNotMatch(workflow, /dist-electron\/\*\*\/\*\.yml/);
+});
+
+test('release workflow accepts short minor tags only for zero patch releases', () => {
+  const workflow = readProjectFile('.github', 'workflows', 'release-electron.yml');
+  const script = extractReleaseTagValidationScript(workflow);
+
+  for (const tagName of ['v1.1.0', 'v1.1']) {
+    const result = runReleaseTagValidation(script, { version: '1.1.0', tagName });
+    assert.equal(result.status, 0, `${tagName} should be accepted: ${result.stderr}${result.stdout}`);
+  }
+
+  const patchResult = runReleaseTagValidation(script, { version: '1.1.1', tagName: 'v1.1' });
+  assert.notEqual(patchResult.status, 0, 'v1.1 should not be accepted for package version 1.1.1');
+  assert.match(patchResult.stdout, /Expected v1\.1\.1\./);
+
+  const emptyTagResult = runReleaseTagValidation(script, { version: '1.1.1', tagName: '' });
+  assert.notEqual(emptyTagResult.status, 0, 'empty release tags should fail');
+  assert.match(emptyTagResult.stdout, /Expected v1\.1\.1\./);
+
+  const wrongResult = runReleaseTagValidation(script, { version: '1.1.0', tagName: 'v1.2' });
+  assert.notEqual(wrongResult.status, 0, 'mismatched minor tags should fail');
+  assert.match(wrongResult.stdout, /Expected v1\.1\.0 or v1\.1\./);
 });
