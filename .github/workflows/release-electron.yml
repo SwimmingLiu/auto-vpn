@@ -193,6 +193,7 @@ jobs:
             mac-arm64|mac-x64)
               required_artifacts=(
                 "dist-electron/AutoVPN-${PKG_VERSION}-${{ matrix.package_arch }}.dmg"
+                "dist-electron/AutoVPN-${PKG_VERSION}-${{ matrix.package_arch }}.dmg.blockmap"
               )
               ;;
             linux-x64)

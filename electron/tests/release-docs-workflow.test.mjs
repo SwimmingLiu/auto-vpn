@@ -100,6 +100,7 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
     'electron/renderer/assets/vpn-auto-logo-v2-minimal.svg',
     'AutoVPN.app/Contents/Resources',
     'AutoVPN-${PKG_VERSION}-${{ matrix.package_arch }}.dmg',
+    'AutoVPN-${PKG_VERSION}-${{ matrix.package_arch }}.dmg.blockmap',
     'AutoVPN-${PKG_VERSION}-x86_64.AppImage',
     'AutoVPN-${PKG_VERSION}-amd64.deb',
     'AutoVPN-${PKG_VERSION}-x86_64.rpm',
