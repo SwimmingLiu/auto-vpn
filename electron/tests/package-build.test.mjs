@@ -8,6 +8,7 @@ import {
   buildSvgIconRenderHtml,
   buildPackageArchList,
   buildElectronBuilderArgs,
+  buildPackagePlatformList,
   buildNodeVendorInstallArgs,
   buildPlaywrightBrowserInstallArgs,
   resolveNodeVendorRuntimePaths,
@@ -19,6 +20,7 @@ import {
   resolvePythonVendorRuntimePaths,
   sanitizeBundledProfileToml,
   resolveShareWorkerPaths,
+  buildCommandSpawnOptions,
   selectRunnablePythonCandidate,
   stageShareWorkerRuntime
 } from '../build/package.mjs';
@@ -94,12 +96,34 @@ test('buildSvgIconRenderHtml renders the app icon on a transparent canvas', () =
   assert.match(html, /data:image\/svg\+xml;base64,/);
 });
 
+test('buildPackagePlatformList defaults to the host platform', () => {
+  assert.deepEqual(buildPackagePlatformList({}, 'darwin'), ['mac']);
+  assert.deepEqual(buildPackagePlatformList({}, 'linux'), ['linux']);
+  assert.deepEqual(buildPackagePlatformList({}, 'win32'), ['win']);
+});
+
+test('buildPackagePlatformList accepts explicit platform aliases', () => {
+  assert.deepEqual(buildPackagePlatformList({ AUTOVPN_PACKAGE_PLATFORM: 'macos' }, 'linux'), ['mac']);
+  assert.deepEqual(buildPackagePlatformList({ AUTOVPN_PACKAGE_PLATFORM: 'windows' }, 'linux'), ['win']);
+  assert.deepEqual(buildPackagePlatformList({ AUTOVPN_PACKAGE_PLATFORM: 'linux,win' }, 'darwin'), ['linux', 'win']);
+});
+
+test('buildPackageArchList accepts explicit architecture aliases', () => {
+  assert.deepEqual(buildPackageArchList({ AUTOVPN_PACKAGE_ARCH: 'x64' }, 'arm64'), ['x64']);
+  assert.deepEqual(buildPackageArchList({ AUTOVPN_PACKAGE_ARCH: 'amd64,arm64' }, 'x64'), ['x64', 'arm64']);
+  assert.deepEqual(buildPackageArchList({ AUTOVPN_PACKAGE_ARCH: 'x64,arm64,armv7l' }, 'arm64'), [
+    'x64',
+    'arm64',
+    'armv7l'
+  ]);
+});
+
 test('buildElectronBuilderArgs builds a macOS DMG installer by default', () => {
   assert.deepEqual(buildElectronBuilderArgs(), ['electron-builder', '--mac', 'dmg']);
 });
 
-test('buildElectronBuilderArgs appends only macOS-compatible architecture flags explicitly', () => {
-  assert.deepEqual(buildElectronBuilderArgs(['dmg'], buildPackageArchList()), [
+test('buildElectronBuilderArgs appends legacy macOS-compatible architecture flags explicitly', () => {
+  assert.deepEqual(buildElectronBuilderArgs(['dmg'], ['x64', 'arm64', 'armv7l']), [
     'electron-builder',
     '--mac',
     'dmg',
@@ -108,8 +132,45 @@ test('buildElectronBuilderArgs appends only macOS-compatible architecture flags 
   ]);
 });
 
-test('buildPackageArchList includes the project package architectures supported by Electron builder', () => {
-  assert.deepEqual(buildPackageArchList(), ['x64', 'arm64', 'armv7l']);
+test('buildPackageArchList defaults to the host architecture', () => {
+  assert.deepEqual(buildPackageArchList({}, 'arm64'), ['arm64']);
+  assert.deepEqual(buildPackageArchList({}, 'x64'), ['x64']);
+});
+
+test('buildElectronBuilderArgs builds target platform and architecture matrices', () => {
+  assert.deepEqual(
+    buildElectronBuilderArgs({
+      platforms: ['mac'],
+      archs: ['x64', 'armv7l']
+    }),
+    ['electron-builder', '--mac', 'dmg', '--x64']
+  );
+
+  assert.deepEqual(
+    buildElectronBuilderArgs({
+      platforms: ['linux'],
+      archs: ['x64', 'arm64']
+    }),
+    ['electron-builder', '--linux', 'AppImage', 'deb', 'rpm', '--x64', '--arm64']
+  );
+
+  assert.deepEqual(
+    buildElectronBuilderArgs({
+      platforms: ['win'],
+      archs: ['arm64']
+    }),
+    ['electron-builder', '--win', 'nsis', 'portable', '--arm64']
+  );
+});
+
+test('buildElectronBuilderArgs only emits architecture flags supported by every selected platform', () => {
+  assert.deepEqual(
+    buildElectronBuilderArgs({
+      platforms: ['linux', 'win'],
+      archs: ['x64', 'ia32']
+    }),
+    ['electron-builder', '--linux', 'AppImage', 'deb', 'rpm', '--win', 'nsis', 'portable', '--x64']
+  );
 });
 
 test('buildPythonVendorInstallArgs installs runtime Python dependencies into vendor dir', () => {
@@ -171,14 +232,35 @@ test('selectRunnablePythonCandidate skips missing commands on PATH', () => {
   );
 });
 
-test('package configuration uses DMG as the macOS distribution target', () => {
+test('selectRunnablePythonCandidate can fall back to the Windows setup-python command', () => {
+  assert.equal(
+    selectRunnablePythonCandidate(['python3.12', 'python3', 'python'], (candidate) => candidate === 'python'),
+    'python'
+  );
+});
+
+test('buildCommandSpawnOptions avoids a Windows shell for Python pip arguments', () => {
+  assert.equal(buildCommandSpawnOptions('python', {}, 'win32').shell, false);
+  assert.equal(buildCommandSpawnOptions('/opt/homebrew/bin/python3.12', {}, 'darwin').shell, false);
+  assert.equal(buildCommandSpawnOptions('npm', {}, 'win32').shell, true);
+  assert.equal(buildCommandSpawnOptions('npx', {}, 'win32').shell, true);
+});
+
+test('package configuration defines platform-specific Electron distribution targets', () => {
   const packageJson = JSON.parse(
     fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf-8')
   );
 
   assert.equal(packageJson.build.productName, 'AutoVPN');
   assert.deepEqual(packageJson.build.mac.target, ['dmg']);
+  assert.deepEqual(packageJson.build.linux.target, ['AppImage', 'deb', 'rpm']);
+  assert.deepEqual(packageJson.build.win.target, ['nsis', 'portable']);
   assert.equal(packageJson.build.dmg.artifactName, '${productName}-${version}-${arch}.${ext}');
+  assert.equal(packageJson.build.appImage.artifactName, '${productName}-${version}-${arch}.${ext}');
+  assert.equal(packageJson.build.deb.artifactName, '${productName}-${version}-${arch}.${ext}');
+  assert.equal(packageJson.build.rpm.artifactName, '${productName}-${version}-${arch}.${ext}');
+  assert.equal(packageJson.build.nsis.artifactName, '${productName}-${version}-${arch}-setup.${ext}');
+  assert.equal(packageJson.build.portable.artifactName, '${productName}-${version}-${arch}-portable.${ext}');
   assert.ok(packageJson.build.files.includes('!electron/tests/**/*'));
 });
 
