@@ -355,6 +355,10 @@ export function buildPackageArchList() {
   return ['x64', 'arm64', 'armv7l'];
 }
 
+function isMacPackageArchitecture(architecture) {
+  return ['x64', 'arm64', 'universal'].includes(architecture);
+}
+
 export function buildElectronBuilderArgs(targets = ['dmg'], architectures = []) {
   const normalizedTargets = Array.isArray(targets)
     ? targets
@@ -365,7 +369,7 @@ export function buildElectronBuilderArgs(targets = ['dmg'], architectures = []) 
     : String(architectures).split(',');
   const archFlags = normalizedArchitectures
     .map((architecture) => String(architecture).trim())
-    .filter(Boolean)
+    .filter(isMacPackageArchitecture)
     .map((architecture) => `--${architecture}`);
   return ['electron-builder', '--mac', ...buildTargets, ...archFlags];
 }
