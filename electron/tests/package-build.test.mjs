@@ -6,6 +6,7 @@ import path from 'node:path';
 
 import {
   buildSvgIconRenderHtml,
+  buildPackageArchList,
   buildElectronBuilderArgs,
   buildNodeVendorInstallArgs,
   buildPlaywrightBrowserInstallArgs,
@@ -95,6 +96,20 @@ test('buildSvgIconRenderHtml renders the app icon on a transparent canvas', () =
 
 test('buildElectronBuilderArgs builds a macOS DMG installer by default', () => {
   assert.deepEqual(buildElectronBuilderArgs(), ['electron-builder', '--mac', 'dmg']);
+});
+
+test('buildElectronBuilderArgs appends only macOS-compatible architecture flags explicitly', () => {
+  assert.deepEqual(buildElectronBuilderArgs(['dmg'], buildPackageArchList()), [
+    'electron-builder',
+    '--mac',
+    'dmg',
+    '--x64',
+    '--arm64'
+  ]);
+});
+
+test('buildPackageArchList includes the project package architectures supported by Electron builder', () => {
+  assert.deepEqual(buildPackageArchList(), ['x64', 'arm64', 'armv7l']);
 });
 
 test('buildPythonVendorInstallArgs installs runtime Python dependencies into vendor dir', () => {
