@@ -167,6 +167,20 @@ jobs:
           done
         shell: bash
 
+      - name: Cache Playwright browser runtime
+        uses: actions/cache@v4
+        with:
+          path: electron/runtime/playwright-browsers
+          key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            playwright-${{ runner.os }}-${{ runner.arch }}-
+
+      - name: Install Playwright browser runtime
+        timeout-minutes: 15
+        env:
+          PLAYWRIGHT_BROWSERS_PATH: electron/runtime/playwright-browsers
+        run: npx playwright install chromium-headless-shell
+
       - name: Package Electron app
         env:
           AUTOVPN_PACKAGE_PLATFORM: ${{ matrix.package_platform }}

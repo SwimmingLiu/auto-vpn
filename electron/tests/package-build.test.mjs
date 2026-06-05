@@ -11,6 +11,7 @@ import {
   buildPackagePlatformList,
   buildNodeVendorInstallArgs,
   buildPlaywrightBrowserInstallArgs,
+  isPlaywrightBrowserRuntimeReady,
   resolveNodeVendorRuntimePaths,
   resolvePlaywrightBrowserRuntimePaths,
   buildPythonVendorInstallArgs,
@@ -24,6 +25,7 @@ import {
   runOrThrow,
   retryOperation,
   selectRunnablePythonCandidate,
+  stagePlaywrightBrowserRuntime,
   stageShareWorkerRuntime
 } from '../build/package.mjs';
 
@@ -253,6 +255,68 @@ test('resolvePlaywrightBrowserRuntimePaths stores bundled Chromium under electro
   assert.deepEqual(resolvePlaywrightBrowserRuntimePaths('/tmp/project'), {
     browserDir: '/tmp/project/electron/runtime/playwright-browsers'
   });
+});
+
+test('isPlaywrightBrowserRuntimeReady detects an installed Chromium headless shell', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vpn-playwright-ready-'));
+  const browserDir = path.join(root, 'electron', 'runtime', 'playwright-browsers');
+  const executable = path.join(
+    browserDir,
+    'chromium_headless_shell-1217',
+    'chrome-headless-shell-mac-arm64',
+    'chrome-headless-shell'
+  );
+  fs.mkdirSync(path.dirname(executable), { recursive: true });
+  fs.writeFileSync(path.join(browserDir, 'chromium_headless_shell-1217', 'INSTALLATION_COMPLETE'), '', 'utf-8');
+  fs.writeFileSync(executable, '', 'utf-8');
+
+  assert.equal(isPlaywrightBrowserRuntimeReady(browserDir, 'darwin'), true);
+});
+
+test('stagePlaywrightBrowserRuntime reuses a CI-preinstalled browser runtime', () => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vpn-playwright-reuse-'));
+  const { browserDir } = resolvePlaywrightBrowserRuntimePaths(projectRoot);
+  const executable = path.join(
+    browserDir,
+    'chromium_headless_shell-1217',
+    'chrome-headless-shell-mac-arm64',
+    'chrome-headless-shell'
+  );
+  fs.mkdirSync(path.dirname(executable), { recursive: true });
+  fs.writeFileSync(path.join(browserDir, 'chromium_headless_shell-1217', 'INSTALLATION_COMPLETE'), '', 'utf-8');
+  fs.writeFileSync(executable, '', 'utf-8');
+
+  let installCalls = 0;
+  const stagedBrowserDir = stagePlaywrightBrowserRuntime(projectRoot, {
+    platform: 'darwin',
+    run: () => {
+      installCalls += 1;
+      throw new Error('Playwright install should not run when the browser is already staged');
+    }
+  });
+
+  assert.equal(stagedBrowserDir, browserDir);
+  assert.equal(installCalls, 0);
+  assert.equal(fs.existsSync(executable), true);
+});
+
+test('stagePlaywrightBrowserRuntime installs missing runtime with a longer CI timeout', () => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vpn-playwright-install-'));
+  const { browserDir } = resolvePlaywrightBrowserRuntimePaths(projectRoot);
+  const calls = [];
+
+  stagePlaywrightBrowserRuntime(projectRoot, {
+    run: (command, args, options) => {
+      calls.push({ command, args, options });
+    }
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].command, 'npx');
+  assert.deepEqual(calls[0].args, buildPlaywrightBrowserInstallArgs());
+  assert.equal(calls[0].options.cwd, projectRoot);
+  assert.equal(calls[0].options.timeout, 900000);
+  assert.equal(calls[0].options.env.PLAYWRIGHT_BROWSERS_PATH, browserDir);
 });
 
 test('buildNodeVendorInstallArgs installs Playwright runtime dependencies into vendor dir', () => {
