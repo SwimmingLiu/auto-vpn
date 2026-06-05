@@ -75,7 +75,7 @@ jobs:
           import subprocess
           import time
 
-          command = ["npx", "playwright", "install", "chromium", "--no-shell"]
+          command = ["npx", "playwright", "install", "chromium-headless-shell"]
 
           for attempt in range(1, 3):
               process = subprocess.Popen(command, start_new_session=True)

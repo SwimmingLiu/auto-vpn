@@ -12,12 +12,12 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const EXPECTED_DIGESTS = {
-  dashboard: '3157a576d3f6cd14dbc5f40adde4e70f92d41281f84efa04e02784a725327c3b',
-  runs: '48db9fa182cabea0551d58da74b5a7d2df53fa6c5fba8e387adec29d55583fbb',
-  results: 'b905b2f9a7ff2ff537a4b289d9877701065fbe1bde83bbe4e9d315258d9b25f9',
-  subscriptions: '21a2f2fbce98c176cb478037c99e256da297307ba37455961b4eefaeda714e60',
-  logs: '47092ceeadbcd85d7c3fb78fef8b45769188eca43482d5aa5b0ad89ec6f313c4',
-  settings: 'f23d25701d045545dc07749b0081d8094f0077c9c66dc9e789206ae834f08de1'
+  dashboard: 'd9d0d057974be8d1d15454ca35e18c7ed5f2c043ac5825a242e0a6831c410d43',
+  runs: 'd3f022a5afabf11265899a3a848b9b9b68674636e6b841f9b65bc21531c6bc07',
+  results: '04522a5a0e71881bc8b9cc72c05e9f88c57a6ea22df31e572940c38abbdeda08',
+  subscriptions: '1b8347e6127410d9286aa38244cf808d94c43574048676543c70df71fe966ac1',
+  logs: 'bc6e613b343ae95d1be738a3a04a1d6d079a71f262ab55c1bc467425c0b2c8ce',
+  settings: '3e90ccfa2b65fa573fb8d853c9c730044c40bf010f83a60aaeab6c910d755321'
 };
 
 const VISUAL_CASES = [
@@ -33,7 +33,7 @@ test('renderer visual hashes match the full mockup-driven workspace', async () =
   const server = await startStaticServer(path.join(__dirname, '..', 'renderer'));
   let browser;
   try {
-    browser = await chromium.launch({ channel: 'chromium' });
+    browser = await chromium.launch();
     const page = await browser.newPage({ viewport: { width: 1440, height: 960 }, deviceScaleFactor: 1 });
     const target = `${server.origin}/index.html`;
 
