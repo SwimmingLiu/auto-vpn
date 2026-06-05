@@ -157,9 +157,14 @@ jobs:
 
       - name: Install dependencies
         run: |
-          npm ci
-          python -m pip install --upgrade pip
-          python -m pip install -e .[dev]
+          for attempt in 1 2; do
+            npm ci && break
+            if [ "${attempt}" -eq 2 ]; then
+              exit 1
+            fi
+            echo "npm ci failed; retrying in 15 seconds."
+            sleep 15
+          done
 
       - name: Package Electron app
         env:
