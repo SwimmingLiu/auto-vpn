@@ -223,6 +223,43 @@ export function buildPlaywrightBrowserInstallArgs() {
   ];
 }
 
+function findChromiumHeadlessShellExecutable(browserDir, platform = process.platform) {
+  if (!fs.existsSync(browserDir)) {
+    return '';
+  }
+
+  const executableName = platform === 'win32' ? 'chrome-headless-shell.exe' : 'chrome-headless-shell';
+  const pending = [browserDir];
+  while (pending.length > 0) {
+    const currentDir = pending.pop();
+    for (const entry of fs.readdirSync(currentDir, { withFileTypes: true })) {
+      const entryPath = path.join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        pending.push(entryPath);
+      } else if (entry.name === executableName) {
+        return entryPath;
+      }
+    }
+  }
+
+  return '';
+}
+
+export function isPlaywrightBrowserRuntimeReady(browserDir, platform = process.platform) {
+  if (!fs.existsSync(browserDir)) {
+    return false;
+  }
+
+  const revisions = fs.readdirSync(browserDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && entry.name.startsWith('chromium_headless_shell-'))
+    .map((entry) => path.join(browserDir, entry.name));
+
+  return revisions.some((revisionPath) => (
+    fs.existsSync(path.join(revisionPath, 'INSTALLATION_COMPLETE')) &&
+    Boolean(findChromiumHeadlessShellExecutable(revisionPath, platform))
+  ));
+}
+
 export function buildSvgIconRenderHtml(svgMarkup, size = 1024) {
   const encodedSvg = Buffer.from(svgMarkup, 'utf8').toString('base64');
   return `<!doctype html>
@@ -433,13 +470,24 @@ export function stageNodeVendorRuntime(projectRoot) {
   return vendorDir;
 }
 
-export function stagePlaywrightBrowserRuntime(projectRoot) {
+export function stagePlaywrightBrowserRuntime(projectRoot, options = {}) {
   const { browserDir } = resolvePlaywrightBrowserRuntimePaths(projectRoot);
+  const {
+    platform = process.platform,
+    run = runOrThrow,
+    timeoutMs = 900000
+  } = options;
+
+  if (isPlaywrightBrowserRuntimeReady(browserDir, platform)) {
+    logPackageStage('Reusing staged Playwright Chromium headless shell');
+    return browserDir;
+  }
+
   logPackageStage('Installing Playwright Chromium headless shell');
   ensureCleanDir(browserDir);
-  runOrThrow('npx', buildPlaywrightBrowserInstallArgs(), {
+  run('npx', buildPlaywrightBrowserInstallArgs(), {
     cwd: projectRoot,
-    timeout: 300000,
+    timeout: timeoutMs,
     env: {
       ...process.env,
       PLAYWRIGHT_BROWSERS_PATH: browserDir
