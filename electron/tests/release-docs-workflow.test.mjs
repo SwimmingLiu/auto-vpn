@@ -108,6 +108,13 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
   for (const requiredText of [
     'release:',
     'types: [published]',
+    'push:',
+    'tags:',
+    "'v*.*'",
+    "'v*.*.*'",
+    'workflow_dispatch:',
+    'tag_name:',
+    'RELEASE_TAG_NAME: ${{ github.event.inputs.tag_name || github.event.release.tag_name || github.ref_name }}',
     'contents: write',
     'fetch-depth: 0',
     'test:',
@@ -115,7 +122,7 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
     'needs: test',
     'Check release tag and package version',
     'PKG_VERSION="$(node -p "require(\'./package.json\').version")"',
-    'TAG_NAME: ${{ github.event.release.tag_name }}',
+    'TAG_NAME: ${{ env.RELEASE_TAG_NAME }}',
     'EXPECTED_TAG="v${PKG_VERSION}"',
     'Release tag ${TAG_NAME} does not match package.json version ${PKG_VERSION}',
     'git fetch --no-tags origin main:refs/remotes/origin/main',
@@ -140,15 +147,6 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
     'for attempt in 1 2',
     'npm ci && break',
     'npm ci failed; retrying in 15 seconds.',
-    'Cache Playwright browser runtime',
-    'uses: actions/cache@v4',
-    'path: electron/runtime/playwright-browsers',
-    "key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}",
-    'playwright-${{ runner.os }}-${{ runner.arch }}-',
-    'Install Playwright browser runtime',
-    'timeout-minutes: 15',
-    'PLAYWRIGHT_BROWSERS_PATH: electron/runtime/playwright-browsers',
-    'npx playwright install chromium-headless-shell',
     './scripts/run_pytest.sh tests -v',
     'test_files = sorted(glob.glob("electron/tests/*.test.mjs"))',
     'browser_dependent_tests = {',
@@ -179,7 +177,7 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
     'dist-electron/**/*.rpm',
     'dist-electron/**/*.exe',
     'softprops/action-gh-release',
-    'tag_name: ${{ github.event.release.tag_name }}',
+    'tag_name: ${{ env.RELEASE_TAG_NAME }}',
     'dist-electron/**/*.dmg',
     'dist-electron/**/*.blockmap'
   ]) {
@@ -191,9 +189,12 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
   assert.match(testJob, /python -m pip install -e \.\[dev\]/);
   assert.doesNotMatch(packageInstallAndBuild, /python -m pip install -e \.\[dev\]/);
   assert.match(packageInstallStep, /shell: bash/);
+  assert.doesNotMatch(packageInstallAndBuild, /Install Playwright browser runtime/);
+  assert.doesNotMatch(packageInstallAndBuild, /PLAYWRIGHT_BROWSERS_PATH: electron\/runtime\/playwright-browsers/);
+  assert.doesNotMatch(packageInstallAndBuild, /npx playwright install chromium-headless-shell/);
 });
 
-test('release renderer tests use the headless shell installed by the workflow', () => {
+test('release renderer tests avoid forcing full Chromium in CI', () => {
   const workflow = readProjectFile('.github', 'workflows', 'release-electron.yml');
   assert.doesNotMatch(workflow, /Install Playwright browsers for tests/);
   assert.doesNotMatch(workflow, /command = \["npx", "playwright", "install", "chromium-headless-shell"\]/);

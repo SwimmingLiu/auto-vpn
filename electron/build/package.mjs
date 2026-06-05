@@ -156,6 +156,15 @@ function logPackageStage(message) {
   console.log(`[package] ${message}`);
 }
 
+function fileExistsNonEmpty(filePath) {
+  return fs.existsSync(filePath) && fs.statSync(filePath).size > 0;
+}
+
+export function shouldBundlePlaywrightBrowserRuntime(env = process.env) {
+  const value = String(env.AUTOVPN_BUNDLE_PLAYWRIGHT_BROWSER ?? '').trim().toLowerCase();
+  return ['1', 'true', 'yes', 'on'].includes(value);
+}
+
 function canRunCommand(command) {
   const result = spawnSync(command, ['-c', 'pass'], { stdio: 'ignore' });
   return !result.error && result.status === 0;
@@ -401,15 +410,23 @@ export function preparePngIcon(projectRoot, size = 1024) {
   const basePng = size === 1024
     ? outputPng
     : path.join(outputDir, `app-icon-${size}.png`);
+  if (fileExistsNonEmpty(basePng)) {
+    logPackageStage(`Using packaged PNG icon ${path.relative(projectRoot, basePng)}`);
+    return basePng;
+  }
   renderSvgToPng(projectRoot, sourceSvg, basePng, size);
   return basePng;
 }
 
 export function prepareMacIcon(projectRoot) {
   const { outputIcns, iconsetDir } = resolveIconPaths(projectRoot);
-  ensureCleanDir(iconsetDir);
-
   const basePng = preparePngIcon(projectRoot);
+  if (fileExistsNonEmpty(outputIcns)) {
+    logPackageStage(`Using packaged macOS icon ${path.relative(projectRoot, outputIcns)}`);
+    return { outputIcns, iconsetDir, basePng };
+  }
+
+  ensureCleanDir(iconsetDir);
   buildIconset(basePng, iconsetDir);
   runOrThrow('iconutil', ['-c', 'icns', iconsetDir, '-o', outputIcns]);
 
@@ -418,6 +435,11 @@ export function prepareMacIcon(projectRoot) {
 
 export function prepareWindowsIcon(projectRoot) {
   const { outputIco } = resolveIconPaths(projectRoot);
+  if (fileExistsNonEmpty(outputIco)) {
+    logPackageStage(`Using packaged Windows icon ${path.relative(projectRoot, outputIco)}`);
+    return { outputIco, png256: '' };
+  }
+
   const png256 = preparePngIcon(projectRoot, 256);
   writePngIco(png256, outputIco);
   return { outputIco, png256 };
@@ -605,7 +627,11 @@ export function runPackaging(projectRoot) {
   stageShareWorkerRuntime(projectRoot);
   stagePythonVendorRuntime(projectRoot);
   stageNodeVendorRuntime(projectRoot);
-  stagePlaywrightBrowserRuntime(projectRoot);
+  if (shouldBundlePlaywrightBrowserRuntime()) {
+    stagePlaywrightBrowserRuntime(projectRoot);
+  } else {
+    logPackageStage('Skipping bundled Playwright browser runtime');
+  }
   logPackageStage('Preparing package icons');
   preparePackageIcons(projectRoot, platforms);
 
