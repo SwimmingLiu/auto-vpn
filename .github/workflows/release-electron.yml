@@ -165,6 +165,7 @@ jobs:
             echo "npm ci failed; retrying in 15 seconds."
             sleep 15
           done
+        shell: bash
 
       - name: Package Electron app
         env:

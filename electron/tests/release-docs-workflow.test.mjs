@@ -99,6 +99,11 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
     '      - name: Install dependencies\n        run: |\n          for attempt in 1 2',
     '      - name: Verify project icon was packaged'
   );
+  const packageInstallStep = extractWorkflowSegment(
+    workflow,
+    '      - name: Install dependencies\n        run: |\n          for attempt in 1 2',
+    '      - name: Package Electron app'
+  );
 
   for (const requiredText of [
     'release:',
@@ -176,6 +181,7 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
   assert.doesNotMatch(workflow, /dist-electron\/\*\*\/\*\.yml/);
   assert.match(testJob, /python -m pip install -e \.\[dev\]/);
   assert.doesNotMatch(packageInstallAndBuild, /python -m pip install -e \.\[dev\]/);
+  assert.match(packageInstallStep, /shell: bash/);
 });
 
 test('release renderer tests use the headless shell installed by the workflow', () => {
