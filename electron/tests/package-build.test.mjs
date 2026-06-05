@@ -21,6 +21,7 @@ import {
   sanitizeBundledProfileToml,
   resolveShareWorkerPaths,
   buildCommandSpawnOptions,
+  runOrThrow,
   retryOperation,
   selectRunnablePythonCandidate,
   stageShareWorkerRuntime
@@ -292,6 +293,18 @@ test('buildCommandSpawnOptions avoids a Windows shell for Python pip arguments',
   assert.equal(buildCommandSpawnOptions('/opt/homebrew/bin/python3.12', {}, 'darwin').shell, false);
   assert.equal(buildCommandSpawnOptions('npm', {}, 'win32').shell, true);
   assert.equal(buildCommandSpawnOptions('npx', {}, 'win32').shell, true);
+});
+
+test('buildCommandSpawnOptions streams package command output by default', () => {
+  assert.equal(buildCommandSpawnOptions('python').stdio, 'inherit');
+  assert.equal(buildCommandSpawnOptions('npm').stdio, 'inherit');
+});
+
+test('runOrThrow reports command timeouts with the configured timeout', () => {
+  assert.throws(
+    () => runOrThrow('node', ['-e', 'setTimeout(() => {}, 1000)'], { timeout: 1, stdio: 'pipe' }),
+    /node -e setTimeout\(\(\) => \{\}, 1000\) timed out after 1 ms/
+  );
 });
 
 test('package configuration defines platform-specific Electron distribution targets', () => {
