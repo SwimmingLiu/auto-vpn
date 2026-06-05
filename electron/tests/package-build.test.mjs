@@ -25,6 +25,7 @@ import {
   runOrThrow,
   retryOperation,
   selectRunnablePythonCandidate,
+  shouldBundlePlaywrightBrowserRuntime,
   stagePlaywrightBrowserRuntime,
   stageShareWorkerRuntime
 } from '../build/package.mjs';
@@ -47,8 +48,20 @@ test('resolveIconPaths points packaging to generated icns and source svg', () =>
     '/tmp/project/electron/renderer/assets/vpn-auto-logo-v2-minimal.svg'
   );
   assert.equal(iconPaths.outputDir, '/tmp/project/electron/build/assets');
+  assert.equal(iconPaths.outputPng, '/tmp/project/electron/build/assets/app-icon-1024.png');
+  assert.equal(iconPaths.outputIco, '/tmp/project/electron/build/assets/app-icon.ico');
   assert.equal(iconPaths.outputIcns, '/tmp/project/electron/build/assets/app-icon.icns');
   assert.equal(iconPaths.iconsetDir, '/tmp/project/electron/build/assets/app-icon.iconset');
+});
+
+test('packaging icon assets are committed so release builds do not need browser rendering', () => {
+  for (const asset of [
+    path.join('electron', 'build', 'assets', 'app-icon-1024.png'),
+    path.join('electron', 'build', 'assets', 'app-icon.ico'),
+    path.join('electron', 'build', 'assets', 'app-icon.icns')
+  ]) {
+    assert.equal(fs.existsSync(path.join(process.cwd(), asset)), true, `${asset} should exist`);
+  }
 });
 
 test('sanitizeBundledProfileToml removes deprecated availability host and phrase fields', () => {
@@ -317,6 +330,14 @@ test('stagePlaywrightBrowserRuntime installs missing runtime with a longer CI ti
   assert.equal(calls[0].options.cwd, projectRoot);
   assert.equal(calls[0].options.timeout, 900000);
   assert.equal(calls[0].options.env.PLAYWRIGHT_BROWSERS_PATH, browserDir);
+});
+
+test('Playwright browser runtime is not bundled by default for release packages', () => {
+  assert.equal(shouldBundlePlaywrightBrowserRuntime({}), false);
+  assert.equal(shouldBundlePlaywrightBrowserRuntime({ AUTOVPN_BUNDLE_PLAYWRIGHT_BROWSER: '0' }), false);
+  assert.equal(shouldBundlePlaywrightBrowserRuntime({ AUTOVPN_BUNDLE_PLAYWRIGHT_BROWSER: 'false' }), false);
+  assert.equal(shouldBundlePlaywrightBrowserRuntime({ AUTOVPN_BUNDLE_PLAYWRIGHT_BROWSER: '1' }), true);
+  assert.equal(shouldBundlePlaywrightBrowserRuntime({ AUTOVPN_BUNDLE_PLAYWRIGHT_BROWSER: 'true' }), true);
 });
 
 test('buildNodeVendorInstallArgs installs Playwright runtime dependencies into vendor dir', () => {

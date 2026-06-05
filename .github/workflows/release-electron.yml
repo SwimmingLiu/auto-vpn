@@ -3,9 +3,21 @@ name: Release Electron App
 on:
   release:
     types: [published]
+  push:
+    tags:
+      - 'v*.*'
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: Release tag to rebuild, for example v1.1.0
+        required: true
 
 permissions:
   contents: write
+
+env:
+  RELEASE_TAG_NAME: ${{ github.event.inputs.tag_name || github.event.release.tag_name || github.ref_name }}
 
 jobs:
   test:
@@ -16,7 +28,7 @@ jobs:
       - name: Checkout release ref
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ env.RELEASE_TAG_NAME }}
           fetch-depth: 0
 
       - name: Setup Node.js
@@ -27,7 +39,7 @@ jobs:
 
       - name: Check release tag and package version
         env:
-          TAG_NAME: ${{ github.event.release.tag_name }}
+          TAG_NAME: ${{ env.RELEASE_TAG_NAME }}
         run: |
           PKG_VERSION="$(node -p "require('./package.json').version")"
           EXPECTED_TAG="v${PKG_VERSION}"
@@ -134,7 +146,7 @@ jobs:
       - name: Checkout release ref
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ env.RELEASE_TAG_NAME }}
           fetch-depth: 0
 
       - name: Setup Node.js
@@ -166,20 +178,6 @@ jobs:
             sleep 15
           done
         shell: bash
-
-      - name: Cache Playwright browser runtime
-        uses: actions/cache@v4
-        with:
-          path: electron/runtime/playwright-browsers
-          key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}
-          restore-keys: |
-            playwright-${{ runner.os }}-${{ runner.arch }}-
-
-      - name: Install Playwright browser runtime
-        timeout-minutes: 15
-        env:
-          PLAYWRIGHT_BROWSERS_PATH: electron/runtime/playwright-browsers
-        run: npx playwright install chromium-headless-shell
 
       - name: Package Electron app
         env:
@@ -270,7 +268,7 @@ jobs:
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.release.tag_name }}
+          tag_name: ${{ env.RELEASE_TAG_NAME }}
           files: |
             dist-electron/**/*.dmg
             dist-electron/**/*.AppImage
