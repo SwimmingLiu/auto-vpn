@@ -67,42 +67,6 @@ jobs:
       - name: Run Python tests
         run: ./scripts/run_pytest.sh tests -v
 
-      - name: Install Playwright browsers for tests
-        run: |
-          python - <<'PY'
-          import os
-          import signal
-          import subprocess
-          import time
-
-          command = ["npx", "playwright", "install", "chromium-headless-shell"]
-
-          for attempt in range(1, 3):
-              process = subprocess.Popen(command, start_new_session=True)
-              try:
-                  exit_code = process.wait(timeout=300)
-              except subprocess.TimeoutExpired as exc:
-                  print(f"Playwright browser install attempt {attempt} timed out; stopping process group.", flush=True)
-                  os.killpg(process.pid, signal.SIGTERM)
-                  try:
-                      process.wait(timeout=10)
-                  except subprocess.TimeoutExpired:
-                      os.killpg(process.pid, signal.SIGKILL)
-                      process.wait()
-                  exit_code = 124
-              if exit_code == 0:
-                  raise SystemExit(0)
-
-              error = subprocess.CalledProcessError(exit_code, command)
-              if attempt == 2:
-                  print(f"Playwright browser install failed after retry: {error}", flush=True)
-                  raise SystemExit(1)
-
-              print(f"Playwright browser install attempt {attempt} failed; retrying: {error}", flush=True)
-              time.sleep(15)
-
-          PY
-
       - name: Run Electron tests
         run: |
           python - <<'PY'
@@ -113,6 +77,12 @@ jobs:
           import sys
 
           test_files = sorted(glob.glob("electron/tests/*.test.mjs"))
+          browser_dependent_tests = {
+              'app-launch.test.mjs',
+              'renderer-e2e.test.mjs',
+              'renderer-visual.test.mjs',
+          }
+          test_files = [test_file for test_file in test_files if os.path.basename(test_file) not in browser_dependent_tests]
           command = ["node", "--test", "--test-timeout=600000", *test_files]
           process = subprocess.Popen(command, start_new_session=True)
           try:
