@@ -123,8 +123,14 @@ export function resolveIconPaths(projectRoot) {
   };
 }
 
-function runOrThrow(command, args, options = {}) {
+export function runOrThrow(command, args, options = {}) {
   const result = spawnSync(command, args, buildCommandSpawnOptions(command, options));
+  if (result.error) {
+    if (result.error.code === 'ETIMEDOUT') {
+      throw new Error(`${command} ${args.join(' ')} timed out after ${options.timeout} ms`);
+    }
+    throw result.error;
+  }
   if (result.status !== 0) {
     const detail = [result.stdout, result.stderr].filter(Boolean).join('\n').trim();
     throw new Error(`${command} ${args.join(' ')} failed${detail ? `: ${detail}` : ''}`);
@@ -139,11 +145,15 @@ function ensureCleanDir(targetDir) {
 export function buildCommandSpawnOptions(command, options = {}, platform = process.platform) {
   const needsWindowsShell = platform === 'win32' && ['npm', 'npx'].includes(command);
   return {
-    stdio: 'pipe',
+    stdio: 'inherit',
     encoding: 'utf8',
     shell: needsWindowsShell,
     ...options
   };
+}
+
+function logPackageStage(message) {
+  console.log(`[package] ${message}`);
 }
 
 function canRunCommand(command) {
@@ -405,27 +415,31 @@ export function stageShareWorkerRuntime(projectRoot) {
 
 export function stagePythonVendorRuntime(projectRoot) {
   const { vendorDir } = resolvePythonVendorRuntimePaths(projectRoot);
+  logPackageStage('Installing Python runtime wheels');
   ensureCleanDir(vendorDir);
   runOrThrow(
     selectPythonForVendorInstall(projectRoot),
     buildPythonVendorInstallArgs(vendorDir),
-    { cwd: projectRoot }
+    { cwd: projectRoot, timeout: 300000 }
   );
   return vendorDir;
 }
 
 export function stageNodeVendorRuntime(projectRoot) {
   const { vendorDir } = resolveNodeVendorRuntimePaths(projectRoot);
+  logPackageStage('Installing Node runtime dependencies');
   ensureCleanDir(vendorDir);
-  runOrThrow('npm', buildNodeVendorInstallArgs(vendorDir), { cwd: projectRoot });
+  runOrThrow('npm', buildNodeVendorInstallArgs(vendorDir), { cwd: projectRoot, timeout: 300000 });
   return vendorDir;
 }
 
 export function stagePlaywrightBrowserRuntime(projectRoot) {
   const { browserDir } = resolvePlaywrightBrowserRuntimePaths(projectRoot);
+  logPackageStage('Installing Playwright Chromium headless shell');
   ensureCleanDir(browserDir);
   runOrThrow('npx', buildPlaywrightBrowserInstallArgs(), {
     cwd: projectRoot,
+    timeout: 300000,
     env: {
       ...process.env,
       PLAYWRIGHT_BROWSERS_PATH: browserDir
@@ -527,24 +541,31 @@ export function runPackaging(projectRoot) {
   const { runtimeDir, defaultSeedPath, bundledSeedPath, liveProfilePath } = resolveRuntimePaths(projectRoot);
   const platforms = buildPackagePlatformList();
   const archs = buildPackageArchList();
+  logPackageStage(`Packaging platforms=${platforms.join(',')} archs=${archs.join(',')}`);
   cleanElectronOutputDir(projectRoot);
   fs.mkdirSync(runtimeDir, { recursive: true });
 
   if (fs.existsSync(liveProfilePath)) {
+    logPackageStage('Bundling runtime profile from live profile');
     stageBundledProfile(liveProfilePath, bundledSeedPath);
   } else if (fs.existsSync(defaultSeedPath)) {
+    logPackageStage('Bundling runtime profile from default profile');
     stageBundledProfile(defaultSeedPath, bundledSeedPath);
   }
 
+  logPackageStage('Staging share worker runtime');
   stageShareWorkerRuntime(projectRoot);
   stagePythonVendorRuntime(projectRoot);
   stageNodeVendorRuntime(projectRoot);
   stagePlaywrightBrowserRuntime(projectRoot);
+  logPackageStage('Preparing package icons');
   preparePackageIcons(projectRoot, platforms);
 
+  logPackageStage('Running electron-builder');
   return spawnSync('npx', buildElectronBuilderArgs({ platforms, archs }), buildCommandSpawnOptions('npx', {
     cwd: projectRoot,
-    stdio: 'inherit'
+    stdio: 'inherit',
+    timeout: 600000
   }));
 }
 
