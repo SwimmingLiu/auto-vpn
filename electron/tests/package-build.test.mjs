@@ -225,6 +225,8 @@ test('buildPythonVendorInstallArgs installs runtime Python dependencies into ven
     'pip',
     'install',
     '--disable-pip-version-check',
+    '--only-binary',
+    ':all:',
     '--target',
     '/tmp/vendor',
     'cryptography>=45.0.0',

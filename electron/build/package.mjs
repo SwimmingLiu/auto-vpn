@@ -186,6 +186,8 @@ export function buildPythonVendorInstallArgs(vendorDir) {
     'pip',
     'install',
     '--disable-pip-version-check',
+    '--only-binary',
+    ':all:',
     '--target',
     vendorDir,
     ...RUNTIME_PYTHON_DEPENDENCIES
