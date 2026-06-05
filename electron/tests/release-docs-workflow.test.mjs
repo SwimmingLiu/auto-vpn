@@ -22,6 +22,16 @@ function extractReleaseTagValidationScript(workflow) {
   return workflow.slice(start, end).replace(/^          /gm, '').trim();
 }
 
+function extractWorkflowSegment(workflow, startMarker, endMarker) {
+  const start = workflow.indexOf(startMarker);
+  const end = workflow.indexOf(endMarker, start);
+
+  assert.notEqual(start, -1, `workflow should contain ${startMarker}`);
+  assert.notEqual(end, -1, `workflow should contain ${endMarker} after ${startMarker}`);
+
+  return workflow.slice(start, end);
+}
+
 function runReleaseTagValidation(script, { version, tagName }) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-release-tag-'));
   try {
@@ -83,6 +93,12 @@ test('README follows the AutoVPN desktop app structure', () => {
 
 test('release workflow packages AutoVPN for native OS and CPU variants after a GitHub Release is published', () => {
   const workflow = readProjectFile('.github', 'workflows', 'release-electron.yml');
+  const testJob = extractWorkflowSegment(workflow, '  test:', '  package-electron:');
+  const packageInstallAndBuild = extractWorkflowSegment(
+    workflow,
+    '      - name: Install dependencies\n        run: |\n          for attempt in 1 2',
+    '      - name: Verify project icon was packaged'
+  );
 
   for (const requiredText of [
     'release:',
@@ -116,7 +132,9 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
     'node-version: 24',
     'python-version: "3.12"',
     'npm ci',
-    'python -m pip install -e .[dev]',
+    'for attempt in 1 2',
+    'npm ci && break',
+    'npm ci failed; retrying in 15 seconds.',
     './scripts/run_pytest.sh tests -v',
     'test_files = sorted(glob.glob("electron/tests/*.test.mjs"))',
     'browser_dependent_tests = {',
@@ -156,6 +174,8 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
 
   assert.doesNotMatch(workflow, /dist-electron\/\*\*\/\*\.zip/);
   assert.doesNotMatch(workflow, /dist-electron\/\*\*\/\*\.yml/);
+  assert.match(testJob, /python -m pip install -e \.\[dev\]/);
+  assert.doesNotMatch(packageInstallAndBuild, /python -m pip install -e \.\[dev\]/);
 });
 
 test('release renderer tests use the headless shell installed by the workflow', () => {
