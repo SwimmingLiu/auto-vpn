@@ -397,6 +397,10 @@ test('package configuration defines platform-specific Electron distribution targ
     fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf-8')
   );
 
+  assert.match(packageJson.homepage, /^https:\/\/github\.com\/SwimmingLiu\/auto-vpn/);
+  assert.equal(packageJson.author.name, 'SwimmingLiu');
+  assert.match(packageJson.author.email, /@users\.noreply\.github\.com$/);
+  assert.match(packageJson.build.linux.maintainer, /^SwimmingLiu <.+@users\.noreply\.github\.com>$/);
   assert.equal(packageJson.build.productName, 'AutoVPN');
   assert.deepEqual(packageJson.build.mac.target, ['dmg']);
   assert.deepEqual(packageJson.build.linux.target, ['AppImage', 'deb', 'rpm']);
