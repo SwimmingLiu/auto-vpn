@@ -135,7 +135,7 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
     'package_platform: win',
     'package_arch: x64',
     'package_arch: arm64',
-    'runs-on: macos-latest',
+    'os: macos-latest',
     'runs-on: ${{ matrix.os }}',
     'ubuntu-24.04',
     'ubuntu-24.04-arm',
@@ -192,6 +192,24 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
   assert.doesNotMatch(packageInstallAndBuild, /Install Playwright browser runtime/);
   assert.doesNotMatch(packageInstallAndBuild, /PLAYWRIGHT_BROWSERS_PATH: electron\/runtime\/playwright-browsers/);
   assert.doesNotMatch(packageInstallAndBuild, /npx playwright install chromium-headless-shell/);
+});
+
+test('release workflow runs its shared test gate on Ubuntu', () => {
+  const workflow = readProjectFile('.github', 'workflows', 'release-electron.yml');
+  const testJob = extractWorkflowSegment(workflow, '  test:', '  package-electron:');
+
+  assert.match(testJob, /runs-on: ubuntu-24\.04/);
+  assert.doesNotMatch(testJob, /runs-on: macos-latest/);
+  assert.match(workflow, /os: macos-latest/);
+});
+
+test('release package version matches the next v1.1.1 release tag', () => {
+  const packageJson = JSON.parse(readProjectFile('package.json'));
+  const packageLock = JSON.parse(readProjectFile('package-lock.json'));
+
+  assert.equal(packageJson.version, '1.1.1');
+  assert.equal(packageLock.version, '1.1.1');
+  assert.equal(packageLock.packages[''].version, '1.1.1');
 });
 
 test('release renderer tests avoid forcing full Chromium in CI', () => {

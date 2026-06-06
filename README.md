@@ -179,7 +179,7 @@ The explicit `--branch main` is required because `https://sub-nodes.pages.dev` f
 
 ## 🚢 Release Packaging
 
-`.github/workflows/release-electron.yml` runs after a GitHub Release is published. It checks out the release tag, installs Node.js 24 and Python 3.12, runs the full test suite once, then builds native installer matrices for macOS Apple Silicon, macOS Intel, Linux x64, Linux ARM64, Windows x64, and Windows ARM64. Each matrix job uploads its `dist-electron` assets back to the release.
+`.github/workflows/release-electron.yml` runs after a GitHub Release is published. It checks out the release tag, installs Node.js 24 and Python 3.12, runs the shared test gate once on Ubuntu, then builds native installer matrices for macOS Apple Silicon, macOS Intel, Linux x64, Linux ARM64, Windows x64, and Windows ARM64. Each matrix job uploads its `dist-electron` assets back to the release.
 
 The CI packaging path intentionally uses the same command as local builds:
 
