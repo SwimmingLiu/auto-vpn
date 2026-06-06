@@ -235,8 +235,11 @@ test('buildElectronBuilderArgs only emits architecture flags supported by every 
   );
 });
 
-test('buildPythonVendorInstallArgs installs runtime Python dependencies into vendor dir', () => {
-  assert.deepEqual(buildPythonVendorInstallArgs('/tmp/vendor'), [
+test('buildPythonVendorInstallArgs installs target-platform Python 3.12 wheels into vendor dir', () => {
+  assert.deepEqual(buildPythonVendorInstallArgs('/tmp/vendor', {
+    platform: 'linux',
+    arch: 'x64'
+  }), [
     '-m',
     'pip',
     'install',
@@ -245,7 +248,41 @@ test('buildPythonVendorInstallArgs installs runtime Python dependencies into ven
     ':all:',
     '--target',
     '/tmp/vendor',
-    'cryptography>=45.0.0',
+    '--platform',
+    'manylinux2014_x86_64',
+    '--implementation',
+    'cp',
+    '--python-version',
+    '3.12',
+    '--abi',
+    'cp312',
+    'cryptography>=45.0.0,<47',
+    'python-dotenv>=1.0.1',
+    'requests>=2.32.0',
+    'tomlkit>=0.13.2'
+  ]);
+
+  assert.deepEqual(buildPythonVendorInstallArgs('/tmp/vendor', {
+    platform: 'win',
+    arch: 'arm64'
+  }), [
+    '-m',
+    'pip',
+    'install',
+    '--disable-pip-version-check',
+    '--only-binary',
+    ':all:',
+    '--target',
+    '/tmp/vendor',
+    '--platform',
+    'win_arm64',
+    '--implementation',
+    'cp',
+    '--python-version',
+    '3.12',
+    '--abi',
+    'cp312',
+    'cryptography>=45.0.0,<47',
     'python-dotenv>=1.0.1',
     'requests>=2.32.0',
     'tomlkit>=0.13.2'

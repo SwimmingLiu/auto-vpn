@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const RUNTIME_PYTHON_DEPENDENCIES = [
-  'cryptography>=45.0.0',
+  'cryptography>=45.0.0,<47',
   'python-dotenv>=1.0.1',
   'requests>=2.32.0',
   'tomlkit>=0.13.2'
@@ -199,8 +199,29 @@ function selectPythonForVendorInstall(projectRoot) {
   return selectRunnablePythonCandidate(candidates);
 }
 
-export function buildPythonVendorInstallArgs(vendorDir) {
-  return [
+function resolvePythonVendorPlatformTag(platform, arch) {
+  const normalizedPlatform = normalizePackagePlatform(platform);
+  const normalizedArch = normalizePackageArch(arch);
+  if (normalizedPlatform === 'mac') {
+    if (normalizedArch === 'x64') return 'macosx_10_13_x86_64';
+    if (normalizedArch === 'arm64') return 'macosx_11_0_arm64';
+  }
+  if (normalizedPlatform === 'linux') {
+    if (normalizedArch === 'x64') return 'manylinux2014_x86_64';
+    if (normalizedArch === 'arm64') return 'manylinux2014_aarch64';
+  }
+  if (normalizedPlatform === 'win') {
+    if (normalizedArch === 'x64') return 'win_amd64';
+    if (normalizedArch === 'arm64') return 'win_arm64';
+  }
+  throw new Error(`Unsupported Python vendor target: ${platform}-${arch}`);
+}
+
+export function buildPythonVendorInstallArgs(vendorDir, target = {}) {
+  const platform = target.platform ?? buildPackagePlatformList()[0];
+  const arch = target.arch ?? buildPackageArchList()[0];
+  const platformTag = resolvePythonVendorPlatformTag(platform, arch);
+  const args = [
     '-m',
     'pip',
     'install',
@@ -208,9 +229,24 @@ export function buildPythonVendorInstallArgs(vendorDir) {
     '--only-binary',
     ':all:',
     '--target',
-    vendorDir,
-    ...RUNTIME_PYTHON_DEPENDENCIES
+    vendorDir
   ];
+  if (platformTag) {
+    args.push(
+      '--platform',
+      platformTag,
+      '--implementation',
+      'cp',
+      '--python-version',
+      '3.12',
+      '--abi',
+      'cp312'
+    );
+  }
+  args.push(
+    ...RUNTIME_PYTHON_DEPENDENCIES
+  );
+  return args;
 }
 
 export function buildNodeVendorInstallArgs(vendorDir) {
@@ -472,13 +508,13 @@ export function stageShareWorkerRuntime(projectRoot) {
   return runtimePath;
 }
 
-export function stagePythonVendorRuntime(projectRoot) {
+export function stagePythonVendorRuntime(projectRoot, target = {}) {
   const { vendorDir } = resolvePythonVendorRuntimePaths(projectRoot);
   logPackageStage('Installing Python runtime wheels');
   ensureCleanDir(vendorDir);
   runOrThrow(
     selectPythonForVendorInstall(projectRoot),
-    buildPythonVendorInstallArgs(vendorDir),
+    buildPythonVendorInstallArgs(vendorDir, target),
     { cwd: projectRoot, timeout: 300000 }
   );
   return vendorDir;
@@ -625,7 +661,10 @@ export function runPackaging(projectRoot) {
 
   logPackageStage('Staging share worker runtime');
   stageShareWorkerRuntime(projectRoot);
-  stagePythonVendorRuntime(projectRoot);
+  stagePythonVendorRuntime(projectRoot, {
+    platform: platforms[0],
+    arch: archs[0]
+  });
   stageNodeVendorRuntime(projectRoot);
   if (shouldBundlePlaywrightBrowserRuntime()) {
     stagePlaywrightBrowserRuntime(projectRoot);
