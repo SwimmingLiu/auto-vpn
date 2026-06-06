@@ -22,7 +22,7 @@ env:
 jobs:
   test:
     name: Test AutoVPN release inputs
-    runs-on: macos-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout release ref
