@@ -20,7 +20,7 @@ The Cloudflare Pages deployment command and upload structure stay unchanged.
 ## Goals
 
 - Allow the verify stage to use its own configurable subscription URL.
-- Default the verify subscription URL to `https://www.swimmingliu.xyz/sub?token=8410fb43eb2176497f5beafc0c39f5bc`.
+- Default the verify subscription URL to `https://www.swimmingliu.online/sub?token=8410fb43eb2176497f5beafc0c39f5bc`.
 - Keep the existing deploy subscription URL configurable and visible in the settings UI.
 - Restore stable postprocess emoji decoration behavior for every final node.
 - When country lookup fails, returns `ZZ`, or returns an invalid code, consistently fall back to `US` so the final grouping and emoji output do not appear blank or undecorated.
@@ -76,7 +76,7 @@ Rules:
 - If `verify_subscription_url` is blank, verification falls back to `subscription_url`.
 - New defaults use:
   - `subscription_url`: current deploy default unless the user edits it
-  - `verify_subscription_url`: `https://www.swimmingliu.xyz/sub?token=8410fb43eb2176497f5beafc0c39f5bc`
+  - `verify_subscription_url`: `https://www.swimmingliu.online/sub?token=8410fb43eb2176497f5beafc0c39f5bc`
 
 This keeps backward compatibility for older profiles while letting new profiles and UI state expose the verify-specific target explicitly.
 
