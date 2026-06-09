@@ -61,7 +61,7 @@ Expected: `DeployConfig` 缺少字段或 store 未落盘，测试失败。
 class DeployConfig:
     project_name: str
     subscription_url: str
-    verify_subscription_url: str = "https://www.swimmingliu.xyz/sub?token=8410fb43eb2176497f5beafc0c39f5bc"
+    verify_subscription_url: str = "https://www.swimmingliu.online/sub?token=8410fb43eb2176497f5beafc0c39f5bc"
     pages_project_url: str = "https://sub-nodes.pages.dev"
     secret_query: str = "serect_key=swimmingliu"
     account_id: str = "e743286b4304e96ee8795d62917052aa"

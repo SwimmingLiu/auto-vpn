@@ -61,7 +61,7 @@
 
 默认 verify 地址：
 
-- `https://www.swimmingliu.xyz/sub?token=8410fb43eb2176497f5beafc0c39f5bc`
+- `https://www.swimmingliu.online/sub?token=8410fb43eb2176497f5beafc0c39f5bc`
 
 如果 `verify_subscription_url` 为空，运行时会退回使用 `subscription_url`。
 

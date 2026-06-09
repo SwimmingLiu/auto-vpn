@@ -26,10 +26,10 @@
 def test_create_default_profile_starts_with_editable_defaults(tmp_path: Path) -> None:
     profile = create_default_profile(tmp_path / "vpn-subscription-automation")
 
-    assert profile.deploy.subscription_url == "https://swimmingliu.xyz/179ba8dd-3854-4747-b853-fc1868ef3937"
+    assert profile.deploy.subscription_url == "https://swimmingliu.online/179ba8dd-3854-4747-b853-fc1868ef3937"
     assert (
         profile.deploy.verify_subscription_url
-        == "https://www.swimmingliu.xyz/sub?token=8410fb43eb2176497f5beafc0c39f5bc"
+        == "https://www.swimmingliu.online/sub?token=8410fb43eb2176497f5beafc0c39f5bc"
     )
 
 
@@ -61,7 +61,7 @@ Expected: FAIL because `DeployConfig` does not yet expose `verify_subscription_u
 class DeployConfig:
     project_name: str
     subscription_url: str
-    verify_subscription_url: str = "https://www.swimmingliu.xyz/sub?token=8410fb43eb2176497f5beafc0c39f5bc"
+    verify_subscription_url: str = "https://www.swimmingliu.online/sub?token=8410fb43eb2176497f5beafc0c39f5bc"
     pages_project_url: str = "https://sub-nodes.pages.dev"
     secret_query: str = "serect_key=swimmingliu"
     account_id: str = "e743286b4304e96ee8795d62917052aa"
@@ -73,8 +73,8 @@ And persist it in `_render_profile_toml(...)` plus the packaged default profile:
 ```toml
 [deploy]
 project_name = "sub-nodes"
-subscription_url = "https://swimmingliu.xyz/179ba8dd-3854-4747-b853-fc1868ef3937"
-verify_subscription_url = "https://www.swimmingliu.xyz/sub?token=8410fb43eb2176497f5beafc0c39f5bc"
+subscription_url = "https://swimmingliu.online/179ba8dd-3854-4747-b853-fc1868ef3937"
+verify_subscription_url = "https://www.swimmingliu.online/sub?token=8410fb43eb2176497f5beafc0c39f5bc"
 pages_project_url = "https://sub-nodes.pages.dev"
 ```
 
@@ -494,8 +494,8 @@ Example doc snippet:
 
 ```toml
 [deploy]
-subscription_url = "https://swimmingliu.xyz/179ba8dd-3854-4747-b853-fc1868ef3937"
-verify_subscription_url = "https://www.swimmingliu.xyz/sub?token=8410fb43eb2176497f5beafc0c39f5bc"
+subscription_url = "https://swimmingliu.online/179ba8dd-3854-4747-b853-fc1868ef3937"
+verify_subscription_url = "https://www.swimmingliu.online/sub?token=8410fb43eb2176497f5beafc0c39f5bc"
 ```
 
 - [ ] **Step 2: Run the full regression suite**

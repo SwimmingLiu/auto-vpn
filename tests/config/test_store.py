@@ -26,7 +26,7 @@ def make_profile(project_name: str = "sub-nodes", source_url: str = "https://a.e
             concurrency=4,
             urls=["https://example.com/file"],
         ),
-        deploy=DeployConfig(project_name=project_name, subscription_url="https://swimmingliu.xyz/test"),
+        deploy=DeployConfig(project_name=project_name, subscription_url="https://swimmingliu.online/test"),
     )
 
 
@@ -72,10 +72,10 @@ def test_create_default_profile_starts_with_editable_defaults(tmp_path: Path) ->
     assert profile.sources["leiting"].key == ""
     assert all(source.max_iterations == 5000 for source in profile.sources.values())
     assert profile.deploy.project_name == "sub-nodes"
-    assert profile.deploy.subscription_url == "https://swimmingliu.xyz/179ba8dd-3854-4747-b853-fc1868ef3937"
+    assert profile.deploy.subscription_url == "https://swimmingliu.online/179ba8dd-3854-4747-b853-fc1868ef3937"
     assert (
         profile.deploy.verify_subscription_url
-        == "https://www.swimmingliu.xyz/sub?token=8410fb43eb2176497f5beafc0c39f5bc"
+        == "https://www.swimmingliu.online/sub?token=8410fb43eb2176497f5beafc0c39f5bc"
     )
     assert len(profile.speed_test.urls) == 3
     assert profile.worker_build.environment_name == "production"
