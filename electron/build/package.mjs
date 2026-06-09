@@ -618,7 +618,7 @@ export function buildElectronBuilderArgs(options = ['dmg'], architectures = []) 
 
   const targetByPlatform = {
     mac: ['--mac', 'dmg'],
-    linux: ['--linux', 'AppImage', 'deb', 'rpm'],
+    linux: ['--linux', 'deb', 'rpm'],
     win: ['--win', 'nsis', 'portable']
   };
   const platforms = options.platforms ?? buildPackagePlatformList();
