@@ -213,7 +213,7 @@ test('buildElectronBuilderArgs builds target platform and architecture matrices'
       platforms: ['linux'],
       archs: ['x64', 'arm64']
     }),
-    ['electron-builder', '--linux', 'AppImage', 'deb', 'rpm', '--x64', '--arm64']
+    ['electron-builder', '--linux', 'deb', 'rpm', '--x64', '--arm64']
   );
 
   assert.deepEqual(
@@ -231,7 +231,7 @@ test('buildElectronBuilderArgs only emits architecture flags supported by every 
       platforms: ['linux', 'win'],
       archs: ['x64', 'ia32']
     }),
-    ['electron-builder', '--linux', 'AppImage', 'deb', 'rpm', '--win', 'nsis', 'portable', '--x64']
+    ['electron-builder', '--linux', 'deb', 'rpm', '--win', 'nsis', 'portable', '--x64']
   );
 });
 
@@ -440,10 +440,11 @@ test('package configuration defines platform-specific Electron distribution targ
   assert.match(packageJson.build.linux.maintainer, /^SwimmingLiu <.+@users\.noreply\.github\.com>$/);
   assert.equal(packageJson.build.productName, 'AutoVPN');
   assert.deepEqual(packageJson.build.mac.target, ['dmg']);
-  assert.deepEqual(packageJson.build.linux.target, ['AppImage', 'deb', 'rpm']);
+  assert.deepEqual(packageJson.build.linux.target, ['deb', 'rpm']);
   assert.deepEqual(packageJson.build.win.target, ['nsis', 'portable']);
+  assert.equal(packageJson.build.dmg.writeUpdateInfo, false);
+  assert.equal(packageJson.build.nsis.differentialPackage, false);
   assert.equal(packageJson.build.dmg.artifactName, '${productName}-${version}-${arch}.${ext}');
-  assert.equal(packageJson.build.appImage.artifactName, '${productName}-${version}-${arch}.${ext}');
   assert.equal(packageJson.build.deb.artifactName, '${productName}-${version}-${arch}.${ext}');
   assert.equal(packageJson.build.rpm.artifactName, '${productName}-${version}-${arch}.${ext}');
   assert.equal(packageJson.build.nsis.artifactName, '${productName}-${version}-${arch}-setup.${ext}');

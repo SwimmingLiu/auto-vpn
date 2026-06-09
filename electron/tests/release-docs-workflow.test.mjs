@@ -74,7 +74,6 @@ test('README follows the AutoVPN desktop app structure', () => {
     'npm run package:electron',
     'electron/renderer/assets/vpn-auto-logo-v2-minimal.svg',
     'AutoVPN-<version>-arm64.dmg',
-    'AutoVPN-<version>-x86_64.AppImage',
     'AutoVPN-<version>-amd64.deb',
     'AutoVPN-<version>-aarch64.rpm',
     'AutoVPN-<version>-arm64.deb',
@@ -164,28 +163,32 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
     'electron/renderer/assets/vpn-auto-logo-v2-minimal.svg',
     'AutoVPN.app/Contents/Resources',
     'AutoVPN-${PKG_VERSION}-${{ matrix.package_arch }}.dmg',
-    'AutoVPN-${PKG_VERSION}-${{ matrix.package_arch }}.dmg.blockmap',
-    'AutoVPN-${PKG_VERSION}-x86_64.AppImage',
     'AutoVPN-${PKG_VERSION}-amd64.deb',
     'AutoVPN-${PKG_VERSION}-x86_64.rpm',
     'AutoVPN-${PKG_VERSION}-aarch64.rpm',
     'AutoVPN-${PKG_VERSION}-${{ matrix.package_arch }}-setup.exe',
     'AutoVPN-${PKG_VERSION}-${{ matrix.package_arch }}-portable.exe',
     'Missing release artifact: ${artifact}',
-    'dist-electron/**/*.AppImage',
     'dist-electron/**/*.deb',
     'dist-electron/**/*.rpm',
     'dist-electron/**/*.exe',
     'softprops/action-gh-release',
     'tag_name: ${{ env.RELEASE_TAG_NAME }}',
     'dist-electron/**/*.dmg',
-    'dist-electron/**/*.blockmap'
+    'publish-release-notes:',
+    'node scripts/generate-release-notes.mjs',
+    'gh release edit "${RELEASE_TAG_NAME}"',
+    'AutoVPN ${RELEASE_TAG_NAME}'
   ]) {
     assert.ok(workflow.includes(requiredText), `workflow should contain ${requiredText}`);
   }
 
+  assert.doesNotMatch(workflow, /AutoVPN-\$\{PKG_VERSION\}-\$\{\{ matrix\.package_arch \}\}\.dmg\.blockmap/);
+  assert.doesNotMatch(workflow, /AutoVPN-\$\{PKG_VERSION\}-x86_64\.AppImage/);
+  assert.doesNotMatch(workflow, /AutoVPN-\$\{PKG_VERSION\}-arm64\.AppImage/);
   assert.doesNotMatch(workflow, /dist-electron\/\*\*\/\*\.zip/);
   assert.doesNotMatch(workflow, /dist-electron\/\*\*\/\*\.yml/);
+  assert.doesNotMatch(workflow, /dist-electron\/\*\*\/\*\.blockmap/);
   assert.match(testJob, /python -m pip install -e \.\[dev\]/);
   assert.doesNotMatch(packageInstallAndBuild, /python -m pip install -e \.\[dev\]/);
   assert.match(packageInstallStep, /shell: bash/);

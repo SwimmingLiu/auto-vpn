@@ -221,19 +221,16 @@ jobs:
             mac-arm64|mac-x64)
               required_artifacts=(
                 "dist-electron/AutoVPN-${PKG_VERSION}-${{ matrix.package_arch }}.dmg"
-                "dist-electron/AutoVPN-${PKG_VERSION}-${{ matrix.package_arch }}.dmg.blockmap"
               )
               ;;
             linux-x64)
               required_artifacts=(
-                "dist-electron/AutoVPN-${PKG_VERSION}-x86_64.AppImage"
                 "dist-electron/AutoVPN-${PKG_VERSION}-amd64.deb"
                 "dist-electron/AutoVPN-${PKG_VERSION}-x86_64.rpm"
               )
               ;;
             linux-arm64)
               required_artifacts=(
-                "dist-electron/AutoVPN-${PKG_VERSION}-arm64.AppImage"
                 "dist-electron/AutoVPN-${PKG_VERSION}-arm64.deb"
                 "dist-electron/AutoVPN-${PKG_VERSION}-aarch64.rpm"
               )
@@ -271,8 +268,40 @@ jobs:
           tag_name: ${{ env.RELEASE_TAG_NAME }}
           files: |
             dist-electron/**/*.dmg
-            dist-electron/**/*.AppImage
             dist-electron/**/*.deb
             dist-electron/**/*.rpm
             dist-electron/**/*.exe
-            dist-electron/**/*.blockmap
+
+  publish-release-notes:
+    name: Publish release notes
+    needs: package-electron
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout release ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG_NAME }}
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Generate release notes
+        run: |
+          RELEASE_NOTES_CREATED_AT="$(TZ=Asia/Shanghai date)" \
+            node scripts/generate-release-notes.mjs "${RELEASE_TAG_NAME}" "${GITHUB_REPOSITORY}" > release-notes.md
+        shell: bash
+
+      - name: Update GitHub release body
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release edit "${RELEASE_TAG_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "AutoVPN ${RELEASE_TAG_NAME}" \
+            --notes-file release-notes.md
+        shell: bash

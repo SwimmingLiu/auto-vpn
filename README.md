@@ -27,7 +27,7 @@ AutoVPN is a local-first Electron desktop app for collecting VPN nodes, testing 
 | Backend | Python 3.12 package under `src/vpn_automation` |
 | Runtime config | TOML profile + SQLite checkpoints |
 | Automation | Xray, Playwright, Cloudflare Wrangler |
-| Packaging | electron-builder DMG / AppImage / DEB / RPM / NSIS / portable |
+| Packaging | electron-builder DMG / DEB / RPM / NSIS / portable |
 | Tests | pytest, node:test, Playwright-powered Electron tests |
 | CI release | GitHub Actions on `release.published` |
 
@@ -39,8 +39,8 @@ Download the latest installer for your operating system and CPU from [Releases](
 
 - macOS Apple Silicon: `AutoVPN-<version>-arm64.dmg`
 - macOS Intel: `AutoVPN-<version>-x64.dmg`
-- Linux x64: `AutoVPN-<version>-x86_64.AppImage`, `AutoVPN-<version>-amd64.deb`, or `AutoVPN-<version>-x86_64.rpm`
-- Linux ARM64: `AutoVPN-<version>-arm64.AppImage`, `AutoVPN-<version>-arm64.deb`, or `AutoVPN-<version>-aarch64.rpm`
+- Linux x64: `AutoVPN-<version>-amd64.deb` or `AutoVPN-<version>-x86_64.rpm`
+- Linux ARM64: `AutoVPN-<version>-arm64.deb` or `AutoVPN-<version>-aarch64.rpm`
 - Windows x64: `AutoVPN-<version>-x64-setup.exe` or `AutoVPN-<version>-x64-portable.exe`
 - Windows ARM64: `AutoVPN-<version>-arm64-setup.exe` or `AutoVPN-<version>-arm64-portable.exe`
 
@@ -179,7 +179,7 @@ The explicit `--branch main` is required because `https://sub-nodes.pages.dev` f
 
 ## 🚢 Release Packaging
 
-`.github/workflows/release-electron.yml` runs after a GitHub Release is published. It checks out the release tag, installs Node.js 24 and Python 3.12, runs the shared test gate once on Ubuntu, then builds native installer matrices for macOS Apple Silicon, macOS Intel, Linux x64, Linux ARM64, Windows x64, and Windows ARM64. Each matrix job uploads its `dist-electron` assets back to the release.
+`.github/workflows/release-electron.yml` runs after a GitHub Release is published. It checks out the release tag, installs Node.js 24 and Python 3.12, runs the shared test gate once on Ubuntu, then builds native installer matrices for macOS Apple Silicon, macOS Intel, Linux x64, Linux ARM64, Windows x64, and Windows ARM64. Each matrix job uploads its `dist-electron` assets back to the release, and a final notes job rewrites the release description into a clash-verge-style download layout.
 
 The CI packaging path intentionally uses the same command as local builds:
 
