@@ -206,13 +206,13 @@ test('release workflow runs its shared test gate on Ubuntu', () => {
   assert.match(workflow, /os: macos-latest/);
 });
 
-test('release package version matches the next v1.1.1 release tag', () => {
+test('release package version matches the next release tag', () => {
   const packageJson = JSON.parse(readProjectFile('package.json'));
   const packageLock = JSON.parse(readProjectFile('package-lock.json'));
 
-  assert.equal(packageJson.version, '1.1.1');
-  assert.equal(packageLock.version, '1.1.1');
-  assert.equal(packageLock.packages[''].version, '1.1.1');
+  assert.equal(packageJson.version, '1.1.2');
+  assert.equal(packageLock.version, packageJson.version);
+  assert.equal(packageLock.packages[''].version, packageJson.version);
 });
 
 test('release renderer tests avoid forcing full Chromium in CI', () => {
