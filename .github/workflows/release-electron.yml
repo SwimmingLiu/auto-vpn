@@ -270,7 +270,8 @@ jobs:
             dist-electron/**/*.dmg
             dist-electron/**/*.deb
             dist-electron/**/*.rpm
-            dist-electron/**/*.exe
+            dist-electron/*-setup.exe
+            dist-electron/*-portable.exe
 
   publish-release-notes:
     name: Publish release notes

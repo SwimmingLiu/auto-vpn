@@ -172,7 +172,8 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
     'Missing release artifact: ${artifact}',
     'dist-electron/**/*.deb',
     'dist-electron/**/*.rpm',
-    'dist-electron/**/*.exe',
+    'dist-electron/*-setup.exe',
+    'dist-electron/*-portable.exe',
     'softprops/action-gh-release',
     'tag_name: ${{ env.RELEASE_TAG_NAME }}',
     'dist-electron/**/*.dmg',
@@ -190,6 +191,7 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
   assert.doesNotMatch(workflow, /dist-electron\/\*\*\/\*\.zip/);
   assert.doesNotMatch(workflow, /dist-electron\/\*\*\/\*\.yml/);
   assert.doesNotMatch(workflow, /dist-electron\/\*\*\/\*\.blockmap/);
+  assert.doesNotMatch(workflow, /dist-electron\/\*\*\/\*\.exe/);
   assert.doesNotMatch(workflow, /dist-electron\/mac-\*/);
   assert.match(testJob, /python -m pip install -e \.\[dev\]/);
   assert.doesNotMatch(packageInstallAndBuild, /python -m pip install -e \.\[dev\]/);
