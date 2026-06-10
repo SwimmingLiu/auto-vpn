@@ -161,6 +161,7 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
     'AUTOVPN_PACKAGE_ARCH: ${{ matrix.package_arch }}',
     'default Electron icon is used',
     'electron/renderer/assets/vpn-auto-logo-v2-minimal.svg',
+    'find dist-electron -type f -path "*/AutoVPN.app/Contents/Resources/*.icns"',
     'AutoVPN.app/Contents/Resources',
     'AutoVPN-${PKG_VERSION}-${{ matrix.package_arch }}.dmg',
     'AutoVPN-${PKG_VERSION}-amd64.deb',
@@ -189,6 +190,7 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
   assert.doesNotMatch(workflow, /dist-electron\/\*\*\/\*\.zip/);
   assert.doesNotMatch(workflow, /dist-electron\/\*\*\/\*\.yml/);
   assert.doesNotMatch(workflow, /dist-electron\/\*\*\/\*\.blockmap/);
+  assert.doesNotMatch(workflow, /dist-electron\/mac-\*/);
   assert.match(testJob, /python -m pip install -e \.\[dev\]/);
   assert.doesNotMatch(packageInstallAndBuild, /python -m pip install -e \.\[dev\]/);
   assert.match(packageInstallStep, /shell: bash/);
@@ -210,7 +212,7 @@ test('release package version matches the next release tag', () => {
   const packageJson = JSON.parse(readProjectFile('package.json'));
   const packageLock = JSON.parse(readProjectFile('package-lock.json'));
 
-  assert.equal(packageJson.version, '1.1.2');
+  assert.equal(packageJson.version, '1.1.3');
   assert.equal(packageLock.version, packageJson.version);
   assert.equal(packageLock.packages[''].version, packageJson.version);
 });

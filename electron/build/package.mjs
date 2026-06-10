@@ -604,6 +604,7 @@ export function buildPackageArchList(env = process.env, hostArch = process.arch)
 }
 
 export function buildElectronBuilderArgs(options = ['dmg'], architectures = []) {
+  const publishArgs = ['--publish', 'never'];
   if (!options || Array.isArray(options) || typeof options === 'string') {
     const normalizedTargets = Array.isArray(options)
       ? options
@@ -613,7 +614,7 @@ export function buildElectronBuilderArgs(options = ['dmg'], architectures = []) 
       .map(normalizePackageArch)
       .filter((arch) => isPackageArchSupportedByPlatform('mac', arch))
       .map((arch) => `--${arch}`);
-    return ['electron-builder', '--mac', ...buildTargets, ...normalizedArchitectures];
+    return ['electron-builder', '--mac', ...buildTargets, ...normalizedArchitectures, ...publishArgs];
   }
 
   const targetByPlatform = {
@@ -636,6 +637,7 @@ export function buildElectronBuilderArgs(options = ['dmg'], architectures = []) 
     }
   }
 
+  args.push(...publishArgs);
   return args;
 }
 
