@@ -53,7 +53,7 @@ test('README follows the AutoVPN desktop app structure', () => {
   const readme = readProjectFile('README.md');
 
   assert.match(readme, /^# AutoVPN/m);
-  assert.match(readme, /!\[AutoVPN desktop screenshot\]\(assets\/vpn-sub-[^)]+\.png\)/);
+  assert.match(readme, /!\[AutoVPN desktop intro\]\(assets\/intro\.png\)/);
 
   for (const section of [
     'Features',
@@ -214,7 +214,7 @@ test('release package version matches the next release tag', () => {
   const packageJson = JSON.parse(readProjectFile('package.json'));
   const packageLock = JSON.parse(readProjectFile('package-lock.json'));
 
-  assert.equal(packageJson.version, '1.1.3');
+  assert.equal(packageJson.version, '1.2.0');
   assert.equal(packageLock.version, packageJson.version);
   assert.equal(packageLock.packages[''].version, packageJson.version);
 });
