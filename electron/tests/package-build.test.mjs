@@ -181,7 +181,7 @@ test('buildPackageArchList accepts explicit architecture aliases', () => {
 });
 
 test('buildElectronBuilderArgs builds a macOS DMG installer by default', () => {
-  assert.deepEqual(buildElectronBuilderArgs(), ['electron-builder', '--mac', 'dmg']);
+  assert.deepEqual(buildElectronBuilderArgs(), ['electron-builder', '--mac', 'dmg', '--publish', 'never']);
 });
 
 test('buildElectronBuilderArgs appends legacy macOS-compatible architecture flags explicitly', () => {
@@ -190,7 +190,9 @@ test('buildElectronBuilderArgs appends legacy macOS-compatible architecture flag
     '--mac',
     'dmg',
     '--x64',
-    '--arm64'
+    '--arm64',
+    '--publish',
+    'never'
   ]);
 });
 
@@ -205,7 +207,7 @@ test('buildElectronBuilderArgs builds target platform and architecture matrices'
       platforms: ['mac'],
       archs: ['x64', 'armv7l']
     }),
-    ['electron-builder', '--mac', 'dmg', '--x64']
+    ['electron-builder', '--mac', 'dmg', '--x64', '--publish', 'never']
   );
 
   assert.deepEqual(
@@ -213,7 +215,7 @@ test('buildElectronBuilderArgs builds target platform and architecture matrices'
       platforms: ['linux'],
       archs: ['x64', 'arm64']
     }),
-    ['electron-builder', '--linux', 'deb', 'rpm', '--x64', '--arm64']
+    ['electron-builder', '--linux', 'deb', 'rpm', '--x64', '--arm64', '--publish', 'never']
   );
 
   assert.deepEqual(
@@ -221,7 +223,7 @@ test('buildElectronBuilderArgs builds target platform and architecture matrices'
       platforms: ['win'],
       archs: ['arm64']
     }),
-    ['electron-builder', '--win', 'nsis', 'portable', '--arm64']
+    ['electron-builder', '--win', 'nsis', 'portable', '--arm64', '--publish', 'never']
   );
 });
 
@@ -231,7 +233,7 @@ test('buildElectronBuilderArgs only emits architecture flags supported by every 
       platforms: ['linux', 'win'],
       archs: ['x64', 'ia32']
     }),
-    ['electron-builder', '--linux', 'deb', 'rpm', '--win', 'nsis', 'portable', '--x64']
+    ['electron-builder', '--linux', 'deb', 'rpm', '--win', 'nsis', 'portable', '--x64', '--publish', 'never']
   );
 });
 

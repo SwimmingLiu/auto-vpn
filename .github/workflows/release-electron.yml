@@ -201,7 +201,7 @@ jobs:
           case "${{ matrix.package_platform }}" in
             mac)
               test -f electron/build/assets/app-icon.icns
-              app_icon_count="$(find "dist-electron/mac-"*"/AutoVPN.app/Contents/Resources" -name "*.icns" -print | wc -l | tr -d ' ')"
+              app_icon_count="$(find dist-electron -type f -path "*/AutoVPN.app/Contents/Resources/*.icns" -print | wc -l | tr -d ' ')"
               if [ "${app_icon_count}" -eq 0 ]; then
                 echo "No .icns resource found under AutoVPN.app/Contents/Resources."
                 exit 1
