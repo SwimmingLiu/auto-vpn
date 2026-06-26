@@ -1,8 +1,12 @@
 {
   "name": "vpn-subscription-automation",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "AutoVPN Electron desktop app for VPN subscription automation",
-  "author": "SwimmingLiu",
+  "homepage": "https://github.com/SwimmingLiu/auto-vpn#readme",
+  "author": {
+    "name": "SwimmingLiu",
+    "email": "swimmingliu@users.noreply.github.com"
+  },
   "main": "electron/main.js",
   "type": "module",
   "scripts": {
@@ -36,8 +40,41 @@
       "category": "public.app-category.developer-tools",
       "icon": "electron/build/assets/app-icon.icns"
     },
+    "linux": {
+      "target": [
+        "deb",
+        "rpm"
+      ],
+      "category": "Utility",
+      "maintainer": "SwimmingLiu <swimmingliu@users.noreply.github.com>",
+      "icon": "electron/build/assets/app-icon-1024.png"
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "icon": "electron/build/assets/app-icon.ico"
+    },
     "dmg": {
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "writeUpdateInfo": false
+    },
+    "deb": {
       "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "rpm": {
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
+    "nsis": {
+      "artifactName": "${productName}-${version}-${arch}-setup.${ext}",
+      "differentialPackage": false,
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-${arch}-portable.${ext}"
     }
   },
   "dependencies": {

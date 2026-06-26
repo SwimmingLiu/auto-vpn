@@ -96,7 +96,7 @@ max_download_candidates = 50
 
 [deploy]
 project_name = "vmessnodes"
-subscription_url = "https://swimmingliu.xyz/179ba8dd-3854-4747-b853-fc1868ef3937"
+subscription_url = "https://swimmingliu.online/179ba8dd-3854-4747-b853-fc1868ef3937"
 pages_project_url = "https://vmess2clash.pages.dev"
 secret_query = "serect_key=swimmingliu"
 account_id = "e743286b4304e96ee8795d62917052aa"

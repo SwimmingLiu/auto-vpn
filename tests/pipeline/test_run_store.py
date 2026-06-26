@@ -1,3 +1,4 @@
+import os
 import sqlite3
 from pathlib import Path
 
@@ -182,6 +183,20 @@ def test_run_store_ignores_failed_runs_when_resuming_latest(tmp_path: Path) -> N
     latest = RunStore.find_latest_incomplete_run(artifacts_root)
 
     assert latest == running_dir / "run.db"
+
+
+def test_find_latest_artifact_dir_breaks_mtime_ties_by_name(tmp_path: Path) -> None:
+    artifacts_root = tmp_path / "artifacts"
+    first_dir = artifacts_root / "20260423-010101"
+    second_dir = artifacts_root / "20260423-020202"
+    first_dir.mkdir(parents=True)
+    second_dir.mkdir(parents=True)
+    os.utime(first_dir, (1000, 1000))
+    os.utime(second_dir, (1000, 1000))
+
+    latest = RunStore.find_latest_artifact_dir(artifacts_root)
+
+    assert latest == second_dir
 
 
 def test_run_store_restores_source_resume_state(tmp_path: Path) -> None:

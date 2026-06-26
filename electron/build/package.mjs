@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const RUNTIME_PYTHON_DEPENDENCIES = [
-  'cryptography>=45.0.0',
+  'cryptography>=45.0.0,<47',
   'python-dotenv>=1.0.1',
   'requests>=2.32.0',
   'tomlkit>=0.13.2'
@@ -116,18 +116,21 @@ export function resolveIconPaths(projectRoot) {
   return {
     sourceSvg: path.join(projectRoot, 'electron', 'renderer', 'assets', 'vpn-auto-logo-v2-minimal.svg'),
     outputDir,
+    outputPng: path.join(outputDir, 'app-icon-1024.png'),
+    outputIco: path.join(outputDir, 'app-icon.ico'),
     outputIcns: path.join(outputDir, 'app-icon.icns'),
     iconsetDir: path.join(outputDir, 'app-icon.iconset')
   };
 }
 
-function runOrThrow(command, args, options = {}) {
-  const result = spawnSync(command, args, {
-    stdio: 'pipe',
-    encoding: 'utf8',
-    shell: process.platform === 'win32',
-    ...options
-  });
+export function runOrThrow(command, args, options = {}) {
+  const result = spawnSync(command, args, buildCommandSpawnOptions(command, options));
+  if (result.error) {
+    if (result.error.code === 'ETIMEDOUT') {
+      throw new Error(`${command} ${args.join(' ')} timed out after ${options.timeout} ms`);
+    }
+    throw result.error;
+  }
   if (result.status !== 0) {
     const detail = [result.stdout, result.stderr].filter(Boolean).join('\n').trim();
     throw new Error(`${command} ${args.join(' ')} failed${detail ? `: ${detail}` : ''}`);
@@ -137,6 +140,29 @@ function runOrThrow(command, args, options = {}) {
 function ensureCleanDir(targetDir) {
   fs.rmSync(targetDir, { recursive: true, force: true });
   fs.mkdirSync(targetDir, { recursive: true });
+}
+
+export function buildCommandSpawnOptions(command, options = {}, platform = process.platform) {
+  const needsWindowsShell = platform === 'win32' && ['npm', 'npx'].includes(command);
+  return {
+    stdio: 'inherit',
+    encoding: 'utf8',
+    shell: needsWindowsShell,
+    ...options
+  };
+}
+
+function logPackageStage(message) {
+  console.log(`[package] ${message}`);
+}
+
+function fileExistsNonEmpty(filePath) {
+  return fs.existsSync(filePath) && fs.statSync(filePath).size > 0;
+}
+
+export function shouldBundlePlaywrightBrowserRuntime(env = process.env) {
+  const value = String(env.AUTOVPN_BUNDLE_PLAYWRIGHT_BROWSER ?? '').trim().toLowerCase();
+  return ['1', 'true', 'yes', 'on'].includes(value);
 }
 
 function canRunCommand(command) {
@@ -166,22 +192,61 @@ function selectPythonForVendorInstall(projectRoot) {
     '/usr/local/bin/python3.14',
     '/usr/local/bin/python3.12',
     'python3.12',
-    'python3'
+    'python3',
+    'python'
   ];
 
   return selectRunnablePythonCandidate(candidates);
 }
 
-export function buildPythonVendorInstallArgs(vendorDir) {
-  return [
+function resolvePythonVendorPlatformTag(platform, arch) {
+  const normalizedPlatform = normalizePackagePlatform(platform);
+  const normalizedArch = normalizePackageArch(arch);
+  if (normalizedPlatform === 'mac') {
+    if (normalizedArch === 'x64') return 'macosx_10_13_x86_64';
+    if (normalizedArch === 'arm64') return 'macosx_11_0_arm64';
+  }
+  if (normalizedPlatform === 'linux') {
+    if (normalizedArch === 'x64') return 'manylinux2014_x86_64';
+    if (normalizedArch === 'arm64') return 'manylinux2014_aarch64';
+  }
+  if (normalizedPlatform === 'win') {
+    if (normalizedArch === 'x64') return 'win_amd64';
+    if (normalizedArch === 'arm64') return 'win_arm64';
+  }
+  throw new Error(`Unsupported Python vendor target: ${platform}-${arch}`);
+}
+
+export function buildPythonVendorInstallArgs(vendorDir, target = {}) {
+  const platform = target.platform ?? buildPackagePlatformList()[0];
+  const arch = target.arch ?? buildPackageArchList()[0];
+  const platformTag = resolvePythonVendorPlatformTag(platform, arch);
+  const args = [
     '-m',
     'pip',
     'install',
     '--disable-pip-version-check',
+    '--only-binary',
+    ':all:',
     '--target',
-    vendorDir,
-    ...RUNTIME_PYTHON_DEPENDENCIES
+    vendorDir
   ];
+  if (platformTag) {
+    args.push(
+      '--platform',
+      platformTag,
+      '--implementation',
+      'cp',
+      '--python-version',
+      '3.12',
+      '--abi',
+      'cp312'
+    );
+  }
+  args.push(
+    ...RUNTIME_PYTHON_DEPENDENCIES
+  );
+  return args;
 }
 
 export function buildNodeVendorInstallArgs(vendorDir) {
@@ -201,6 +266,43 @@ export function buildPlaywrightBrowserInstallArgs() {
     'install',
     'chromium-headless-shell'
   ];
+}
+
+function findChromiumHeadlessShellExecutable(browserDir, platform = process.platform) {
+  if (!fs.existsSync(browserDir)) {
+    return '';
+  }
+
+  const executableName = platform === 'win32' ? 'chrome-headless-shell.exe' : 'chrome-headless-shell';
+  const pending = [browserDir];
+  while (pending.length > 0) {
+    const currentDir = pending.pop();
+    for (const entry of fs.readdirSync(currentDir, { withFileTypes: true })) {
+      const entryPath = path.join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        pending.push(entryPath);
+      } else if (entry.name === executableName) {
+        return entryPath;
+      }
+    }
+  }
+
+  return '';
+}
+
+export function isPlaywrightBrowserRuntimeReady(browserDir, platform = process.platform) {
+  if (!fs.existsSync(browserDir)) {
+    return false;
+  }
+
+  const revisions = fs.readdirSync(browserDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && entry.name.startsWith('chromium_headless_shell-'))
+    .map((entry) => path.join(browserDir, entry.name));
+
+  return revisions.some((revisionPath) => (
+    fs.existsSync(path.join(revisionPath, 'INSTALLATION_COMPLETE')) &&
+    Boolean(findChromiumHeadlessShellExecutable(revisionPath, platform))
+  ));
 }
 
 export function buildSvgIconRenderHtml(svgMarkup, size = 1024) {
@@ -232,11 +334,30 @@ export function buildSvgIconRenderHtml(svgMarkup, size = 1024) {
 </html>`;
 }
 
+export async function retryOperation(operation, { retries = 3, delayMs = 250 } = {}) {
+  if (!Number.isInteger(retries) || retries < 1) {
+    throw new TypeError('retryOperation retries must be a positive integer');
+  }
+
+  let lastError;
+  for (let attempt = 1; attempt <= retries; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      if (attempt < retries && delayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+  }
+  throw lastError;
+}
+
 function renderSvgToPng(projectRoot, sourceSvg, outputPng, size = 1024) {
   const renderScript = `
     import fs from 'node:fs';
     import { chromium } from 'playwright';
-    import { buildSvgIconRenderHtml } from ${JSON.stringify(pathToFileURL(__filename).href)};
+    import { buildSvgIconRenderHtml, retryOperation } from ${JSON.stringify(pathToFileURL(__filename).href)};
 
     const sourceSvg = ${JSON.stringify(sourceSvg)};
     const outputPng = ${JSON.stringify(outputPng)};
@@ -254,11 +375,14 @@ function renderSvgToPng(projectRoot, sourceSvg, outputPng, size = 1024) {
           await img.decode();
         }
       });
-      await page.screenshot({
-        path: outputPng,
-        omitBackground: true,
-        animations: 'disabled'
-      });
+      await retryOperation(
+        () => page.screenshot({
+          path: outputPng,
+          omitBackground: true,
+          animations: 'disabled'
+        }),
+        { retries: 3, delayMs: 250 }
+      );
     } finally {
       await browser.close();
     }
@@ -296,17 +420,81 @@ function buildIconset(basePng, iconsetDir) {
   }
 }
 
-export function prepareMacIcon(projectRoot) {
-  const { sourceSvg, outputDir, outputIcns, iconsetDir } = resolveIconPaths(projectRoot);
-  fs.mkdirSync(outputDir, { recursive: true });
-  ensureCleanDir(iconsetDir);
+function writePngIco(pngPath, icoPath) {
+  const png = fs.readFileSync(pngPath);
+  const header = Buffer.alloc(6);
+  header.writeUInt16LE(0, 0);
+  header.writeUInt16LE(1, 2);
+  header.writeUInt16LE(1, 4);
 
-  const basePng = path.join(outputDir, 'app-icon-1024.png');
-  renderSvgToPng(projectRoot, sourceSvg, basePng);
+  const entry = Buffer.alloc(16);
+  entry.writeUInt8(0, 0);
+  entry.writeUInt8(0, 1);
+  entry.writeUInt8(0, 2);
+  entry.writeUInt8(0, 3);
+  entry.writeUInt16LE(1, 4);
+  entry.writeUInt16LE(32, 6);
+  entry.writeUInt32LE(png.length, 8);
+  entry.writeUInt32LE(header.length + entry.length, 12);
+
+  fs.writeFileSync(icoPath, Buffer.concat([header, entry, png]));
+}
+
+export function preparePngIcon(projectRoot, size = 1024) {
+  const { sourceSvg, outputDir, outputPng } = resolveIconPaths(projectRoot);
+  fs.mkdirSync(outputDir, { recursive: true });
+  const basePng = size === 1024
+    ? outputPng
+    : path.join(outputDir, `app-icon-${size}.png`);
+  if (fileExistsNonEmpty(basePng)) {
+    logPackageStage(`Using packaged PNG icon ${path.relative(projectRoot, basePng)}`);
+    return basePng;
+  }
+  renderSvgToPng(projectRoot, sourceSvg, basePng, size);
+  return basePng;
+}
+
+export function prepareMacIcon(projectRoot) {
+  const { outputIcns, iconsetDir } = resolveIconPaths(projectRoot);
+  const basePng = preparePngIcon(projectRoot);
+  if (fileExistsNonEmpty(outputIcns)) {
+    logPackageStage(`Using packaged macOS icon ${path.relative(projectRoot, outputIcns)}`);
+    return { outputIcns, iconsetDir, basePng };
+  }
+
+  ensureCleanDir(iconsetDir);
   buildIconset(basePng, iconsetDir);
   runOrThrow('iconutil', ['-c', 'icns', iconsetDir, '-o', outputIcns]);
 
   return { outputIcns, iconsetDir, basePng };
+}
+
+export function prepareWindowsIcon(projectRoot) {
+  const { outputIco } = resolveIconPaths(projectRoot);
+  if (fileExistsNonEmpty(outputIco)) {
+    logPackageStage(`Using packaged Windows icon ${path.relative(projectRoot, outputIco)}`);
+    return { outputIco, png256: '' };
+  }
+
+  const png256 = preparePngIcon(projectRoot, 256);
+  writePngIco(png256, outputIco);
+  return { outputIco, png256 };
+}
+
+export function preparePackageIcons(projectRoot, platforms = buildPackagePlatformList()) {
+  const requestedPlatforms = new Set(platforms);
+  const prepared = {
+    png: preparePngIcon(projectRoot)
+  };
+
+  if (requestedPlatforms.has('mac')) {
+    prepared.mac = prepareMacIcon(projectRoot);
+  }
+  if (requestedPlatforms.has('win')) {
+    prepared.win = prepareWindowsIcon(projectRoot);
+  }
+
+  return prepared;
 }
 
 export function stageShareWorkerRuntime(projectRoot) {
@@ -320,29 +508,44 @@ export function stageShareWorkerRuntime(projectRoot) {
   return runtimePath;
 }
 
-export function stagePythonVendorRuntime(projectRoot) {
+export function stagePythonVendorRuntime(projectRoot, target = {}) {
   const { vendorDir } = resolvePythonVendorRuntimePaths(projectRoot);
+  logPackageStage('Installing Python runtime wheels');
   ensureCleanDir(vendorDir);
   runOrThrow(
     selectPythonForVendorInstall(projectRoot),
-    buildPythonVendorInstallArgs(vendorDir),
-    { cwd: projectRoot }
+    buildPythonVendorInstallArgs(vendorDir, target),
+    { cwd: projectRoot, timeout: 300000 }
   );
   return vendorDir;
 }
 
 export function stageNodeVendorRuntime(projectRoot) {
   const { vendorDir } = resolveNodeVendorRuntimePaths(projectRoot);
+  logPackageStage('Installing Node runtime dependencies');
   ensureCleanDir(vendorDir);
-  runOrThrow('npm', buildNodeVendorInstallArgs(vendorDir), { cwd: projectRoot });
+  runOrThrow('npm', buildNodeVendorInstallArgs(vendorDir), { cwd: projectRoot, timeout: 300000 });
   return vendorDir;
 }
 
-export function stagePlaywrightBrowserRuntime(projectRoot) {
+export function stagePlaywrightBrowserRuntime(projectRoot, options = {}) {
   const { browserDir } = resolvePlaywrightBrowserRuntimePaths(projectRoot);
+  const {
+    platform = process.platform,
+    run = runOrThrow,
+    timeoutMs = 900000
+  } = options;
+
+  if (isPlaywrightBrowserRuntimeReady(browserDir, platform)) {
+    logPackageStage('Reusing staged Playwright Chromium headless shell');
+    return browserDir;
+  }
+
+  logPackageStage('Installing Playwright Chromium headless shell');
   ensureCleanDir(browserDir);
-  runOrThrow('npx', buildPlaywrightBrowserInstallArgs(), {
+  run('npx', buildPlaywrightBrowserInstallArgs(), {
     cwd: projectRoot,
+    timeout: timeoutMs,
     env: {
       ...process.env,
       PLAYWRIGHT_BROWSERS_PATH: browserDir
@@ -351,27 +554,91 @@ export function stagePlaywrightBrowserRuntime(projectRoot) {
   return browserDir;
 }
 
-export function buildPackageArchList() {
-  return ['x64', 'arm64', 'armv7l'];
+function splitList(value) {
+  if (Array.isArray(value)) {
+    return value;
+  }
+  return String(value ?? '').split(',');
 }
 
-function isMacPackageArchitecture(architecture) {
-  return ['x64', 'arm64', 'universal'].includes(architecture);
+function normalizePackagePlatform(value) {
+  const normalized = String(value).trim().toLowerCase();
+  if (['mac', 'macos', 'darwin', 'osx'].includes(normalized)) return 'mac';
+  if (['linux'].includes(normalized)) return 'linux';
+  if (['win', 'windows', 'win32'].includes(normalized)) return 'win';
+  throw new Error(`Unsupported package platform: ${value}`);
 }
 
-export function buildElectronBuilderArgs(targets = ['dmg'], architectures = []) {
-  const normalizedTargets = Array.isArray(targets)
-    ? targets
-    : String(targets).split(',');
-  const buildTargets = normalizedTargets.map((target) => String(target).trim()).filter(Boolean);
-  const normalizedArchitectures = Array.isArray(architectures)
-    ? architectures
-    : String(architectures).split(',');
-  const archFlags = normalizedArchitectures
-    .map((architecture) => String(architecture).trim())
-    .filter(isMacPackageArchitecture)
-    .map((architecture) => `--${architecture}`);
-  return ['electron-builder', '--mac', ...buildTargets, ...archFlags];
+function normalizePackageArch(value) {
+  const normalized = String(value).trim().toLowerCase();
+  if (['x64', 'amd64'].includes(normalized)) return 'x64';
+  if (['arm64', 'aarch64'].includes(normalized)) return 'arm64';
+  if (['ia32', 'x86'].includes(normalized)) return 'ia32';
+  if (['armv7l', 'armv7', 'armhf'].includes(normalized)) return 'armv7l';
+  throw new Error(`Unsupported package architecture: ${value}`);
+}
+
+function isPackageArchSupportedByPlatform(platform, arch) {
+  const supportedArchs = {
+    mac: ['x64', 'arm64', 'universal'],
+    linux: ['x64', 'arm64', 'armv7l'],
+    win: ['x64', 'arm64', 'ia32']
+  };
+  return supportedArchs[platform].includes(arch);
+}
+
+export function buildPackagePlatformList(env = process.env, hostPlatform = process.platform) {
+  const requested = env.AUTOVPN_PACKAGE_PLATFORM || env.npm_config_platform;
+  if (requested) {
+    return splitList(requested).map(normalizePackagePlatform);
+  }
+  return [normalizePackagePlatform(hostPlatform)];
+}
+
+export function buildPackageArchList(env = process.env, hostArch = process.arch) {
+  const requested = env.AUTOVPN_PACKAGE_ARCH || env.npm_config_arch;
+  if (requested) {
+    return splitList(requested).map(normalizePackageArch);
+  }
+  return [normalizePackageArch(hostArch)];
+}
+
+export function buildElectronBuilderArgs(options = ['dmg'], architectures = []) {
+  const publishArgs = ['--publish', 'never'];
+  if (!options || Array.isArray(options) || typeof options === 'string') {
+    const normalizedTargets = Array.isArray(options)
+      ? options
+      : String(options).split(',');
+    const buildTargets = normalizedTargets.map((target) => String(target).trim()).filter(Boolean);
+    const normalizedArchitectures = splitList(architectures)
+      .map(normalizePackageArch)
+      .filter((arch) => isPackageArchSupportedByPlatform('mac', arch))
+      .map((arch) => `--${arch}`);
+    return ['electron-builder', '--mac', ...buildTargets, ...normalizedArchitectures, ...publishArgs];
+  }
+
+  const targetByPlatform = {
+    mac: ['--mac', 'dmg'],
+    linux: ['--linux', 'deb', 'rpm'],
+    win: ['--win', 'nsis', 'portable']
+  };
+  const platforms = options.platforms ?? buildPackagePlatformList();
+  const archs = options.archs ?? buildPackageArchList();
+  const args = ['electron-builder'];
+
+  for (const platform of platforms) {
+    const normalizedPlatform = normalizePackagePlatform(platform);
+    args.push(...targetByPlatform[normalizedPlatform]);
+  }
+  for (const arch of archs) {
+    const normalizedArch = normalizePackageArch(arch);
+    if (platforms.every((platform) => isPackageArchSupportedByPlatform(normalizePackagePlatform(platform), normalizedArch))) {
+      args.push(`--${normalizedArch}`);
+    }
+  }
+
+  args.push(...publishArgs);
+  return args;
 }
 
 export function cleanElectronOutputDir(projectRoot) {
@@ -380,26 +647,41 @@ export function cleanElectronOutputDir(projectRoot) {
 
 export function runPackaging(projectRoot) {
   const { runtimeDir, defaultSeedPath, bundledSeedPath, liveProfilePath } = resolveRuntimePaths(projectRoot);
+  const platforms = buildPackagePlatformList();
+  const archs = buildPackageArchList();
+  logPackageStage(`Packaging platforms=${platforms.join(',')} archs=${archs.join(',')}`);
   cleanElectronOutputDir(projectRoot);
   fs.mkdirSync(runtimeDir, { recursive: true });
 
   if (fs.existsSync(liveProfilePath)) {
+    logPackageStage('Bundling runtime profile from live profile');
     stageBundledProfile(liveProfilePath, bundledSeedPath);
   } else if (fs.existsSync(defaultSeedPath)) {
+    logPackageStage('Bundling runtime profile from default profile');
     stageBundledProfile(defaultSeedPath, bundledSeedPath);
   }
 
+  logPackageStage('Staging share worker runtime');
   stageShareWorkerRuntime(projectRoot);
-  stagePythonVendorRuntime(projectRoot);
+  stagePythonVendorRuntime(projectRoot, {
+    platform: platforms[0],
+    arch: archs[0]
+  });
   stageNodeVendorRuntime(projectRoot);
-  stagePlaywrightBrowserRuntime(projectRoot);
-  prepareMacIcon(projectRoot);
+  if (shouldBundlePlaywrightBrowserRuntime()) {
+    stagePlaywrightBrowserRuntime(projectRoot);
+  } else {
+    logPackageStage('Skipping bundled Playwright browser runtime');
+  }
+  logPackageStage('Preparing package icons');
+  preparePackageIcons(projectRoot, platforms);
 
-  return spawnSync('npx', buildElectronBuilderArgs(), {
+  logPackageStage('Running electron-builder');
+  return spawnSync('npx', buildElectronBuilderArgs({ platforms, archs }), buildCommandSpawnOptions('npx', {
     cwd: projectRoot,
     stdio: 'inherit',
-    shell: process.platform === 'win32'
-  });
+    timeout: 600000
+  }));
 }
 
 if (process.argv[1] === __filename) {

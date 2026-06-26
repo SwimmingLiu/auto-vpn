@@ -413,7 +413,7 @@ class RunStore:
             return None
         candidates = sorted(
             [path for path in artifacts_root.iterdir() if path.is_dir()],
-            key=lambda path: path.stat().st_mtime,
+            key=lambda path: (path.stat().st_mtime, path.name),
             reverse=True,
         )
         return candidates[0] if candidates else None

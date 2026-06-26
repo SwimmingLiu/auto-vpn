@@ -33,7 +33,7 @@ def test_build_pages_deploy_command_contains_project_name() -> None:
 def test_build_secret_url_uses_pages_project_url_and_query() -> None:
     deploy = DeployConfig(
         project_name="sub-nodes",
-        subscription_url="https://swimmingliu.xyz/179ba8dd-3854-4747-b853-fc1868ef3937",
+        subscription_url="https://swimmingliu.online/179ba8dd-3854-4747-b853-fc1868ef3937",
         pages_project_url="https://sub-nodes.pages.dev",
         secret_query="serect_key=swimmingliu",
     )
@@ -78,7 +78,7 @@ def test_deploy_pages_bundle_retries_direct_once_after_network_error(monkeypatch
     bundle_dir.mkdir(parents=True)
     deploy = DeployConfig(
         project_name="sub-nodes",
-        subscription_url="https://swimmingliu.xyz/179ba8dd-3854-4747-b853-fc1868ef3937",
+        subscription_url="https://swimmingliu.online/179ba8dd-3854-4747-b853-fc1868ef3937",
         share_project_name="",
     )
 
@@ -117,7 +117,7 @@ def test_deploy_pages_bundle_retries_with_proxy_after_network_error(monkeypatch,
     bundle_dir.mkdir(parents=True)
     deploy = DeployConfig(
         project_name="sub-nodes",
-        subscription_url="https://swimmingliu.xyz/179ba8dd-3854-4747-b853-fc1868ef3937",
+        subscription_url="https://swimmingliu.online/179ba8dd-3854-4747-b853-fc1868ef3937",
         share_project_name="",
     )
 
@@ -229,7 +229,7 @@ def test_deploy_pages_bundle_syncs_share_project_sub_to_final_pages_url(monkeypa
     bundle_dir.mkdir(parents=True)
     deploy = DeployConfig(
         project_name="sub-nodes",
-        subscription_url="https://swimmingliu.xyz/sub",
+        subscription_url="https://swimmingliu.online/sub",
         pages_project_url="https://sub-nodes.pages.dev",
         share_project_name="sub-links-share-03",
     )
@@ -309,7 +309,7 @@ def test_deploy_pages_bundle_falls_back_share_project_when_share_project_is_bloc
     bundle_dir.mkdir(parents=True)
     deploy = DeployConfig(
         project_name="sub-nodes",
-        subscription_url="https://swimmingliu.xyz/sub",
+        subscription_url="https://swimmingliu.online/sub",
         pages_project_url="https://sub-nodes.pages.dev",
         share_project_name="sub-links-share-03",
     )
@@ -377,7 +377,7 @@ def test_deploy_pages_bundle_redeploys_share_project_after_sub_update(monkeypatc
     bundle_dir.mkdir(parents=True)
     deploy = DeployConfig(
         project_name="sub-nodes",
-        subscription_url="https://swimmingliu.xyz/sub",
+        subscription_url="https://swimmingliu.online/sub",
         pages_project_url="https://sub-nodes.pages.dev",
         share_project_name="sub-links-share-03",
     )
@@ -432,7 +432,7 @@ def test_deploy_pages_bundle_falls_back_when_share_redeploy_is_blocked(monkeypat
     share_worker_source.write_text("export default { async fetch() { return new Response('login'); } }", encoding="utf-8")
     deploy = DeployConfig(
         project_name="sub-nodes",
-        subscription_url="https://swimmingliu.xyz/sub",
+        subscription_url="https://swimmingliu.online/sub",
         pages_project_url="https://sub-nodes.pages.dev",
         share_project_name="sub-links-share-03",
     )
@@ -478,7 +478,7 @@ def test_deploy_pages_bundle_falls_back_when_share_redeploy_is_blocked(monkeypat
 
         def list_pages_domains(self, project_name: str):
             if project_name == "sub-links-share-03":
-                return [{"name": "www.swimmingliu.xyz"}]
+                return [{"name": "www.swimmingliu.online"}]
             return []
 
         def get_pages_project(self, project_name: str):
@@ -526,8 +526,8 @@ def test_deploy_pages_bundle_falls_back_when_share_redeploy_is_blocked(monkeypat
     assert result["share_project_cleanup_blocked_project"] == "sub-links-share-03"
     assert fake_client.created == ["sub-links-share-04"]
     assert fake_client.copy_calls == [("sub-links-share-03", "sub-links-share-04")]
-    assert fake_client.attached == [("sub-links-share-04", "www.swimmingliu.xyz")]
-    assert fake_client.dns_calls == [("www.swimmingliu.xyz", "sub-links-share-04.pages.dev", False)]
+    assert fake_client.attached == [("sub-links-share-04", "www.swimmingliu.online")]
+    assert fake_client.dns_calls == [("www.swimmingliu.online", "sub-links-share-04.pages.dev", False)]
     assert len(run_calls) == 3
     assert run_calls[1][6] == "sub-links-share-03"
     assert run_calls[2][6] == "sub-links-share-04"
@@ -545,7 +545,7 @@ def test_deploy_pages_bundle_recovers_latest_existing_share_project_when_request
     bundle_dir.mkdir(parents=True)
     deploy = DeployConfig(
         project_name="sub-nodes-04",
-        subscription_url="https://swimmingliu.xyz/sub",
+        subscription_url="https://swimmingliu.online/sub",
         pages_project_url="https://sub-nodes-04.pages.dev",
         share_project_name="sub-links-share-03",
     )

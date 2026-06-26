@@ -13,6 +13,11 @@ node_modules/
 dist/
 dist-electron/
 build/
+!electron/build/
+!electron/build/assets/
+!electron/build/assets/app-icon-1024.png
+!electron/build/assets/app-icon.ico
+!electron/build/assets/app-icon.icns
 electron/runtime/bundled-profile.toml
 electron/runtime/share-worker/
 electron/runtime/python-vendor/

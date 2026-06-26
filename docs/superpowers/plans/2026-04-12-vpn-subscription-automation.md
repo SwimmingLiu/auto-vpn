@@ -96,7 +96,7 @@ def test_profile_store_round_trip(tmp_path: Path) -> None:
     profile = AppProfile(
         sources={"leiting": SourceConfig(url="https://a.example", key="k1", enabled=True)},
         speed_test=SpeedTestConfig(min_download_mb_s=1.0, timeout_seconds=15, concurrency=4, urls=["https://example.com/file"]),
-        deploy=DeployConfig(project_name="vmessnodes", subscription_url="https://swimmingliu.xyz/test"),
+        deploy=DeployConfig(project_name="vmessnodes", subscription_url="https://swimmingliu.online/test"),
     )
     store = ProfileStore(tmp_path / "default.json")
     store.save(profile)

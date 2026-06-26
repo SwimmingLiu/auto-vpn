@@ -53,7 +53,7 @@ class AvailabilityTargetConfig:
 class DeployConfig:
     project_name: str
     subscription_url: str
-    verify_subscription_url: str = "https://www.swimmingliu.xyz/sub?token=8410fb43eb2176497f5beafc0c39f5bc"
+    verify_subscription_url: str = "https://www.swimmingliu.online/sub?token=8410fb43eb2176497f5beafc0c39f5bc"
     pages_project_url: str = "https://sub-nodes.pages.dev"
     custom_domain: str = ""
     secret_query: str = "serect_key=swimmingliu"
@@ -360,8 +360,8 @@ def create_default_profile(project_root: Path) -> AppProfile:
         ),
         deploy=DeployConfig(
             project_name="sub-nodes",
-            subscription_url="https://swimmingliu.xyz/179ba8dd-3854-4747-b853-fc1868ef3937",
-            verify_subscription_url="https://www.swimmingliu.xyz/sub?token=8410fb43eb2176497f5beafc0c39f5bc",
+            subscription_url="https://swimmingliu.online/179ba8dd-3854-4747-b853-fc1868ef3937",
+            verify_subscription_url="https://www.swimmingliu.online/sub?token=8410fb43eb2176497f5beafc0c39f5bc",
         ),
         availability_targets=default_availability_targets(),
     )
