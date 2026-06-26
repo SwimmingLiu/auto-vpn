@@ -43,15 +43,19 @@ jobs:
         run: |
           npm ci
 
-      - name: Install Playwright browser
-        run: |
-          npx playwright install chromium-headless-shell
-
       - name: Run Python tests
         run: ./scripts/run_pytest.sh tests -q
 
-      - name: Run Electron Node tests
-        run: npm run test:electron
+      - name: Run Electron headless Node tests
+        run: |
+          node --test \
+            electron/tests/backend.test.mjs \
+            electron/tests/package-build.test.mjs \
+            electron/tests/process-lifecycle.test.mjs \
+            electron/tests/release-docs-workflow.test.mjs \
+            electron/tests/release-notes.test.mjs \
+            electron/tests/ui-state.test.mjs \
+            electron/tests/window-config.test.mjs
 
       - name: Smoke headless CLI
         run: |
