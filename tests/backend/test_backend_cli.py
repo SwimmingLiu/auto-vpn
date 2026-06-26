@@ -144,6 +144,35 @@ def test_artifact_latest_json_returns_latest_reported_artifact(tmp_path: Path) -
     assert payload["source_counts"]["leiting"]["raw_links"] == 3
 
 
+def test_artifact_latest_json_redacts_secret_bearing_deployment_fields(tmp_path: Path) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    latest_dir = project_root / "artifacts" / "20260423-020202"
+    latest_dir.mkdir(parents=True)
+    (latest_dir / "pipeline_report.json").write_text(
+        json.dumps(
+            {
+                "run_status": "failed",
+                "deployment": {
+                    "project_name": "sub-nodes",
+                    "stdout": "deployed https://sub.example/sub?token=STDOUT-SECRET",
+                    "share_project_sub_value": "https://sub.example/?serect_key=SHARE-SECRET",
+                },
+                "error": "verify failed https://verify.example/sub?token=ERROR-SECRET",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    payload = json.loads(artifact_latest_json(project_root))
+    serialized = json.dumps(payload, ensure_ascii=False)
+
+    assert payload["deployment"]["share_project_sub_value"] == "set"
+    assert "STDOUT-SECRET" not in serialized
+    assert "SHARE-SECRET" not in serialized
+    assert "ERROR-SECRET" not in serialized
+
+
 def test_artifact_latest_json_uses_runtime_artifacts_override(tmp_path: Path, monkeypatch) -> None:
     project_root = tmp_path / "vpn-subscription-automation"
     runtime_artifacts_root = tmp_path / "Application Support" / "vpn-subscription-automation" / "artifacts"

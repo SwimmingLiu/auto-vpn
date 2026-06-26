@@ -3,6 +3,7 @@
 [![Release](https://img.shields.io/github/v/release/SwimmingLiu/auto-vpn?style=flat-square&color=0e7490)](https://github.com/SwimmingLiu/auto-vpn/releases)
 [![Downloads](https://img.shields.io/github/downloads/SwimmingLiu/auto-vpn/total?style=flat-square&color=0e7490)](https://github.com/SwimmingLiu/auto-vpn/releases)
 [![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-0e7490?style=flat-square)]()
+[![CI](https://github.com/SwimmingLiu/auto-vpn/actions/workflows/release-electron.yml/badge.svg)](https://github.com/SwimmingLiu/auto-vpn/actions)
 
 ![AutoVPN desktop intro](assets/intro.png)
 
@@ -11,7 +12,7 @@ AutoVPN is a desktop control center for turning raw VPN node sources into tested
 ## Features
 
 - Six focused workspace pages for overview, runs, results, subscriptions, logs, and settings.
-- Automated node extraction, deduplication, Xray connectivity checks, speed tests, and availability filters.
+- Automated node extraction, deduplication, Mihomo connectivity checks, speed tests, and availability filters.
 - Cloudflare Pages deployment with worker rendering, transformation, obfuscation, packaging, and verification.
 - Recoverable runs backed by SQLite checkpoints and `state/profile.toml`.
 - Multi-platform Electron packaging with project-owned transparent icon assets.
@@ -23,7 +24,7 @@ AutoVPN is a desktop control center for turning raw VPN node sources into tested
 | Desktop | Electron 37, native HTML/CSS/ES modules |
 | Backend | Python 3.12 under `src/vpn_automation` |
 | Runtime state | TOML profile, SQLite checkpoints |
-| Automation | Xray, Playwright, Cloudflare Wrangler |
+| Automation | Mihomo, Playwright, Cloudflare Wrangler |
 | Packaging | electron-builder for DMG, DEB, RPM, NSIS, portable EXE |
 | Tests | pytest, node:test, Playwright-backed renderer checks |
 
@@ -37,7 +38,7 @@ Download the latest installer from [GitHub Releases](https://github.com/Swimming
 | Linux | `AutoVPN-<version>-amd64.deb`, `AutoVPN-<version>-x86_64.rpm`, `AutoVPN-<version>-arm64.deb`, `AutoVPN-<version>-aarch64.rpm` |
 | Windows | `AutoVPN-<version>-x64-setup.exe`, `AutoVPN-<version>-x64-portable.exe`, `AutoVPN-<version>-arm64-setup.exe`, `AutoVPN-<version>-arm64-portable.exe` |
 
-The app bundles the Electron shell, runtime seed files, Python dependencies, browser probe runtime, and worker template. Pipeline stages that call external tools still require those tools locally, including `xray` and Cloudflare Wrangler/npm tooling.
+The app bundles the Electron shell, runtime seed files, Python dependencies, browser probe runtime, and worker template. Pipeline stages that call external tools still require those tools locally, including `mihomo` and Cloudflare Wrangler/npm tooling.
 
 ## Project Structure
 
@@ -67,7 +68,7 @@ source .venv/bin/activate
 pip install -e .[dev]
 npm install
 npx playwright install chromium
-brew install xray
+brew install mihomo
 ```
 
 Run the desktop app:
@@ -83,6 +84,42 @@ Run the backend pipeline:
 ./scripts/run_backend_pipeline.sh --with-deploy --with-verify
 ./scripts/monitor_run.sh --once
 ```
+
+Run the headless CLI after `pip install -e .[dev]`:
+
+```bash
+autovpn profile show --project-root /opt/autovpn/vpn-subscription-automation
+autovpn profile summary --project-root /opt/autovpn/vpn-subscription-automation --json
+autovpn doctor --project-root /opt/autovpn/vpn-subscription-automation --output human
+autovpn run --project-root /opt/autovpn/vpn-subscription-automation --skip-deploy --skip-verify --output jsonl
+autovpn artifacts latest --project-root /opt/autovpn/vpn-subscription-automation
+```
+
+The `autovpn` command is the terminal and Agent-facing interface. It reuses the same Python backend as Electron and supports profile, run, artifact, retry, and resume operations without opening the desktop client.
+
+For long terminal or Agent runs, start a detached job and reconnect later:
+
+```bash
+autovpn run --project-root /opt/autovpn/vpn-subscription-automation --skip-deploy --skip-verify --detach --json
+autovpn status --project-root /opt/autovpn/vpn-subscription-automation --json
+autovpn logs --project-root /opt/autovpn/vpn-subscription-automation --tail 200
+autovpn stop --project-root /opt/autovpn/vpn-subscription-automation
+```
+
+Detached job state is stored under `state/jobs/` with `job.json`, `events.jsonl`, `human.log`, `stdout.log`, and `stderr.log`.
+
+For Linux/headless deployment checks, run:
+
+```bash
+autovpn doctor --project-root /opt/autovpn/vpn-subscription-automation --output json
+autovpn doctor --project-root /opt/autovpn/vpn-subscription-automation --deploy --strict --output human
+```
+
+`doctor` reports `pass`, `warn`, and `fail` checks for Python, profile paths, source configuration, Mihomo, Node/npm/npx, Playwright, and Cloudflare readiness. It does not run the full pipeline or perform a real deploy.
+
+For a complete terminal-only install path, dependency matrix, troubleshooting, and redaction rules, see [`docs/headless-agent/linux-headless-guide.md`](docs/headless-agent/linux-headless-guide.md).
+
+Agents should use the project-local AutoVPN skill at [`.codex/skills/autovpn-agent/SKILL.md`](.codex/skills/autovpn-agent/SKILL.md), which defines the safe CLI operating flow and redaction rules.
 
 Run tests:
 

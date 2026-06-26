@@ -18,6 +18,7 @@ dev = ["pytest>=8.0.0"]
 
 [project.scripts]
 vpn-subscription-automation = "vpn_automation.app:main"
+autovpn = "vpn_automation.cli:main"
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
