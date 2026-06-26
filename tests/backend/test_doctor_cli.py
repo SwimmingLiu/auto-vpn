@@ -1,0 +1,234 @@
+import json
+import subprocess
+from pathlib import Path
+
+from vpn_automation import cli, doctor
+from vpn_automation.config.models import AppProfile, DeployConfig, SourceConfig, SpeedTestConfig
+from vpn_automation.config.store import ProfileStore
+
+
+def _write_minimal_project(project_root: Path, *, source_key: str = "SOURCE-SECRET", api_token: str = "") -> None:
+    (project_root / "templates" / "share-worker").mkdir(parents=True)
+    (project_root / "templates" / "vmess_node.js").write_text("const MainData = `__MAIN_DATA__`;", encoding="utf-8")
+    (project_root / "templates" / "share-worker" / "vpn.js").write_text("export default {};", encoding="utf-8")
+    ProfileStore(project_root / "state" / "profile.toml").save(
+        AppProfile(
+            sources={
+                "leiting": SourceConfig(
+                    url="https://source.example/api?token=SOURCE-URL-SECRET",
+                    key=source_key,
+                    enabled=True,
+                    max_iterations=10,
+                    min_iterations=1,
+                )
+            },
+            speed_test=SpeedTestConfig(
+                min_download_mb_s=1.0,
+                timeout_seconds=10,
+                concurrency=2,
+                urls=["https://speed.example/file.bin"],
+            ),
+            deploy=DeployConfig(
+                project_name="sub-nodes",
+                subscription_url="https://sub.example/sub?token=SUB-SECRET",
+                cloudflare_api_token=api_token,
+            ),
+        )
+    )
+
+
+def _fake_successful_dependencies(monkeypatch) -> None:
+    monkeypatch.setattr(doctor.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(
+        doctor.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, stdout="ok\n", stderr=""),
+    )
+    monkeypatch.setattr(doctor, "_url_reachable", lambda url, timeout_seconds=3: (True, "reachable"))
+    monkeypatch.setattr(doctor, "_playwright_browser_ready", lambda project_root: (True, "chromium ready"))
+
+
+def test_doctor_json_reports_checks_without_leaking_secrets(tmp_path: Path, monkeypatch, capsys) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    _write_minimal_project(project_root, api_token="CF-TOKEN-SECRET")
+    _fake_successful_dependencies(monkeypatch)
+    monkeypatch.delenv("CLOUDFLARE_API_TOKEN", raising=False)
+
+    code = cli.main(["doctor", "--project-root", str(project_root), "--output", "json"])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert code == 0
+    assert payload["ok"] is True
+    assert any(check["name"] == "sources" and check["status"] == "pass" for check in payload["checks"])
+    assert "SOURCE-SECRET" not in captured.out
+    assert "SOURCE-URL-SECRET" not in captured.out
+    assert "CF-TOKEN-SECRET" not in captured.out
+    assert "SUB-SECRET" not in captured.out
+    assert captured.err == ""
+
+
+def test_doctor_deploy_strict_fails_when_cloudflare_credentials_are_missing(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    _write_minimal_project(project_root)
+    _fake_successful_dependencies(monkeypatch)
+    monkeypatch.delenv("CLOUDFLARE_API_TOKEN", raising=False)
+    monkeypatch.delenv("CLOUDFLARE_API_KEY", raising=False)
+
+    code = cli.main(["doctor", "--project-root", str(project_root), "--deploy", "--strict", "--output", "json"])
+
+    payload = json.loads(capsys.readouterr().out)
+    cloudflare_check = next(check for check in payload["checks"] if check["name"] == "cloudflare_credentials")
+    assert code == 1
+    assert payload["ok"] is False
+    assert cloudflare_check["status"] == "fail"
+    assert "missing" in cloudflare_check["message"].lower()
+
+
+def test_doctor_human_output_marks_warning_and_strict_returns_nonzero(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    _write_minimal_project(project_root, source_key="")
+    _fake_successful_dependencies(monkeypatch)
+
+    code = cli.main(["doctor", "--project-root", str(project_root), "--strict", "--output", "human"])
+
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "[warn] sources:" in captured.out
+    assert "SOURCE-URL-SECRET" not in captured.out
+
+
+def test_doctor_reports_missing_mihomo_and_npx(tmp_path: Path, monkeypatch, capsys) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    _write_minimal_project(project_root, api_token="CF-TOKEN-SECRET")
+
+    def fake_which(name: str) -> str | None:
+        if name in {"mihomo", "npx"}:
+            return None
+        return f"/usr/bin/{name}"
+
+    monkeypatch.setattr(doctor.shutil, "which", fake_which)
+    monkeypatch.setattr(doctor, "_url_reachable", lambda url, timeout_seconds=3: (True, "reachable"))
+    monkeypatch.setattr(doctor, "_playwright_browser_ready", lambda project_root: (True, "chromium ready"))
+
+    code = cli.main(["doctor", "--project-root", str(project_root), "--output", "json"])
+
+    payload = json.loads(capsys.readouterr().out)
+    checks = {check["name"]: check for check in payload["checks"]}
+    assert code == 1
+    assert checks["mihomo"]["status"] == "fail"
+    assert checks["node_binaries"]["status"] == "fail"
+    assert checks["node_binaries"]["details"]["missing"] == ["npx"]
+
+
+def test_doctor_warns_when_playwright_browser_is_missing(tmp_path: Path, monkeypatch, capsys) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    _write_minimal_project(project_root, api_token="CF-TOKEN-SECRET")
+    _fake_successful_dependencies(monkeypatch)
+    monkeypatch.setattr(doctor, "_playwright_browser_ready", lambda project_root: (False, "browser missing"))
+
+    code = cli.main(["doctor", "--project-root", str(project_root), "--strict", "--output", "json"])
+
+    payload = json.loads(capsys.readouterr().out)
+    check = next(check for check in payload["checks"] if check["name"] == "playwright_browser")
+    assert code == 1
+    assert check["status"] == "warn"
+    assert "browser missing" in check["message"]
+
+
+def test_doctor_deploy_strict_requires_wrangler_and_account_id(tmp_path: Path, monkeypatch, capsys) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    _write_minimal_project(project_root, api_token="CF-TOKEN-SECRET")
+    _fake_successful_dependencies(monkeypatch)
+    profile = ProfileStore(project_root / "state" / "profile.toml").load()
+    profile.deploy.account_id = ""
+    ProfileStore(project_root / "state" / "profile.toml").save(profile)
+
+    def fake_run(command, **kwargs):
+        if command[:4] == ["/usr/bin/npx", "wrangler", "pages", "deploy"]:
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="wrangler missing")
+        return subprocess.CompletedProcess(command, 0, stdout="ok\n", stderr="")
+
+    monkeypatch.setattr(doctor.subprocess, "run", fake_run)
+
+    code = cli.main(["doctor", "--project-root", str(project_root), "--deploy", "--strict", "--output", "json"])
+
+    payload = json.loads(capsys.readouterr().out)
+    checks = {check["name"]: check for check in payload["checks"]}
+    assert code == 1
+    assert checks["cloudflare_account"]["status"] == "fail"
+    assert checks["wrangler"]["status"] == "fail"
+
+
+def test_doctor_reports_unreachable_network_urls(tmp_path: Path, monkeypatch, capsys) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    _write_minimal_project(project_root, api_token="CF-TOKEN-SECRET")
+    _fake_successful_dependencies(monkeypatch)
+    monkeypatch.setattr(doctor, "_url_reachable", lambda url, timeout_seconds=3: (False, "timeout"))
+
+    code = cli.main(["doctor", "--project-root", str(project_root), "--output", "json"])
+
+    payload = json.loads(capsys.readouterr().out)
+    check = next(check for check in payload["checks"] if check["name"] == "network_reachability")
+    assert code == 1
+    assert check["status"] == "fail"
+    assert check["details"]["failed_count"] >= 2
+    assert "SOURCE-URL-SECRET" not in json.dumps(check, ensure_ascii=False)
+
+
+def test_doctor_fails_when_profile_path_is_not_writable(tmp_path: Path, monkeypatch, capsys) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    _write_minimal_project(project_root, api_token="CF-TOKEN-SECRET")
+    _fake_successful_dependencies(monkeypatch)
+    monkeypatch.setattr(doctor, "_path_writable", lambda path: False if path.name == "profile.toml" else True)
+
+    code = cli.main(["doctor", "--project-root", str(project_root), "--output", "json"])
+
+    payload = json.loads(capsys.readouterr().out)
+    check = next(check for check in payload["checks"] if check["name"] == "profile_path")
+    assert code == 1
+    assert check["status"] == "fail"
+
+
+def test_doctor_reports_missing_obfuscator(tmp_path: Path, monkeypatch, capsys) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    _write_minimal_project(project_root, api_token="CF-TOKEN-SECRET")
+    _fake_successful_dependencies(monkeypatch)
+
+    def fake_run(command, **kwargs):
+        if command[:2] == ["/usr/bin/npx", "javascript-obfuscator"]:
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="not found")
+        return subprocess.CompletedProcess(command, 0, stdout="ok\n", stderr="")
+
+    monkeypatch.setattr(doctor.subprocess, "run", fake_run)
+
+    code = cli.main(["doctor", "--project-root", str(project_root), "--output", "json"])
+
+    payload = json.loads(capsys.readouterr().out)
+    check = next(check for check in payload["checks"] if check["name"] == "javascript_obfuscator")
+    assert code == 1
+    assert check["status"] == "fail"
+
+
+def test_doctor_fails_invalid_speedtest_settings(tmp_path: Path, monkeypatch, capsys) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    _write_minimal_project(project_root, api_token="CF-TOKEN-SECRET")
+    _fake_successful_dependencies(monkeypatch)
+    profile = ProfileStore(project_root / "state" / "profile.toml").load()
+    profile.speed_test.timeout_seconds = 0
+    ProfileStore(project_root / "state" / "profile.toml").save(profile)
+
+    code = cli.main(["doctor", "--project-root", str(project_root), "--output", "json"])
+
+    payload = json.loads(capsys.readouterr().out)
+    check = next(check for check in payload["checks"] if check["name"] == "speed_test_config")
+    assert code == 1
+    assert check["status"] == "fail"

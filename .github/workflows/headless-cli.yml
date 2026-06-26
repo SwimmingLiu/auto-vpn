@@ -1,0 +1,53 @@
+name: Headless CLI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  headless:
+    name: Linux headless CLI
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .[dev]
+          npm ci
+          npx playwright install chromium-headless-shell
+
+      - name: Run Python tests
+        run: ./scripts/run_pytest.sh tests -q
+
+      - name: Run Electron Node tests
+        run: npm run test:electron
+
+      - name: Smoke headless CLI
+        run: |
+          autovpn profile summary --project-root "$PWD" --json
+          autovpn artifacts latest --project-root "$PWD"
+          autovpn artifacts list --project-root "$PWD"
+          autovpn doctor --project-root "$PWD" --output json > doctor.json || doctor_status=$?
+          python -m json.tool doctor.json >/dev/null
+          echo "doctor_status=${doctor_status:-0}"

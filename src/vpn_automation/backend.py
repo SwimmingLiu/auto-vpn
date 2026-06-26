@@ -17,6 +17,7 @@ from vpn_automation.config.store import ProfileStore, resolve_profile_path
 from vpn_automation.pipeline.controller import PipelineController
 from vpn_automation.pipeline.run_store import RunStore
 from vpn_automation.pipeline.tls_warnings import suppress_insecure_request_warnings
+from vpn_automation.redaction import redact_text, safe_deployment
 
 
 def build_event(event_type: str, payload: dict[str, Any]) -> str:
@@ -80,8 +81,8 @@ def artifact_latest_json(project_root: Path) -> str:
                 "stage_status": report.get("stage_status", {}),
                 "counts": report.get("counts", {}),
                 "source_counts": report.get("source_counts", {}),
-                "deployment": report.get("deployment", {}),
-                "error": report.get("error", ""),
+                "deployment": safe_deployment(report.get("deployment", {}) or {}),
+                "error": redact_text(str(report.get("error", ""))),
             }
         )
     else:
@@ -186,9 +187,9 @@ def _emit_summary(emit: Callable[[str, dict[str, Any]], None], summary: Any) -> 
             "stage_status": summary.stage_status,
             "counts": summary.counts,
             "source_counts": getattr(summary, "source_counts", {}),
-            "deployment": summary.deployment,
+            "deployment": safe_deployment(getattr(summary, "deployment", {}) or {}),
             "run_status": getattr(summary, "run_status", "success"),
-            "error": getattr(summary, "error", ""),
+            "error": redact_text(str(getattr(summary, "error", ""))),
         },
     )
 
