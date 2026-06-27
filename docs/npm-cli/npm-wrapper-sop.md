@@ -16,12 +16,13 @@ The npm package is a distribution and launcher layer. It must not reimplement pr
 
 ## Source Analyses
 
-This SOP is based on four independent implementation analyses:
+This SOP is based on these implementation and verification analyses:
 
 - [npm wrapper architecture](./wrapper-architecture-plan.md)
 - [Python CLI contract](./python-cli-contract-plan.md)
 - [Release and CI](./release-ci-plan.md)
 - [README, Agent, and user experience](./docs-agent-plan.md)
+- [Testing and acceptance](./npm-wrapper-test-sop.md)
 
 ## Non-Negotiable Principles
 
@@ -238,6 +239,8 @@ Exit criteria:
 - Documentation states that npm wrapper still calls the Python CLI.
 
 ## Phase 6: Acceptance and Release Readiness
+
+Reference: [Testing and acceptance](./npm-wrapper-test-sop.md)
 
 Goal: verify end-to-end behavior before merge and release.
 
