@@ -78,7 +78,12 @@ test('README follows the AutoVPN desktop app structure', () => {
     'AutoVPN-<version>-aarch64.rpm',
     'AutoVPN-<version>-arm64.deb',
     'AutoVPN-<version>-x64-setup.exe',
-    'AutoVPN-<version>-arm64-portable.exe'
+    'AutoVPN-<version>-arm64-portable.exe',
+    'vpn_subscription_automation-<version>-py3-none-any.whl',
+    'vpn_subscription_automation-<version>.tar.gz',
+    'pipx install',
+    'python -m venv .venv',
+    'autovpn doctor --project-root'
   ]) {
     assert.ok(readme.includes(requiredText), `README should mention ${requiredText}`);
   }
@@ -117,6 +122,7 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
     'contents: write',
     'fetch-depth: 0',
     'test:',
+    'package-cli:',
     'package-electron:',
     'needs: test',
     'Check release tag and package version',
@@ -177,6 +183,12 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
     'softprops/action-gh-release',
     'tag_name: ${{ env.RELEASE_TAG_NAME }}',
     'dist-electron/**/*.dmg',
+    'python -m build',
+    'python -m twine check dist/*',
+    'dist/*.whl',
+    'dist/*.tar.gz',
+    'vpn_subscription_automation-${PKG_VERSION}-py3-none-any.whl',
+    'vpn_subscription_automation-${PKG_VERSION}.tar.gz',
     'publish-release-notes:',
     'node scripts/generate-release-notes.mjs',
     'gh release edit "${RELEASE_TAG_NAME}"',

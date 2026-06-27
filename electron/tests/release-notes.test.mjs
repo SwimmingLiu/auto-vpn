@@ -33,6 +33,8 @@ test('release notes follow the clash-verge style download layout without blockma
     'AutoVPN-1.1.1-arm64.deb',
     'AutoVPN-1.1.1-x86_64.rpm',
     'AutoVPN-1.1.1-aarch64.rpm',
+    'vpn_subscription_automation-1.1.1-py3-none-any.whl',
+    'vpn_subscription_automation-1.1.1.tar.gz',
     'Created at Mon Jun 09 16:00:00 CST 2026.'
   ]) {
     assert.ok(notes.includes(requiredText), `release notes should contain ${requiredText}`);

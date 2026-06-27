@@ -37,8 +37,28 @@ Download the latest installer from [GitHub Releases](https://github.com/Swimming
 | macOS | `AutoVPN-<version>-arm64.dmg`, `AutoVPN-<version>-x64.dmg` |
 | Linux | `AutoVPN-<version>-amd64.deb`, `AutoVPN-<version>-x86_64.rpm`, `AutoVPN-<version>-arm64.deb`, `AutoVPN-<version>-aarch64.rpm` |
 | Windows | `AutoVPN-<version>-x64-setup.exe`, `AutoVPN-<version>-x64-portable.exe`, `AutoVPN-<version>-arm64-setup.exe`, `AutoVPN-<version>-arm64-portable.exe` |
+| CLI | `vpn_subscription_automation-<version>-py3-none-any.whl`, `vpn_subscription_automation-<version>.tar.gz` |
 
-The app bundles the Electron shell, runtime seed files, Python dependencies, browser probe runtime, and worker template. Pipeline stages that call external tools still require those tools locally, including `mihomo` and Cloudflare Wrangler/npm tooling.
+The desktop installers bundle the Electron shell, runtime seed files, Python dependencies, browser probe runtime, and worker template. They do not install the terminal `autovpn` command. For Linux servers, headless hosts, and Agents, install the Python CLI package instead. Pipeline stages that call external tools still require those tools locally, including `mihomo` and Cloudflare Wrangler/npm tooling.
+
+Install the CLI from a release wheel:
+
+```bash
+python3.12 -m pip install --user pipx
+python3.12 -m pipx ensurepath
+pipx install https://github.com/SwimmingLiu/auto-vpn/releases/download/v<version>/vpn_subscription_automation-<version>-py3-none-any.whl
+autovpn doctor --project-root /opt/autovpn/vpn-subscription-automation --output human
+```
+
+Alternatively, install into a project virtual environment:
+
+```bash
+cd /opt/autovpn/vpn-subscription-automation
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install https://github.com/SwimmingLiu/auto-vpn/releases/download/v<version>/vpn_subscription_automation-<version>-py3-none-any.whl
+autovpn --help
+```
 
 ## Project Structure
 

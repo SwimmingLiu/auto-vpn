@@ -2,7 +2,13 @@ README.md
 pyproject.toml
 src/vpn_automation/__init__.py
 src/vpn_automation/app.py
+src/vpn_automation/artifact_preview.py
 src/vpn_automation/backend.py
+src/vpn_automation/backend_resume.py
+src/vpn_automation/cli.py
+src/vpn_automation/doctor.py
+src/vpn_automation/jobs.py
+src/vpn_automation/redaction.py
 src/vpn_automation/config/__init__.py
 src/vpn_automation/config/models.py
 src/vpn_automation/config/runtime.py
@@ -22,8 +28,11 @@ src/vpn_automation/pipeline/package.py
 src/vpn_automation/pipeline/postprocess.py
 src/vpn_automation/pipeline/proxy_runtime.py
 src/vpn_automation/pipeline/render.py
+src/vpn_automation/pipeline/run_store.py
 src/vpn_automation/pipeline/speedtest.py
+src/vpn_automation/pipeline/tls_warnings.py
 src/vpn_automation/pipeline/vmess.py
+src/vpn_automation/pipeline/worker_build.py
 src/vpn_subscription_automation.egg-info/PKG-INFO
 src/vpn_subscription_automation.egg-info/SOURCES.txt
 src/vpn_subscription_automation.egg-info/dependency_links.txt

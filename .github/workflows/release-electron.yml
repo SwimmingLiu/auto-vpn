@@ -273,9 +273,57 @@ jobs:
             dist-electron/*-setup.exe
             dist-electron/*-portable.exe
 
+  package-cli:
+    name: Package AutoVPN CLI
+    needs: test
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout release ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG_NAME }}
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Build CLI package
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build twine
+          python -m build
+          python -m twine check dist/*
+        shell: bash
+
+      - name: Verify CLI artifacts exist
+        run: |
+          PKG_VERSION="$(python - <<'PY'
+          import tomllib
+          with open("pyproject.toml", "rb") as handle:
+              print(tomllib.load(handle)["project"]["version"])
+          PY
+          )"
+          test -f "dist/vpn_subscription_automation-${PKG_VERSION}-py3-none-any.whl"
+          test -f "dist/vpn_subscription_automation-${PKG_VERSION}.tar.gz"
+        shell: bash
+
+      - name: Upload CLI release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG_NAME }}
+          files: |
+            dist/*.whl
+            dist/*.tar.gz
+
   publish-release-notes:
     name: Publish release notes
-    needs: package-electron
+    needs:
+      - package-electron
+      - package-cli
     runs-on: ubuntu-24.04
 
     steps:

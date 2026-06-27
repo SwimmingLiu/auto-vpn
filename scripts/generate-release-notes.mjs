@@ -47,6 +47,9 @@ export function buildReleaseNotes({
 #### RPM包(Redhat系) 使用 dnf ./路径 安装
 - [64位](${downloadBaseUrl}/AutoVPN-${resolvedVersion}-x86_64.rpm) | [ARM64](${downloadBaseUrl}/AutoVPN-${resolvedVersion}-aarch64.rpm)
 
+### CLI
+- [Python Wheel](${downloadBaseUrl}/vpn_subscription_automation-${resolvedVersion}-py3-none-any.whl) | [Source Tarball](${downloadBaseUrl}/vpn_subscription_automation-${resolvedVersion}.tar.gz)
+
 ### FAQ
 - [项目说明](https://github.com/${repoSlug}#readme)
 
