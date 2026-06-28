@@ -17,12 +17,13 @@ The public npm registry package is not enabled in Phase 1. Use the GitHub Releas
 The CLI is currently hybrid:
 
 - Node.js handles `--help`, `--version`, argument validation, `doctor --output json`, `profile summary --json`, `artifacts latest/list/preview`, `status --json`, `logs`, and read-only `jobs` commands.
-- Python remains the backend for high-risk pipeline actions such as `run`, `retry-stage`, `resume`, detached job creation, stop, speedtest, deploy, and verify.
+- Python remains the backend for high-risk pipeline actions such as `run`, `retry-stage`, `resume`, detached job creation, stop, speedtest, deploy, and verify, selected through the backend adapter boundary.
 
 Fallback flags for migrated commands:
 
 ```bash
 AUTOVPN_CLI_SHELL=python autovpn <args>
+AUTOVPN_BACKEND=python autovpn run --project-root . --output jsonl
 AUTOVPN_DOCTOR_BACKEND=python autovpn doctor --output json
 AUTOVPN_PROFILE_BACKEND=python autovpn profile summary --json
 AUTOVPN_ARTIFACTS_BACKEND=python autovpn artifacts latest
@@ -51,6 +52,7 @@ For Python-backed commands, the wrapper forwards argv, stdin, stdout, stderr, an
 - `AUTOVPN_ALLOW_VERSION_MISMATCH`
 - `AUTOVPN_PYTHON_CLI`
 - `AUTOVPN_CLI_SHELL`
+- `AUTOVPN_BACKEND`
 - `AUTOVPN_DOCTOR_BACKEND`
 - `AUTOVPN_PROFILE_BACKEND`
 - `AUTOVPN_ARTIFACTS_BACKEND`
