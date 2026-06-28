@@ -27,7 +27,7 @@ export function resolveProfilePath(projectRoot: string, env: NodeJS.ProcessEnv =
   if (override) {
     return path.resolve(override);
   }
-  return path.join(projectRoot, 'state', 'profile.toml');
+  return path.join(resolveUserRuntimeRoot(env), 'profile.toml');
 }
 
 export function resolveArtifactsRoot(projectRoot: string, env: NodeJS.ProcessEnv = process.env): string {
@@ -35,7 +35,29 @@ export function resolveArtifactsRoot(projectRoot: string, env: NodeJS.ProcessEnv
   if (override) {
     return path.resolve(override);
   }
-  return path.join(resolveRuntimeRoot(projectRoot), 'artifacts');
+  return path.join(resolveUserRuntimeRoot(env), 'artifacts');
+}
+
+export function resolveUserRuntimeRoot(env: NodeJS.ProcessEnv = process.env): string {
+  const override = String(env.VPN_AUTOMATION_RUNTIME_ROOT ?? '').trim();
+  if (override) {
+    return path.resolve(expandHomePath(override));
+  }
+  return path.join(osHomeDir(), '.auto-vpn');
+}
+
+function expandHomePath(value: string): string {
+  if (value === '~') {
+    return osHomeDir();
+  }
+  if (value.startsWith(`~${path.sep}`)) {
+    return path.join(osHomeDir(), value.slice(2));
+  }
+  return value;
+}
+
+function osHomeDir(): string {
+  return process.env.HOME || process.env.USERPROFILE || '';
 }
 
 export function readOptionValue(argv: string[], optionName: string): string | undefined {

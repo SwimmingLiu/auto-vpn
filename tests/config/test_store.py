@@ -194,24 +194,20 @@ def test_profile_store_migrates_legacy_chatgpt_availability_target(tmp_path: Pat
     assert "negative_phrases" not in payload
 
 
-def test_resolve_profile_path_prefers_repo_anchor_state_when_running_from_worktree(tmp_path: Path) -> None:
+def test_resolve_profile_path_defaults_to_user_runtime_profile(tmp_path: Path, monkeypatch) -> None:
     repo_root = tmp_path / "vpn-subscription-automation"
     worktree_root = repo_root / ".worktrees" / "cleanup"
-    anchor_profile = repo_root / "state" / "profile.toml"
-    local_profile = worktree_root / "state" / "profile.toml"
+    runtime_root = tmp_path / "home" / ".auto-vpn"
 
     repo_root.mkdir(parents=True)
     worktree_root.mkdir(parents=True)
     (repo_root / "pyproject.toml").write_text("", encoding="utf-8")
     (repo_root / "src" / "vpn_automation").mkdir(parents=True)
-    anchor_profile.parent.mkdir(parents=True, exist_ok=True)
-    local_profile.parent.mkdir(parents=True, exist_ok=True)
-    local_profile.write_text("", encoding="utf-8")
-    anchor_profile.write_text("", encoding="utf-8")
+    monkeypatch.setenv("VPN_AUTOMATION_RUNTIME_ROOT", str(runtime_root))
 
     resolved = resolve_profile_path(worktree_root)
 
-    assert resolved == anchor_profile
+    assert resolved == runtime_root / "profile.toml"
 
 
 def test_resolve_profile_path_prefers_env_override(tmp_path: Path, monkeypatch) -> None:

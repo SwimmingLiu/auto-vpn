@@ -14,7 +14,8 @@ from vpn_automation.backend import (
     save_profile_json,
 )
 from vpn_automation.config.models import AppProfile, DeployConfig, SourceConfig, SpeedTestConfig
-from vpn_automation.config.store import ProfileStore
+from vpn_automation.config.runtime import resolve_artifacts_root
+from vpn_automation.config.store import ProfileStore, resolve_profile_path
 from vpn_automation.pipeline.run_store import RunStore
 
 
@@ -31,7 +32,7 @@ def test_ensure_profile_json_bootstraps_missing_profile(tmp_path: Path) -> None:
     payload = json.loads(profile_json)
     assert payload["deploy"]["project_name"] == "sub-nodes"
     assert payload["paths"]["project_root"] == str(project_root)
-    assert payload["paths"]["artifacts_root"] == str(project_root / "artifacts")
+    assert payload["paths"]["artifacts_root"] == str(resolve_artifacts_root(project_root))
     assert payload["workspace"] == payload["paths"]
 
 
@@ -43,7 +44,7 @@ def test_save_profile_json_persists_toml_backed_changes(tmp_path: Path) -> None:
 
     saved_json = save_profile_json(project_root, json.dumps(payload, ensure_ascii=False))
 
-    stored = (project_root / "state" / "profile.toml").read_text(encoding="utf-8")
+    stored = resolve_profile_path(project_root).read_text(encoding="utf-8")
     assert 'url = "https://example.com/api"' in stored
     assert 'key = "abcdabcdabcdabcd"' in stored
     assert json.loads(saved_json)["sources"]["leiting"]["url"] == "https://example.com/api"
@@ -58,7 +59,7 @@ def test_save_profile_payload_persists_updated_deploy_project_names(tmp_path: Pa
 
     saved_json = save_profile_json(project_root, json.dumps(payload, ensure_ascii=False))
 
-    stored = (project_root / "state" / "profile.toml").read_text(encoding="utf-8")
+    stored = resolve_profile_path(project_root).read_text(encoding="utf-8")
     assert 'project_name = "sub-nodes-04"' in stored
     assert 'pages_project_url = "https://sub-nodes-04.pages.dev"' in stored
     assert 'share_project_name = "sub-links-share-05"' in stored
@@ -96,7 +97,7 @@ def test_find_resume_run_db_prefers_latest_incomplete_artifact(tmp_path: Path) -
     from vpn_automation.backend import find_resume_run_db
 
     project_root = tmp_path / "vpn-subscription-automation"
-    artifacts_root = project_root / "artifacts"
+    artifacts_root = resolve_artifacts_root(project_root)
     first_dir = artifacts_root / "20260423-010101"
     second_dir = artifacts_root / "20260423-020202"
     first_dir.mkdir(parents=True)
@@ -117,7 +118,7 @@ def test_find_resume_run_db_prefers_latest_incomplete_artifact(tmp_path: Path) -
 
 def test_artifact_latest_json_returns_latest_reported_artifact(tmp_path: Path) -> None:
     project_root = tmp_path / "vpn-subscription-automation"
-    artifacts_root = project_root / "artifacts"
+    artifacts_root = resolve_artifacts_root(project_root)
     first_dir = artifacts_root / "20260423-010101"
     latest_dir = artifacts_root / "20260423-020202"
     first_dir.mkdir(parents=True)
@@ -146,7 +147,7 @@ def test_artifact_latest_json_returns_latest_reported_artifact(tmp_path: Path) -
 
 def test_artifact_latest_json_redacts_secret_bearing_deployment_fields(tmp_path: Path) -> None:
     project_root = tmp_path / "vpn-subscription-automation"
-    latest_dir = project_root / "artifacts" / "20260423-020202"
+    latest_dir = resolve_artifacts_root(project_root) / "20260423-020202"
     latest_dir.mkdir(parents=True)
     (latest_dir / "pipeline_report.json").write_text(
         json.dumps(
@@ -209,7 +210,7 @@ def test_artifact_latest_json_returns_empty_when_no_artifact_exists(tmp_path: Pa
 
 def test_artifact_list_json_reports_retryable_stages_and_retry_context(tmp_path: Path) -> None:
     project_root = tmp_path / "vpn-subscription-automation"
-    artifact_dir = project_root / "artifacts" / "20260427-081718"
+    artifact_dir = resolve_artifacts_root(project_root) / "20260427-081718"
     artifact_dir.mkdir(parents=True)
     vmess_link = "vmess://demo"
     (artifact_dir / "vpn_node_deduped.txt").write_text(f"{vmess_link}\n", encoding="utf-8")
@@ -273,7 +274,7 @@ def test_artifact_list_json_reports_retryable_stages_and_retry_context(tmp_path:
 
 def test_artifact_list_json_filters_non_run_directories(tmp_path: Path) -> None:
     project_root = tmp_path / "vpn-subscription-automation"
-    artifacts_root = project_root / "artifacts"
+    artifacts_root = resolve_artifacts_root(project_root)
     artifact_dir = artifacts_root / "20260427-081718"
     screenshots_dir = artifacts_root / "screenshots"
     artifact_dir.mkdir(parents=True)
@@ -344,7 +345,7 @@ def test_retry_stage_does_not_overwrite_profile_saved_by_retry_runner(
     project_root = tmp_path / "vpn-subscription-automation"
     artifact_dir = project_root / "artifacts" / "20260507-141218"
     artifact_dir.mkdir(parents=True)
-    store = ProfileStore(project_root / "state" / "profile.toml")
+    store = ProfileStore(resolve_profile_path(project_root))
     store.save(
         AppProfile(
             sources={"leiting": SourceConfig(url="https://example.com/api", key="demo", enabled=True)},
@@ -536,7 +537,7 @@ def test_run_pipeline_emits_log_and_summary_when_configuration_fails(
 
 def test_run_pipeline_persists_updated_deploy_names_after_success(tmp_path: Path, monkeypatch) -> None:
     project_root = tmp_path / "vpn-subscription-automation"
-    store = ProfileStore(project_root / "state" / "profile.toml")
+    store = ProfileStore(resolve_profile_path(project_root))
     profile = AppProfile(
         sources={"leiting": SourceConfig(url="https://example.com/api", key="demo", enabled=True)},
         speed_test=SpeedTestConfig(min_download_mb_s=1.0, timeout_seconds=20, concurrency=3, urls=[]),
@@ -652,7 +653,7 @@ def test_resume_pipeline_does_not_overwrite_profile_saved_by_resume_runner(
         ),
         encoding="utf-8",
     )
-    store = ProfileStore(project_root / "state" / "profile.toml")
+    store = ProfileStore(resolve_profile_path(project_root))
     store.save(
         AppProfile(
             sources={"leiting": SourceConfig(url="https://example.com/api", key="demo", enabled=True)},
@@ -702,7 +703,7 @@ def test_run_pipeline_resume_latest_uses_latest_run_db(
     monkeypatch,
 ) -> None:
     project_root = tmp_path / "vpn-subscription-automation"
-    artifacts_root = project_root / "artifacts"
+    artifacts_root = resolve_artifacts_root(project_root)
     artifact_dir = artifacts_root / "20260423-020202"
     artifact_dir.mkdir(parents=True)
     store = RunStore(artifact_dir / "run.db")

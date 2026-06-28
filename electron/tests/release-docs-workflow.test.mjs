@@ -81,7 +81,7 @@ test('README follows the AutoVPN desktop app structure', () => {
 
   for (const requiredText of [
     'Cloudflare Pages',
-    'state/profile.toml',
+    '~/.auto-vpn/profile.toml',
     'npm run package:electron',
     'electron/renderer/assets/vpn-auto-logo-v2-minimal.svg',
     'AutoVPN-<version>-arm64.dmg',

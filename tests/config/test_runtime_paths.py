@@ -125,6 +125,17 @@ def test_resolve_artifacts_root_prefers_runtime_override(tmp_path: Path, monkeyp
     assert resolved == app_support_root / "artifacts"
 
 
+def test_resolve_artifacts_root_defaults_to_user_runtime_root(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    runtime_root = tmp_path / "home" / ".auto-vpn"
+    project_root.mkdir(parents=True)
+    monkeypatch.setenv("VPN_AUTOMATION_RUNTIME_ROOT", str(runtime_root))
+
+    resolved = resolve_artifacts_root(project_root)
+
+    assert resolved == runtime_root / "artifacts"
+
+
 def test_resolve_source_root_keeps_active_worktree_root(tmp_path: Path) -> None:
     root = tmp_path / "vpn-subscription-automation"
     worktree_root = root / ".worktrees" / "feature-x"

@@ -14,7 +14,7 @@ AutoVPN is a desktop control center for turning raw VPN node sources into tested
 - Six focused workspace pages for overview, runs, results, subscriptions, logs, and settings.
 - Automated node extraction, deduplication, Mihomo connectivity checks, speed tests, and availability filters.
 - Cloudflare Pages deployment with worker rendering, transformation, obfuscation, packaging, and verification.
-- Recoverable runs backed by SQLite checkpoints and `state/profile.toml`.
+- Recoverable runs backed by SQLite checkpoints and `~/.auto-vpn/profile.toml`.
 - Multi-platform Electron packaging with project-owned transparent icon assets.
 
 ## Tech Stack
@@ -83,8 +83,8 @@ vpn-subscription-automation/
 ├── scripts/           # Run, resume, monitor, and release helpers
 ├── docs/              # Notes and implementation plans
 ├── assets/            # README media
-├── state/             # Local runtime profile, ignored by git
-├── artifacts/         # Pipeline outputs, ignored by git
+├── state/             # Optional build-time seed profile, ignored by git
+├── artifacts/         # Legacy local outputs, ignored by git
 └── dist-electron/     # Packaged app outputs, ignored by git
 ```
 
@@ -147,7 +147,7 @@ autovpn logs --project-root /opt/autovpn/vpn-subscription-automation --tail 200
 autovpn stop --project-root /opt/autovpn/vpn-subscription-automation
 ```
 
-Detached job state is stored under `state/jobs/` with `job.json`, `events.jsonl`, `human.log`, `stdout.log`, and `stderr.log`.
+Detached job state is stored under `~/.auto-vpn/jobs/` with `job.json`, `events.jsonl`, `human.log`, `stdout.log`, and `stderr.log`.
 
 For Linux/headless deployment checks, run:
 
@@ -182,9 +182,11 @@ AUTOVPN_PACKAGE_PLATFORM=win AUTOVPN_PACKAGE_ARCH=arm64 npm run package:electron
 
 AutoVPN reads and writes one local runtime profile:
 
-- `~/data/VPN/vpn-subscription-automation/state/profile.toml`
+- `~/.auto-vpn/profile.toml`
 
-Packaged builds seed that profile from `electron/runtime/default-profile.toml` or a generated `electron/runtime/bundled-profile.toml`. The generated bundled profile is build output; do not edit it by hand.
+Runtime artifacts and job logs are stored under `~/.auto-vpn/artifacts/` and `~/.auto-vpn/jobs/`. Set `VPN_AUTOMATION_RUNTIME_ROOT` to move all runtime files together.
+
+Packaged builds seed the runtime profile from `electron/runtime/default-profile.toml` or a generated `electron/runtime/bundled-profile.toml`. The generated bundled profile is build output; do not edit it by hand.
 
 ## Release Packaging
 

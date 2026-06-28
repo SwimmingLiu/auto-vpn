@@ -367,7 +367,7 @@ def test_run_extract_executes_enabled_sources_in_parallel(tmp_path: Path) -> Non
     assert set(raw_links) == {"vmess://leiting", "vmess://heidong"}
 
 
-def test_pipeline_controller_persists_failed_stage_status_to_report(tmp_path: Path) -> None:
+def test_pipeline_controller_persists_failed_stage_status_to_report(tmp_path: Path, isolated_runtime_root: Path) -> None:
     project_root = tmp_path / "vpn-subscription-automation"
     catch_root = tmp_path / "vpn-catch-nodes" / "config"
     edge_root = tmp_path / "cloudflarevpn" / "edgetunnel"
@@ -417,7 +417,7 @@ def test_pipeline_controller_persists_failed_stage_status_to_report(tmp_path: Pa
     with pytest.raises(RuntimeError, match="obfuscate boom"):
         controller.run(profile, skip_deploy=True, skip_verify=True)
 
-    artifact_dir = next((project_root / "artifacts").iterdir())
+    artifact_dir = next((isolated_runtime_root / "artifacts").iterdir())
     report = json.loads((artifact_dir / "pipeline_report.json").read_text(encoding="utf-8"))
 
     assert report["stage_status"]["render"] == "success"
@@ -600,9 +600,9 @@ def test_pipeline_reports_per_source_deduped_counts(tmp_path: Path) -> None:
     assert summary.source_counts["heidong"]["deduped_links"] == 1
 
 
-def test_pipeline_prunes_old_artifacts_after_new_run(tmp_path: Path) -> None:
+def test_pipeline_prunes_old_artifacts_after_new_run(tmp_path: Path, isolated_runtime_root: Path) -> None:
     project_root = tmp_path / "vpn-subscription-automation"
-    artifacts_root = project_root / "artifacts"
+    artifacts_root = isolated_runtime_root / "artifacts"
     old_first = artifacts_root / "20260420-010101"
     old_second = artifacts_root / "20260421-010101"
     edge_root = tmp_path / "cloudflarevpn" / "edgetunnel"

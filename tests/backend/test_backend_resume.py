@@ -265,9 +265,9 @@ def test_retry_deploy_stage_persists_updated_deploy_names(tmp_path: Path, monkey
     )
 
     from vpn_automation.config.models import AppProfile, DeployConfig, SourceConfig, SpeedTestConfig
-    from vpn_automation.config.store import ProfileStore
+    from vpn_automation.config.store import ProfileStore, resolve_profile_path
 
-    store = ProfileStore(project_root / "state" / "profile.toml")
+    store = ProfileStore(resolve_profile_path(project_root))
     profile = AppProfile(
         sources={"leiting": SourceConfig(url="https://example.com/api", key="demo", enabled=True)},
         speed_test=SpeedTestConfig(min_download_mb_s=1.0, timeout_seconds=20, concurrency=3, urls=[]),

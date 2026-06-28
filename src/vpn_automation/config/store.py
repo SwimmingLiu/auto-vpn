@@ -10,8 +10,8 @@ from vpn_automation.config.models import (
     DEFAULT_AVAILABILITY_TARGET_ORDER,
     DEFAULT_SOURCE_ORDER,
     create_default_profile,
-    resolve_repo_anchor,
 )
+from vpn_automation.config.runtime import resolve_user_runtime_root
 
 LEGACY_PAGES_PROJECT_NAME = "vmessnodes"
 LEGACY_PAGES_PROJECT_URL = "https://vmess2clash.pages.dev"
@@ -26,13 +26,7 @@ def resolve_profile_path(project_root: Path) -> Path:
     if profile_override:
         return Path(profile_override).expanduser().resolve()
 
-    candidate_root = Path(project_root).resolve()
-    local_path = candidate_root / "state" / "profile.toml"
-    repo_root = resolve_repo_anchor(candidate_root)
-    anchor_path = repo_root / "state" / "profile.toml"
-    if anchor_path != local_path:
-        return anchor_path
-    return local_path
+    return resolve_user_runtime_root() / "profile.toml"
 
 
 def resolve_seed_profile_path(project_root: Path) -> Path | None:

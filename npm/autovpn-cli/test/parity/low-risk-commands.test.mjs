@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { runCliShell } from '../../dist/cli/main.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
+const fixtureEnvs = new Map();
 
 function createIo() {
   return {
@@ -27,10 +28,15 @@ function createIo() {
 async function runNode(argv, { cwd, env = {}, runForwarder } = {}) {
   const io = createIo();
   const forwarded = [];
+  const resolvedEnv = {
+    ...process.env,
+    ...(cwd && fixtureEnvs.get(cwd) ? fixtureEnvs.get(cwd) : {}),
+    ...env
+  };
   const code = await runCliShell(argv, {
     packageVersion: '1.3.0',
     cwd,
-    env,
+    env: resolvedEnv,
     io,
     runForwarder: runForwarder ?? (async (forwardedArgv) => {
       forwarded.push(forwardedArgv);
@@ -42,13 +48,16 @@ async function runNode(argv, { cwd, env = {}, runForwarder } = {}) {
 
 async function createProjectFixture() {
   const root = await mkdtemp(path.join(os.tmpdir(), 'autovpn-node-parity-'));
-  await mkdir(path.join(root, 'state', 'jobs', '20260628-000000-abcdef'), { recursive: true });
-  await mkdir(path.join(root, 'artifacts', '20260628-000000'), { recursive: true });
+  const runtimeRoot = path.join(root, '.auto-vpn');
+  const runtimeEnv = { VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot };
+  fixtureEnvs.set(root, runtimeEnv);
+  await mkdir(path.join(runtimeRoot, 'jobs', '20260628-000000-abcdef'), { recursive: true });
+  await mkdir(path.join(runtimeRoot, 'artifacts', '20260628-000000'), { recursive: true });
   await mkdir(path.join(root, 'templates', 'share-worker'), { recursive: true });
   await writeFile(path.join(root, 'pyproject.toml'), '[project]\nname = "fixture"\n', 'utf8');
   await writeFile(path.join(root, 'templates', 'vmess_node.js'), '// worker\n', 'utf8');
   await writeFile(path.join(root, 'templates', 'share-worker', 'vpn.js'), '// share\n', 'utf8');
-  await writeFile(path.join(root, 'state', 'profile.toml'), `
+  await writeFile(path.join(runtimeRoot, 'profile.toml'), `
 [sources.xuanfeng]
 url = "https://example.invalid/source"
 key = "secret-source-key"
@@ -74,7 +83,7 @@ probe_url = "https://example.invalid/probe"
 urls = ["https://example.invalid/file"]
 `, 'utf8');
 
-  const artifactDir = path.join(root, 'artifacts', '20260628-000000');
+  const artifactDir = path.join(runtimeRoot, 'artifacts', '20260628-000000');
   await writeFile(path.join(artifactDir, 'pipeline_report.json'), JSON.stringify({
     run_status: 'success',
     stage_status: { extract: 'success', deploy: 'success' },
@@ -91,7 +100,7 @@ urls = ["https://example.invalid/file"]
   }), 'utf8');
   await writeFile(path.join(artifactDir, 'vpn_node_emoji.txt'), 'vmess://not-valid-base64\n', 'utf8');
 
-  const jobDir = path.join(root, 'state', 'jobs', '20260628-000000-abcdef');
+  const jobDir = path.join(runtimeRoot, 'jobs', '20260628-000000-abcdef');
   const job = {
     schema_version: 1,
     job_id: '20260628-000000-abcdef',
@@ -122,7 +131,7 @@ urls = ["https://example.invalid/file"]
     job_file: path.join(jobDir, 'job.json')
   };
   await writeFile(path.join(jobDir, 'job.json'), JSON.stringify(job), 'utf8');
-  await writeFile(path.join(root, 'state', 'jobs', 'index.json'), JSON.stringify({
+  await writeFile(path.join(runtimeRoot, 'jobs', 'index.json'), JSON.stringify({
     schema_version: 1,
     latest_job_id: '20260628-000000-abcdef',
     jobs: [{
@@ -136,7 +145,7 @@ urls = ["https://example.invalid/file"]
   await writeFile(path.join(jobDir, 'human.log'), 'line 1\nline 2\nline 3\n', 'utf8');
   await writeFile(path.join(jobDir, 'events.jsonl'), '{"type":"summary","run_status":"success"}\n', 'utf8');
 
-  return { root, artifactDir };
+  return { root, artifactDir, runtimeRoot, env: runtimeEnv };
 }
 
 function resolvePythonCli() {
@@ -156,12 +165,30 @@ function resolvePythonCli() {
   return '';
 }
 
+function readOptionValue(argv, optionName) {
+  for (let index = 0; index < argv.length; index += 1) {
+    const value = argv[index];
+    if (value === optionName) {
+      return argv[index + 1];
+    }
+    if (value.startsWith(`${optionName}=`)) {
+      return value.slice(optionName.length + 1);
+    }
+  }
+  return undefined;
+}
+
 function runPython(argv) {
   const pythonCli = resolvePythonCli();
   if (!pythonCli) {
     return undefined;
   }
-  return spawnSync(pythonCli, argv, { encoding: 'utf8' });
+  const projectRoot = readOptionValue(argv, '--project-root');
+  const env = {
+    ...process.env,
+    ...(projectRoot && fixtureEnvs.get(projectRoot) ? fixtureEnvs.get(projectRoot) : {})
+  };
+  return spawnSync(pythonCli, argv, { encoding: 'utf8', env });
 }
 
 function parseJsonLine(output) {
@@ -170,7 +197,10 @@ function parseJsonLine(output) {
 
 function normalize(value) {
   if (typeof value === 'string') {
-    return value.replaceAll('\\', '/').replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:\d{2})?/g, '<timestamp>');
+    return value
+      .replaceAll('\\', '/')
+      .replaceAll('/private/var/', '/var/')
+      .replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:\d{2})?/g, '<timestamp>');
   }
   if (Array.isArray(value)) {
     return value.map(normalize);
@@ -270,8 +300,8 @@ test('Phase 5 handles follow log streaming in Node', async () => {
 });
 
 test('Phase 3 reconciles completed running jobs from summary events', async () => {
-  const { root, artifactDir } = await createProjectFixture();
-  const jobPath = path.join(root, 'state', 'jobs', '20260628-000000-abcdef', 'job.json');
+  const { root, artifactDir, runtimeRoot } = await createProjectFixture();
+  const jobPath = path.join(runtimeRoot, 'jobs', '20260628-000000-abcdef', 'job.json');
   const job = JSON.parse(await import('node:fs/promises').then((fs) => fs.readFile(jobPath, 'utf8')));
   job.status = 'running';
   job.exit_code = null;

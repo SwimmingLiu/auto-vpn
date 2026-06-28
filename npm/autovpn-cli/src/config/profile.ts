@@ -1,7 +1,8 @@
 import fs from 'node:fs';
+import path from 'node:path';
 import { parse } from '@iarna/toml';
 
-import { resolveProfilePath } from '../runtime/paths.js';
+import { resolveArtifactsRoot, resolveProfilePath } from '../runtime/paths.js';
 
 const DEFAULT_SOURCE_ORDER = ['leiting', 'heidong', 'mifeng', 'xuanfeng-area', 'xuanfeng-all-area'];
 
@@ -18,6 +19,7 @@ function readProfile(profilePath: string): Record<string, any> {
 
 export function profileSummary(projectRoot: string, env: NodeJS.ProcessEnv = process.env): Record<string, unknown> {
   const profilePath = resolveProfilePath(projectRoot, env);
+  const stateRoot = path.dirname(profilePath);
   const payload = readProfile(profilePath);
   const rawSources = (payload.sources ?? {}) as Record<string, any>;
   const sourceNames = [
@@ -54,8 +56,8 @@ export function profileSummary(projectRoot: string, env: NodeJS.ProcessEnv = pro
     },
     paths: {
       project_root: projectRoot,
-      artifacts_root: `${projectRoot}/artifacts`,
-      state_root: `${projectRoot}/state`,
+      artifacts_root: resolveArtifactsRoot(projectRoot, env),
+      state_root: stateRoot,
       profile_path: profilePath
     }
   };
