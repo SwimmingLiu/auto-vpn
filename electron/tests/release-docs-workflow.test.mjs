@@ -13,7 +13,7 @@ test('README follows the AutoVPN desktop app structure', () => {
   const readme = readProjectFile('README.md');
 
   assert.match(readme, /^# AutoVPN/m);
-  assert.match(readme, /!\[AutoVPN desktop screenshot\]\(assets\/vpn-sub-[^)]+\.png\)/);
+  assert.match(readme, /!\[AutoVPN desktop screenshot\]\(assets\/intro\.png\)/);
 
   for (const section of [
     'Features',

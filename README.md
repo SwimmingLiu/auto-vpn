@@ -5,7 +5,7 @@
 [![Platform](https://img.shields.io/badge/platform-macOS-0e7490?style=flat-square)]()
 [![CI](https://github.com/SwimmingLiu/vpn-subscription-automation/actions/workflows/release-electron.yml/badge.svg)](https://github.com/SwimmingLiu/vpn-subscription-automation/actions)
 
-![AutoVPN desktop screenshot](assets/vpn-sub-所有页面.png)
+![AutoVPN desktop screenshot](assets/intro.png)
 
 AutoVPN is a local-first Electron desktop app for collecting VPN nodes, testing connectivity and regional availability, generating subscription worker assets, and deploying the final subscription endpoint to Cloudflare Pages.
 

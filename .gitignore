@@ -18,3 +18,4 @@ electron/runtime/share-worker/
 electron/runtime/python-vendor/
 electron/runtime/node-vendor/
 electron/runtime/playwright-browsers/
+.idea
