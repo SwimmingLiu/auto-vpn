@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { createRequire } from 'node:module';
 
 import { resolveProfilePath, readOptionValue } from '../runtime/paths.js';
 import { redactText } from '../runtime/redaction.js';
@@ -70,6 +71,38 @@ function reconcileFromPipelineReport(job: Record<string, any>): Record<string, a
   }
 }
 
+function reconcileFromRunDb(job: Record<string, any>): Record<string, any> | undefined {
+  const artifactDir = String(job.artifact_dir ?? '');
+  if (!artifactDir) {
+    return undefined;
+  }
+  const runDbPath = path.join(artifactDir, 'run.db');
+  if (!fs.existsSync(runDbPath)) {
+    return undefined;
+  }
+  try {
+    const require = createRequire(import.meta.url);
+    const sqlite = require('node:sqlite') as { DatabaseSync: new (file: string) => any };
+    const db = new sqlite.DatabaseSync(runDbPath);
+    try {
+      const row = db.prepare('SELECT status FROM runs ORDER BY run_id DESC LIMIT 1').get() as { status?: string } | undefined;
+      const runStatus = String(row?.status ?? '');
+      if (!['success', 'failed', 'stopped'].includes(runStatus)) {
+        return undefined;
+      }
+      return {
+        status: runStatus,
+        finished_at: job.finished_at || nowIso(),
+        exit_code: runStatus === 'success' ? 0 : 1
+      };
+    } finally {
+      db.close();
+    }
+  } catch {
+    return undefined;
+  }
+}
+
 function writeJob(job: Record<string, any>): void {
   const jobFile = String(job.job_file ?? '');
   if (!jobFile) {
@@ -110,6 +143,11 @@ function reconcileJob(job: Record<string, any>): Record<string, any> {
     const reportStatus = reconcileFromPipelineReport(job);
     if (reportStatus) {
       Object.assign(job, reportStatus);
+    } else {
+      const runDbStatus = reconcileFromRunDb(job);
+      if (runDbStatus) {
+        Object.assign(job, runDbStatus);
+      }
     }
   }
 
@@ -147,6 +185,33 @@ export function latestJobId(projectRoot: string, env: NodeJS.ProcessEnv = proces
     throw new Error('no jobs found');
   }
   return jobId;
+}
+
+export function activeJobIds(projectRoot: string, env: NodeJS.ProcessEnv = process.env): string[] {
+  const index = loadIndex(projectRoot, env);
+  const active: string[] = [];
+  for (const item of (index.jobs ?? []) as Array<Record<string, unknown>>) {
+    try {
+      const job = loadJob(projectRoot, String(item.job_id ?? ''), env);
+      if (['running', 'stopping'].includes(String(job.status ?? '')) && processAlive(Number(job.pid ?? 0))) {
+        active.push(String(job.job_id));
+      }
+    } catch {
+      // Ignore stale index rows that no longer have job metadata.
+    }
+  }
+  return active;
+}
+
+export function singleActiveJobId(projectRoot: string, env: NodeJS.ProcessEnv = process.env): string {
+  const active = activeJobIds(projectRoot, env);
+  if (active.length > 1) {
+    throw new Error(`multiple active jobs: ${active.join(', ')}`);
+  }
+  if (!active.length) {
+    throw new Error('no active jobs');
+  }
+  return active[0];
 }
 
 export function loadJob(projectRoot: string, jobId: string, env: NodeJS.ProcessEnv = process.env): Record<string, any> {

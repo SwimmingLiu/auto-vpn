@@ -81,11 +81,10 @@ test('high-risk CLI commands are executed through backend adapter', async () => 
   assert.deepEqual(backendCalls, [['run', '--project-root', '/repo', '--skip-deploy', '--skip-verify', '--output', 'jsonl']]);
 });
 
-test('jobs stop and detached resume/retry are executed through backend adapter', async () => {
+test('non-detached resume and retry commands are executed through backend adapter', async () => {
   const cases = [
-    ['stop', '--project-root', '.'],
-    ['jobs', 'resume', 'job-1', '--project-root', '.', '--detach'],
-    ['jobs', 'retry', '--project-root', '.', '--artifact-dir', '/tmp/artifact', '--stage', 'deploy', '--detach']
+    ['resume', 'pipeline', '--project-root', '.', '--session', '/tmp/session', '--output', 'jsonl'],
+    ['retry-stage', '--project-root', '.', '--artifact-dir', '/tmp/artifact', '--stage', 'deploy', '--output', 'jsonl']
   ];
 
   for (const argv of cases) {

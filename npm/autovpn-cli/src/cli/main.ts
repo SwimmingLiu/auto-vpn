@@ -1,7 +1,7 @@
 import { validateCommand } from './commands/index.js';
 import { CliUsageError } from './errors.js';
 import { normalizeProjectRootArgs } from './global-options.js';
-import { runNativeCommand } from './native-commands.js';
+import { JobRuntimeOptions, runNativeCommand } from './native-commands.js';
 import { CliIo, defaultIo, renderHelp } from './output.js';
 import { AutoVpnBackend } from '../backend/types.js';
 import { selectBackend } from '../backend/select-backend.js';
@@ -18,6 +18,10 @@ export interface CliShellOptions {
   createBackend?: CreateBackend;
   readPackageVersion?: ReadPackageVersion;
   cwd?: string;
+  spawn?: JobRuntimeOptions['spawn'];
+  now?: JobRuntimeOptions['now'];
+  jobId?: JobRuntimeOptions['jobId'];
+  sleep?: JobRuntimeOptions['sleep'];
 }
 
 async function defaultReadPackageVersion(): Promise<string> {
@@ -83,7 +87,11 @@ export async function runCliShell(argv: string[], options: CliShellOptions = {})
       cwd,
       env,
       io,
-      pythonFallback: (fallbackArgv) => backend.executeCli(fallbackArgv)
+      pythonFallback: (fallbackArgv) => backend.executeCli(fallbackArgv),
+      spawn: options.spawn,
+      now: options.now,
+      jobId: options.jobId,
+      sleep: options.sleep
     });
     if (nativeResult !== undefined) {
       return nativeResult;
