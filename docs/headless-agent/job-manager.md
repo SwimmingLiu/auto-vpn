@@ -19,7 +19,7 @@ Add persistent background job management for Linux headless and Agent workflows.
 Create job state under the runtime state root:
 
 ```text
-state/jobs/
+~/.auto-vpn/jobs/
   index.json
   <job_id>/
     job.json

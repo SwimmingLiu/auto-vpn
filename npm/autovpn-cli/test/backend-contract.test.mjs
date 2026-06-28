@@ -1,0 +1,247 @@
+import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
+import test from 'node:test';
+
+import { runCliShell } from '../dist/cli/main.js';
+import { normalizeEvent, parseEventLine } from '../dist/events/schema.js';
+import { PythonBackend } from '../dist/backend/python-backend.js';
+import { selectBackend } from '../dist/backend/select-backend.js';
+
+function createIo() {
+  return {
+    stdout: '',
+    stderr: '',
+    writeStdout(chunk) {
+      this.stdout += chunk;
+    },
+    writeStderr(chunk) {
+      this.stderr += chunk;
+    }
+  };
+}
+
+test('backend event schema normalizes Python JSONL event lines', () => {
+  const event = parseEventLine('{"type":"stage","stage":"speedtest","status":"running"}');
+
+  assert.deepEqual(event, {
+    type: 'stage',
+    stage: 'speedtest',
+    status: 'running'
+  });
+  assert.deepEqual(normalizeEvent({ type: 'summary', run_status: 'success', counts: { raw_links: 2 } }), {
+    type: 'summary',
+    run_status: 'success',
+    counts: { raw_links: 2 }
+  });
+});
+
+test('backend event schema rejects invalid event envelopes', () => {
+  assert.throws(() => parseEventLine('not json'), /Invalid backend event JSON/);
+  assert.throws(() => normalizeEvent({ message: 'missing type' }), /Backend event is missing string type/);
+});
+
+test('PythonBackend executeCli owns Python process forwarding', async () => {
+  const forwarded = [];
+  const backend = new PythonBackend({
+    runForwarder: async (argv) => {
+      forwarded.push(argv);
+      return 7;
+    }
+  });
+
+  const code = await backend.executeCli(['run', '--project-root', '/repo', '--output', 'jsonl']);
+
+  assert.equal(code, 7);
+  assert.deepEqual(forwarded, [['run', '--project-root', '/repo', '--output', 'jsonl']]);
+});
+
+test('high-risk CLI commands are executed through backend adapter', async () => {
+  const io = createIo();
+  const backendCalls = [];
+  const directForwarderCalls = [];
+
+  const code = await runCliShell(['run', '--project-root', '.', '--skip-deploy', '--skip-verify', '--output', 'jsonl'], {
+    packageVersion: '1.3.0',
+    cwd: '/repo',
+    io,
+    runForwarder: async (argv) => {
+      directForwarderCalls.push(argv);
+      return 99;
+    },
+    createBackend: () => ({
+      executeCli: async (argv) => {
+        backendCalls.push(argv);
+        return 5;
+      }
+    })
+  });
+
+  assert.equal(code, 5);
+  assert.deepEqual(directForwarderCalls, []);
+  assert.deepEqual(backendCalls, [['run', '--project-root', '/repo', '--skip-deploy', '--skip-verify', '--output', 'jsonl']]);
+});
+
+test('non-detached resume and retry commands are executed through backend adapter', async () => {
+  const cases = [
+    ['resume', 'pipeline', '--project-root', '.', '--session', '/tmp/session', '--output', 'jsonl'],
+    ['retry-stage', '--project-root', '.', '--artifact-dir', '/tmp/artifact', '--stage', 'deploy', '--output', 'jsonl']
+  ];
+
+  for (const argv of cases) {
+    const io = createIo();
+    const backendCalls = [];
+    const code = await runCliShell(argv, {
+      packageVersion: '1.3.0',
+      cwd: '/repo',
+      io,
+      runForwarder: async () => 99,
+      createBackend: () => ({
+        executeCli: async (backendArgv) => {
+          backendCalls.push(backendArgv);
+          return 0;
+        }
+      })
+    });
+
+    assert.equal(code, 0, argv.join(' '));
+    assert.equal(backendCalls.length, 1, argv.join(' '));
+  }
+});
+
+test('low-risk Python fallbacks are executed through backend adapter', async () => {
+  const io = createIo();
+  const directForwarderCalls = [];
+  const backendCalls = [];
+
+  const code = await runCliShell(['doctor', '--project-root', '.', '--output', 'json'], {
+    packageVersion: '1.3.0',
+    cwd: '/repo',
+    env: { AUTOVPN_DOCTOR_BACKEND: 'python' },
+    io,
+    runForwarder: async (argv) => {
+      directForwarderCalls.push(argv);
+      return 99;
+    },
+    createBackend: () => ({
+      executeCli: async (argv) => {
+        backendCalls.push(argv);
+        return 6;
+      }
+    })
+  });
+
+  assert.equal(code, 6);
+  assert.deepEqual(directForwarderCalls, []);
+  assert.deepEqual(backendCalls, [['doctor', '--project-root', '/repo', '--output', 'json']]);
+});
+
+test('PythonBackend parses real JSON job payloads for job metadata methods', async () => {
+  const spawns = [];
+  const backend = new PythonBackend({
+    resolvePythonCli: () => ({ command: '/opt/autovpn/bin/autovpn', args: [] }),
+    spawn: (command, args) => {
+      spawns.push([command, args]);
+      const child = new EventEmitter();
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      queueMicrotask(() => {
+        child.stdout.emit('data', '{"ok":true,"job_id":"job-1","pid":123,"status":"running"}\n');
+        child.stdout.emit('end');
+        child.emit('close', 0, null);
+      });
+      return child;
+    }
+  });
+
+  const detached = await backend.startDetached({ projectRoot: '/repo', skipDeploy: true, skipVerify: true });
+  const status = await backend.readJob('job-1', { projectRoot: '/repo' });
+
+  assert.equal(detached.job_id, 'job-1');
+  assert.equal(status.pid, 123);
+  assert.deepEqual(spawns[0], ['/opt/autovpn/bin/autovpn', ['run', '--project-root', '/repo', '--output', 'jsonl', '--skip-deploy', '--skip-verify', '--detach', '--json']]);
+  assert.deepEqual(spawns[1], ['/opt/autovpn/bin/autovpn', ['jobs', 'status', 'job-1', '--json', '--project-root', '/repo']]);
+});
+
+test('selectBackend defaults to Python backend and supports explicit Python fallback', () => {
+  assert.equal(selectBackend({ env: {} }).kind, 'python');
+  assert.equal(selectBackend({ env: { AUTOVPN_BACKEND: 'python' } }).kind, 'python');
+});
+
+test('PythonBackend can stream normalized events from captured JSONL stdout', async () => {
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  const spawns = [];
+  const backend = new PythonBackend({
+    resolvePythonCli: () => ({ command: '/opt/autovpn/bin/autovpn', args: [] }),
+    spawn: (command, args) => {
+      spawns.push([command, args]);
+      return child;
+    }
+  });
+
+  const events = [];
+  const consume = (async () => {
+    for await (const event of backend.run({ projectRoot: '/repo', skipDeploy: true, skipVerify: true, output: 'jsonl' })) {
+      events.push(event);
+    }
+  })();
+  child.stdout.emit('data', '{"type":"run_started","artifact_dir":"/repo/artifacts/1"}\n');
+  child.stdout.emit('data', '{"type":"summary","run_status":"success"}\n');
+  child.stdout.emit('end');
+  child.emit('close', 0, null);
+  await consume;
+
+  assert.deepEqual(spawns[0], ['/opt/autovpn/bin/autovpn', ['run', '--project-root', '/repo', '--output', 'jsonl', '--skip-deploy', '--skip-verify']]);
+  assert.deepEqual(events.map((event) => event.type), ['run_started', 'summary']);
+});
+
+test('PythonBackend event streams surface non-zero Python exits', async () => {
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  const backend = new PythonBackend({
+    resolvePythonCli: () => ({ command: '/opt/autovpn/bin/autovpn', args: [] }),
+    spawn: () => child
+  });
+
+  const consume = (async () => {
+    for await (const _event of backend.run({ projectRoot: '/repo', output: 'jsonl' })) {
+      // consume stream
+    }
+  })();
+  child.stderr.emit('data', 'bad config\n');
+  child.stdout.emit('end');
+  child.emit('close', 1, null);
+
+  await assert.rejects(consume, /Python backend exited with code 1: bad config/);
+});
+
+test('PythonBackend readLogs streams Python job log output', async () => {
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  const spawns = [];
+  const backend = new PythonBackend({
+    resolvePythonCli: () => ({ command: '/opt/autovpn/bin/autovpn', args: [] }),
+    spawn: (command, args) => {
+      spawns.push([command, args]);
+      return child;
+    }
+  });
+
+  const lines = [];
+  const consume = (async () => {
+    for await (const line of backend.readLogs({ projectRoot: '/repo', jobId: 'job-1', format: 'jsonl', tail: 10 })) {
+      lines.push(line);
+    }
+  })();
+  child.stdout.emit('data', '{"level":"info","message":"one"}\n');
+  child.stdout.emit('data', '{"level":"info","message":"two"}\n');
+  child.stdout.emit('end');
+  child.emit('close', 0, null);
+  await consume;
+
+  assert.deepEqual(spawns[0], ['/opt/autovpn/bin/autovpn', ['jobs', 'logs', 'job-1', '--project-root', '/repo', '--format', 'jsonl', '--tail', '10']]);
+  assert.deepEqual(lines, ['{"level":"info","message":"one"}', '{"level":"info","message":"two"}']);
+});

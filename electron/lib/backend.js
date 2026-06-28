@@ -5,12 +5,13 @@ export function buildPythonCandidates(projectRoot) {
   return [
     path.join(projectRoot, '.venv', 'bin', 'python'),
     path.join(projectRoot, '.venv', 'bin', 'python3'),
-    '/opt/homebrew/bin/python3.14',
     '/opt/homebrew/bin/python3.12',
-    '/usr/local/bin/python3.14',
+    '/opt/homebrew/bin/python3.14',
     '/usr/local/bin/python3.12',
+    '/usr/local/bin/python3.14',
     'python3.12',
-    'python3'
+    'python3',
+    'python'
   ];
 }
 

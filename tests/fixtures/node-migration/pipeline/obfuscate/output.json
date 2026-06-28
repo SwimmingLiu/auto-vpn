@@ -1,0 +1,22 @@
+{
+  "transformed_source": "// subscription worker: returns encoded payload on secret match, random bytes otherwise\nconst SUBSCRIPTION_PAYLOAD = `alpha\nbeta`;\nfunction buildRandomPayload() {\n  const edge_demo_random_bytes = new Uint8Array(8);\n  return String.fromCharCode.apply(null, edge_demo_random_bytes);\n}\nasync function handleSubscriptionRequest(request) {\n  try {\n    const url = new URL(request.url);\n    const edge_demo_secret_token = url.searchParams.get(['ser', 'ect', '_key'].join(''));\n    const edge_demo_response_payload = edge_demo_secret_token === ['swim', 'ming', 'liu'].join('') ? SUBSCRIPTION_PAYLOAD : buildRandomPayload();\n    return new Response(edge_demo_response_payload);\n  } catch (edge_demo_error) {\n    return new Response(edge_demo_error.toString());\n  }\n}\n",
+  "modules": {
+    "custom/modules/runtime.js": "export const workerSource = \"// subscription worker: returns encoded payload on secret match, random bytes otherwise\\nconst SUBSCRIPTION_PAYLOAD = `alpha\\nbeta`;\\nfunction buildRandomPayload() {\\n  const edge_demo_random_bytes = new Uint8Array(8);\\n  return String.fromCharCode.apply(null, edge_demo_random_bytes);\\n}\\nasync function handleSubscriptionRequest(request) {\\n  try {\\n    const url = new URL(request.url);\\n    const edge_demo_secret_token = url.searchParams.get(['ser', 'ect', '_key'].join(''));\\n    const edge_demo_response_payload = edge_demo_secret_token === ['swim', 'ming', 'liu'].join('') ? SUBSCRIPTION_PAYLOAD : buildRandomPayload();\\n    return new Response(edge_demo_response_payload);\\n  } catch (edge_demo_error) {\\n    return new Response(edge_demo_error.toString());\\n  }\\n}\\n\";\n",
+    "custom/modules/guard.js": "export const secretParam = ['ser', 'ect', '_key'].join('');\nexport const secretValue = ['swim', 'ming', 'liu'].join('');\n",
+    "custom/modules/noise.js": "export const noiseLengthRange = [8, 12];\n",
+    "custom/modules/payload.js": "export const mainData = \"alpha\\nbeta\";\n"
+  },
+  "manifest": {
+    "environment_name": "staging",
+    "entry_filename": "_worker.js",
+    "modules": [
+      "custom/modules/guard.js",
+      "custom/modules/noise.js",
+      "custom/modules/payload.js",
+      "custom/modules/runtime.js"
+    ],
+    "variable_prefix": "edge-demo",
+    "enable_keyword_fragmentation": true,
+    "enable_identifier_randomization": true
+  }
+}

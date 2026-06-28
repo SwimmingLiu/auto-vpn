@@ -1,0 +1,27 @@
+{
+  "ok": true,
+  "sources": {
+    "xuanfeng": {
+      "enabled": true,
+      "url": "set",
+      "key": "set"
+    }
+  },
+  "deploy": {
+    "project_name": "sub-nodes",
+    "pages_project_url": "https://sub-nodes.pages.dev",
+    "cloudflare_api_token": "set",
+    "cloudflare_global_key": "missing",
+    "cloudflare_email": "missing",
+    "account_id": "set",
+    "subscription_url": "set",
+    "verify_subscription_url": "set",
+    "secret_query": "set"
+  },
+  "paths": {
+    "project_root": "/repo",
+    "artifacts_root": "/repo/artifacts",
+    "state_root": "/repo/state",
+    "profile_path": "/repo/state/profile.toml"
+  }
+}

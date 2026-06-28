@@ -1,6 +1,7 @@
 import argparse
 import json
 import sys
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 from vpn_automation import artifact_preview
@@ -8,6 +9,13 @@ from vpn_automation import backend
 from vpn_automation import doctor
 from vpn_automation import jobs
 from vpn_automation.config.models import resolve_repo_anchor
+
+
+def _package_version() -> str:
+    try:
+        return version("vpn-subscription-automation")
+    except PackageNotFoundError:
+        return "0.0.0"
 
 
 def _project_root(value: str) -> Path:
@@ -64,6 +72,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="autovpn",
         description="AutoVPN headless command line interface",
     )
+    parser.add_argument("--version", action="version", version=f"autovpn {_package_version()}")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     profile_parser = subparsers.add_parser("profile")
@@ -395,6 +404,10 @@ def dispatch(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if argv is not None and argv == ["--version"]:
+        print(f"autovpn {_package_version()}")
+        return 0
+
     parser = build_parser()
     args = parser.parse_args(argv)
     try:

@@ -27,10 +27,10 @@ def test_create_default_profile_omits_workspace_and_keeps_defaults(tmp_path: Pat
     assert "workspace" not in profile.to_dict()
     assert profile.deploy.project_name == "sub-nodes"
     assert profile.deploy.pages_project_url == "https://sub-nodes.pages.dev"
-    assert profile.deploy.subscription_url == "https://swimmingliu.xyz/179ba8dd-3854-4747-b853-fc1868ef3937"
+    assert profile.deploy.subscription_url == "https://swimmingliu.online/179ba8dd-3854-4747-b853-fc1868ef3937"
     assert (
         profile.deploy.verify_subscription_url
-        == "https://www.swimmingliu.xyz/sub?token=8410fb43eb2176497f5beafc0c39f5bc"
+        == "https://www.swimmingliu.online/sub?token=8410fb43eb2176497f5beafc0c39f5bc"
     )
     assert profile.sources["leiting"].enabled is True
 

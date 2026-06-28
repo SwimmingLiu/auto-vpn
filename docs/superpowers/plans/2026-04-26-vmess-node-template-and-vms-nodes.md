@@ -225,7 +225,7 @@ def test_ensure_profile_json_bootstraps_missing_profile(tmp_path: Path) -> None:
 def test_build_secret_url_uses_pages_project_url_and_query() -> None:
     deploy = DeployConfig(
         project_name="vms-nodes",
-        subscription_url="https://swimmingliu.xyz/179ba8dd-3854-4747-b853-fc1868ef3937",
+        subscription_url="https://swimmingliu.online/179ba8dd-3854-4747-b853-fc1868ef3937",
         pages_project_url="https://vms-nodes.pages.dev",
         secret_query="serect_key=swimmingliu",
     )
@@ -251,7 +251,7 @@ pages_project_url: str = "https://vms-nodes.pages.dev"
 ...
 deploy=DeployConfig(
     project_name="vms-nodes",
-    subscription_url="https://swimmingliu.xyz/179ba8dd-3854-4747-b853-fc1868ef3937",
+    subscription_url="https://swimmingliu.online/179ba8dd-3854-4747-b853-fc1868ef3937",
 )
 ```
 

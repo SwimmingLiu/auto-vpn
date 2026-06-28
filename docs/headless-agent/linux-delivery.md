@@ -53,7 +53,7 @@ autovpn doctor --deploy --strict --output json
 
 - Profile path resolves correctly.
 - `~/.auto-vpn/profile.toml` exists or can be created.
-- `~/.auto-vpn/artifacts/` or `VPN_AUTOMATION_ARTIFACTS_ROOT` is writable.
+- `~/.auto-vpn/artifacts/` or `VPN_AUTOMATION_RUNTIME_ROOT` is writable.
 - `templates/vmess_node.js` exists.
 - `.env` presence is reported as status only.
 

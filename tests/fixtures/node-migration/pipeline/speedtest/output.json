@@ -1,0 +1,30 @@
+{
+  "average_download_mb_s": 2.345,
+  "selected_links": [
+    "vmess://b",
+    "vmess://d"
+  ],
+  "results": [
+    {
+      "link": "vmess://c",
+      "reachable": false,
+      "average_download_mb_s": 0.0,
+      "latency_ms": 0,
+      "error": "timeout"
+    },
+    {
+      "link": "vmess://b",
+      "reachable": true,
+      "average_download_mb_s": 2.2,
+      "latency_ms": 31,
+      "error": ""
+    },
+    {
+      "link": "vmess://d",
+      "reachable": true,
+      "average_download_mb_s": 1.7,
+      "latency_ms": 62,
+      "error": "https://speed.example/backup: timeout"
+    }
+  ]
+}

@@ -113,3 +113,25 @@ def test_build_worker_artifacts_emits_sidecar_modules_and_manifest() -> None:
     assert artifacts.manifest["environment_name"] == "staging"
     assert artifacts.manifest["entry_filename"] == "_worker.js"
     assert artifacts.manifest["variable_prefix"] == "vf"
+
+
+def test_build_worker_artifacts_fixture_matches_node_migration_golden() -> None:
+    import json
+
+    module = _load_worker_build_module()
+    fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "node-migration" / "pipeline" / "obfuscate"
+    payload = json.loads((fixture_dir / "input.json").read_text(encoding="utf-8"))
+    expected = json.loads((fixture_dir / "output.json").read_text(encoding="utf-8"))
+
+    config = module.WorkerBuildConfig(**payload["config"])
+    artifacts = module.build_worker_artifacts(
+        payload["rendered_source"],
+        config,
+        payload["secret_query"],
+    )
+
+    assert {
+        "transformed_source": artifacts.transformed_source,
+        "modules": artifacts.modules,
+        "manifest": artifacts.manifest,
+    } == expected

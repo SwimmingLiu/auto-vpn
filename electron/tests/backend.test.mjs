@@ -58,12 +58,13 @@ test('buildBackendInvocation appends extra args for retry-stage style commands',
   ]);
 });
 
-test('buildPythonCandidates prefers project venv and Homebrew Python before generic python', () => {
+test('buildPythonCandidates prefers project venv and Python 3.12 before Python 3.14 fallbacks', () => {
   const candidates = buildPythonCandidates('/repo');
 
   assert.equal(candidates[0], '/repo/.venv/bin/python');
   assert.equal(candidates[1], '/repo/.venv/bin/python3');
-  assert.ok(candidates.indexOf('/opt/homebrew/bin/python3.14') < candidates.indexOf('python3'));
+  assert.ok(candidates.indexOf('/opt/homebrew/bin/python3.12') < candidates.indexOf('/opt/homebrew/bin/python3.14'));
+  assert.ok(candidates.indexOf('/usr/local/bin/python3.12') < candidates.indexOf('/usr/local/bin/python3.14'));
   assert.ok(candidates.indexOf('/opt/homebrew/bin/python3.12') < candidates.indexOf('python3'));
 });
 

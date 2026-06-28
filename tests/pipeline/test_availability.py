@@ -59,6 +59,31 @@ def test_evaluate_provider_response_rejects_redirect_outside_allowed_hosts() -> 
     assert result.reason == "unexpected_host"
 
 
+def test_evaluate_provider_response_fixture_matches_node_migration_golden() -> None:
+    import json
+    from pathlib import Path
+
+    fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "node-migration" / "pipeline" / "availability"
+    payload = json.loads((fixture_dir / "input.json").read_text(encoding="utf-8"))
+    expected = json.loads((fixture_dir / "output.json").read_text(encoding="utf-8"))
+    target_payload = payload["target"]
+    target = ProviderTarget(
+        name=target_payload["name"],
+        url=target_payload["url"],
+        allowed_hosts=tuple(target_payload["allowed_hosts"]),
+        negative_phrases=tuple(target_payload["negative_phrases"]),
+    )
+
+    provider_result = evaluate_provider_response(target, **payload["response"])
+    availability_result = AvailabilityResult(
+        speed_result=SpeedTestResult(**payload["speed_result"]),
+        provider_results={"custom": provider_result},
+    )
+
+    assert provider_result.__dict__ == expected["provider_result"]
+    assert availability_result.to_dict() == expected["availability_result"]
+
+
 def test_fetch_provider_result_uses_chatgpt_unlock_probe() -> None:
     target = ProviderTarget(
         name="chatgpt",

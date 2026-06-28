@@ -110,7 +110,7 @@ autovpn run --project-root /opt/autovpn/vpn-subscription-automation --output hum
 | `cloudflare_credentials` fails in deploy mode | Set `CLOUDFLARE_API_TOKEN` or profile Cloudflare credentials. |
 | `cloudflare_account` fails | Set `CLOUDFLARE_ACCOUNT_ID` or profile `deploy.account_id`. |
 | `network_reachability` fails | Check server outbound network, proxy env vars, and configured speed/availability URLs. |
-| `profile_path` or `artifacts_root` fails | Fix ownership and write permissions under `~/.auto-vpn/`, or set `VPN_AUTOMATION_RUNTIME_ROOT`. |
+| `profile_path` or `artifacts_root` fails | Fix ownership and write permissions under `~/.auto-vpn/`, or set `VPN_AUTOMATION_RUNTIME_ROOT` to a writable directory. |
 
 ## Redaction Rules
 
