@@ -128,6 +128,7 @@ test('Node job manager stop marks job stopped and targets process group', async 
     timeoutMs: 0,
     now: () => '2026-06-28T00:00:01+00:00',
     isAlive: () => true,
+    processMatchesJob: () => true,
     signalProcess: (target, signal) => {
       signals.push([target, signal]);
     }
