@@ -36,6 +36,17 @@ function runReleaseTagValidation(script, { version, tagName }) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-release-tag-'));
   try {
     fs.writeFileSync(path.join(tempDir, 'package.json'), JSON.stringify({ version }), 'utf-8');
+    fs.mkdirSync(path.join(tempDir, 'npm', 'autovpn-cli'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tempDir, 'npm', 'autovpn-cli', 'package.json'),
+      JSON.stringify({ version }),
+      'utf-8'
+    );
+    fs.writeFileSync(
+      path.join(tempDir, 'pyproject.toml'),
+      `[project]\nversion = "${version}"\n`,
+      'utf-8'
+    );
     return spawnSync('bash', ['-euo', 'pipefail', '-c', script], {
       cwd: tempDir,
       env: {

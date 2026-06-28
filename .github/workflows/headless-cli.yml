@@ -43,6 +43,10 @@ jobs:
         run: |
           npm ci
 
+      - name: Install npm CLI dependencies
+        run: |
+          npm ci --prefix npm/autovpn-cli
+
       - name: Run Python tests
         run: ./scripts/run_pytest.sh tests -q
 
@@ -56,6 +60,24 @@ jobs:
             electron/tests/release-notes.test.mjs \
             electron/tests/ui-state.test.mjs \
             electron/tests/window-config.test.mjs
+
+      - name: Run npm CLI wrapper tests
+        run: |
+          npm test --prefix npm/autovpn-cli
+
+      - name: Pack npm CLI wrapper
+        run: |
+          cd npm/autovpn-cli
+          npm pack --json --pack-destination .
+
+      - name: Smoke npm CLI wrapper
+        run: |
+          PY_AUTOVPN="$(command -v autovpn)"
+          AUTOVPN_PYTHON_CLI="${PY_AUTOVPN}" AUTOVPN_NO_INSTALL=1 npx -y ./npm/autovpn-cli/*.tgz --help
+          AUTOVPN_PYTHON_CLI="${PY_AUTOVPN}" AUTOVPN_NO_INSTALL=1 npx -y ./npm/autovpn-cli/*.tgz --version
+          AUTOVPN_PYTHON_CLI="${PY_AUTOVPN}" AUTOVPN_NO_INSTALL=1 npx -y ./npm/autovpn-cli/*.tgz doctor --project-root "$PWD" --output json > npm-doctor.json || npm_doctor_status=$?
+          python -m json.tool npm-doctor.json >/dev/null
+          echo "npm_doctor_status=${npm_doctor_status:-0}"
 
       - name: Smoke headless CLI
         run: |

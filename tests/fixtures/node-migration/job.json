@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "job_id": "20260628-000000-abcdef",
+  "kind": "run",
+  "status": "success",
+  "pid": 12345,
+  "pgid": 12345,
+  "created_at": "2026-06-28T00:00:00+08:00",
+  "started_at": "2026-06-28T00:00:00+08:00",
+  "finished_at": "2026-06-28T00:01:00+08:00",
+  "updated_at": "2026-06-28T00:01:00+08:00",
+  "exit_code": 0,
+  "signal": "",
+  "project_root": "/repo",
+  "command": ["python", "-m", "vpn_automation.backend", "run", "--project-root", "/repo"],
+  "event_log": "/repo/state/jobs/20260628-000000-abcdef/events.jsonl",
+  "human_log": "/repo/state/jobs/20260628-000000-abcdef/human.log",
+  "stdout_log": "/repo/state/jobs/20260628-000000-abcdef/stdout.log",
+  "stderr_log": "/repo/state/jobs/20260628-000000-abcdef/stderr.log",
+  "artifact_dir": "/repo/artifacts/20260628-000000",
+  "session_dir": "/repo/state/jobs/20260628-000000-abcdef",
+  "resume_from": "",
+  "retry": {
+    "source_artifact_dir": "",
+    "stage": ""
+  },
+  "options": {
+    "resume_latest": false,
+    "skip_deploy": true,
+    "skip_verify": true,
+    "output_format": "jsonl"
+  },
+  "stop_requested_at": "",
+  "last_event_at": "2026-06-28T00:01:00+08:00",
+  "last_error": "",
+  "job_file": "/repo/state/jobs/20260628-000000-abcdef/job.json"
+}

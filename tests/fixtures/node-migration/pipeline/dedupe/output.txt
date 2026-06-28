@@ -1,0 +1,2 @@
+vmess://node-a
+vmess://node-b

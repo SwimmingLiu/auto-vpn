@@ -12,6 +12,7 @@ state/
 node_modules/
 dist/
 dist-electron/
+npm/autovpn-cli/*.tgz
 build/
 !electron/build/
 !electron/build/assets/

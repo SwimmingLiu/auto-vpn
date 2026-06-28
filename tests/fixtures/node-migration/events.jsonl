@@ -1,0 +1,9 @@
+{"type":"run_started","artifact_dir":"/repo/artifacts/20260628-000000","skip_deploy":true,"skip_verify":true,"resume_from":""}
+{"type":"log","message":"[doctor] runtime environment loaded"}
+{"type":"stage","stage":"doctor","status":"success"}
+{"type":"extract_source_started","source_name":"xuanfeng","requested_iterations":2,"min_iterations":1,"resume_from_iteration":1}
+{"type":"extract_iteration","source_name":"xuanfeng","iteration":1,"requested_iterations":2,"new_items":1,"extracted_links":1,"total_links":1}
+{"type":"extract_source_completed","source_name":"xuanfeng","requested_iterations":2,"successful_iterations":1,"failed_iterations":0,"raw_links":1}
+{"type":"speedtest_probe_result","completed":1,"total":1,"link":"vmess://REDACTED","reachable":true,"latency_ms":120,"error":""}
+{"type":"availability_link_result","completed":1,"total":1,"link":"vmess://REDACTED","all_passed":true,"provider_results":{"subscription":{"name":"subscription","passed":true,"reason":"ok"}}}
+{"type":"summary","artifact_dir":"/repo/artifacts/20260628-000000","stage_status":{"doctor":"success","extract":"success"},"counts":{"raw_links":1},"source_counts":{"xuanfeng":{"raw_links":1}},"deployment":{},"run_status":"success","error":""}
