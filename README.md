@@ -39,26 +39,35 @@ Download the latest installer from [GitHub Releases](https://github.com/Swimming
 | Windows | `AutoVPN-<version>-x64-setup.exe`, `AutoVPN-<version>-x64-portable.exe`, `AutoVPN-<version>-arm64-setup.exe`, `AutoVPN-<version>-arm64-portable.exe` |
 | CLI | `vpn_subscription_automation-<version>-py3-none-any.whl`, `vpn_subscription_automation-<version>.tar.gz`, `swimmingliu-autovpn-<version>.tgz` |
 
-The desktop installers bundle the Electron shell, runtime seed files, Python dependencies, browser probe runtime, and worker template. They do not install the terminal `autovpn` command. For Linux servers, headless hosts, and Agents, install the Python CLI package instead. Pipeline stages that call external tools still require those tools locally, including `mihomo` and Cloudflare Wrangler/npm tooling.
+The desktop installers bundle the Electron shell, runtime seed files, Python dependencies, browser probe runtime, and worker template. They do not install the terminal `autovpn` command. For terminal use on Linux servers, headless hosts, CI, or Agents, install the CLI separately.
 
-Install the npm CLI wrapper when a Node.js-native install flow is easier for servers, CI, or Agents:
+## CLI Quickstart
+
+The CLI entrypoint is `autovpn`. It uses the same automation backend as the desktop app and stores runtime data under `~/.auto-vpn/` by default:
+
+- profile: `~/.auto-vpn/profile.toml`
+- run artifacts: `~/.auto-vpn/artifacts/`
+- detached job state and logs: `~/.auto-vpn/jobs/`
+
+Set `VPN_AUTOMATION_RUNTIME_ROOT` to move those files together.
+
+Install the npm wrapper when a Node.js-native install flow is easier. It requires Node.js `>=22.5.0`:
 
 ```bash
-npx -y https://github.com/SwimmingLiu/auto-vpn/releases/download/v<version>/swimmingliu-autovpn-<version>.tgz doctor --project-root /opt/autovpn/vpn-subscription-automation --output json
+npx -y https://github.com/SwimmingLiu/auto-vpn/releases/download/v<version>/swimmingliu-autovpn-<version>.tgz --version
 npm install -g https://github.com/SwimmingLiu/auto-vpn/releases/download/v<version>/swimmingliu-autovpn-<version>.tgz
 autovpn --version
-autovpn doctor --project-root /opt/autovpn/vpn-subscription-automation --output human
 ```
 
-The npm wrapper exposes the same `autovpn` command and forwards all business commands to a matching Python backend. It resolves the backend from `AUTOVPN_PYTHON_CLI`, a compatible PATH `autovpn`, or a wrapper-managed Python virtual environment. Set `AUTOVPN_NO_INSTALL=1` in locked-down CI if automatic backend installation should be disabled.
+The npm wrapper exposes the same `autovpn` command. For commands that still need Python, it resolves the backend from `AUTOVPN_PYTHON_CLI`, a compatible PATH `autovpn`, or a wrapper-managed Python virtual environment. Set `AUTOVPN_NO_INSTALL=1` in locked-down CI if automatic backend installation should be disabled.
 
-Install the CLI from a release wheel:
+Install the Python CLI from a release wheel when you want a pure Python installation:
 
 ```bash
 python3.12 -m pip install --user pipx
 python3.12 -m pipx ensurepath
 pipx install https://github.com/SwimmingLiu/auto-vpn/releases/download/v<version>/vpn_subscription_automation-<version>-py3-none-any.whl
-autovpn doctor --project-root /opt/autovpn/vpn-subscription-automation --output human
+autovpn --version
 ```
 
 Alternatively, install into a project virtual environment:
@@ -70,6 +79,26 @@ source .venv/bin/activate
 python -m pip install https://github.com/SwimmingLiu/auto-vpn/releases/download/v<version>/vpn_subscription_automation-<version>-py3-none-any.whl
 autovpn --help
 ```
+
+Common CLI checks and local dry runs:
+
+```bash
+autovpn doctor --project-root /opt/autovpn/vpn-subscription-automation --output human
+autovpn profile summary --project-root /opt/autovpn/vpn-subscription-automation --json
+autovpn run --project-root /opt/autovpn/vpn-subscription-automation --skip-deploy --skip-verify --output jsonl
+autovpn artifacts latest --project-root /opt/autovpn/vpn-subscription-automation
+```
+
+For long terminal or Agent runs, start a detached job and reconnect later:
+
+```bash
+autovpn run --project-root /opt/autovpn/vpn-subscription-automation --skip-deploy --skip-verify --detach --json
+autovpn status --project-root /opt/autovpn/vpn-subscription-automation --json
+autovpn logs --project-root /opt/autovpn/vpn-subscription-automation --tail 200
+autovpn stop --project-root /opt/autovpn/vpn-subscription-automation
+```
+
+Pipeline stages that call external tools still require those tools locally, including `mihomo` and Cloudflare Wrangler/npm tooling. For a complete terminal-only install path, dependency matrix, troubleshooting, and redaction rules, see [`docs/headless-agent/linux-headless-guide.md`](docs/headless-agent/linux-headless-guide.md).
 
 ## Project Structure
 

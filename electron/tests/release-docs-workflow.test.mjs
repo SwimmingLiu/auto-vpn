@@ -70,6 +70,7 @@ test('README follows the AutoVPN desktop app structure', () => {
     'Features',
     'Tech Stack',
     'Installation',
+    'CLI Quickstart',
     'Project Structure',
     'Development',
     'Release Packaging',
@@ -92,9 +93,17 @@ test('README follows the AutoVPN desktop app structure', () => {
     'AutoVPN-<version>-arm64-portable.exe',
     'vpn_subscription_automation-<version>-py3-none-any.whl',
     'vpn_subscription_automation-<version>.tar.gz',
+    'swimmingliu-autovpn-<version>.tgz',
     'pipx install',
     'python -m venv .venv',
-    'autovpn doctor --project-root'
+    'autovpn doctor --project-root',
+    'Node.js `>=22.5.0`',
+    'npm install -g https://github.com/SwimmingLiu/auto-vpn/releases/download/v<version>/swimmingliu-autovpn-<version>.tgz',
+    'AUTOVPN_PYTHON_CLI',
+    'AUTOVPN_NO_INSTALL=1',
+    'VPN_AUTOMATION_RUNTIME_ROOT',
+    'autovpn run --project-root /opt/autovpn/vpn-subscription-automation --skip-deploy --skip-verify --detach --json',
+    'autovpn logs --project-root /opt/autovpn/vpn-subscription-automation --tail 200'
   ]) {
     assert.ok(readme.includes(requiredText), `README should mention ${requiredText}`);
   }
