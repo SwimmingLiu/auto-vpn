@@ -5,6 +5,14 @@ from pathlib import Path
 from vpn_automation import cli
 
 
+def test_cli_version_prints_package_version(capsys) -> None:
+    code = cli.main(["--version"])
+
+    captured = capsys.readouterr()
+    assert code == 0
+    assert captured.out.strip() == "autovpn 1.3.0"
+
+
 def test_profile_show_maps_to_backend_profile_json(tmp_path: Path, monkeypatch, capsys) -> None:
     project_root = tmp_path / "vpn-subscription-automation"
     called = {}

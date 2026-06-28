@@ -37,9 +37,20 @@ Download the latest installer from [GitHub Releases](https://github.com/Swimming
 | macOS | `AutoVPN-<version>-arm64.dmg`, `AutoVPN-<version>-x64.dmg` |
 | Linux | `AutoVPN-<version>-amd64.deb`, `AutoVPN-<version>-x86_64.rpm`, `AutoVPN-<version>-arm64.deb`, `AutoVPN-<version>-aarch64.rpm` |
 | Windows | `AutoVPN-<version>-x64-setup.exe`, `AutoVPN-<version>-x64-portable.exe`, `AutoVPN-<version>-arm64-setup.exe`, `AutoVPN-<version>-arm64-portable.exe` |
-| CLI | `vpn_subscription_automation-<version>-py3-none-any.whl`, `vpn_subscription_automation-<version>.tar.gz` |
+| CLI | `vpn_subscription_automation-<version>-py3-none-any.whl`, `vpn_subscription_automation-<version>.tar.gz`, `swimmingliu-autovpn-<version>.tgz` |
 
 The desktop installers bundle the Electron shell, runtime seed files, Python dependencies, browser probe runtime, and worker template. They do not install the terminal `autovpn` command. For Linux servers, headless hosts, and Agents, install the Python CLI package instead. Pipeline stages that call external tools still require those tools locally, including `mihomo` and Cloudflare Wrangler/npm tooling.
+
+Install the npm CLI wrapper when a Node.js-native install flow is easier for servers, CI, or Agents:
+
+```bash
+npx -y https://github.com/SwimmingLiu/auto-vpn/releases/download/v<version>/swimmingliu-autovpn-<version>.tgz doctor --project-root /opt/autovpn/vpn-subscription-automation --output json
+npm install -g https://github.com/SwimmingLiu/auto-vpn/releases/download/v<version>/swimmingliu-autovpn-<version>.tgz
+autovpn --version
+autovpn doctor --project-root /opt/autovpn/vpn-subscription-automation --output human
+```
+
+The npm wrapper exposes the same `autovpn` command and forwards all business commands to a matching Python backend. It resolves the backend from `AUTOVPN_PYTHON_CLI`, a compatible PATH `autovpn`, or a wrapper-managed Python virtual environment. Set `AUTOVPN_NO_INSTALL=1` in locked-down CI if automatic backend installation should be disabled.
 
 Install the CLI from a release wheel:
 
@@ -116,6 +127,16 @@ autovpn artifacts latest --project-root /opt/autovpn/vpn-subscription-automation
 ```
 
 The `autovpn` command is the terminal and Agent-facing interface. It reuses the same Python backend as Electron and supports profile, run, artifact, retry, and resume operations without opening the desktop client.
+
+Run the npm wrapper from source during development:
+
+```bash
+npm ci --prefix npm/autovpn-cli
+npm test --prefix npm/autovpn-cli
+(cd npm/autovpn-cli && npm pack --pack-destination .)
+AUTOVPN_PYTHON_CLI="$(command -v autovpn)" AUTOVPN_NO_INSTALL=1 npx -y ./npm/autovpn-cli/*.tgz --version
+AUTOVPN_PYTHON_CLI="$(command -v autovpn)" AUTOVPN_NO_INSTALL=1 npx -y ./npm/autovpn-cli/*.tgz doctor --project-root "$PWD" --output json
+```
 
 For long terminal or Agent runs, start a detached job and reconnect later:
 

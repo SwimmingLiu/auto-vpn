@@ -241,9 +241,9 @@ The wrapper must not parse AutoVPN business commands. It only handles wrapper ru
 ```bash
 rtk proxy npm ci --prefix npm/autovpn-cli
 rtk proxy npm test --prefix npm/autovpn-cli
-rtk proxy npm pack --json --prefix npm/autovpn-cli
-rtk proxy npx -y ./npm/autovpn-cli/*.tgz --help
-rtk proxy npx -y ./npm/autovpn-cli/*.tgz doctor --project-root "$PWD" --output json
+rtk proxy bash -lc 'cd npm/autovpn-cli && npm pack --json --pack-destination .'
+rtk proxy env AUTOVPN_PYTHON_CLI="$PWD/.venv/bin/autovpn" AUTOVPN_NO_INSTALL=1 npx -y ./npm/autovpn-cli/*.tgz --help
+rtk proxy env AUTOVPN_PYTHON_CLI="$PWD/.venv/bin/autovpn" AUTOVPN_NO_INSTALL=1 npx -y ./npm/autovpn-cli/*.tgz doctor --project-root "$PWD" --output json
 ```
 
 Phase 1 is complete when `npx` works from a packed local tarball and release workflow uploads an npm `.tgz`.
