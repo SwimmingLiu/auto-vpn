@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 from vpn_automation.config.models import SpeedTestConfig
 from vpn_automation.pipeline.proxy_runtime import (
     _register_active_proxy_runtime,
@@ -7,12 +10,16 @@ from vpn_automation.pipeline.proxy_runtime import (
 )
 from vpn_automation.pipeline.speedtest import (
     ProbeResult,
+    SpeedTestResult,
     aggregate_speed_measurements,
     probe_links,
     probe_vmess_link,
     select_speedtest_candidates,
     speedtest_links,
 )
+
+
+FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "node-migration" / "pipeline" / "speedtest"
 
 
 def test_build_mihomo_runtime_config_uses_mixed_port_and_ws_proxy() -> None:
@@ -253,3 +260,29 @@ def test_speedtest_links_emits_selected_and_full_test_events(monkeypatch) -> Non
         "speedtest_result",
         "speedtest_result",
     ]
+
+
+def test_speedtest_node_migration_fixture_matches_python_golden() -> None:
+    payload = json.loads((FIXTURE_DIR / "input.json").read_text(encoding="utf-8"))
+    expected = json.loads((FIXTURE_DIR / "output.json").read_text(encoding="utf-8"))
+
+    probes = [ProbeResult(**item) for item in payload["probes"]]
+    full_results = {item["link"]: SpeedTestResult(**item) for item in payload["full_results"]}
+
+    selected = select_speedtest_candidates(probes, payload["config"]["max_download_candidates"])
+    results = [
+        SpeedTestResult(
+            link=probe.link,
+            reachable=False,
+            average_download_mb_s=0.0,
+            latency_ms=probe.latency_ms,
+            error=probe.error,
+        )
+        for probe in probes
+        if not probe.reachable
+    ]
+    results.extend(full_results[link] for link in selected)
+
+    assert aggregate_speed_measurements(payload["measurements"]) == expected["average_download_mb_s"]
+    assert selected == expected["selected_links"]
+    assert [result.__dict__ for result in results] == expected["results"]
