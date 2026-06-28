@@ -4,14 +4,14 @@ from pathlib import Path
 
 from vpn_automation import cli, doctor
 from vpn_automation.config.models import AppProfile, DeployConfig, SourceConfig, SpeedTestConfig
-from vpn_automation.config.store import ProfileStore
+from vpn_automation.config.store import ProfileStore, resolve_profile_path
 
 
 def _write_minimal_project(project_root: Path, *, source_key: str = "SOURCE-SECRET", api_token: str = "") -> None:
     (project_root / "templates" / "share-worker").mkdir(parents=True)
     (project_root / "templates" / "vmess_node.js").write_text("const MainData = `__MAIN_DATA__`;", encoding="utf-8")
     (project_root / "templates" / "share-worker" / "vpn.js").write_text("export default {};", encoding="utf-8")
-    ProfileStore(project_root / "state" / "profile.toml").save(
+    ProfileStore(resolve_profile_path(project_root)).save(
         AppProfile(
             sources={
                 "leiting": SourceConfig(
@@ -148,9 +148,9 @@ def test_doctor_deploy_strict_requires_wrangler_and_account_id(tmp_path: Path, m
     project_root = tmp_path / "vpn-subscription-automation"
     _write_minimal_project(project_root, api_token="CF-TOKEN-SECRET")
     _fake_successful_dependencies(monkeypatch)
-    profile = ProfileStore(project_root / "state" / "profile.toml").load()
+    profile = ProfileStore(resolve_profile_path(project_root)).load()
     profile.deploy.account_id = ""
-    ProfileStore(project_root / "state" / "profile.toml").save(profile)
+    ProfileStore(resolve_profile_path(project_root)).save(profile)
 
     def fake_run(command, **kwargs):
         if command[:4] == ["/usr/bin/npx", "wrangler", "pages", "deploy"]:
@@ -222,9 +222,9 @@ def test_doctor_fails_invalid_speedtest_settings(tmp_path: Path, monkeypatch, ca
     project_root = tmp_path / "vpn-subscription-automation"
     _write_minimal_project(project_root, api_token="CF-TOKEN-SECRET")
     _fake_successful_dependencies(monkeypatch)
-    profile = ProfileStore(project_root / "state" / "profile.toml").load()
+    profile = ProfileStore(resolve_profile_path(project_root)).load()
     profile.speed_test.timeout_seconds = 0
-    ProfileStore(project_root / "state" / "profile.toml").save(profile)
+    ProfileStore(resolve_profile_path(project_root)).save(profile)
 
     code = cli.main(["doctor", "--project-root", str(project_root), "--output", "json"])
 

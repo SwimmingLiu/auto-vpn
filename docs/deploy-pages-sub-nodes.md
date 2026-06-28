@@ -82,7 +82,7 @@
 - `enable_identifier_randomization`
 - `emit_sidecar_modules`
 
-这组配置当前不在设置页暴露，默认通过 `state/profile.toml` 手工维护。
+这组配置当前不在设置页暴露，默认通过 `~/.auto-vpn/profile.toml` 手工维护。可用 `VPN_AUTOMATION_RUNTIME_ROOT` 改到其他用户数据目录。
 
 ## 3. 旧配置迁移规则
 
@@ -111,7 +111,7 @@
 
 生成顺序：
 
-1. 如果 `state/profile.toml` 存在，复制它到 `bundled-profile.toml`
+1. 如果项目内 `state/profile.toml` 存在，复制它到 `bundled-profile.toml`
 2. 否则复制 `default-profile.toml` 到 `bundled-profile.toml`
 
 因此 `bundled-profile.toml` 是派生产物，不应作为源码提交。

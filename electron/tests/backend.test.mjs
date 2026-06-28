@@ -112,33 +112,63 @@ test('resolveProjectRoot returns explicit root unchanged', () => {
   assert.equal(resolveProjectRoot('/repo'), '/repo');
 });
 
-test('resolveStateProfilePath prefers the repo-anchor state file for worktrees', () => {
+test('resolveStateProfilePath defaults to the user runtime profile outside the project tree', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vpn-state-root-'));
   const repoRoot = path.join(root, 'vpn-subscription-automation');
   const worktreeRoot = path.join(repoRoot, '.worktrees', 'cleanup');
-  const anchorProfile = path.join(repoRoot, 'state', 'profile.toml');
-  const localProfile = path.join(worktreeRoot, 'state', 'profile.toml');
+  const runtimeRoot = path.join(root, 'home', '.auto-vpn');
 
   fs.mkdirSync(worktreeRoot, { recursive: true });
-  fs.mkdirSync(path.dirname(localProfile), { recursive: true });
-  fs.mkdirSync(path.dirname(anchorProfile), { recursive: true });
-  fs.writeFileSync(localProfile, '[sources]\n', 'utf-8');
-  fs.writeFileSync(anchorProfile, '[sources]\n', 'utf-8');
 
-  assert.equal(resolveStateProfilePath(worktreeRoot), anchorProfile);
-});
-
-test('resolveStateProfilePath switches to userData when packaged', () => {
   assert.equal(
-    resolveStateProfilePath('/repo', { isPackaged: true, userDataPath: '/Users/demo/Library/Application Support/VPN' }),
-    '/Users/demo/Library/Application Support/VPN/state/profile.toml'
+    resolveStateProfilePath(worktreeRoot, { runtimeRootPath: runtimeRoot }),
+    path.join(runtimeRoot, 'profile.toml')
   );
 });
 
-test('resolveRuntimeArtifactsPath switches to userData when packaged', () => {
+test('resolveStateProfilePath honors the runtime root env override', () => {
+  const previous = process.env.VPN_AUTOMATION_RUNTIME_ROOT;
+  process.env.VPN_AUTOMATION_RUNTIME_ROOT = '/Users/demo/.custom-auto-vpn';
+  try {
+    assert.equal(resolveStateProfilePath('/repo'), '/Users/demo/.custom-auto-vpn/profile.toml');
+  } finally {
+    if (previous === undefined) {
+      delete process.env.VPN_AUTOMATION_RUNTIME_ROOT;
+    } else {
+      process.env.VPN_AUTOMATION_RUNTIME_ROOT = previous;
+    }
+  }
+});
+
+test('resolveStateProfilePath expands home-relative runtime root env override', () => {
+  const previous = process.env.VPN_AUTOMATION_RUNTIME_ROOT;
+  process.env.VPN_AUTOMATION_RUNTIME_ROOT = '~/.custom-auto-vpn';
+  try {
+    assert.equal(resolveStateProfilePath('/repo'), path.join(os.homedir(), '.custom-auto-vpn', 'profile.toml'));
+  } finally {
+    if (previous === undefined) {
+      delete process.env.VPN_AUTOMATION_RUNTIME_ROOT;
+    } else {
+      process.env.VPN_AUTOMATION_RUNTIME_ROOT = previous;
+    }
+  }
+});
+
+test('resolveStateProfilePath uses the same user runtime root when packaged', () => {
   assert.equal(
-    resolveRuntimeArtifactsPath('/repo', { isPackaged: true, userDataPath: '/Users/demo/Library/Application Support/VPN' }),
-    '/Users/demo/Library/Application Support/VPN/artifacts'
+    resolveStateProfilePath('/repo', {
+      isPackaged: true,
+      userDataPath: '/Users/demo/Library/Application Support/VPN',
+      runtimeRootPath: '/Users/demo/.auto-vpn'
+    }),
+    '/Users/demo/.auto-vpn/profile.toml'
+  );
+});
+
+test('resolveRuntimeArtifactsPath defaults to the user runtime artifacts directory', () => {
+  assert.equal(
+    resolveRuntimeArtifactsPath('/repo', { runtimeRootPath: '/Users/demo/.auto-vpn' }),
+    '/Users/demo/.auto-vpn/artifacts'
   );
 });
 

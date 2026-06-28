@@ -6,6 +6,13 @@ from dotenv import dotenv_values
 from vpn_automation.config.models import resolve_repo_anchor
 
 
+def resolve_user_runtime_root() -> Path:
+    runtime_override = os.environ.get("VPN_AUTOMATION_RUNTIME_ROOT", "").strip()
+    if runtime_override:
+        return Path(runtime_override).expanduser().resolve()
+    return Path.home() / ".auto-vpn"
+
+
 def resolve_runtime_root(candidate: Path) -> Path:
     resolved = candidate.resolve()
     if resolved.exists():
@@ -38,7 +45,7 @@ def resolve_artifacts_root(candidate: Path) -> Path:
     artifacts_override = os.environ.get("VPN_AUTOMATION_ARTIFACTS_ROOT", "").strip()
     if artifacts_override:
         return Path(artifacts_override).expanduser().resolve()
-    return resolve_runtime_root(candidate) / "artifacts"
+    return resolve_user_runtime_root() / "artifacts"
 
 
 def resolve_template_file(candidate: Path) -> Path:

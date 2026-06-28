@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -46,32 +47,33 @@ export function resolveProjectRoot(explicitRoot = '') {
   return findProjectRoot(currentDir);
 }
 
+function expandHomePath(value) {
+  if (value === '~') {
+    return os.homedir();
+  }
+  if (value.startsWith(`~${path.sep}`)) {
+    return path.join(os.homedir(), value.slice(2));
+  }
+  return value;
+}
+
+export function resolveUserRuntimeRoot(options = {}) {
+  const { runtimeRootPath = '' } = options;
+  if (runtimeRootPath) {
+    return path.resolve(expandHomePath(runtimeRootPath));
+  }
+  if (process.env.VPN_AUTOMATION_RUNTIME_ROOT) {
+    return path.resolve(expandHomePath(process.env.VPN_AUTOMATION_RUNTIME_ROOT));
+  }
+  return path.join(os.homedir(), '.auto-vpn');
+}
+
 export function resolveStateProfilePath(projectRoot, options = {}) {
-  const { isPackaged = false, userDataPath = '' } = options;
-  if (isPackaged && userDataPath) {
-    return path.join(userDataPath, 'state', 'profile.toml');
-  }
-
-  const localRoot = path.resolve(projectRoot);
-  const localPath = path.join(localRoot, 'state', 'profile.toml');
-  const parts = localRoot.split(path.sep);
-  const worktreeIndex = parts.indexOf('.worktrees');
-
-  if (worktreeIndex === -1) {
-    return localPath;
-  }
-
-  const repoRoot = parts.slice(0, worktreeIndex).join(path.sep) || path.sep;
-  const anchorPath = path.join(repoRoot, 'state', 'profile.toml');
-  return anchorPath;
+  return path.join(resolveUserRuntimeRoot(options), 'profile.toml');
 }
 
 export function resolveRuntimeArtifactsPath(projectRoot, options = {}) {
-  const { isPackaged = false, userDataPath = '' } = options;
-  if (isPackaged && userDataPath) {
-    return path.join(userDataPath, 'artifacts');
-  }
-  return path.join(path.resolve(projectRoot), 'artifacts');
+  return path.join(resolveUserRuntimeRoot(options), 'artifacts');
 }
 
 export function resolveBundledProfilePath(projectRoot) {

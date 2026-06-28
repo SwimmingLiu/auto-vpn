@@ -52,8 +52,8 @@ autovpn doctor --deploy --strict --output json
 #### Profile and Paths
 
 - Profile path resolves correctly.
-- `state/profile.toml` exists or can be created.
-- `artifacts/` or `VPN_AUTOMATION_ARTIFACTS_ROOT` is writable.
+- `~/.auto-vpn/profile.toml` exists or can be created.
+- `~/.auto-vpn/artifacts/` or `VPN_AUTOMATION_ARTIFACTS_ROOT` is writable.
 - `templates/vmess_node.js` exists.
 - `.env` presence is reported as status only.
 
@@ -151,7 +151,7 @@ The guide should not tell Linux users to install `xray` for the current speedtes
 
 ```bash
 autovpn profile show --project-root /opt/autovpn/vpn-subscription-automation
-vim /opt/autovpn/vpn-subscription-automation/state/profile.toml
+vim ~/.auto-vpn/profile.toml
 ```
 
 Example `.env` keys:
