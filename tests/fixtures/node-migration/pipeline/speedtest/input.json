@@ -1,0 +1,67 @@
+{
+  "links": [
+    "vmess://a",
+    "vmess://b",
+    "vmess://c",
+    "vmess://d"
+  ],
+  "config": {
+    "min_download_mb_s": 1.0,
+    "timeout_seconds": 20,
+    "concurrency": 2,
+    "urls": [
+      "https://speed.example/10mb"
+    ],
+    "probe_url": "https://www.gstatic.com/generate_204",
+    "max_download_bytes": 5000000,
+    "startup_wait_seconds": 1.0,
+    "max_download_candidates": 2
+  },
+  "measurements": [
+    1.2344,
+    2.3455,
+    3.4566
+  ],
+  "probes": [
+    {
+      "link": "vmess://a",
+      "reachable": true,
+      "latency_ms": 120,
+      "error": ""
+    },
+    {
+      "link": "vmess://b",
+      "reachable": true,
+      "latency_ms": 30,
+      "error": ""
+    },
+    {
+      "link": "vmess://c",
+      "reachable": false,
+      "latency_ms": 0,
+      "error": "timeout"
+    },
+    {
+      "link": "vmess://d",
+      "reachable": true,
+      "latency_ms": 60,
+      "error": ""
+    }
+  ],
+  "full_results": [
+    {
+      "link": "vmess://b",
+      "reachable": true,
+      "average_download_mb_s": 2.2,
+      "latency_ms": 31,
+      "error": ""
+    },
+    {
+      "link": "vmess://d",
+      "reachable": true,
+      "average_download_mb_s": 1.7,
+      "latency_ms": 62,
+      "error": "https://speed.example/backup: timeout"
+    }
+  ]
+}
