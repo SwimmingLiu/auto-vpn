@@ -8,13 +8,13 @@ import { latestJobId, listJobs, loadJob, publicJobPayload, tailLog } from '../jo
 import { readOptionValue, resolveProjectRoot } from '../runtime/paths.js';
 import { CliIo } from './output.js';
 
-type RunForwarder = (argv: string[]) => Promise<number>;
+type PythonFallback = (argv: string[]) => Promise<number>;
 
 interface NativeContext {
   cwd: string;
   env: NodeJS.ProcessEnv;
   io: CliIo;
-  runForwarder: RunForwarder;
+  pythonFallback: PythonFallback;
 }
 
 function wantsPython(env: NodeJS.ProcessEnv, key: string): boolean {
@@ -45,7 +45,7 @@ export async function runNativeCommand(argv: string[], context: NativeContext): 
   const command = argv[0];
 
   if (command === 'doctor') {
-    if (wantsPython(context.env, 'AUTOVPN_DOCTOR_BACKEND')) return context.runForwarder(argv);
+    if (wantsPython(context.env, 'AUTOVPN_DOCTOR_BACKEND')) return context.pythonFallback(argv);
     if (readOptionValue(argv, '--output') !== 'json') return undefined;
     const result = runDoctor(projectRoot, argv, context.env);
     context.io.writeStdout(jsonLine(result.payload));
@@ -53,13 +53,13 @@ export async function runNativeCommand(argv: string[], context: NativeContext): 
   }
 
   if (command === 'profile' && argv[1] === 'summary') {
-    if (wantsPython(context.env, 'AUTOVPN_PROFILE_BACKEND')) return context.runForwarder(argv);
+    if (wantsPython(context.env, 'AUTOVPN_PROFILE_BACKEND')) return context.pythonFallback(argv);
     context.io.writeStdout(jsonLine(profileSummary(projectRoot, context.env)));
     return 0;
   }
 
   if (command === 'artifacts') {
-    if (wantsPython(context.env, 'AUTOVPN_ARTIFACTS_BACKEND')) return context.runForwarder(argv);
+    if (wantsPython(context.env, 'AUTOVPN_ARTIFACTS_BACKEND')) return context.pythonFallback(argv);
     const subcommand = argv[1];
     if (subcommand === 'latest') {
       context.io.writeStdout(jsonLine(artifactLatest(projectRoot, context.env)));
@@ -76,7 +76,7 @@ export async function runNativeCommand(argv: string[], context: NativeContext): 
   }
 
   if (command === 'jobs') {
-    if (wantsPython(context.env, 'AUTOVPN_JOBS_BACKEND')) return context.runForwarder(argv);
+    if (wantsPython(context.env, 'AUTOVPN_JOBS_BACKEND')) return context.pythonFallback(argv);
     const subcommand = positionalAfter(argv, 1);
     if (subcommand === 'list') {
       context.io.writeStdout(jsonLine(listJobs(projectRoot, context.env)));
@@ -96,13 +96,13 @@ export async function runNativeCommand(argv: string[], context: NativeContext): 
   }
 
   if (command === 'status') {
-    if (wantsPython(context.env, 'AUTOVPN_JOBS_BACKEND')) return context.runForwarder(argv);
+    if (wantsPython(context.env, 'AUTOVPN_JOBS_BACKEND')) return context.pythonFallback(argv);
     context.io.writeStdout(jsonLine(publicJobPayload(loadJob(projectRoot, latestJobId(projectRoot, context.env), context.env))));
     return 0;
   }
 
   if (command === 'logs') {
-    if (wantsPython(context.env, 'AUTOVPN_JOBS_BACKEND')) return context.runForwarder(argv);
+    if (wantsPython(context.env, 'AUTOVPN_JOBS_BACKEND')) return context.pythonFallback(argv);
     if (argv.includes('--follow')) return undefined;
     const jobId = latestJobId(projectRoot, context.env);
     const logFormat = readOptionValue(argv, '--format');

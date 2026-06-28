@@ -3,15 +3,19 @@ import { CliUsageError } from './errors.js';
 import { normalizeProjectRootArgs } from './global-options.js';
 import { runNativeCommand } from './native-commands.js';
 import { CliIo, defaultIo, renderHelp } from './output.js';
+import { AutoVpnBackend } from '../backend/types.js';
+import { selectBackend } from '../backend/select-backend.js';
 
 type RunForwarder = (argv: string[]) => Promise<number>;
 type ReadPackageVersion = () => string | Promise<string>;
+type CreateBackend = (options: { env: NodeJS.ProcessEnv; cwd: string; runForwarder: RunForwarder }) => Pick<AutoVpnBackend, 'executeCli'>;
 
 export interface CliShellOptions {
   packageVersion?: string;
   env?: NodeJS.ProcessEnv;
   io?: CliIo;
   runForwarder?: RunForwarder;
+  createBackend?: CreateBackend;
   readPackageVersion?: ReadPackageVersion;
   cwd?: string;
 }
@@ -20,6 +24,10 @@ async function defaultReadPackageVersion(): Promise<string> {
   // @ts-expect-error The Phase 1 runner is plain ESM JavaScript.
   const runner = await import('../../lib/runner.mjs');
   return String(runner.readPackageVersion());
+}
+
+function defaultCreateBackend(options: { env: NodeJS.ProcessEnv; cwd: string; runForwarder: RunForwarder }): Pick<AutoVpnBackend, 'executeCli'> {
+  return selectBackend(options);
 }
 
 async function defaultRunForwarder(argv: string[]): Promise<number> {
@@ -46,6 +54,7 @@ export async function runCliShell(argv: string[], options: CliShellOptions = {})
   const env = options.env ?? process.env;
   const io = options.io ?? defaultIo();
   const runForwarder = options.runForwarder ?? defaultRunForwarder;
+  const cwd = options.cwd ?? process.cwd();
 
   if (env.AUTOVPN_CLI_SHELL === 'python') {
     return runForwarder(argv);
@@ -66,18 +75,20 @@ export async function runCliShell(argv: string[], options: CliShellOptions = {})
   }
 
   try {
-    const normalizedArgv = normalizeProjectRootArgs(argv, options.cwd ?? process.cwd());
+    const normalizedArgv = normalizeProjectRootArgs(argv, cwd);
     validateCommand(normalizedArgv);
+    const createBackend = options.createBackend ?? defaultCreateBackend;
+    const backend = createBackend({ env, cwd, runForwarder });
     const nativeResult = await runNativeCommand(normalizedArgv, {
-      cwd: options.cwd ?? process.cwd(),
+      cwd,
       env,
       io,
-      runForwarder
+      pythonFallback: (fallbackArgv) => backend.executeCli(fallbackArgv)
     });
     if (nativeResult !== undefined) {
       return nativeResult;
     }
-    return await runForwarder(normalizedArgv);
+    return await backend.executeCli(normalizedArgv);
   } catch (error) {
     if (error instanceof CliUsageError) {
       io.writeStderr(`autovpn: ${error.message}\n`);
