@@ -7,6 +7,7 @@ from vpn_automation.config.models import SourceConfig
 from vpn_automation.pipeline.extract import (
     build_runtime_source_url,
     build_source_script_path,
+    decrypt_payload,
     extract_links_from_plaintext,
     fetch_source_links,
 )
@@ -81,6 +82,17 @@ def test_extract_links_from_plaintext_converts_v2ray_json_to_vmess() -> None:
     assert str(payload["port"]) == "443"
     assert payload["net"] == "ws"
     assert payload["path"] == "/ws"
+
+
+def test_extract_fixture_matches_node_migration_golden() -> None:
+    import json
+
+    fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "node-migration" / "pipeline" / "extract"
+    payload = json.loads((fixture_dir / "input.json").read_text(encoding="utf-8"))
+    expected = json.loads((fixture_dir / "output.json").read_text(encoding="utf-8"))
+
+    assert decrypt_payload(payload["cipher_text"], payload["key"]) == payload["plain"]
+    assert extract_links_from_plaintext(payload["source_name"], payload["plaintext"]) == expected["links"]
 
 
 def test_fetch_source_links_returns_partial_results_when_requests_start_failing(
