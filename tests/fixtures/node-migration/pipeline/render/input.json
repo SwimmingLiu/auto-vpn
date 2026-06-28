@@ -1,0 +1,7 @@
+{
+  "template": "export default {\n  async fetch(request) {\n    const MainData = `__MAIN_DATA__`;\n    return new Response(MainData);\n  }\n}\n",
+  "links": [
+    "vmess://alpha",
+    "trojan://beta@example.com:443?security=tls#Beta"
+  ]
+}
