@@ -1,3 +1,5 @@
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import requests
@@ -183,3 +185,19 @@ def test_decorate_link_with_country_replaces_unknown_prefix_with_us() -> None:
     updated = decorate_link_with_country(link, "ZZ")
 
     assert parse_vmess_link(updated)["ps"] == "🇺🇸 US 772"
+
+
+def test_postprocess_fixture_matches_python_golden_output() -> None:
+    fixture_dir = Path(__file__).resolve().parents[1] / "fixtures" / "node-migration" / "pipeline" / "postprocess"
+    input_payload = json.loads((fixture_dir / "input.json").read_text(encoding="utf-8"))
+    expected_payload = json.loads((fixture_dir / "output.json").read_text(encoding="utf-8"))
+    ranked = [
+        (item["link"], {}, item["country_code"])
+        for item in input_payload["ranked_links"]
+    ]
+    filters = FilterConfig(**input_payload["filters"])
+    selected = select_links_by_country_limit(ranked, filters)
+    country_by_link = {item["link"]: item["country_code"] for item in input_payload["ranked_links"]}
+    decorated = [decorate_link_with_country(link, country_by_link[link]) for link in selected]
+
+    assert decorated == expected_payload["links"]

@@ -1,0 +1,24 @@
+{
+  "ranked_links": [
+    {
+      "link": "vmess://eyJ2IjoiMiIsInBzIjoiVVMgb2xkLW5hbWUiLCJhZGQiOiIxLjEuMS4xIiwicG9ydCI6IjQ0MyIsImlkIjoiNDE4MDQ4YWYtYTI5My00Yjk5LTliMGMtOThjYTM1ODBkZDI0IiwiYWlkIjoiMCIsInNjeSI6Im5vbmUiLCJuZXQiOiJ3cyIsInR5cGUiOiJkdGxzIiwiaG9zdCI6Ind3dy5leGFtcGxlLmNvbSIsInBhdGgiOiIvcGF0aC9kZW1vIiwidGxzIjoidGxzIiwic25pIjoid3d3LmV4YW1wbGUuY29tIn0=",
+      "country_code": "HK"
+    },
+    {
+      "link": "vmess://eyJ2IjoiMiIsInBzIjoiTm9kZS0yIiwiYWRkIjoiMS4xLjEuMSIsInBvcnQiOiI4NDQzIiwiaWQiOiI0MTgwNDhhZi1hMjkzLTRiOTktOWIwYy05OGNhMzU4MGRkMjQiLCJhaWQiOiIwIiwic2N5Ijoibm9uZSIsIm5ldCI6IndzIiwidHlwZSI6ImR0bHMiLCJob3N0Ijoid3d3LmV4YW1wbGUuY29tIiwicGF0aCI6Ii9wYXRoL2RlbW8iLCJ0bHMiOiJ0bHMiLCJzbmkiOiJ3d3cuZXhhbXBsZS5jb20ifQ==",
+      "country_code": "HK"
+    },
+    {
+      "link": "vmess://eyJ2IjoiMiIsInBzIjoiQ04gYmxvY2tlZCIsImFkZCI6IjEuMS4xLjEiLCJwb3J0IjoiOTQ0MyIsImlkIjoiNDE4MDQ4YWYtYTI5My00Yjk5LTliMGMtOThjYTM1ODBkZDI0IiwiYWlkIjoiMCIsInNjeSI6Im5vbmUiLCJuZXQiOiJ3cyIsInR5cGUiOiJkdGxzIiwiaG9zdCI6Ind3dy5leGFtcGxlLmNvbSIsInBhdGgiOiIvcGF0aC9kZW1vIiwidGxzIjoidGxzIiwic25pIjoid3d3LmV4YW1wbGUuY29tIn0=",
+      "country_code": "CN"
+    }
+  ],
+  "filters": {
+    "excluded_country_codes": [
+      "CN"
+    ],
+    "per_country_limit": {
+      "HK": 1
+    }
+  }
+}
