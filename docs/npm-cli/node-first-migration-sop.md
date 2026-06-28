@@ -304,7 +304,7 @@ The shell must call the Python adapter for command execution until the command h
 rtk proxy npm test --prefix npm/autovpn-cli
 rtk proxy npx -y ./npm/autovpn-cli/*.tgz --help
 rtk proxy npx -y ./npm/autovpn-cli/*.tgz --version
-rtk proxy npx -y ./npm/autovpn-cli/*.tgz doctor --project-root "$PWD" --output json
+rtk proxy env AUTOVPN_PYTHON_CLI="$PWD/.venv/bin/autovpn" AUTOVPN_NO_INSTALL=1 npx -y ./npm/autovpn-cli/*.tgz doctor --project-root "$PWD" --output json
 ```
 
 Phase 2 is complete when help/version/argument errors are produced by Node.js, while command behavior still matches Python.

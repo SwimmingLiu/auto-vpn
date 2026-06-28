@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { main } from '../lib/runner.mjs';
+import { runCliShell } from '../dist/cli/main.js';
 
-const code = await main(process.argv.slice(2));
+const code = await runCliShell(process.argv.slice(2));
 process.exitCode = code;
