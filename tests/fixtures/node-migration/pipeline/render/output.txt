@@ -1,0 +1,7 @@
+export default {
+  async fetch(request) {
+    const MainData = `vmess://alpha
+trojan://beta@example.com:443?security=tls#Beta`;
+    return new Response(MainData);
+  }
+}
