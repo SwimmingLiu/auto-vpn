@@ -1,0 +1,21 @@
+{
+  "target": {
+    "name": "custom",
+    "url": "https://custom.example/",
+    "allowed_hosts": ["custom.example"],
+    "negative_phrases": ["blocked"]
+  },
+  "response": {
+    "final_url": "https://custom.example/path",
+    "status_code": 200,
+    "title": "Welcome",
+    "body": "service is blocked in this region"
+  },
+  "speed_result": {
+    "link": "vmess://node",
+    "reachable": true,
+    "average_download_mb_s": 3.5,
+    "latency_ms": 80,
+    "error": ""
+  }
+}
