@@ -157,7 +157,7 @@ test('normalizes provided project root and forwards business commands', async ()
   const forwarded = [];
   const rawRoot = path.join(process.cwd(), '.', 'nested', '..');
 
-  const code = await runCliShell(['doctor', '--project-root', rawRoot, '--output', 'json'], {
+  const code = await runCliShell(['run', '--project-root', rawRoot, '--output', 'jsonl'], {
     packageVersion: '1.3.0',
     io,
     runForwarder: async (argv) => {
@@ -169,5 +169,5 @@ test('normalizes provided project root and forwards business commands', async ()
   assert.equal(code, 7);
   assert.equal(io.stdout, '');
   assert.equal(io.stderr, '');
-  assert.deepEqual(forwarded, [['doctor', '--project-root', process.cwd(), '--output', 'json']]);
+  assert.deepEqual(forwarded, [['run', '--project-root', process.cwd(), '--output', 'jsonl']]);
 });

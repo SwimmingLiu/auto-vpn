@@ -1,6 +1,7 @@
 import { validateCommand } from './commands/index.js';
 import { CliUsageError } from './errors.js';
 import { normalizeProjectRootArgs } from './global-options.js';
+import { runNativeCommand } from './native-commands.js';
 import { CliIo, defaultIo, renderHelp } from './output.js';
 
 type RunForwarder = (argv: string[]) => Promise<number>;
@@ -67,6 +68,15 @@ export async function runCliShell(argv: string[], options: CliShellOptions = {})
   try {
     const normalizedArgv = normalizeProjectRootArgs(argv, options.cwd ?? process.cwd());
     validateCommand(normalizedArgv);
+    const nativeResult = await runNativeCommand(normalizedArgv, {
+      cwd: options.cwd ?? process.cwd(),
+      env,
+      io,
+      runForwarder
+    });
+    if (nativeResult !== undefined) {
+      return nativeResult;
+    }
     return await runForwarder(normalizedArgv);
   } catch (error) {
     if (error instanceof CliUsageError) {

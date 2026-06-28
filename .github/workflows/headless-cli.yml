@@ -65,6 +65,10 @@ jobs:
         run: |
           npm test --prefix npm/autovpn-cli
 
+      - name: Run npm CLI parity tests
+        run: |
+          npm test --prefix npm/autovpn-cli -- --test-name-pattern parity
+
       - name: Pack npm CLI wrapper
         run: |
           cd npm/autovpn-cli
