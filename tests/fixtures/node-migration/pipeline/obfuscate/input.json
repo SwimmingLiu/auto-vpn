@@ -1,0 +1,18 @@
+{
+  "rendered_source": "const SUBSCRIPTION_PAYLOAD = `alpha\nbeta`;\nfunction buildRandomPayload() {\n  const randomBytes = new Uint8Array(8);\n  return String.fromCharCode.apply(null, randomBytes);\n}\nasync function handleSubscriptionRequest(request) {\n  try {\n    const url = new URL(request.url);\n    const secretToken = url.searchParams.get(\"serect_key\");\n    const responsePayload = secretToken === \"swimmingliu\" ? SUBSCRIPTION_PAYLOAD : buildRandomPayload();\n    return new Response(responsePayload);\n  } catch (error) {\n    return new Response(error.toString());\n  }\n}\n",
+  "config": {
+    "environment_name": "staging",
+    "entry_filename": "_worker.js",
+    "bundle_subdir": "pages_bundle",
+    "modules_subdir": "/custom/modules/",
+    "manifest_filename": "manifest.json",
+    "variable_prefix": "edge-demo",
+    "comment_template": "subscription worker: returns encoded payload on secret match, random bytes otherwise",
+    "random_noise_min_length": 8,
+    "random_noise_max_length": 12,
+    "enable_keyword_fragmentation": true,
+    "enable_identifier_randomization": true,
+    "emit_sidecar_modules": true
+  },
+  "secret_query": "serect_key=swimmingliu"
+}
