@@ -205,19 +205,14 @@ test('Phase 3 low-risk commands run in Node by default', async () => {
   }
 });
 
-test('Phase 3 migrated commands support explicit Python fallback', async () => {
+test('Phase 3 migrated non-job commands support explicit Python fallback', async () => {
   const { root, artifactDir } = await createProjectFixture();
   const cases = [
     { argv: ['doctor', '--project-root', root, '--output', 'json'], env: { AUTOVPN_DOCTOR_BACKEND: 'python' } },
     { argv: ['profile', 'summary', '--project-root', root, '--json'], env: { AUTOVPN_PROFILE_BACKEND: 'python' } },
     { argv: ['artifacts', 'latest', '--project-root', root], env: { AUTOVPN_ARTIFACTS_BACKEND: 'python' } },
     { argv: ['artifacts', 'list', '--project-root', root], env: { AUTOVPN_ARTIFACTS_BACKEND: 'python' } },
-    { argv: ['artifacts', 'preview', artifactDir, '--project-root', root, '--json'], env: { AUTOVPN_ARTIFACTS_BACKEND: 'python' } },
-    { argv: ['jobs', 'list', '--project-root', root, '--json'], env: { AUTOVPN_JOBS_BACKEND: 'python' } },
-    { argv: ['jobs', 'status', '20260628-000000-abcdef', '--project-root', root, '--json'], env: { AUTOVPN_JOBS_BACKEND: 'python' } },
-    { argv: ['jobs', 'logs', '20260628-000000-abcdef', '--project-root', root, '--tail', '2'], env: { AUTOVPN_JOBS_BACKEND: 'python' } },
-    { argv: ['status', '--project-root', root, '--json'], env: { AUTOVPN_JOBS_BACKEND: 'python' } },
-    { argv: ['logs', '--project-root', root, '--tail', '2'], env: { AUTOVPN_JOBS_BACKEND: 'python' } }
+    { argv: ['artifacts', 'preview', artifactDir, '--project-root', root, '--json'], env: { AUTOVPN_ARTIFACTS_BACKEND: 'python' } }
   ];
 
   for (const item of cases) {
@@ -252,7 +247,7 @@ test('Phase 3 leaves doctor human output on the Python backend', async () => {
   assert.equal(result.stderr, '');
 });
 
-test('Phase 3 leaves follow log streaming on the Python backend', async () => {
+test('Phase 5 handles follow log streaming in Node', async () => {
   const { root } = await createProjectFixture();
   const cases = [
     ['logs', '--project-root', root, '--follow'],
@@ -263,13 +258,13 @@ test('Phase 3 leaves follow log streaming on the Python backend', async () => {
     const result = await runNode(argv, {
       cwd: root,
       runForwarder: async (forwardedArgv) => {
-        assert.deepEqual(forwardedArgv, argv);
+        assert.fail(`follow logs should not forward to Python: ${forwardedArgv.join(' ')}`);
         return 7;
       }
     });
 
-    assert.equal(result.code, 7, argv.join(' '));
-    assert.equal(result.stdout, '', argv.join(' '));
+    assert.equal(result.code, 0, argv.join(' '));
+    assert.equal(result.stdout, 'line 1\nline 2\nline 3\n', argv.join(' '));
     assert.equal(result.stderr, '', argv.join(' '));
   }
 });
