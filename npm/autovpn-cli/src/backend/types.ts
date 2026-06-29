@@ -58,4 +58,4 @@ export interface AutoVpnBackend {
   executeCli(argv: string[]): Promise<number>;
 }
 
-export type RunForwarder = (argv: string[]) => Promise<number>;
+export type RunForwarder = (argv: string[], options?: { env?: NodeJS.ProcessEnv; cwd?: string }) => Promise<number>;

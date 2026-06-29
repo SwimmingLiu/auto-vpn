@@ -47,8 +47,8 @@ test('backend event schema rejects invalid event envelopes', () => {
 test('PythonBackend executeCli owns Python process forwarding', async () => {
   const forwarded = [];
   const backend = new PythonBackend({
-    runForwarder: async (argv) => {
-      forwarded.push(argv);
+    runForwarder: async (argv, options) => {
+      forwarded.push({ argv, options });
       return 7;
     }
   });
@@ -56,7 +56,54 @@ test('PythonBackend executeCli owns Python process forwarding', async () => {
   const code = await backend.executeCli(['run', '--project-root', '/repo', '--output', 'jsonl']);
 
   assert.equal(code, 7);
-  assert.deepEqual(forwarded, [['run', '--project-root', '/repo', '--output', 'jsonl']]);
+  assert.deepEqual(forwarded.map((item) => item.argv), [['run', '--project-root', '/repo', '--output', 'jsonl']]);
+  assert.ok(forwarded[0].options.env);
+  assert.equal(forwarded[0].options.cwd, process.cwd());
+});
+
+test('PythonBackend executeCli merges project .env before forwarding', async () => {
+  const root = await mkdir(path.join(os.tmpdir(), `autovpn-forward-env-${Date.now()}`), { recursive: true });
+  await writeFile(path.join(root, '.env'), 'VPN_AUTOMATION_UPSTREAM_PROXY=off\nEXTRA_FROM_DOTENV=value\n', 'utf8');
+  const forwarded = [];
+  const backend = new PythonBackend({
+    env: { VPN_AUTOMATION_UPSTREAM_PROXY: 'http://127.0.0.1:7890', PATH: '/bin' },
+    cwd: '/work',
+    runForwarder: async (argv, options) => {
+      forwarded.push({ argv, options });
+      return 0;
+    }
+  });
+
+  const code = await backend.executeCli(['run', `--project-root=${root}`, '--output', 'jsonl']);
+
+  assert.equal(code, 0);
+  assert.equal(forwarded[0].options.cwd, '/work');
+  assert.equal(forwarded[0].options.env.VPN_AUTOMATION_UPSTREAM_PROXY, 'http://127.0.0.1:7890');
+  assert.equal(forwarded[0].options.env.EXTRA_FROM_DOTENV, 'value');
+  assert.equal(forwarded[0].options.env.PATH, '/bin');
+});
+
+test('default Python CLI foreground path merges project .env', async () => {
+  const root = await mkdir(path.join(os.tmpdir(), `autovpn-shell-env-${Date.now()}`), { recursive: true });
+  await writeFile(path.join(root, '.env'), 'EXTRA_FROM_DOTENV=value\n', 'utf8');
+  const io = createIo();
+  const forwarded = [];
+
+  const code = await runCliShell(['run', '--project-root', root, '--skip-deploy', '--skip-verify', '--output', 'jsonl'], {
+    packageVersion: '1.3.0',
+    cwd: '/repo',
+    env: { PATH: '/bin' },
+    io,
+    runForwarder: async (argv, options) => {
+      forwarded.push({ argv, options });
+      return 0;
+    }
+  });
+
+  assert.equal(code, 0);
+  assert.equal(forwarded.length, 1);
+  assert.equal(forwarded[0].options.env.EXTRA_FROM_DOTENV, 'value');
+  assert.equal(forwarded[0].options.env.PATH, '/bin');
 });
 
 test('high-risk CLI commands are executed through backend adapter', async () => {

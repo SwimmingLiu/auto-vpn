@@ -3,12 +3,11 @@ import { CliUsageError } from './errors.js';
 import { normalizeProjectRootArgs } from './global-options.js';
 import { JobRuntimeOptions, runNativeCommand } from './native-commands.js';
 import { CliIo, defaultIo, renderHelp } from './output.js';
-import { AutoVpnBackend } from '../backend/types.js';
+import { AutoVpnBackend, RunForwarder } from '../backend/types.js';
 import { selectBackend } from '../backend/select-backend.js';
 import { readOptionValue, resolveProjectRoot } from '../runtime/paths.js';
 import { redactText } from '../runtime/redaction.js';
 
-type RunForwarder = (argv: string[]) => Promise<number>;
 type ReadPackageVersion = () => string | Promise<string>;
 type ShellBackend = Pick<AutoVpnBackend, 'executeCli'> & Partial<Pick<AutoVpnBackend, 'run' | 'kind'>>;
 type CreateBackend = (options: { env: NodeJS.ProcessEnv; cwd: string; runForwarder: RunForwarder }) => ShellBackend;
@@ -37,10 +36,10 @@ function defaultCreateBackend(options: { env: NodeJS.ProcessEnv; cwd: string; ru
   return selectBackend(options);
 }
 
-async function defaultRunForwarder(argv: string[]): Promise<number> {
+async function defaultRunForwarder(argv: string[], options?: { env?: NodeJS.ProcessEnv; cwd?: string }): Promise<number> {
   // @ts-expect-error The Phase 1 runner is plain ESM JavaScript.
   const runner = await import('../../lib/runner.mjs');
-  return Number(await runner.runForwarder(argv));
+  return Number(await runner.runForwarder(argv, options));
 }
 
 function isEnabled(value: string | undefined): boolean {
@@ -114,7 +113,7 @@ export async function runCliShell(argv: string[], options: CliShellOptions = {})
   const cwd = options.cwd ?? process.cwd();
 
   if (env.AUTOVPN_CLI_SHELL === 'python') {
-    return runForwarder(argv);
+    return runForwarder(argv, { env, cwd });
   }
 
   if (isEnabled(env.AUTOVPN_WRAPPER_PROBE) && argv.length === 1 && argv[0] === '--version') {
