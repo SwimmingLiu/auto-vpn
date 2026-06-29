@@ -6,6 +6,7 @@ import { parse } from '@iarna/toml';
 import { AutoVpnEvent } from '../events/schema.js';
 import { mergeProjectEnv } from '../runtime/env.js';
 import { resolveArtifactsRoot, resolveProfilePath } from '../runtime/paths.js';
+import { redactText } from '../runtime/redaction.js';
 import { fetchSourceLinksWithBackend, ExtractedSourceResult, SourceConfigInput } from './extract.js';
 import { dedupeVmessLinksWithBackend } from './dedupe.js';
 import { speedtestLinksWithBackend, SpeedTestResult } from './speedtest.js';
@@ -22,6 +23,8 @@ export interface NodePipelineOptions {
   skipDeploy?: boolean;
   skipVerify?: boolean;
   output?: 'jsonl' | 'human';
+  eventLog?: string;
+  humanLog?: string;
 }
 
 export interface PipelineSummary {
@@ -60,6 +63,7 @@ interface PipelineProfile {
 }
 
 const STAGES: StageName[] = ['doctor', 'extract', 'dedupe', 'speedtest', 'availability', 'postprocess', 'render', 'obfuscate', 'deploy', 'verify'];
+const DEFAULT_PYTHON_RUNTIME_STAGES = ['EXTRACT', 'SPEEDTEST', 'AVAILABILITY'];
 
 function formatTimestamp(date: Date): string {
   const pad = (value: number) => String(value).padStart(2, '0');
@@ -111,6 +115,67 @@ async function writeJson(artifactDir: string, filename: string, payload: unknown
   await writeFile(path.join(artifactDir, filename), `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
 }
 
+function appendTextFile(filePath: string | undefined, text: string): void {
+  if (!filePath) {
+    return;
+  }
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.appendFileSync(filePath, text, 'utf8');
+}
+
+function renderHumanEvent(event: AutoVpnEvent): string {
+  if (event.type === 'run_started') {
+    return `[run_started] artifact_dir=${String(event.artifact_dir ?? '')} skip_deploy=${String(Boolean(event.skip_deploy))} skip_verify=${String(Boolean(event.skip_verify))}`;
+  }
+  if (event.type === 'log') {
+    return String(event.message ?? '');
+  }
+  if (event.type === 'stage') {
+    return `[stage] ${String(event.stage ?? '')}=${String(event.status ?? '')}`;
+  }
+  if (event.type === 'summary') {
+    const counts = Object.entries((event.counts ?? {}) as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([name, value]) => `${name}=${String(value)}`)
+      .join(' ');
+    const suffix = counts ? ` ${counts}` : '';
+    return `[summary] run_status=${String(event.run_status ?? 'unknown')} artifact_dir=${String(event.artifact_dir ?? '')}${suffix}`;
+  }
+  if (event.type === 'run_failed') {
+    return `[run_failed] ${String(event.error ?? 'unknown error')}`;
+  }
+  return JSON.stringify(event);
+}
+
+function eventLogLine(event: AutoVpnEvent): string {
+  return `${JSON.stringify(event)}\n`;
+}
+
+function humanLogLine(event: AutoVpnEvent): string {
+  return `${renderHumanEvent(event)}\n`;
+}
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return redactText(`${error.constructor.name}: ${error.message}`);
+  }
+  return redactText(String(error));
+}
+
+function defaultRuntimeStageEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const next = { ...env };
+  if (next.AUTOVPN_PIPELINE_BACKEND) {
+    return next;
+  }
+  for (const stage of DEFAULT_PYTHON_RUNTIME_STAGES) {
+    const key = `AUTOVPN_STAGE_BACKEND_${stage}`;
+    if (!next[key]) {
+      next[key] = 'python';
+    }
+  }
+  return next;
+}
+
 function orderPreservingUnique(values: string[]): string[] {
   const seen = new Set<string>();
   const result: string[] = [];
@@ -150,6 +215,7 @@ async function writeWorkerArtifacts(artifactDir: string, profile: PipelineProfil
 export async function runNodePipeline(options: NodePipelineOptions, context: RunNodePipelineContext = {}): Promise<PipelineSummary> {
   const projectRoot = path.resolve(options.projectRoot);
   const env = mergeProjectEnv(projectRoot, { ...process.env, ...(context.env ?? {}) });
+  const runtimeStageEnv = defaultRuntimeStageEnv(env);
   const artifactDir = await uniqueArtifactDir(resolveArtifactsRoot(projectRoot, env), formatTimestamp((context.now ?? (() => new Date()))()));
   const summary: PipelineSummary = {
     artifact_dir: artifactDir,
@@ -163,7 +229,10 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
   };
 
   const emit = (type: string, payload: Record<string, unknown> = {}) => {
-    context.emit?.({ type, ...payload } as AutoVpnEvent);
+    const event = { type, ...payload } as AutoVpnEvent;
+    appendTextFile(options.eventLog, eventLogLine(event));
+    appendTextFile(options.humanLog, humanLogLine(event));
+    context.emit?.(event);
   };
   const writeReport = () => writeJson(artifactDir, 'pipeline_report.json', summary);
   let activeStage: StageName | undefined;
@@ -182,6 +251,7 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
   });
 
   try {
+    await setStage('doctor', 'running');
     await setStage('doctor', 'success');
     const profile = await readProfile(projectRoot, env);
 
@@ -190,7 +260,7 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
     for (const [sourceName, source] of enabledSources(profile)) {
       const result = context.stages?.extract
         ? await context.stages.extract({ source_name: sourceName, source })
-        : await fetchSourceLinksWithBackend({ source_name: sourceName, source }, { cwd: projectRoot, env });
+        : await fetchSourceLinksWithBackend({ source_name: sourceName, source }, { cwd: projectRoot, env: runtimeStageEnv });
       extractResults.push(result);
       summary.source_counts[result.source_name] = {
         raw_links: result.links.length,
@@ -215,7 +285,7 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
     const runtimePath = path.join(artifactDir, 'runtime');
     const speedResults = context.stages?.speedtest
       ? await context.stages.speedtest(dedupedLinks, profile.speed_test ?? {}, runtimePath)
-      : await speedtestLinksWithBackend({ links: dedupedLinks, config: profile.speed_test as any, runtime_path: runtimePath }, { cwd: projectRoot, env });
+      : await speedtestLinksWithBackend({ links: dedupedLinks, config: profile.speed_test as any, runtime_path: runtimePath }, { cwd: projectRoot, env: runtimeStageEnv });
     const passedSpeedLinks = speedResults
       .filter((result) => result.reachable && result.average_download_mb_s >= Number(profile.speed_test?.min_download_mb_s ?? 0))
       .map((result) => result.link);
@@ -234,7 +304,7 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
         config: profile.speed_test ?? {},
         runtime_path: runtimePath,
         targets: profile.availability_targets as any
-      }, { cwd: projectRoot, env });
+      }, { cwd: projectRoot, env: runtimeStageEnv });
     const availableLinks = availabilityResults.filter((result) => result.all_passed).map((result) => result.link);
     summary.counts.availability_links = availableLinks.length;
     await writeLines(artifactDir, 'vpn_node_availability.txt', availableLinks);
@@ -282,14 +352,14 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
     }
   } catch (error) {
     summary.run_status = 'failed';
-    summary.error = error instanceof Error ? error.message : String(error);
+    summary.error = errorMessage(error);
     if (activeStage && summary.stage_status[activeStage] === 'running') {
       summary.stage_status[activeStage] = 'failed';
       emit('stage', { stage: activeStage, status: 'failed' });
     }
-    emit('error', { message: summary.error });
     await writeReport();
     emit('summary', summary as unknown as Record<string, unknown>);
+    emit('run_failed', { error: summary.error });
     throw error;
   }
 

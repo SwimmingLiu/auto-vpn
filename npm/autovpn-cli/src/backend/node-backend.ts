@@ -15,8 +15,35 @@ export interface NodeBackendOptions {
   cwd?: string;
 }
 
+interface EventQueueState {
+  events: AutoVpnEvent[];
+  wake: Array<() => void>;
+  done: boolean;
+  error?: unknown;
+}
+
 function unsupported(method: string): Error {
   return new Error(`Node backend ${method} is not available yet; use AUTOVPN_BACKEND=python`);
+}
+
+function pushEvent(queue: EventQueueState, event: AutoVpnEvent): void {
+  queue.events.push(event);
+  const wake = queue.wake.shift();
+  wake?.();
+}
+
+function finishQueue(queue: EventQueueState, error?: unknown): void {
+  queue.done = true;
+  queue.error = error;
+  for (const wake of queue.wake.splice(0)) {
+    wake();
+  }
+}
+
+function waitForEvent(queue: EventQueueState): Promise<void> {
+  return new Promise((resolve) => {
+    queue.wake.push(resolve);
+  });
 }
 
 export class NodeBackend implements AutoVpnBackend {
@@ -36,20 +63,23 @@ export class NodeBackend implements AutoVpnBackend {
     if (options.resumeLatest) {
       throw new Error('Node backend resume-latest is not available yet; use AUTOVPN_BACKEND=python');
     }
-    const events: AutoVpnEvent[] = [];
-    try {
-      await runNodePipeline(options, {
+    const queue: EventQueueState = { events: [], wake: [], done: false };
+    void runNodePipeline(options, {
         env: this.env,
-        emit: (event) => events.push(event)
-      });
-    } catch (error) {
-      for (const event of events) {
-        yield event;
+        emit: (event) => pushEvent(queue, event)
+      })
+      .then(() => finishQueue(queue))
+      .catch((error) => finishQueue(queue, error));
+
+    while (!queue.done || queue.events.length > 0) {
+      if (queue.events.length === 0) {
+        await waitForEvent(queue);
+        continue;
       }
-      throw error;
+      yield queue.events.shift() as AutoVpnEvent;
     }
-    for (const event of events) {
-      yield event;
+    if (queue.error) {
+      throw queue.error;
     }
   }
 

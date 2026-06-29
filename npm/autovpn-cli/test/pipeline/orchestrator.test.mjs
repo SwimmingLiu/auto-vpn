@@ -137,7 +137,7 @@ test('runNodePipeline marks the active stage failed and writes a summary on erro
     stages: {
       extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink] }),
       speedtest: async () => {
-        throw new Error('speedtest fixture boom');
+        throw new Error(`speedtest fixture boom token=SECRET serect_key=QUERY ${firstLink}`);
       }
     }
   }), /speedtest fixture boom/);
@@ -147,6 +147,45 @@ test('runNodePipeline marks the active stage failed and writes a summary on erro
   assert.equal(report.run_status, 'failed');
   assert.equal(report.stage_status.speedtest, 'failed');
   assert.match(report.error, /speedtest fixture boom/);
-  assert.equal(events.at(-1).type, 'summary');
-  assert.equal(events.at(-1).run_status, 'failed');
+  assert.match(report.error, /token=<redacted>/);
+  assert.match(report.error, /serect_key=<redacted>/);
+  assert.match(report.error, /vmess:\/\/<redacted>/);
+  assert.equal(events.at(-2).type, 'summary');
+  assert.equal(events.at(-2).run_status, 'failed');
+  assert.equal(events.at(-1).type, 'run_failed');
+  assert.equal(events.at(-1).error, report.error);
+});
+
+test('runNodePipeline writes event and human logs for Node runs', async () => {
+  const projectRoot = await makeProject();
+  const eventLog = path.join(projectRoot, 'logs', 'events.jsonl');
+  const humanLog = path.join(projectRoot, 'logs', 'human.log');
+  const firstLink = vmessLink('first', 'one.example');
+  const result = await runNodePipeline({
+    projectRoot,
+    skipDeploy: true,
+    skipVerify: true,
+    output: 'jsonl',
+    eventLog,
+    humanLog
+  }, {
+    env: {
+      VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'),
+      VPN_AUTOMATION_PROFILE_PATH: path.join(projectRoot, 'state', 'profile.toml')
+    },
+    now: () => new Date('2026-06-29T01:02:03Z'),
+    stages: {
+      extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink] }),
+      speedtest: async (links) => links.map((link) => ({ link, reachable: true, average_download_mb_s: 3, latency_ms: 20, error: '' })),
+      availability: async (results) => results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} })),
+      countryLookup: () => 'US',
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
+    }
+  });
+
+  assert.equal(result.run_status, 'success');
+  const eventLines = (await readFile(eventLog, 'utf8')).trim().split(/\n/).map((line) => JSON.parse(line));
+  assert.equal(eventLines[0].type, 'run_started');
+  assert.equal(eventLines.at(-1).type, 'summary');
+  assert.match(await readFile(humanLog, 'utf8'), /\[summary\] run_status=success/);
 });

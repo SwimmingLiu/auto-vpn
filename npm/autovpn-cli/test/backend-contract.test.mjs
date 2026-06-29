@@ -167,6 +167,65 @@ test('foreground run renders Node backend human events', async () => {
   assert.equal(io.stderr, '');
 });
 
+test('foreground Node run passes event and human log paths to backend', async () => {
+  const io = createIo();
+  const seen = [];
+
+  const code = await runCliShell([
+    'run',
+    '--project-root',
+    '.',
+    '--skip-deploy',
+    '--skip-verify',
+    '--output',
+    'jsonl',
+    '--event-log',
+    '/tmp/events.jsonl',
+    '--human-log',
+    '/tmp/human.log'
+  ], {
+    packageVersion: '1.3.0',
+    cwd: '/repo',
+    io,
+    runForwarder: async () => 99,
+    createBackend: () => ({
+      kind: 'node',
+      executeCli: async () => 5,
+      async *run(options) {
+        seen.push(options);
+        yield { type: 'summary', artifact_dir: '/repo/artifacts/1', run_status: 'success' };
+      }
+    })
+  });
+
+  assert.equal(code, 0);
+  assert.equal(seen[0].eventLog, '/tmp/events.jsonl');
+  assert.equal(seen[0].humanLog, '/tmp/human.log');
+});
+
+test('Node backend rejects detached run before native Python job handling', async () => {
+  const io = createIo();
+  let executeCliCalled = false;
+
+  const code = await runCliShell(['run', '--project-root', '.', '--skip-deploy', '--skip-verify', '--detach', '--json'], {
+    packageVersion: '1.3.0',
+    cwd: '/repo',
+    io,
+    runForwarder: async () => 99,
+    createBackend: () => ({
+      kind: 'node',
+      executeCli: async () => {
+        executeCliCalled = true;
+        return 5;
+      }
+    })
+  });
+
+  assert.equal(code, 1);
+  assert.equal(executeCliCalled, false);
+  assert.match(io.stderr, /Node backend detached runs are not available yet/);
+});
+
 test('non-detached resume and retry commands are executed through backend adapter', async () => {
   const cases = [
     ['resume', 'pipeline', '--project-root', '.', '--session', '/tmp/session', '--output', 'jsonl'],
@@ -286,8 +345,27 @@ test('NodeBackend yields failure events before surfacing pipeline errors', async
   }, /profile\.toml/);
 
   assert.equal(events[0].type, 'run_started');
-  assert.equal(events.at(-1).type, 'summary');
-  assert.equal(events.at(-1).run_status, 'failed');
+  assert.equal(events.at(-2).type, 'summary');
+  assert.equal(events.at(-2).run_status, 'failed');
+  assert.equal(events.at(-1).type, 'run_failed');
+});
+
+test('NodeBackend streams events before pipeline completion', async () => {
+  const projectRoot = await mkdir(path.join(os.tmpdir(), `autovpn-node-backend-stream-${Date.now()}`, 'project'), { recursive: true });
+  const runtimeRoot = path.join(projectRoot, '.runtime');
+  const backend = new NodeBackend({
+    env: { VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot },
+    cwd: projectRoot
+  });
+
+  const iterator = backend.run({ projectRoot, skipDeploy: true, skipVerify: true, output: 'jsonl' })[Symbol.asyncIterator]();
+  const first = await iterator.next();
+  assert.equal(first.value.type, 'run_started');
+  await assert.rejects(async () => {
+    while (!(await iterator.next()).done) {
+      // consume
+    }
+  }, /profile\.toml/);
 });
 
 test('PythonBackend can stream normalized events from captured JSONL stdout', async () => {

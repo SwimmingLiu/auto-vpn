@@ -26,15 +26,12 @@ The CLI is currently hybrid:
 
 - Node.js handles `--help`, `--version`, argument validation, `doctor --output json`, `profile summary --json`, `artifacts latest/list/preview`, `status --json`, `logs`, and read-only `jobs` commands.
 - Python remains the default backend for high-risk pipeline actions such as `run`, `retry-stage`, `resume`, detached job creation, stop, speedtest, deploy, and verify, selected through the backend adapter boundary.
-- The experimental Node backend can orchestrate a non-deploy foreground pipeline when explicitly selected with `AUTOVPN_BACKEND=node` and `--skip-deploy --skip-verify`. In v2, runtime-heavy stages should still use Python stage fallback unless a caller injects Node runtime implementations.
+- The experimental Node backend can orchestrate a non-deploy foreground pipeline when explicitly selected with `AUTOVPN_BACKEND=node` and `--skip-deploy --skip-verify`. In v2, runtime-heavy stages default to Python stage fallback unless a caller explicitly selects Node stage implementations.
 
 Experimental Node-orchestrated dry run:
 
 ```bash
 AUTOVPN_BACKEND=node \
-AUTOVPN_STAGE_BACKEND_EXTRACT=python \
-AUTOVPN_STAGE_BACKEND_SPEEDTEST=python \
-AUTOVPN_STAGE_BACKEND_AVAILABILITY=python \
 autovpn run --project-root . --skip-deploy --skip-verify --output jsonl
 ```
 
