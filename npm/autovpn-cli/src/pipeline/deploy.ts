@@ -133,15 +133,14 @@ export function rewriteUrlHost(url: string, hostname: string): string {
     if (!parsed.protocol || !parsed.host) {
       return '';
     }
-    parsed.host = hostname;
-    return parsed.toString();
+    return `${parsed.protocol}//${hostname}${parsed.pathname}${parsed.search}${parsed.hash}`;
   } catch {
     return '';
   }
 }
 
 export function buildCustomDomainSubscriptionUrl(deploy: DeployLike): string {
-  const customDomain = getString(deploy, 'custom_domain').replace(/\/+$/g, '');
+  const customDomain = getString(deploy, 'custom_domain');
   if (!customDomain) {
     return '';
   }
