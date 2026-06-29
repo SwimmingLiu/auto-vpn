@@ -87,6 +87,95 @@ test('runNodePipeline emits compatible events and writes non-deploy artifacts', 
   assert.equal(JSON.parse(await readFile(path.join(artifactDir, 'pipeline_report.json'), 'utf8')).run_status, 'success');
 });
 
+test('runNodePipeline can execute deploy and verify through explicit stage adapters', async () => {
+  const projectRoot = await makeProject();
+  const events = [];
+  const firstLink = vmessLink('first', 'one.example');
+  const deployment = {
+    returncode: 0,
+    stdout: 'deployed https://sub.example/path?token=SECRET',
+    stderr: '',
+    attempts: [{ mode: 'direct', returncode: 0 }],
+    project_name: 'sub-nodes',
+    pages_project_url: 'https://sub-nodes.pages.dev',
+    subscription_url: 'https://sub.example/path?token=SUBSECRET',
+    secret_query: 'serect_key=QUERYSECRET'
+  };
+
+  const result = await runNodePipeline({
+    projectRoot,
+    skipDeploy: false,
+    skipVerify: false,
+    output: 'jsonl'
+  }, {
+    env: {
+      VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'),
+      VPN_AUTOMATION_PROFILE_PATH: path.join(projectRoot, 'state', 'profile.toml')
+    },
+    now: () => new Date('2026-06-29T01:02:03Z'),
+    emit: (event) => events.push(event),
+    stages: {
+      extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink] }),
+      speedtest: async (links) => links.map((link) => ({ link, reachable: true, average_download_mb_s: 3, latency_ms: 20, error: '' })),
+      availability: async (results) => results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} })),
+      countryLookup: () => 'US',
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } }),
+      deploy: async ({ bundleDir, profile }) => {
+        assert.match(bundleDir, /pages_bundle$/);
+        assert.equal(profile.deploy.project_name, 'fixture-project');
+        return deployment;
+      },
+      verify: async ({ deployment: deployed }) => {
+        assert.equal(deployed.returncode, 0);
+        return { pages_domain_ok: true, secret_ok: true, subscription_ok: true };
+      }
+    }
+  });
+
+  assert.equal(result.run_status, 'success');
+  assert.equal(result.stage_status.deploy, 'success');
+  assert.equal(result.stage_status.verify, 'success');
+  assert.equal(result.deployment.stdout, 'deployed https://sub.example/path?token=<redacted>');
+  assert.equal(result.deployment.subscription_url, 'set');
+  assert.equal(result.deployment.secret_query, 'set');
+  assert.equal(events.at(-1).type, 'summary');
+  assert.equal(events.at(-1).run_status, 'success');
+  assert.equal(events.at(-1).deployment.stdout, 'deployed https://sub.example/path?token=<redacted>');
+  assert.equal(events.at(-1).deployment.subscription_url, 'set');
+  assert.doesNotMatch(JSON.stringify(events.at(-1)), /SECRET|SUBSECRET|QUERYSECRET/);
+});
+
+test('runNodePipeline emits effective skip_verify when deploy is skipped', async () => {
+  const projectRoot = await makeProject();
+  const events = [];
+  const firstLink = vmessLink('first', 'one.example');
+
+  await runNodePipeline({
+    projectRoot,
+    skipDeploy: true,
+    skipVerify: false,
+    output: 'jsonl'
+  }, {
+    env: {
+      VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'),
+      VPN_AUTOMATION_PROFILE_PATH: path.join(projectRoot, 'state', 'profile.toml')
+    },
+    now: () => new Date('2026-06-29T01:02:03Z'),
+    emit: (event) => events.push(event),
+    stages: {
+      extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink] }),
+      speedtest: async (links) => links.map((link) => ({ link, reachable: true, average_download_mb_s: 3, latency_ms: 20, error: '' })),
+      availability: async (results) => results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} })),
+      countryLookup: () => 'US',
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
+    }
+  });
+
+  assert.equal(events[0].type, 'run_started');
+  assert.equal(events[0].skip_deploy, true);
+  assert.equal(events[0].skip_verify, true);
+});
+
 test('runNodePipeline loads project .env before resolving profile and artifacts paths', async () => {
   const projectRoot = await makeProject();
   const artifactsRoot = path.join(projectRoot, 'env-artifacts');

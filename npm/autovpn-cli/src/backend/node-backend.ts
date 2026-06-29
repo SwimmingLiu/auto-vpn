@@ -26,6 +26,12 @@ function unsupported(method: string): Error {
   return new Error(`Node backend ${method} is not available yet; use AUTOVPN_BACKEND=python`);
 }
 
+function usesPythonStageFallback(env: NodeJS.ProcessEnv, stage: string): boolean {
+  const stageValue = String(env[`AUTOVPN_STAGE_BACKEND_${stage.toUpperCase()}`] ?? '').trim().toLowerCase();
+  const pipelineValue = String(env.AUTOVPN_PIPELINE_BACKEND ?? '').trim().toLowerCase();
+  return stageValue === 'python' || pipelineValue === 'python';
+}
+
 function pushEvent(queue: EventQueueState, event: AutoVpnEvent): void {
   queue.events.push(event);
   const wake = queue.wake.shift();
@@ -57,8 +63,11 @@ export class NodeBackend implements AutoVpnBackend {
   }
 
   async *run(options: RunOptions): AsyncIterable<AutoVpnEvent> {
-    if (!options.skipDeploy || !options.skipVerify) {
+    if (!options.skipDeploy && !usesPythonStageFallback(this.env, 'deploy')) {
       throw new Error('Node backend deploy is not available yet; use AUTOVPN_BACKEND=python or --skip-deploy --skip-verify');
+    }
+    if (!options.skipVerify && !options.skipDeploy && !usesPythonStageFallback(this.env, 'verify')) {
+      throw new Error('Node backend verify is not available yet; use AUTOVPN_BACKEND=python or --skip-verify');
     }
     if (options.resumeLatest) {
       throw new Error('Node backend resume-latest is not available yet; use AUTOVPN_BACKEND=python');

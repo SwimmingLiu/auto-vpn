@@ -163,7 +163,7 @@ autovpn run --project-root /opt/autovpn/vpn-subscription-automation --skip-deplo
 autovpn artifacts latest --project-root /opt/autovpn/vpn-subscription-automation
 ```
 
-The `autovpn` command is the terminal and Agent-facing interface. It defaults to the same Python backend as Electron for production runs and now also includes an opt-in Node backend for v2 non-deploy pipeline validation.
+The `autovpn` command is the terminal and Agent-facing interface. It defaults to the same Python backend as Electron for production runs and now also includes an opt-in Node backend for v2/v3 pipeline migration validation.
 
 Run the npm wrapper from source during development:
 
@@ -175,6 +175,8 @@ AUTOVPN_PYTHON_CLI="$(command -v autovpn)" AUTOVPN_NO_INSTALL=1 npx -y ./npm/aut
 AUTOVPN_PYTHON_CLI="$(command -v autovpn)" AUTOVPN_NO_INSTALL=1 npx -y ./npm/autovpn-cli/*.tgz doctor --project-root "$PWD" --output json
 AUTOVPN_BACKEND=node npx -y ./npm/autovpn-cli/*.tgz run --project-root "$PWD" --skip-deploy --skip-verify --output jsonl
 ```
+
+Deploy/verify under `AUTOVPN_BACKEND=node` is still experimental. It stays disabled by default; to exercise the v3 Node orchestrator with Python deploy/verify fallback, set `AUTOVPN_STAGE_BACKEND_DEPLOY=python`, `AUTOVPN_STAGE_BACKEND_VERIFY=python`, and an absolute `AUTOVPN_PYTHON_CLI` path.
 
 For long terminal or Agent runs, start a detached job and reconnect later:
 

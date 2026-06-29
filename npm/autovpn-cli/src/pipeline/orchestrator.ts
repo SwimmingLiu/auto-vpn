@@ -14,6 +14,8 @@ import { checkLinkAvailabilityBatchWithBackend, AvailabilityResultDict } from '.
 import { decorateLinkWithCountry, postprocessLinksWithBackend } from './postprocess.js';
 import { renderMainDataWithBackend } from './render.js';
 import { buildWorkerArtifactsWithBackend, WorkerBuildArtifacts } from './obfuscate.js';
+import { deployPagesWithBackend, isVerifySuccess, verifyDeploymentWithBackend } from './deploy.js';
+import { safeDeployment } from '../runtime/redaction.js';
 
 type StageName = 'doctor' | 'extract' | 'dedupe' | 'speedtest' | 'availability' | 'postprocess' | 'render' | 'obfuscate' | 'deploy' | 'verify';
 type StageStatus = 'pending' | 'running' | 'success' | 'failed' | 'skipped';
@@ -44,6 +46,8 @@ export interface NodePipelineStageOverrides {
   availability?: (results: SpeedTestResult[], config: Record<string, unknown>, runtimePath: string, targets: unknown) => AvailabilityResultDict[] | Promise<AvailabilityResultDict[]>;
   countryLookup?: (link: string, speedResult: SpeedTestResult, availabilityResult: AvailabilityResultDict) => string;
   obfuscate?: (input: { transformedSource: string; config: Record<string, unknown>; secretQuery: string }) => WorkerBuildArtifacts | Promise<WorkerBuildArtifacts>;
+  deploy?: (input: { projectRoot: string; bundleDir: string; profile: PipelineProfile }) => Record<string, unknown> | Promise<Record<string, unknown>>;
+  verify?: (input: { projectRoot: string; profile: PipelineProfile; deployment: Record<string, unknown> }) => Record<string, unknown> | Promise<Record<string, unknown>>;
 }
 
 export interface RunNodePipelineContext {
@@ -193,7 +197,7 @@ function defaultCountryFor(_link: string, _speedResult: SpeedTestResult, _availa
   return 'US';
 }
 
-async function writeWorkerArtifacts(artifactDir: string, profile: PipelineProfile, renderedSource: string, artifacts: WorkerBuildArtifacts): Promise<void> {
+async function writeWorkerArtifacts(artifactDir: string, profile: PipelineProfile, renderedSource: string, artifacts: WorkerBuildArtifacts): Promise<string> {
   const workerBuild = profile.worker_build ?? {};
   const entryFilename = String(workerBuild.entry_filename ?? 'unknown.js');
   const bundleSubdir = String(workerBuild.bundle_subdir ?? 'pages_bundle');
@@ -210,6 +214,7 @@ async function writeWorkerArtifacts(artifactDir: string, profile: PipelineProfil
     await mkdir(path.dirname(destination), { recursive: true });
     await writeFile(destination, moduleSource, 'utf8');
   }
+  return bundleDir;
 }
 
 export async function runNodePipeline(options: NodePipelineOptions, context: RunNodePipelineContext = {}): Promise<PipelineSummary> {
@@ -246,7 +251,7 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
   emit('run_started', {
     artifact_dir: artifactDir,
     skip_deploy: Boolean(options.skipDeploy),
-    skip_verify: Boolean(options.skipVerify),
+    skip_verify: Boolean(options.skipVerify || options.skipDeploy),
     resume_from: ''
   });
 
@@ -339,16 +344,37 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
         config: profile.worker_build as any,
         secret_query: secretQuery
       }, { cwd: projectRoot, env });
-    await writeWorkerArtifacts(artifactDir, profile, rendered.rendered_source, workerArtifacts);
+    const bundleDir = await writeWorkerArtifacts(artifactDir, profile, rendered.rendered_source, workerArtifacts);
     await setStage('obfuscate', 'success');
 
-    await setStage('deploy', options.skipDeploy ? 'skipped' : 'failed');
-    if (!options.skipDeploy) {
-      throw new Error('Node backend deploy is not available yet; use --skip-deploy');
+    if (options.skipDeploy) {
+      await setStage('deploy', 'skipped');
+    } else {
+      await setStage('deploy', 'running');
+      const deployment = context.stages?.deploy
+        ? await context.stages.deploy({ projectRoot, bundleDir, profile })
+        : await deployPagesWithBackend({ projectRoot, bundleDir, deploy: profile.deploy ?? {} }, { cwd: projectRoot, env });
+      if (Number(deployment.returncode ?? 1) !== 0) {
+        summary.deployment = safeDeployment(deployment);
+        throw new Error(`Cloudflare deployment failed: ${JSON.stringify(summary.deployment)}`);
+      }
+      summary.deployment = safeDeployment(deployment);
+      await setStage('deploy', 'success');
     }
-    await setStage('verify', options.skipVerify ? 'skipped' : 'failed');
-    if (!options.skipVerify) {
-      throw new Error('Node backend verify is not available yet; use --skip-verify');
+
+    const effectiveSkipVerify = Boolean(options.skipVerify || options.skipDeploy);
+    if (effectiveSkipVerify) {
+      await setStage('verify', 'skipped');
+    } else {
+      await setStage('verify', 'running');
+      const verification = context.stages?.verify
+        ? await context.stages.verify({ projectRoot, profile, deployment: summary.deployment })
+        : await verifyDeploymentWithBackend({ projectRoot, deploy: profile.deploy ?? {}, deployment: summary.deployment }, { cwd: projectRoot, env });
+      summary.deployment = safeDeployment({ ...summary.deployment, ...verification });
+      if (!isVerifySuccess(verification)) {
+        throw new Error(`Verification failed: ${JSON.stringify(summary.deployment)}`);
+      }
+      await setStage('verify', 'success');
     }
   } catch (error) {
     summary.run_status = 'failed';
