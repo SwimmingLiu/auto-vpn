@@ -5,7 +5,7 @@ export interface RunOptions {
   skipDeploy?: boolean;
   skipVerify?: boolean;
   resumeLatest?: boolean;
-  output?: 'jsonl';
+  output?: 'jsonl' | 'human';
   eventLog?: string;
   humanLog?: string;
 }

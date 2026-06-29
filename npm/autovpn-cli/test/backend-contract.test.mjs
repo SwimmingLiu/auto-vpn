@@ -4,6 +4,7 @@ import test from 'node:test';
 
 import { runCliShell } from '../dist/cli/main.js';
 import { normalizeEvent, parseEventLine } from '../dist/events/schema.js';
+import { NodeBackend } from '../dist/backend/node-backend.js';
 import { PythonBackend } from '../dist/backend/python-backend.js';
 import { selectBackend } from '../dist/backend/select-backend.js';
 
@@ -165,6 +166,23 @@ test('PythonBackend parses real JSON job payloads for job metadata methods', asy
 test('selectBackend defaults to Python backend and supports explicit Python fallback', () => {
   assert.equal(selectBackend({ env: {} }).kind, 'python');
   assert.equal(selectBackend({ env: { AUTOVPN_BACKEND: 'python' } }).kind, 'python');
+});
+
+test('selectBackend supports explicit Node backend opt-in', () => {
+  const backend = selectBackend({ env: { AUTOVPN_BACKEND: 'node' } });
+
+  assert.equal(backend.kind, 'node');
+  assert.ok(backend instanceof NodeBackend);
+});
+
+test('NodeBackend rejects deploy and verify runs before creating artifacts', async () => {
+  const backend = new NodeBackend({ env: {}, cwd: '/repo' });
+
+  await assert.rejects(async () => {
+    for await (const _event of backend.run({ projectRoot: '/repo', skipDeploy: false, skipVerify: false, output: 'jsonl' })) {
+      // consume
+    }
+  }, /Node backend deploy is not available yet/);
 });
 
 test('PythonBackend can stream normalized events from captured JSONL stdout', async () => {
