@@ -1,4 +1,5 @@
 import { AutoVpnEvent } from '../events/schema.js';
+import { runNodePipeline } from '../pipeline/orchestrator.js';
 import {
   AutoVpnBackend,
   DetachedRunOptions,
@@ -35,9 +36,14 @@ export class NodeBackend implements AutoVpnBackend {
     if (options.resumeLatest) {
       throw new Error('Node backend resume-latest is not available yet; use AUTOVPN_BACKEND=python');
     }
-    void this.env;
-    void this.cwd;
-    throw new Error('Node backend non-deploy orchestrator is not implemented yet');
+    const events: AutoVpnEvent[] = [];
+    await runNodePipeline(options, {
+      env: this.env,
+      emit: (event) => events.push(event)
+    });
+    for (const event of events) {
+      yield event;
+    }
   }
 
   async *retryStage(_options: RetryOptions): AsyncIterable<AutoVpnEvent> {
