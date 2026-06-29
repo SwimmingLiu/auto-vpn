@@ -6,6 +6,7 @@ import { CliIo, defaultIo, renderHelp } from './output.js';
 import { AutoVpnBackend } from '../backend/types.js';
 import { selectBackend } from '../backend/select-backend.js';
 import { readOptionValue, resolveProjectRoot } from '../runtime/paths.js';
+import { redactText } from '../runtime/redaction.js';
 
 type RunForwarder = (argv: string[]) => Promise<number>;
 type ReadPackageVersion = () => string | Promise<string>;
@@ -162,7 +163,7 @@ export async function runCliShell(argv: string[], options: CliShellOptions = {})
       io.writeStderr(`autovpn: ${error.message}\n`);
       return error.exitCode;
     }
-    const message = error instanceof Error ? error.message : String(error);
+    const message = redactText(error instanceof Error ? error.message : String(error));
     io.writeStderr(`autovpn npm wrapper error: ${message}\n`);
     return 1;
   }

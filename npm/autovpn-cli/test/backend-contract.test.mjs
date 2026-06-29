@@ -203,6 +203,32 @@ test('foreground Node run passes event and human log paths to backend', async ()
   assert.equal(seen[0].humanLog, '/tmp/human.log');
 });
 
+test('foreground Node run redacts raw backend errors written to stderr', async () => {
+  const io = createIo();
+
+  const code = await runCliShell(['run', '--project-root', '.', '--skip-deploy', '--skip-verify', '--output', 'jsonl'], {
+    packageVersion: '1.3.0',
+    cwd: '/repo',
+    io,
+    runForwarder: async () => 99,
+    createBackend: () => ({
+      kind: 'node',
+      executeCli: async () => 5,
+      async *run() {
+        yield { type: 'run_failed', error: 'Error: boom token=<redacted> serect_key=<redacted> vmess://<redacted>' };
+        throw new Error('boom token=SECRET serect_key=QUERY vmess://abcdef');
+      }
+    })
+  });
+
+  assert.equal(code, 1);
+  assert.match(io.stdout, /token=<redacted>/);
+  assert.match(io.stderr, /token=<redacted>/);
+  assert.match(io.stderr, /serect_key=<redacted>/);
+  assert.match(io.stderr, /vmess:\/\/<redacted>/);
+  assert.doesNotMatch(io.stderr, /SECRET|QUERY|vmess:\/\/abcdef/);
+});
+
 test('Node backend rejects detached run before native Python job handling', async () => {
   const io = createIo();
   let executeCliCalled = false;
