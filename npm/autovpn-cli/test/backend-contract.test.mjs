@@ -392,7 +392,7 @@ test('selectBackend supports explicit Node backend opt-in', () => {
   assert.ok(backend instanceof NodeBackend);
 });
 
-test('NodeBackend rejects deploy and verify runs before creating artifacts', async () => {
+test('NodeBackend rejects deploy runs before creating artifacts', async () => {
   const backend = new NodeBackend({ env: {}, cwd: '/repo' });
 
   await assert.rejects(async () => {
@@ -402,7 +402,7 @@ test('NodeBackend rejects deploy and verify runs before creating artifacts', asy
   }, /Node backend deploy is not available yet/);
 });
 
-test('NodeBackend allows full runs only when deploy and verify Python stage fallbacks are explicit', async () => {
+test('NodeBackend allows full runs when deploy Python fallback is explicit', async () => {
   const projectRoot = await mkdir(path.join(os.tmpdir(), `autovpn-node-backend-deploy-fallback-${Date.now()}`, 'project'), { recursive: true });
   const backend = new NodeBackend({
     env: {

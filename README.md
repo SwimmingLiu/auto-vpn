@@ -176,7 +176,7 @@ AUTOVPN_PYTHON_CLI="$(command -v autovpn)" AUTOVPN_NO_INSTALL=1 npx -y ./npm/aut
 AUTOVPN_BACKEND=node npx -y ./npm/autovpn-cli/*.tgz run --project-root "$PWD" --skip-deploy --skip-verify --output jsonl
 ```
 
-Deploy/verify under `AUTOVPN_BACKEND=node` is still experimental. It stays disabled by default; to exercise the v3 Node orchestrator with Python deploy/verify fallback, set `AUTOVPN_STAGE_BACKEND_DEPLOY=python`, `AUTOVPN_STAGE_BACKEND_VERIFY=python`, and an absolute `AUTOVPN_PYTHON_CLI` path.
+Deploy under `AUTOVPN_BACKEND=node` is still experimental and remains Python-backed. To exercise the v3 Node orchestrator with Python deploy fallback and Node-native verify, set `AUTOVPN_STAGE_BACKEND_DEPLOY=python` and an absolute `AUTOVPN_PYTHON_CLI` path. Set `AUTOVPN_STAGE_BACKEND_VERIFY=python` only when you need to roll verify back to the Python adapter.
 
 For long terminal or Agent runs, start a detached job and reconnect later:
 
