@@ -85,6 +85,88 @@ test('high-risk CLI commands are executed through backend adapter', async () => 
   assert.deepEqual(backendCalls, [['run', '--project-root', '/repo', '--skip-deploy', '--skip-verify', '--output', 'jsonl']]);
 });
 
+test('foreground run streams Node backend events when explicitly selected', async () => {
+  const io = createIo();
+  let executeCliCalled = false;
+
+  const code = await runCliShell(['run', '--project-root', '.', '--skip-deploy', '--skip-verify', '--output', 'jsonl'], {
+    packageVersion: '1.3.0',
+    cwd: '/repo',
+    io,
+    runForwarder: async () => 99,
+    createBackend: () => ({
+      kind: 'node',
+      executeCli: async () => {
+        executeCliCalled = true;
+        return 5;
+      },
+      async *run(options) {
+        yield { type: 'run_started', artifact_dir: '/repo/artifacts/1', skip_deploy: options.skipDeploy, skip_verify: options.skipVerify };
+        yield { type: 'summary', artifact_dir: '/repo/artifacts/1', run_status: 'success' };
+      }
+    })
+  });
+
+  assert.equal(code, 0);
+  assert.equal(executeCliCalled, false);
+  assert.deepEqual(io.stdout.trim().split(/\n/).map((line) => JSON.parse(line)), [
+    { type: 'run_started', artifact_dir: '/repo/artifacts/1', skip_deploy: true, skip_verify: true },
+    { type: 'summary', artifact_dir: '/repo/artifacts/1', run_status: 'success' }
+  ]);
+  assert.equal(io.stderr, '');
+});
+
+test('foreground run keeps Python backend executeCli forwarding by default', async () => {
+  const io = createIo();
+  const backendCalls = [];
+
+  const code = await runCliShell(['run', '--project-root', '.', '--skip-deploy', '--skip-verify', '--output', 'jsonl'], {
+    packageVersion: '1.3.0',
+    cwd: '/repo',
+    io,
+    runForwarder: async () => 99,
+    createBackend: () => ({
+      kind: 'python',
+      executeCli: async (argv) => {
+        backendCalls.push(argv);
+        return 6;
+      },
+      async *run() {
+        throw new Error('python run should not be consumed by shell');
+      }
+    })
+  });
+
+  assert.equal(code, 6);
+  assert.deepEqual(backendCalls, [['run', '--project-root', '/repo', '--skip-deploy', '--skip-verify', '--output', 'jsonl']]);
+  assert.equal(io.stdout, '');
+  assert.equal(io.stderr, '');
+});
+
+test('foreground run renders Node backend human events', async () => {
+  const io = createIo();
+
+  const code = await runCliShell(['run', '--project-root', '.', '--skip-deploy', '--skip-verify', '--output', 'human'], {
+    packageVersion: '1.3.0',
+    cwd: '/repo',
+    io,
+    runForwarder: async () => 99,
+    createBackend: () => ({
+      kind: 'node',
+      executeCli: async () => 5,
+      async *run() {
+        yield { type: 'stage', stage: 'extract', status: 'success' };
+        yield { type: 'summary', artifact_dir: '/repo/artifacts/1', run_status: 'success' };
+      }
+    })
+  });
+
+  assert.equal(code, 0);
+  assert.match(io.stdout, /\[extract\] success/);
+  assert.match(io.stdout, /summary: success \/repo\/artifacts\/1/);
+  assert.equal(io.stderr, '');
+});
+
 test('non-detached resume and retry commands are executed through backend adapter', async () => {
   const cases = [
     ['resume', 'pipeline', '--project-root', '.', '--session', '/tmp/session', '--output', 'jsonl'],

@@ -5,10 +5,12 @@ import { JobRuntimeOptions, runNativeCommand } from './native-commands.js';
 import { CliIo, defaultIo, renderHelp } from './output.js';
 import { AutoVpnBackend } from '../backend/types.js';
 import { selectBackend } from '../backend/select-backend.js';
+import { readOptionValue, resolveProjectRoot } from '../runtime/paths.js';
 
 type RunForwarder = (argv: string[]) => Promise<number>;
 type ReadPackageVersion = () => string | Promise<string>;
-type CreateBackend = (options: { env: NodeJS.ProcessEnv; cwd: string; runForwarder: RunForwarder }) => Pick<AutoVpnBackend, 'executeCli'>;
+type ShellBackend = Pick<AutoVpnBackend, 'executeCli'> & Partial<Pick<AutoVpnBackend, 'run' | 'kind'>>;
+type CreateBackend = (options: { env: NodeJS.ProcessEnv; cwd: string; runForwarder: RunForwarder }) => ShellBackend;
 
 export interface CliShellOptions {
   packageVersion?: string;
@@ -30,7 +32,7 @@ async function defaultReadPackageVersion(): Promise<string> {
   return String(runner.readPackageVersion());
 }
 
-function defaultCreateBackend(options: { env: NodeJS.ProcessEnv; cwd: string; runForwarder: RunForwarder }): Pick<AutoVpnBackend, 'executeCli'> {
+function defaultCreateBackend(options: { env: NodeJS.ProcessEnv; cwd: string; runForwarder: RunForwarder }): ShellBackend {
   return selectBackend(options);
 }
 
@@ -52,6 +54,41 @@ async function resolvePackageVersion(options: CliShellOptions): Promise<string> 
     return String(await options.readPackageVersion());
   }
   return defaultReadPackageVersion();
+}
+
+function hasFlag(argv: string[], flag: string): boolean {
+  return argv.includes(flag);
+}
+
+function eventOutputFormat(argv: string[]): 'jsonl' | 'human' {
+  return readOptionValue(argv, '--output') === 'human' ? 'human' : 'jsonl';
+}
+
+async function runForegroundPipeline(argv: string[], backend: ShellBackend, io: CliIo, cwd: string): Promise<number | undefined> {
+  if (argv[0] !== 'run' || hasFlag(argv, '--detach') || backend.kind !== 'node' || typeof backend.run !== 'function') {
+    return undefined;
+  }
+  const output = eventOutputFormat(argv);
+  for await (const event of backend.run({
+    projectRoot: resolveProjectRoot(argv, cwd),
+    skipDeploy: hasFlag(argv, '--skip-deploy'),
+    skipVerify: hasFlag(argv, '--skip-verify'),
+    resumeLatest: hasFlag(argv, '--resume-latest'),
+    output
+  })) {
+    if (output === 'human') {
+      if (event.type === 'log' && typeof event.message === 'string') {
+        io.writeStdout(`${event.message}\n`);
+      } else if (event.type === 'stage') {
+        io.writeStdout(`[${String(event.stage ?? '')}] ${String(event.status ?? '')}\n`);
+      } else if (event.type === 'summary') {
+        io.writeStdout(`summary: ${String(event.run_status ?? '')} ${String(event.artifact_dir ?? '')}\n`);
+      }
+      continue;
+    }
+    io.writeStdout(`${JSON.stringify(event)}\n`);
+  }
+  return 0;
 }
 
 export async function runCliShell(argv: string[], options: CliShellOptions = {}): Promise<number> {
@@ -95,6 +132,10 @@ export async function runCliShell(argv: string[], options: CliShellOptions = {})
     });
     if (nativeResult !== undefined) {
       return nativeResult;
+    }
+    const foregroundResult = await runForegroundPipeline(normalizedArgv, backend, io, cwd);
+    if (foregroundResult !== undefined) {
+      return foregroundResult;
     }
     return await backend.executeCli(normalizedArgv);
   } catch (error) {
