@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -86,4 +87,36 @@ test('Python render rollback adapter invokes backend venv Python when no callbac
   assert.equal(spawns[0].command, '/opt/autovpn/.venv/bin/python');
   assert.equal(spawns[0].args[0], '-c');
   assert.deepEqual(spawns[0].options.stdio, ['pipe', 'pipe', 'pipe']);
+});
+
+test('Python render rollback adapter merges project .env into spawn environment', async () => {
+  const projectRoot = await mkdtemp(path.join(os.tmpdir(), 'autovpn-render-env-'));
+  await mkdir(projectRoot, { recursive: true });
+  await writeFile(path.join(projectRoot, '.env'), 'EXTRA_FROM_DOTENV=1\nPATH=/from-dotenv\n', 'utf8');
+  const spawns = [];
+  const input = { template: `const MainData = \`${MAIN_DATA_PLACEHOLDER}\`;`, links: ['vmess://a'] };
+  await renderMainDataWithBackend(input, {
+    cwd: projectRoot,
+    env: { AUTOVPN_STAGE_BACKEND_RENDER: 'python', PATH: '/explicit-path' },
+    resolvePythonCli: () => ({ command: '/opt/autovpn/.venv/bin/autovpn', args: [] }),
+    spawn: (command, args, options) => {
+      spawns.push({ command, args, options });
+      const child = new EventEmitter();
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.stdin = {
+        write(chunk) {
+          this.input = String(chunk);
+        },
+        end() {
+          child.stdout.emit('data', '{"rendered_source":"ok"}\n');
+          child.emit('close', 0, null);
+        }
+      };
+      return child;
+    }
+  });
+
+  assert.equal(spawns[0].options.env.EXTRA_FROM_DOTENV, '1');
+  assert.equal(spawns[0].options.env.PATH, '/explicit-path');
 });

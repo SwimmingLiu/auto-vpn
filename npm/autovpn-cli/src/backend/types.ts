@@ -5,7 +5,7 @@ export interface RunOptions {
   skipDeploy?: boolean;
   skipVerify?: boolean;
   resumeLatest?: boolean;
-  output?: 'jsonl';
+  output?: 'jsonl' | 'human';
   eventLog?: string;
   humanLog?: string;
 }
@@ -58,4 +58,4 @@ export interface AutoVpnBackend {
   executeCli(argv: string[]): Promise<number>;
 }
 
-export type RunForwarder = (argv: string[]) => Promise<number>;
+export type RunForwarder = (argv: string[], options?: { env?: NodeJS.ProcessEnv; cwd?: string }) => Promise<number>;

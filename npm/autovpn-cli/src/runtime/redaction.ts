@@ -6,16 +6,33 @@ const SECRET_DEPLOYMENT_KEYS = new Set([
   'pages_secret_admin'
 ]);
 
-const SECRET_TEXT_PATTERNS: Array<[RegExp, string]> = [
-  [/(token=)[^&\s"']+/g, '$1<redacted>'],
-  [/(serect_key=)[^&\s"']+/g, '$1<redacted>'],
-  [/(secret_key=)[^&\s"']+/g, '$1<redacted>'],
-  [/(api[_-]?token=)[^&\s"']+/gi, '$1<redacted>'],
+const SECRET_FIELD_NAMES = [
+  'token',
+  'serect_key',
+  'secret_key',
+  'api_token',
+  'api-token',
+  'cloudflare_api_token',
+  'subscription_url',
+  'verify_subscription_url',
+  'secret_query',
+  'share_project_sub_value',
+  'pages_secret_admin'
+];
+
+const SECRET_FIELD_PATTERN = new RegExp(
+  `(["']?)\\b(${SECRET_FIELD_NAMES.map((key) => key.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')).join('|')})\\b\\1(\\s*[:=]\\s*)(["']?)([^\\s"',}&]+)(\\4)`,
+  'gi'
+);
+
+const SECRET_TEXT_PATTERNS: Array<[RegExp, string | ((...args: string[]) => string)]> = [
+  [SECRET_FIELD_PATTERN, (_match, keyQuote, key, separator, valueQuote, _value, closingQuote) => `${keyQuote}${key}${keyQuote}${separator}${valueQuote}<redacted>${closingQuote}`],
+  [/(Bearer\s+)[A-Za-z0-9._~+/\-=]+/gi, '$1<redacted>'],
   [/vmess:\/\/[A-Za-z0-9_\-+/=]+/g, 'vmess://<redacted>']
 ];
 
 export function redactText(value: string): string {
-  return SECRET_TEXT_PATTERNS.reduce((result, [pattern, replacement]) => result.replace(pattern, replacement), value);
+  return SECRET_TEXT_PATTERNS.reduce((result, [pattern, replacement]) => result.replace(pattern, replacement as string), value);
 }
 
 function redactNested(value: unknown): unknown {
@@ -45,4 +62,3 @@ export function safeDeployment(deployment: Record<string, unknown>): Record<stri
   }
   return safe;
 }
-

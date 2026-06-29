@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { mkdir, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 
 import { runCliShell } from '../dist/cli/main.js';
 import { normalizeEvent, parseEventLine } from '../dist/events/schema.js';
+import { NodeBackend } from '../dist/backend/node-backend.js';
 import { PythonBackend } from '../dist/backend/python-backend.js';
 import { selectBackend } from '../dist/backend/select-backend.js';
 
@@ -43,8 +47,8 @@ test('backend event schema rejects invalid event envelopes', () => {
 test('PythonBackend executeCli owns Python process forwarding', async () => {
   const forwarded = [];
   const backend = new PythonBackend({
-    runForwarder: async (argv) => {
-      forwarded.push(argv);
+    runForwarder: async (argv, options) => {
+      forwarded.push({ argv, options });
       return 7;
     }
   });
@@ -52,7 +56,54 @@ test('PythonBackend executeCli owns Python process forwarding', async () => {
   const code = await backend.executeCli(['run', '--project-root', '/repo', '--output', 'jsonl']);
 
   assert.equal(code, 7);
-  assert.deepEqual(forwarded, [['run', '--project-root', '/repo', '--output', 'jsonl']]);
+  assert.deepEqual(forwarded.map((item) => item.argv), [['run', '--project-root', '/repo', '--output', 'jsonl']]);
+  assert.ok(forwarded[0].options.env);
+  assert.equal(forwarded[0].options.cwd, process.cwd());
+});
+
+test('PythonBackend executeCli merges project .env before forwarding', async () => {
+  const root = await mkdir(path.join(os.tmpdir(), `autovpn-forward-env-${Date.now()}`), { recursive: true });
+  await writeFile(path.join(root, '.env'), 'VPN_AUTOMATION_UPSTREAM_PROXY=off\nEXTRA_FROM_DOTENV=value\n', 'utf8');
+  const forwarded = [];
+  const backend = new PythonBackend({
+    env: { VPN_AUTOMATION_UPSTREAM_PROXY: 'http://127.0.0.1:7890', PATH: '/bin' },
+    cwd: '/work',
+    runForwarder: async (argv, options) => {
+      forwarded.push({ argv, options });
+      return 0;
+    }
+  });
+
+  const code = await backend.executeCli(['run', `--project-root=${root}`, '--output', 'jsonl']);
+
+  assert.equal(code, 0);
+  assert.equal(forwarded[0].options.cwd, '/work');
+  assert.equal(forwarded[0].options.env.VPN_AUTOMATION_UPSTREAM_PROXY, 'http://127.0.0.1:7890');
+  assert.equal(forwarded[0].options.env.EXTRA_FROM_DOTENV, 'value');
+  assert.equal(forwarded[0].options.env.PATH, '/bin');
+});
+
+test('default Python CLI foreground path merges project .env', async () => {
+  const root = await mkdir(path.join(os.tmpdir(), `autovpn-shell-env-${Date.now()}`), { recursive: true });
+  await writeFile(path.join(root, '.env'), 'EXTRA_FROM_DOTENV=value\n', 'utf8');
+  const io = createIo();
+  const forwarded = [];
+
+  const code = await runCliShell(['run', '--project-root', root, '--skip-deploy', '--skip-verify', '--output', 'jsonl'], {
+    packageVersion: '1.3.0',
+    cwd: '/repo',
+    env: { PATH: '/bin' },
+    io,
+    runForwarder: async (argv, options) => {
+      forwarded.push({ argv, options });
+      return 0;
+    }
+  });
+
+  assert.equal(code, 0);
+  assert.equal(forwarded.length, 1);
+  assert.equal(forwarded[0].options.env.EXTRA_FROM_DOTENV, 'value');
+  assert.equal(forwarded[0].options.env.PATH, '/bin');
 });
 
 test('high-risk CLI commands are executed through backend adapter', async () => {
@@ -79,6 +130,173 @@ test('high-risk CLI commands are executed through backend adapter', async () => 
   assert.equal(code, 5);
   assert.deepEqual(directForwarderCalls, []);
   assert.deepEqual(backendCalls, [['run', '--project-root', '/repo', '--skip-deploy', '--skip-verify', '--output', 'jsonl']]);
+});
+
+test('foreground run streams Node backend events when explicitly selected', async () => {
+  const io = createIo();
+  let executeCliCalled = false;
+
+  const code = await runCliShell(['run', '--project-root', '.', '--skip-deploy', '--skip-verify', '--output', 'jsonl'], {
+    packageVersion: '1.3.0',
+    cwd: '/repo',
+    io,
+    runForwarder: async () => 99,
+    createBackend: () => ({
+      kind: 'node',
+      executeCli: async () => {
+        executeCliCalled = true;
+        return 5;
+      },
+      async *run(options) {
+        yield { type: 'run_started', artifact_dir: '/repo/artifacts/1', skip_deploy: options.skipDeploy, skip_verify: options.skipVerify };
+        yield { type: 'summary', artifact_dir: '/repo/artifacts/1', run_status: 'success' };
+      }
+    })
+  });
+
+  assert.equal(code, 0);
+  assert.equal(executeCliCalled, false);
+  assert.deepEqual(io.stdout.trim().split(/\n/).map((line) => JSON.parse(line)), [
+    { type: 'run_started', artifact_dir: '/repo/artifacts/1', skip_deploy: true, skip_verify: true },
+    { type: 'summary', artifact_dir: '/repo/artifacts/1', run_status: 'success' }
+  ]);
+  assert.equal(io.stderr, '');
+});
+
+test('foreground run keeps Python backend executeCli forwarding by default', async () => {
+  const io = createIo();
+  const backendCalls = [];
+
+  const code = await runCliShell(['run', '--project-root', '.', '--skip-deploy', '--skip-verify', '--output', 'jsonl'], {
+    packageVersion: '1.3.0',
+    cwd: '/repo',
+    io,
+    runForwarder: async () => 99,
+    createBackend: () => ({
+      kind: 'python',
+      executeCli: async (argv) => {
+        backendCalls.push(argv);
+        return 6;
+      },
+      async *run() {
+        throw new Error('python run should not be consumed by shell');
+      }
+    })
+  });
+
+  assert.equal(code, 6);
+  assert.deepEqual(backendCalls, [['run', '--project-root', '/repo', '--skip-deploy', '--skip-verify', '--output', 'jsonl']]);
+  assert.equal(io.stdout, '');
+  assert.equal(io.stderr, '');
+});
+
+test('foreground run renders Node backend human events', async () => {
+  const io = createIo();
+
+  const code = await runCliShell(['run', '--project-root', '.', '--skip-deploy', '--skip-verify', '--output', 'human'], {
+    packageVersion: '1.3.0',
+    cwd: '/repo',
+    io,
+    runForwarder: async () => 99,
+    createBackend: () => ({
+      kind: 'node',
+      executeCli: async () => 5,
+      async *run() {
+        yield { type: 'stage', stage: 'extract', status: 'success' };
+        yield { type: 'summary', artifact_dir: '/repo/artifacts/1', run_status: 'success' };
+      }
+    })
+  });
+
+  assert.equal(code, 0);
+  assert.match(io.stdout, /\[extract\] success/);
+  assert.match(io.stdout, /summary: success \/repo\/artifacts\/1/);
+  assert.equal(io.stderr, '');
+});
+
+test('foreground Node run passes event and human log paths to backend', async () => {
+  const io = createIo();
+  const seen = [];
+
+  const code = await runCliShell([
+    'run',
+    '--project-root',
+    '.',
+    '--skip-deploy',
+    '--skip-verify',
+    '--output',
+    'jsonl',
+    '--event-log',
+    '/tmp/events.jsonl',
+    '--human-log',
+    '/tmp/human.log'
+  ], {
+    packageVersion: '1.3.0',
+    cwd: '/repo',
+    io,
+    runForwarder: async () => 99,
+    createBackend: () => ({
+      kind: 'node',
+      executeCli: async () => 5,
+      async *run(options) {
+        seen.push(options);
+        yield { type: 'summary', artifact_dir: '/repo/artifacts/1', run_status: 'success' };
+      }
+    })
+  });
+
+  assert.equal(code, 0);
+  assert.equal(seen[0].eventLog, '/tmp/events.jsonl');
+  assert.equal(seen[0].humanLog, '/tmp/human.log');
+});
+
+test('foreground Node run redacts raw backend errors written to stderr', async () => {
+  const io = createIo();
+
+  const code = await runCliShell(['run', '--project-root', '.', '--skip-deploy', '--skip-verify', '--output', 'jsonl'], {
+    packageVersion: '1.3.0',
+    cwd: '/repo',
+    io,
+    runForwarder: async () => 99,
+    createBackend: () => ({
+      kind: 'node',
+      executeCli: async () => 5,
+      async *run() {
+        yield { type: 'run_failed', error: 'Error: boom token=<redacted> serect_key=<redacted> vmess://<redacted>' };
+        throw new Error('boom token=SECRET serect_key=QUERY vmess://abcdef');
+      }
+    })
+  });
+
+  assert.equal(code, 1);
+  assert.match(io.stdout, /token=<redacted>/);
+  assert.match(io.stderr, /token=<redacted>/);
+  assert.match(io.stderr, /serect_key=<redacted>/);
+  assert.match(io.stderr, /vmess:\/\/<redacted>/);
+  assert.doesNotMatch(io.stderr, /SECRET|QUERY|vmess:\/\/abcdef/);
+});
+
+test('Node backend rejects detached run before native Python job handling', async () => {
+  const io = createIo();
+  let executeCliCalled = false;
+
+  const code = await runCliShell(['run', '--project-root', '.', '--skip-deploy', '--skip-verify', '--detach', '--json'], {
+    packageVersion: '1.3.0',
+    cwd: '/repo',
+    io,
+    runForwarder: async () => 99,
+    createBackend: () => ({
+      kind: 'node',
+      executeCli: async () => {
+        executeCliCalled = true;
+        return 5;
+      }
+    })
+  });
+
+  assert.equal(code, 1);
+  assert.equal(executeCliCalled, false);
+  assert.match(io.stderr, /Node backend detached runs are not available yet/);
 });
 
 test('non-detached resume and retry commands are executed through backend adapter', async () => {
@@ -167,6 +385,62 @@ test('selectBackend defaults to Python backend and supports explicit Python fall
   assert.equal(selectBackend({ env: { AUTOVPN_BACKEND: 'python' } }).kind, 'python');
 });
 
+test('selectBackend supports explicit Node backend opt-in', () => {
+  const backend = selectBackend({ env: { AUTOVPN_BACKEND: 'node' } });
+
+  assert.equal(backend.kind, 'node');
+  assert.ok(backend instanceof NodeBackend);
+});
+
+test('NodeBackend rejects deploy and verify runs before creating artifacts', async () => {
+  const backend = new NodeBackend({ env: {}, cwd: '/repo' });
+
+  await assert.rejects(async () => {
+    for await (const _event of backend.run({ projectRoot: '/repo', skipDeploy: false, skipVerify: false, output: 'jsonl' })) {
+      // consume
+    }
+  }, /Node backend deploy is not available yet/);
+});
+
+test('NodeBackend yields failure events before surfacing pipeline errors', async () => {
+  const projectRoot = await mkdir(path.join(os.tmpdir(), `autovpn-node-backend-failure-${Date.now()}`, 'project'), { recursive: true });
+  const runtimeRoot = path.join(projectRoot, '.runtime');
+  const events = [];
+  const backend = new NodeBackend({
+    env: { VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot },
+    cwd: projectRoot
+  });
+
+  await assert.rejects(async () => {
+    for await (const event of backend.run({ projectRoot, skipDeploy: true, skipVerify: true, output: 'jsonl' })) {
+      events.push(event);
+    }
+  }, /profile\.toml/);
+
+  assert.equal(events[0].type, 'run_started');
+  assert.equal(events.at(-2).type, 'summary');
+  assert.equal(events.at(-2).run_status, 'failed');
+  assert.equal(events.at(-1).type, 'run_failed');
+});
+
+test('NodeBackend streams events before pipeline completion', async () => {
+  const projectRoot = await mkdir(path.join(os.tmpdir(), `autovpn-node-backend-stream-${Date.now()}`, 'project'), { recursive: true });
+  const runtimeRoot = path.join(projectRoot, '.runtime');
+  const backend = new NodeBackend({
+    env: { VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot },
+    cwd: projectRoot
+  });
+
+  const iterator = backend.run({ projectRoot, skipDeploy: true, skipVerify: true, output: 'jsonl' })[Symbol.asyncIterator]();
+  const first = await iterator.next();
+  assert.equal(first.value.type, 'run_started');
+  await assert.rejects(async () => {
+    while (!(await iterator.next()).done) {
+      // consume
+    }
+  }, /profile\.toml/);
+});
+
 test('PythonBackend can stream normalized events from captured JSONL stdout', async () => {
   const child = new EventEmitter();
   child.stdout = new EventEmitter();
@@ -194,6 +468,37 @@ test('PythonBackend can stream normalized events from captured JSONL stdout', as
 
   assert.deepEqual(spawns[0], ['/opt/autovpn/bin/autovpn', ['run', '--project-root', '/repo', '--output', 'jsonl', '--skip-deploy', '--skip-verify']]);
   assert.deepEqual(events.map((event) => event.type), ['run_started', 'summary']);
+});
+
+test('PythonBackend merges project .env into spawned run environment without overriding explicit env', async () => {
+  const projectRoot = await mkdir(path.join(os.tmpdir(), `autovpn-python-backend-env-${Date.now()}`), { recursive: true });
+  await writeFile(path.join(projectRoot, '.env'), 'VPN_AUTOMATION_UPSTREAM_PROXY=off\nEXTRA_FROM_ENV=1\nPATH=/from-dotenv\n', 'utf8');
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  const spawns = [];
+  const backend = new PythonBackend({
+    env: { PATH: '/bin', VPN_AUTOMATION_UPSTREAM_PROXY: 'http://127.0.0.1:7890' },
+    resolvePythonCli: () => ({ command: '/opt/autovpn/bin/autovpn', args: [] }),
+    spawn: (command, args, options) => {
+      spawns.push({ command, args, options });
+      return child;
+    }
+  });
+
+  const consume = (async () => {
+    for await (const _event of backend.run({ projectRoot, skipDeploy: true, skipVerify: true, output: 'jsonl' })) {
+      // consume
+    }
+  })();
+  child.stdout.emit('data', '{"type":"summary","run_status":"success"}\n');
+  child.stdout.emit('end');
+  child.emit('close', 0, null);
+  await consume;
+
+  assert.equal(spawns[0].options.env.VPN_AUTOMATION_UPSTREAM_PROXY, 'http://127.0.0.1:7890');
+  assert.equal(spawns[0].options.env.EXTRA_FROM_ENV, '1');
+  assert.equal(spawns[0].options.env.PATH, '/bin');
 });
 
 test('PythonBackend event streams surface non-zero Python exits', async () => {

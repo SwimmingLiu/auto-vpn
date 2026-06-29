@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { spawn as defaultSpawn, ChildProcess } from 'node:child_process';
+import { mergeProjectEnv } from '../runtime/env.js';
 
 export const MAIN_DATA_PLACEHOLDER = '__MAIN_DATA__';
 
@@ -82,7 +83,7 @@ function pythonCommandFor(resolved: ResolvedPythonCli): string {
 }
 
 async function renderWithPython(input: RenderInput, options: RenderBackendOptions): Promise<RenderOutput> {
-  const env = options.env ?? process.env;
+  const env = mergeProjectEnv(options.cwd ?? process.cwd(), options.env ?? process.env);
   const resolved = options.resolvePythonCli ? await options.resolvePythonCli() : await defaultResolvePythonCli(env);
   const child = (options.spawn ?? defaultSpawn)(pythonCommandFor(resolved), ['-c', PYTHON_RENDER_HELPER], {
     cwd: options.cwd ?? process.cwd(),

@@ -12,12 +12,35 @@ autovpn run --project-root . --skip-deploy --skip-verify --output jsonl
 
 The public npm registry package is not enabled in Phase 1. Use the GitHub Release `.tgz` until license, provenance, and idempotent publishing gates are complete.
 
+For Agent-friendly JSONL output, prefer foreground runs:
+
+```bash
+autovpn doctor --project-root . --output json
+autovpn run --project-root . --skip-deploy --skip-verify --output jsonl
+autovpn artifacts latest --project-root .
+```
+
 ## Runtime Shape
 
 The CLI is currently hybrid:
 
 - Node.js handles `--help`, `--version`, argument validation, `doctor --output json`, `profile summary --json`, `artifacts latest/list/preview`, `status --json`, `logs`, and read-only `jobs` commands.
-- Python remains the backend for high-risk pipeline actions such as `run`, `retry-stage`, `resume`, detached job creation, stop, speedtest, deploy, and verify, selected through the backend adapter boundary.
+- Python remains the default backend for high-risk pipeline actions such as `run`, `retry-stage`, `resume`, detached job creation, stop, speedtest, deploy, and verify, selected through the backend adapter boundary.
+- The experimental Node backend can orchestrate a non-deploy foreground pipeline when explicitly selected with `AUTOVPN_BACKEND=node` and `--skip-deploy --skip-verify`. In v2, runtime-heavy stages default to Python stage fallback unless a caller explicitly selects Node stage implementations.
+
+Experimental Node-orchestrated dry run:
+
+```bash
+AUTOVPN_BACKEND=node \
+autovpn run --project-root . --skip-deploy --skip-verify --output jsonl
+```
+
+Current Node backend limits:
+
+- `--detach`, `retry-stage`, `resume`, deploy, and verify remain Python-backed.
+- A Node foreground run requires both `--skip-deploy` and `--skip-verify`.
+- `--resume-latest` is not implemented for the Node backend yet.
+- Project `.env` is loaded before resolving profile and artifact paths. Explicit process environment values still win over `.env`.
 
 Fallback flags for migrated commands:
 
@@ -53,7 +76,19 @@ For Python-backed commands, the wrapper forwards argv, stdin, stdout, stderr, an
 - `AUTOVPN_PYTHON_CLI`
 - `AUTOVPN_CLI_SHELL`
 - `AUTOVPN_BACKEND`
+- `AUTOVPN_PIPELINE_BACKEND`
+- `AUTOVPN_STAGE_BACKEND_EXTRACT`
+- `AUTOVPN_STAGE_BACKEND_DEDUPE`
+- `AUTOVPN_STAGE_BACKEND_SPEEDTEST`
+- `AUTOVPN_STAGE_BACKEND_AVAILABILITY`
+- `AUTOVPN_STAGE_BACKEND_POSTPROCESS`
+- `AUTOVPN_STAGE_BACKEND_RENDER`
+- `AUTOVPN_STAGE_BACKEND_OBFUSCATE`
 - `AUTOVPN_DOCTOR_BACKEND`
 - `AUTOVPN_PROFILE_BACKEND`
 - `AUTOVPN_ARTIFACTS_BACKEND`
 - `AUTOVPN_JOBS_BACKEND`
+- `VPN_AUTOMATION_RUNTIME_ROOT`
+- `VPN_AUTOMATION_PROFILE_PATH`
+- `VPN_AUTOMATION_ARTIFACTS_ROOT`
+- `VPN_AUTOMATION_UPSTREAM_PROXY`

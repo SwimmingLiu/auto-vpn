@@ -1,0 +1,70 @@
+[sources]
+[sources.fixture]
+url = "https://fixture.example/source?t=123"
+key = "abcdabcdabcdabcd"
+enabled = true
+max_iterations = 1
+min_iterations = 0
+plateau_limit = 1
+use_random_area = false
+failure_limit = 1
+max_runtime_seconds = 0
+
+[speed_test]
+min_download_mb_s = 1
+timeout_seconds = 20
+concurrency = 1
+urls = ["https://speed.example/10mb"]
+probe_url = "https://www.gstatic.com/generate_204"
+max_download_bytes = 1000
+startup_wait_seconds = 1
+max_download_candidates = 0
+
+[availability_targets]
+[availability_targets.custom]
+url = "https://custom.example/"
+enabled = true
+allowed_hosts = ["custom.example"]
+negative_phrases = []
+
+[deploy]
+project_name = "fixture-project"
+subscription_url = "https://sub.example.invalid/?serect_key=fixture"
+verify_subscription_url = "https://sub.example.invalid/verify?serect_key=fixture"
+pages_project_url = "https://fixture-project.pages.dev"
+custom_domain = ""
+secret_query = "serect_key=fixture"
+cloudflare_auth_mode = "api_token"
+cloudflare_api_token = ""
+cloudflare_global_key = ""
+cloudflare_email = ""
+account_id = ""
+use_wrangler = true
+auto_create_project_on_blocked = true
+fallback_project_prefix = ""
+share_project_name = "sub-links-share-03"
+share_project_auto_fallback = true
+share_project_fallback_prefix = "sub-links-share"
+share_project_sub_env_key = "SUB"
+pages_secret_admin = "fixture"
+fallback_last_used_suffix = 0
+share_project_fallback_last_used_suffix = 0
+
+[worker_build]
+environment_name = "production"
+entry_filename = "_worker.js"
+bundle_subdir = "pages_bundle"
+modules_subdir = "modules"
+manifest_filename = "manifest.json"
+variable_prefix = "sg"
+comment_template = "subscription worker: returns encoded payload on secret match, random bytes otherwise"
+random_noise_min_length = 24
+random_noise_max_length = 96
+enable_keyword_fragmentation = false
+enable_identifier_randomization = false
+emit_sidecar_modules = true
+
+[filters]
+excluded_country_codes = []
+
+[filters.per_country_limit]
