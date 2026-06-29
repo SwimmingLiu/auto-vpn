@@ -89,6 +89,18 @@ autovpn run --project-root /opt/autovpn/vpn-subscription-automation --skip-deplo
 autovpn artifacts latest --project-root /opt/autovpn/vpn-subscription-automation
 ```
 
+The npm CLI defaults high-risk `run` execution to the Python backend for production compatibility. For v2 Node-backend validation, run the experimental Node orchestrator only as a non-deploy foreground pipeline:
+
+```bash
+AUTOVPN_BACKEND=node \
+AUTOVPN_STAGE_BACKEND_EXTRACT=python \
+AUTOVPN_STAGE_BACKEND_SPEEDTEST=python \
+AUTOVPN_STAGE_BACKEND_AVAILABILITY=python \
+autovpn run --project-root /opt/autovpn/vpn-subscription-automation --skip-deploy --skip-verify --output jsonl
+```
+
+This mode writes normal artifacts and JSONL events, loads project `.env` before resolving profile and artifact paths, and intentionally rejects deploy, verify, detached jobs, and `--resume-latest` until the v3 runtime migration is complete.
+
 For long terminal or Agent runs, start a detached job and reconnect later:
 
 ```bash
@@ -155,7 +167,7 @@ autovpn run --project-root /opt/autovpn/vpn-subscription-automation --skip-deplo
 autovpn artifacts latest --project-root /opt/autovpn/vpn-subscription-automation
 ```
 
-The `autovpn` command is the terminal and Agent-facing interface. It reuses the same Python backend as Electron and supports profile, run, artifact, retry, and resume operations without opening the desktop client.
+The `autovpn` command is the terminal and Agent-facing interface. It defaults to the same Python backend as Electron for production runs and now also includes an opt-in Node backend for v2 non-deploy pipeline validation.
 
 Run the npm wrapper from source during development:
 
@@ -165,6 +177,7 @@ npm test --prefix npm/autovpn-cli
 (cd npm/autovpn-cli && npm pack --pack-destination .)
 AUTOVPN_PYTHON_CLI="$(command -v autovpn)" AUTOVPN_NO_INSTALL=1 npx -y ./npm/autovpn-cli/*.tgz --version
 AUTOVPN_PYTHON_CLI="$(command -v autovpn)" AUTOVPN_NO_INSTALL=1 npx -y ./npm/autovpn-cli/*.tgz doctor --project-root "$PWD" --output json
+AUTOVPN_BACKEND=node AUTOVPN_STAGE_BACKEND_EXTRACT=python AUTOVPN_STAGE_BACKEND_SPEEDTEST=python AUTOVPN_STAGE_BACKEND_AVAILABILITY=python npx -y ./npm/autovpn-cli/*.tgz run --project-root "$PWD" --skip-deploy --skip-verify --output jsonl
 ```
 
 For long terminal or Agent runs, start a detached job and reconnect later:
