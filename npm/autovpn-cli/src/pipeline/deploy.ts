@@ -20,6 +20,12 @@ export interface CloudflareCredentials {
   global_api_key: string;
 }
 
+export interface CloudflareVerifyClient {
+  verifyUrl(url: string, expectedFragment?: string): Promise<boolean>;
+  verifySubdomainCname(hostname: string, target: string): Promise<boolean>;
+  deletePagesProject(projectName: string): Promise<unknown>;
+}
+
 export interface DeployInput {
   projectRoot: string;
   bundleDir: string;
@@ -39,6 +45,8 @@ export interface DeployVerifyBackendOptions {
   resolvePythonCli?: () => ResolvedPythonCli | Promise<ResolvedPythonCli>;
   pythonDeploy?: (input: DeployInput) => Record<string, unknown> | Promise<Record<string, unknown>>;
   pythonVerify?: (input: VerifyInput) => Record<string, unknown> | Promise<Record<string, unknown>>;
+  cloudflareClient?: CloudflareVerifyClient;
+  fetch?: typeof fetch;
 }
 
 const PYTHON_DEPLOY_HELPER = `
@@ -88,6 +96,7 @@ sys.stdout.write("\\n")
 
 const PAGES_PRODUCTION_BRANCH = 'main';
 const FALLBACK_SUFFIX_PATTERN = /^(?<prefix>.+)-(?<suffix>\d+)$/;
+const CLOUDFLARE_API_BASE_URL = 'https://api.cloudflare.com/client/v4';
 
 function clean(value: unknown): string {
   return value ? String(value).trim() : '';
@@ -252,7 +261,7 @@ export function resolveLatestExistingProjectName(baseName: string, existingNames
 
 export function resolveCloudflareCredentials(
   deploy: DeployLike,
-  runtimeEnv: Record<string, string>,
+  runtimeEnv: Record<string, string | undefined>,
   options: { explicitApiToken?: string } = {}
 ): CloudflareCredentials {
   const authMode = getString(deploy, 'cloudflare_auth_mode') || 'api_token';
@@ -314,6 +323,179 @@ export function buildNoopCleanupBlockedProjectResult(deployment: DeployLike): Re
     cleanup_deleted: false,
     cleanup_errors: deployment.cleanup_errors ?? []
   };
+}
+
+function normalizeHostname(value: string): string {
+  return clean(value).replace(/\.+$/g, '').toLowerCase();
+}
+
+function cloudflareHeaders(credentials: CloudflareCredentials): Record<string, string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (credentials.auth_mode === 'global_key') {
+    headers['X-Auth-Email'] = credentials.email;
+    headers['X-Auth-Key'] = credentials.global_api_key;
+    return headers;
+  }
+  headers.Authorization = `Bearer ${credentials.api_token}`;
+  return headers;
+}
+
+function responseBodyText(response: Response): Promise<string> {
+  return response.text().catch(() => '');
+}
+
+export class CloudflareHttpClient implements CloudflareVerifyClient {
+  private accountId: string;
+  private readonly headers: Record<string, string>;
+  private readonly fetchImpl: typeof fetch;
+
+  constructor(credentials: CloudflareCredentials, options: { fetch?: typeof fetch } = {}) {
+    this.accountId = credentials.account_id;
+    this.headers = cloudflareHeaders(credentials);
+    this.fetchImpl = options.fetch ?? fetch;
+  }
+
+  private async apiRequest(pathname: string, options: RequestInit = {}): Promise<unknown> {
+    const response = await this.fetchImpl(`${CLOUDFLARE_API_BASE_URL}${pathname}`, {
+      ...options,
+      headers: { ...this.headers, ...(options.headers as Record<string, string> | undefined) },
+      signal: options.signal ?? AbortSignal.timeout(20_000)
+    });
+    if (!response.ok) {
+      const body = await responseBodyText(response);
+      throw new Error(`Cloudflare API request failed (${response.status}): ${body || response.statusText}`);
+    }
+    return response.json();
+  }
+
+  private async apiResult(pathname: string, options: RequestInit = {}): Promise<unknown> {
+    const payload = await this.apiRequest(pathname, options);
+    if (payload && typeof payload === 'object' && 'result' in payload) {
+      return (payload as { result: unknown }).result;
+    }
+    return payload;
+  }
+
+  async listAccounts(): Promise<Record<string, unknown>[]> {
+    return (await this.apiResult('/accounts')) as Record<string, unknown>[];
+  }
+
+  async resolveAccountId(): Promise<string> {
+    if (this.accountId) {
+      return this.accountId;
+    }
+    const accounts = await this.listAccounts();
+    if (!accounts.length) {
+      throw new Error('No Cloudflare account available for the supplied credentials');
+    }
+    this.accountId = clean(accounts[0].id);
+    return this.accountId;
+  }
+
+  async listZones(name = ''): Promise<Record<string, unknown>[]> {
+    const params = name ? `?name=${encodeURIComponent(name)}` : '';
+    return (await this.apiResult(`/zones${params}`)) as Record<string, unknown>[];
+  }
+
+  async resolveZoneForHostname(hostname: string): Promise<Record<string, unknown>> {
+    const normalized = normalizeHostname(hostname);
+    const labels = normalized.split('.').filter(Boolean);
+    const startIndex = labels.length <= 2 ? 0 : 1;
+    for (let index = startIndex; index < labels.length - 1; index += 1) {
+      const candidate = labels.slice(index).join('.');
+      if (!candidate.includes('.')) {
+        continue;
+      }
+      const zones = await this.listZones(candidate);
+      for (const zone of zones) {
+        if (clean(zone.name).toLowerCase() === candidate) {
+          return zone;
+        }
+      }
+    }
+    throw new Error(`Cloudflare zone not found for hostname: ${hostname}`);
+  }
+
+  async listDnsRecords(zoneId: string, hostname: string): Promise<Record<string, unknown>[]> {
+    return (await this.apiResult(`/zones/${zoneId}/dns_records?name=${encodeURIComponent(hostname)}`)) as Record<string, unknown>[];
+  }
+
+  async verifySubdomainCname(hostname: string, target: string): Promise<boolean> {
+    const normalizedHost = normalizeHostname(hostname);
+    const normalizedTarget = normalizeHostname(target);
+    const zone = await this.resolveZoneForHostname(normalizedHost);
+    const records = await this.listDnsRecords(clean(zone.id), normalizedHost);
+    return records.some((record) => (
+      clean(record.type).toUpperCase() === 'CNAME'
+      && normalizeHostname(clean(record.name)) === normalizedHost
+      && normalizeHostname(clean(record.content)) === normalizedTarget
+    ));
+  }
+
+  async deletePagesProject(projectName: string): Promise<unknown> {
+    const accountId = await this.resolveAccountId();
+    return this.apiRequest(`/accounts/${accountId}/pages/projects/${projectName}`, { method: 'DELETE' });
+  }
+
+  async verifyUrl(url: string, expectedFragment = ''): Promise<boolean> {
+    const response = await this.fetchImpl(url, {
+      method: 'GET',
+      signal: AbortSignal.timeout(30_000)
+    });
+    if (!response.ok) {
+      const body = await responseBodyText(response);
+      throw new Error(`URL verification failed (${response.status}): ${body || response.statusText}`);
+    }
+    if (!expectedFragment) {
+      return true;
+    }
+    return (await response.text()).includes(expectedFragment);
+  }
+}
+
+export async function defaultVerifyDeployment(deploy: DeployLike, client: CloudflareVerifyClient): Promise<Record<string, boolean>> {
+  const pagesDomainUrl = buildPagesProjectRootUrl(deploy);
+  const pagesDomainOk = pagesDomainUrl ? await client.verifyUrl(pagesDomainUrl) : false;
+  const secretOk = await client.verifyUrl(buildSecretUrl(deploy));
+  const subscriptionOk = await client.verifyUrl(resolveVerifySubscriptionUrl(deploy));
+  const customDomainUrl = buildCustomDomainRootUrl(deploy);
+  const customDomainOk = customDomainUrl ? await client.verifyUrl(customDomainUrl) : false;
+  const customDomainSubscriptionUrl = resolveCustomDomainVerifySubscriptionUrl(deploy);
+  const customDomainSubscriptionOk = customDomainSubscriptionUrl ? await client.verifyUrl(customDomainSubscriptionUrl) : false;
+  const customDomainDnsTarget = deriveCustomDomainDnsTarget(deploy);
+  const customDomainDnsOk = customDomainUrl && customDomainDnsTarget
+    ? await client.verifySubdomainCname(getString(deploy, 'custom_domain'), customDomainDnsTarget)
+    : false;
+  return {
+    pages_domain_ok: pagesDomainOk,
+    secret_ok: secretOk,
+    subscription_ok: subscriptionOk,
+    custom_domain_ok: customDomainOk,
+    custom_domain_subscription_ok: customDomainSubscriptionOk,
+    custom_domain_dns_ok: customDomainDnsOk
+  };
+}
+
+export async function cleanupBlockedPagesProjects(
+  deploy: DeployLike,
+  deployment: DeployLike,
+  client: CloudflareVerifyClient
+): Promise<Record<string, unknown>> {
+  const candidates = resolveCleanupBlockedProjectCandidates(deploy, deployment);
+  if (!candidates.length) {
+    return buildNoopCleanupBlockedProjectResult(deployment);
+  }
+  let deletedAny = false;
+  const errors: string[] = [];
+  for (const blockedProject of candidates) {
+    try {
+      await client.deletePagesProject(blockedProject);
+      deletedAny = true;
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : String(error));
+    }
+  }
+  return { cleanup_deleted: deletedAny, cleanup_errors: errors };
 }
 
 export function selectPipelineStageBackend(stage: string, env: NodeJS.ProcessEnv = process.env): PipelineStageBackend {
@@ -398,7 +580,16 @@ export async function deployPagesWithBackend(input: DeployInput, options: Deploy
 
 export async function verifyDeploymentWithBackend(input: VerifyInput, options: DeployVerifyBackendOptions = {}): Promise<Record<string, unknown>> {
   if (selectPipelineStageBackend('verify', options.env ?? process.env) !== 'python') {
-    throw new Error('Node verify backend is not available yet; set AUTOVPN_STAGE_BACKEND_VERIFY=python to use the Python verification adapter');
+    const cwd = options.cwd ?? process.cwd();
+    const env = mergeProjectEnv(cwd, options.env ?? process.env);
+    const client = options.cloudflareClient ?? new CloudflareHttpClient(resolveCloudflareCredentials(input.deploy, env), { fetch: options.fetch });
+    const target = mergeDeployVerificationTarget(input.deploy, input.deployment);
+    const verification = await defaultVerifyDeployment(target, client);
+    const result: Record<string, unknown> = { ...verification };
+    if (isVerifySuccess(verification)) {
+      Object.assign(result, await cleanupBlockedPagesProjects(target, input.deployment, client));
+    }
+    return result;
   }
   if (options.pythonVerify) {
     return options.pythonVerify(input);

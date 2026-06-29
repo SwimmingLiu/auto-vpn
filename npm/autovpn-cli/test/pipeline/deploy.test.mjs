@@ -10,6 +10,9 @@ import {
   buildPagesProjectRootUrl,
   buildSecretUrl,
   buildWranglerAuthEnv,
+  cleanupBlockedPagesProjects,
+  CloudflareHttpClient,
+  defaultVerifyDeployment,
   deployPagesWithBackend,
   deriveCustomDomainDnsTarget,
   deriveFallbackProjectBaseName,
@@ -217,6 +220,138 @@ test('deploy backend selection requires explicit Python fallback', async () => {
     bundleDir: '/repo/artifacts/pages_bundle',
     deploy: {}
   }, { env: {} }), /Node deploy backend is not available yet/);
+});
+
+test('Node verify backend verifies deployment target and cleans blocked projects', async () => {
+  const calls = [];
+  const client = {
+    async verifyUrl(url) {
+      calls.push(['verifyUrl', url]);
+      return true;
+    },
+    async verifySubdomainCname(hostname, target) {
+      calls.push(['verifySubdomainCname', hostname, target]);
+      return true;
+    },
+    async deletePagesProject(projectName) {
+      calls.push(['deletePagesProject', projectName]);
+      return { success: true };
+    }
+  };
+
+  const result = await verifyDeploymentWithBackend({
+    projectRoot: '/repo',
+    deploy: {
+      project_name: 'sub-nodes',
+      pages_project_url: 'https://old.pages.dev',
+      subscription_url: 'https://origin.example/sub',
+      verify_subscription_url: 'https://verify.example/sub',
+      custom_domain: 'vpn.example.com',
+      secret_query: 'test_key=fake'
+    },
+    deployment: {
+      project_name: 'sub-nodes-02',
+      pages_project_url: 'https://sub-nodes-02.pages.dev',
+      cleanup_blocked_project: 'sub-nodes-01'
+    }
+  }, { env: {}, cloudflareClient: client });
+
+  assert.deepEqual(result, {
+    pages_domain_ok: true,
+    secret_ok: true,
+    subscription_ok: true,
+    custom_domain_ok: true,
+    custom_domain_subscription_ok: true,
+    custom_domain_dns_ok: true,
+    cleanup_deleted: true,
+    cleanup_errors: []
+  });
+  assert.deepEqual(calls, [
+    ['verifyUrl', 'https://sub-nodes-02.pages.dev'],
+    ['verifyUrl', 'https://sub-nodes-02.pages.dev/?test_key=fake'],
+    ['verifyUrl', 'https://verify.example/sub'],
+    ['verifyUrl', 'https://vpn.example.com'],
+    ['verifyUrl', 'https://vpn.example.com/sub'],
+    ['verifySubdomainCname', 'vpn.example.com', 'sub-nodes-02.pages.dev'],
+    ['deletePagesProject', 'sub-nodes-01']
+  ]);
+});
+
+test('Node default verify and cleanup helpers preserve Python result semantics', async () => {
+  const client = {
+    async verifyUrl(url) {
+      return !url.includes('custom-sub-fail');
+    },
+    async verifySubdomainCname() {
+      return false;
+    },
+    async deletePagesProject(projectName) {
+      if (projectName === 'blocked-b') {
+        throw new Error('delete failed');
+      }
+      return {};
+    }
+  };
+  const deploy = {
+    project_name: 'sub-nodes-02',
+    pages_project_url: 'https://sub-nodes-02.pages.dev',
+    subscription_url: 'https://origin.example/sub',
+    verify_subscription_url: 'https://verify.example/sub',
+    custom_domain: 'vpn.example.com',
+    secret_query: 'test_key=fake'
+  };
+
+  assert.deepEqual(await defaultVerifyDeployment(deploy, client), {
+    pages_domain_ok: true,
+    secret_ok: true,
+    subscription_ok: true,
+    custom_domain_ok: true,
+    custom_domain_subscription_ok: true,
+    custom_domain_dns_ok: false
+  });
+  assert.deepEqual(await cleanupBlockedPagesProjects(deploy, {
+    cleanup_blocked_project: 'blocked-a',
+    share_project_cleanup_blocked_project: 'blocked-b'
+  }, client), {
+    cleanup_deleted: true,
+    cleanup_errors: ['delete failed']
+  });
+});
+
+test('CloudflareHttpClient uses Cloudflare auth headers and verifies DNS records', async () => {
+  const requests = [];
+  const fetchImpl = async (url, options = {}) => {
+    requests.push({ url, options });
+    if (url === 'https://api.cloudflare.com/client/v4/zones?name=example.com') {
+      return new Response(JSON.stringify({ result: [{ id: 'zone-1', name: 'example.com' }] }), { status: 200 });
+    }
+    if (url === 'https://api.cloudflare.com/client/v4/zones/zone-1/dns_records?name=vpn.example.com') {
+      return new Response(JSON.stringify({
+        result: [{ type: 'CNAME', name: 'vpn.example.com.', content: 'sub-nodes.pages.dev.' }]
+      }), { status: 200 });
+    }
+    if (url === 'https://api.cloudflare.com/client/v4/accounts/account-1/pages/projects/blocked-project') {
+      return new Response(JSON.stringify({ success: true }), { status: 200 });
+    }
+    if (url === 'https://vpn.example.com/sub') {
+      return new Response('hello secret fragment', { status: 200 });
+    }
+    return new Response('missing', { status: 404 });
+  };
+  const client = new CloudflareHttpClient({
+    auth_mode: 'api_token',
+    api_token: 'token-1',
+    account_id: 'account-1',
+    email: '',
+    global_api_key: ''
+  }, { fetch: fetchImpl });
+
+  assert.equal(await client.verifySubdomainCname('vpn.example.com.', 'sub-nodes.pages.dev'), true);
+  assert.equal(await client.verifyUrl('https://vpn.example.com/sub', 'secret fragment'), true);
+  await client.deletePagesProject('blocked-project');
+  assert.equal(requests[0].options.headers.Authorization, 'Bearer token-1');
+  assert.equal(requests[3].options.method, 'DELETE');
+  await assert.rejects(() => client.verifyUrl('https://missing.example.com/sub'), /URL verification failed/);
 });
 
 test('Python deploy fallback invokes backend venv Python when no callback is injected', async () => {

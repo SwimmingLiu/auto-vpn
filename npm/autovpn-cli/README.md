@@ -37,9 +37,9 @@ autovpn run --project-root . --skip-deploy --skip-verify --output jsonl
 
 Current Node backend limits:
 
-- `--detach`, `retry-stage`, `resume`, deploy, and verify remain Python-backed.
+- `--detach`, `retry-stage`, `resume`, and deploy remain Python-backed.
 - A Node foreground non-deploy run requires both `--skip-deploy` and `--skip-verify`.
-- A Node foreground deploy/verify run requires `AUTOVPN_STAGE_BACKEND_DEPLOY=python`, `AUTOVPN_STAGE_BACKEND_VERIFY=python`, and an absolute `AUTOVPN_PYTHON_CLI` path so the adapter can run the correct Python environment.
+- A Node foreground deploy/verify run requires `AUTOVPN_STAGE_BACKEND_DEPLOY=python` and an absolute `AUTOVPN_PYTHON_CLI` path so the deploy adapter can run the correct Python environment. Verify is Node-native by default; set `AUTOVPN_STAGE_BACKEND_VERIFY=python` to roll it back.
 - `--resume-latest` is not implemented for the Node backend yet.
 - Project `.env` is loaded before resolving profile and artifact paths. Explicit process environment values still win over `.env`.
 
