@@ -26,7 +26,7 @@ The CLI is currently hybrid:
 
 - Node.js handles `--help`, `--version`, argument validation, `doctor --output json`, `profile summary --json`, `artifacts latest/list/preview`, `status --json`, `logs`, and read-only `jobs` commands.
 - Python remains the default backend for high-risk pipeline actions such as `run`, `retry-stage`, `resume`, detached job creation, stop, speedtest, deploy, and verify, selected through the backend adapter boundary.
-- The experimental Node backend can orchestrate a non-deploy foreground pipeline when explicitly selected with `AUTOVPN_BACKEND=node` and `--skip-deploy --skip-verify`. In v2, runtime-heavy stages default to Python stage fallback unless a caller explicitly selects Node stage implementations.
+- The experimental Node backend can orchestrate foreground pipeline runs when explicitly selected with `AUTOVPN_BACKEND=node`. Deploy and verify remain disabled by default and require explicit Python stage fallback while the native Node Cloudflare implementation is still being migrated.
 
 Experimental Node-orchestrated dry run:
 
@@ -38,7 +38,8 @@ autovpn run --project-root . --skip-deploy --skip-verify --output jsonl
 Current Node backend limits:
 
 - `--detach`, `retry-stage`, `resume`, deploy, and verify remain Python-backed.
-- A Node foreground run requires both `--skip-deploy` and `--skip-verify`.
+- A Node foreground non-deploy run requires both `--skip-deploy` and `--skip-verify`.
+- A Node foreground deploy/verify run requires `AUTOVPN_STAGE_BACKEND_DEPLOY=python`, `AUTOVPN_STAGE_BACKEND_VERIFY=python`, and an absolute `AUTOVPN_PYTHON_CLI` path so the adapter can run the correct Python environment.
 - `--resume-latest` is not implemented for the Node backend yet.
 - Project `.env` is loaded before resolving profile and artifact paths. Explicit process environment values still win over `.env`.
 

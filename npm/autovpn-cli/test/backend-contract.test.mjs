@@ -402,6 +402,24 @@ test('NodeBackend rejects deploy and verify runs before creating artifacts', asy
   }, /Node backend deploy is not available yet/);
 });
 
+test('NodeBackend allows full runs only when deploy and verify Python stage fallbacks are explicit', async () => {
+  const projectRoot = await mkdir(path.join(os.tmpdir(), `autovpn-node-backend-deploy-fallback-${Date.now()}`, 'project'), { recursive: true });
+  const backend = new NodeBackend({
+    env: {
+      VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'),
+      AUTOVPN_STAGE_BACKEND_DEPLOY: 'python',
+      AUTOVPN_STAGE_BACKEND_VERIFY: 'python'
+    },
+    cwd: projectRoot
+  });
+
+  await assert.rejects(async () => {
+    for await (const _event of backend.run({ projectRoot, skipDeploy: false, skipVerify: false, output: 'jsonl' })) {
+      // consume
+    }
+  }, /profile\.toml/);
+});
+
 test('NodeBackend yields failure events before surfacing pipeline errors', async () => {
   const projectRoot = await mkdir(path.join(os.tmpdir(), `autovpn-node-backend-failure-${Date.now()}`, 'project'), { recursive: true });
   const runtimeRoot = path.join(projectRoot, '.runtime');
