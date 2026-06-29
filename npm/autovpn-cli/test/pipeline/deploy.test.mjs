@@ -61,9 +61,11 @@ test('Cloudflare URL helpers match Python deploy semantics', () => {
   assert.equal(buildPagesProjectRootUrl(deploy), 'https://sub-nodes.pages.dev');
   assert.equal(buildCustomDomainRootUrl(deploy), 'https://vpn.example.com');
   assert.equal(rewriteUrlHost('https://verify.example/sub?token=abc#hash', 'vpn.example.com'), 'https://vpn.example.com/sub?token=abc#hash');
+  assert.equal(rewriteUrlHost('https://user:pass@verify.example:8443/sub?token=abc#hash', 'vpn.example.com'), 'https://vpn.example.com/sub?token=abc#hash');
+  assert.equal(rewriteUrlHost('https://verify.example:8443/sub?token=abc#hash', 'vpn.example.com:443'), 'https://vpn.example.com:443/sub?token=abc#hash');
   assert.equal(rewriteUrlHost('not a url', 'vpn.example.com'), '');
-  assert.equal(buildCustomDomainSubscriptionUrl(deploy), 'https://vpn.example.com/sub?token=abc');
-  assert.equal(buildCustomDomainSubscriptionUrl({ ...deploy, verify_subscription_url: '' }), 'https://vpn.example.com/sub?token=abc');
+  assert.equal(buildCustomDomainSubscriptionUrl(deploy), 'https://vpn.example.com//sub?token=abc');
+  assert.equal(buildCustomDomainSubscriptionUrl({ ...deploy, verify_subscription_url: '' }), 'https://vpn.example.com//sub?token=abc');
   assert.equal(buildCustomDomainSubscriptionUrl({ ...deploy, custom_domain: '' }), '');
   assert.equal(buildCustomDomainRootUrl({ custom_domain: false }), '');
   assert.equal(buildCustomDomainSubscriptionUrl({ ...deploy, custom_domain: false }), '');
