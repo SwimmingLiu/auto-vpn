@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { mkdir, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 
 import { runCliShell } from '../dist/cli/main.js';
@@ -212,6 +215,37 @@ test('PythonBackend can stream normalized events from captured JSONL stdout', as
 
   assert.deepEqual(spawns[0], ['/opt/autovpn/bin/autovpn', ['run', '--project-root', '/repo', '--output', 'jsonl', '--skip-deploy', '--skip-verify']]);
   assert.deepEqual(events.map((event) => event.type), ['run_started', 'summary']);
+});
+
+test('PythonBackend merges project .env into spawned run environment without overriding explicit env', async () => {
+  const projectRoot = await mkdir(path.join(os.tmpdir(), `autovpn-python-backend-env-${Date.now()}`), { recursive: true });
+  await writeFile(path.join(projectRoot, '.env'), 'VPN_AUTOMATION_UPSTREAM_PROXY=off\nEXTRA_FROM_ENV=1\nPATH=/from-dotenv\n', 'utf8');
+  const child = new EventEmitter();
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  const spawns = [];
+  const backend = new PythonBackend({
+    env: { PATH: '/bin', VPN_AUTOMATION_UPSTREAM_PROXY: 'http://127.0.0.1:7890' },
+    resolvePythonCli: () => ({ command: '/opt/autovpn/bin/autovpn', args: [] }),
+    spawn: (command, args, options) => {
+      spawns.push({ command, args, options });
+      return child;
+    }
+  });
+
+  const consume = (async () => {
+    for await (const _event of backend.run({ projectRoot, skipDeploy: true, skipVerify: true, output: 'jsonl' })) {
+      // consume
+    }
+  })();
+  child.stdout.emit('data', '{"type":"summary","run_status":"success"}\n');
+  child.stdout.emit('end');
+  child.emit('close', 0, null);
+  await consume;
+
+  assert.equal(spawns[0].options.env.VPN_AUTOMATION_UPSTREAM_PROXY, 'http://127.0.0.1:7890');
+  assert.equal(spawns[0].options.env.EXTRA_FROM_ENV, '1');
+  assert.equal(spawns[0].options.env.PATH, '/bin');
 });
 
 test('PythonBackend event streams surface non-zero Python exits', async () => {

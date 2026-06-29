@@ -2,6 +2,7 @@ import { spawn as defaultSpawn, ChildProcess } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 
 import { parseEventLine, AutoVpnEvent } from '../events/schema.js';
+import { mergeProjectEnv } from '../runtime/env.js';
 import {
   AutoVpnBackend,
   DetachedRunOptions,
@@ -136,6 +137,14 @@ function parseJsonPayload(stdout: string): JobSummary {
   return payload as JobSummary;
 }
 
+function projectRootFromArgv(argv: string[]): string | undefined {
+  const index = argv.indexOf('--project-root');
+  if (index >= 0 && argv[index + 1]) {
+    return argv[index + 1];
+  }
+  return undefined;
+}
+
 export class PythonBackend implements AutoVpnBackend {
   readonly kind = 'python' as const;
   private readonly env: NodeJS.ProcessEnv;
@@ -214,10 +223,12 @@ export class PythonBackend implements AutoVpnBackend {
   }
 
   private async *streamLines(argv: string[]): AsyncIterable<string> {
-    const resolved = this.resolvePythonCli ? this.resolvePythonCli() : await this.defaultResolvePythonCli();
+    const projectRoot = projectRootFromArgv(argv);
+    const env = projectRoot ? mergeProjectEnv(projectRoot, this.env) : this.env;
+    const resolved = this.resolvePythonCli ? this.resolvePythonCli() : await this.defaultResolvePythonCli(env);
     const child = this.spawn(resolved.command, [...resolved.args, ...argv], {
       cwd: this.cwd,
-      env: this.env,
+      env,
       stdio: ['ignore', 'pipe', 'pipe']
     });
     let stderr = '';
@@ -239,10 +250,12 @@ export class PythonBackend implements AutoVpnBackend {
   }
 
   private async captureJson(argv: string[]): Promise<JobSummary> {
-    const resolved = this.resolvePythonCli ? this.resolvePythonCli() : await this.defaultResolvePythonCli();
+    const projectRoot = projectRootFromArgv(argv);
+    const env = projectRoot ? mergeProjectEnv(projectRoot, this.env) : this.env;
+    const resolved = this.resolvePythonCli ? this.resolvePythonCli() : await this.defaultResolvePythonCli(env);
     const child = this.spawn(resolved.command, [...resolved.args, ...argv], {
       cwd: this.cwd,
-      env: this.env,
+      env,
       stdio: ['ignore', 'pipe', 'pipe']
     });
     let stdout = '';
@@ -260,9 +273,9 @@ export class PythonBackend implements AutoVpnBackend {
     return parseJsonPayload(stdout);
   }
 
-  private async defaultResolvePythonCli(): Promise<ResolvedPythonCli> {
+  private async defaultResolvePythonCli(env: NodeJS.ProcessEnv = this.env): Promise<ResolvedPythonCli> {
     // @ts-expect-error Phase 1 runner remains plain ESM JavaScript.
     const runner = await import('../../lib/runner.mjs');
-    return runner.resolveOrInstallPythonCli({ env: this.env });
+    return runner.resolveOrInstallPythonCli({ env });
   }
 }
