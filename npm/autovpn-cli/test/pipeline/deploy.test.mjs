@@ -5,6 +5,7 @@ import test from 'node:test';
 import {
   buildCustomDomainRootUrl,
   buildCustomDomainSubscriptionUrl,
+  buildNoopCleanupBlockedProjectResult,
   buildPagesDeployCommand,
   buildPagesProjectRootUrl,
   buildSecretUrl,
@@ -15,8 +16,12 @@ import {
   derivePagesProjectUrl,
   generateFallbackProjectName,
   isVerifySuccess,
+  mergeDeployVerificationTarget,
   resolveCloudflareCredentials,
+  resolveCleanupBlockedProjectCandidates,
+  resolveCustomDomainVerifySubscriptionUrl,
   resolveLatestExistingProjectName,
+  resolveVerifySubscriptionUrl,
   rewriteUrlHost,
   selectPipelineStageBackend,
   verifyDeploymentWithBackend
@@ -63,6 +68,65 @@ test('Cloudflare URL helpers match Python deploy semantics', () => {
   assert.equal(buildCustomDomainRootUrl({ custom_domain: false }), '');
   assert.equal(buildCustomDomainSubscriptionUrl({ ...deploy, custom_domain: false }), '');
   assert.equal(deriveCustomDomainDnsTarget(deploy), 'sub-nodes.pages.dev');
+});
+
+test('verify URL helpers match Python deploy target semantics', () => {
+  const deploy = {
+    subscription_url: ' https://origin.example/sub?token=abc ',
+    verify_subscription_url: ' https://verify.example/sub?token=abc ',
+    custom_domain: 'vpn.example.com'
+  };
+
+  assert.equal(resolveVerifySubscriptionUrl(deploy), 'https://verify.example/sub?token=abc');
+  assert.equal(resolveVerifySubscriptionUrl({ ...deploy, verify_subscription_url: '' }), 'https://origin.example/sub?token=abc');
+  assert.equal(resolveCustomDomainVerifySubscriptionUrl(deploy), 'https://vpn.example.com/sub?token=abc');
+  assert.equal(resolveCustomDomainVerifySubscriptionUrl({ ...deploy, custom_domain: '' }), '');
+});
+
+test('verify target merge updates only deploy identity keys', () => {
+  const deploy = {
+    project_name: 'old-project',
+    pages_project_url: 'https://old.pages.dev',
+    custom_domain: 'old.example.com',
+    secret_query: 'test_key=fake-secret'
+  };
+  const deployment = {
+    project_name: 'new-project',
+    pages_project_url: 'https://new.pages.dev',
+    custom_domain: 'new.example.com',
+    stdout: 'contains deployment logs'
+  };
+
+  assert.deepEqual(mergeDeployVerificationTarget(deploy, deployment), {
+    project_name: 'new-project',
+    pages_project_url: 'https://new.pages.dev',
+    custom_domain: 'new.example.com',
+    secret_query: 'test_key=fake-secret'
+  });
+  assert.equal(mergeDeployVerificationTarget(deploy, { project_name: '' }).project_name, '');
+});
+
+test('cleanup blocked project helpers expose deterministic Python decision logic', () => {
+  const deploy = { project_name: ' sub-nodes-02 ' };
+
+  assert.deepEqual(resolveCleanupBlockedProjectCandidates(deploy, {
+    cleanup_blocked_project: 'sub-nodes-01',
+    share_project_cleanup_blocked_project: ' sub-nodes-01 '
+  }), ['sub-nodes-01']);
+  assert.deepEqual(resolveCleanupBlockedProjectCandidates(deploy, {
+    cleanup_blocked_project: 'sub-nodes-02',
+    share_project_cleanup_blocked_project: ''
+  }), []);
+  assert.deepEqual(buildNoopCleanupBlockedProjectResult({
+    cleanup_errors: ['existing cleanup error']
+  }), {
+    cleanup_deleted: false,
+    cleanup_errors: ['existing cleanup error']
+  });
+  assert.deepEqual(buildNoopCleanupBlockedProjectResult({}), {
+    cleanup_deleted: false,
+    cleanup_errors: []
+  });
 });
 
 test('Cloudflare fallback project naming matches Python suffix behavior', () => {
@@ -208,4 +272,6 @@ test('Python verify fallback invokes backend venv Python and verify success matc
   assert.equal(isVerifySuccess({ secret_ok: true, subscription_ok: true }), true);
   assert.equal(isVerifySuccess({ pages_domain_ok: false, secret_ok: true, subscription_ok: true }), false);
   assert.equal(isVerifySuccess({ pages_domain_ok: true, secret_ok: true, subscription_ok: false }), false);
+  assert.equal(isVerifySuccess({ secret_ok: true, subscription_ok: true, custom_domain_ok: true, custom_domain_subscription_ok: false }), false);
+  assert.equal(isVerifySuccess({ secret_ok: true, subscription_ok: true, custom_domain_ok: true, custom_domain_dns_ok: false }), false);
 });
