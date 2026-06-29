@@ -166,8 +166,10 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
     context.emit?.({ type, ...payload } as AutoVpnEvent);
   };
   const writeReport = () => writeJson(artifactDir, 'pipeline_report.json', summary);
+  let activeStage: StageName | undefined;
   const setStage = async (stage: StageName, status: StageStatus) => {
     summary.stage_status[stage] = status;
+    activeStage = status === 'running' ? stage : activeStage === stage ? undefined : activeStage;
     emit('stage', { stage, status });
     await writeReport();
   };
@@ -281,6 +283,10 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
   } catch (error) {
     summary.run_status = 'failed';
     summary.error = error instanceof Error ? error.message : String(error);
+    if (activeStage && summary.stage_status[activeStage] === 'running') {
+      summary.stage_status[activeStage] = 'failed';
+      emit('stage', { stage: activeStage, status: 'failed' });
+    }
     emit('error', { message: summary.error });
     await writeReport();
     emit('summary', summary as unknown as Record<string, unknown>);

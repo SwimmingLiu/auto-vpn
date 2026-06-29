@@ -270,6 +270,26 @@ test('NodeBackend rejects deploy and verify runs before creating artifacts', asy
   }, /Node backend deploy is not available yet/);
 });
 
+test('NodeBackend yields failure events before surfacing pipeline errors', async () => {
+  const projectRoot = await mkdir(path.join(os.tmpdir(), `autovpn-node-backend-failure-${Date.now()}`, 'project'), { recursive: true });
+  const runtimeRoot = path.join(projectRoot, '.runtime');
+  const events = [];
+  const backend = new NodeBackend({
+    env: { VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot },
+    cwd: projectRoot
+  });
+
+  await assert.rejects(async () => {
+    for await (const event of backend.run({ projectRoot, skipDeploy: true, skipVerify: true, output: 'jsonl' })) {
+      events.push(event);
+    }
+  }, /profile\.toml/);
+
+  assert.equal(events[0].type, 'run_started');
+  assert.equal(events.at(-1).type, 'summary');
+  assert.equal(events.at(-1).run_status, 'failed');
+});
+
 test('PythonBackend can stream normalized events from captured JSONL stdout', async () => {
   const child = new EventEmitter();
   child.stdout = new EventEmitter();

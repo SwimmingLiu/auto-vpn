@@ -116,3 +116,37 @@ test('runNodePipeline loads project .env before resolving profile and artifacts 
   assert.equal(result.run_status, 'success');
   assert.equal(path.dirname(result.artifact_dir), artifactsRoot);
 });
+
+test('runNodePipeline marks the active stage failed and writes a summary on errors', async () => {
+  const projectRoot = await makeProject();
+  const events = [];
+  const firstLink = vmessLink('first', 'one.example');
+
+  await assert.rejects(() => runNodePipeline({
+    projectRoot,
+    skipDeploy: true,
+    skipVerify: true,
+    output: 'jsonl'
+  }, {
+    env: {
+      VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'),
+      VPN_AUTOMATION_PROFILE_PATH: path.join(projectRoot, 'state', 'profile.toml')
+    },
+    now: () => new Date('2026-06-29T01:02:03Z'),
+    emit: (event) => events.push(event),
+    stages: {
+      extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink] }),
+      speedtest: async () => {
+        throw new Error('speedtest fixture boom');
+      }
+    }
+  }), /speedtest fixture boom/);
+
+  const artifactDir = events.find((event) => event.type === 'run_started').artifact_dir;
+  const report = JSON.parse(await readFile(path.join(artifactDir, 'pipeline_report.json'), 'utf8'));
+  assert.equal(report.run_status, 'failed');
+  assert.equal(report.stage_status.speedtest, 'failed');
+  assert.match(report.error, /speedtest fixture boom/);
+  assert.equal(events.at(-1).type, 'summary');
+  assert.equal(events.at(-1).run_status, 'failed');
+});

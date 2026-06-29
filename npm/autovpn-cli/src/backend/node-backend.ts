@@ -37,10 +37,17 @@ export class NodeBackend implements AutoVpnBackend {
       throw new Error('Node backend resume-latest is not available yet; use AUTOVPN_BACKEND=python');
     }
     const events: AutoVpnEvent[] = [];
-    await runNodePipeline(options, {
-      env: this.env,
-      emit: (event) => events.push(event)
-    });
+    try {
+      await runNodePipeline(options, {
+        env: this.env,
+        emit: (event) => events.push(event)
+      });
+    } catch (error) {
+      for (const event of events) {
+        yield event;
+      }
+      throw error;
+    }
     for (const event of events) {
       yield event;
     }
