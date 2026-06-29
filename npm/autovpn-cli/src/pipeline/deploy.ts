@@ -153,6 +153,15 @@ export function buildCustomDomainSubscriptionUrl(deploy: DeployLike): string {
   return subscriptionUrl ? rewriteUrlHost(subscriptionUrl, customDomain) : '';
 }
 
+export function resolveVerifySubscriptionUrl(deploy: DeployLike): string {
+  const verifySubscriptionUrl = getString(deploy, 'verify_subscription_url');
+  return verifySubscriptionUrl || getString(deploy, 'subscription_url');
+}
+
+export function resolveCustomDomainVerifySubscriptionUrl(deploy: DeployLike): string {
+  return buildCustomDomainSubscriptionUrl(deploy).trim();
+}
+
 function pagesHostnameFromUrl(url: string): string {
   try {
     return new URL(clean(url)).host.trim();
@@ -276,6 +285,36 @@ export function buildWranglerAuthEnv(credentials: CloudflareCredentials): Record
     env.CLOUDFLARE_API_TOKEN = credentials.api_token;
   }
   return env;
+}
+
+export function mergeDeployVerificationTarget(deploy: DeployLike, deployment: DeployLike): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...deploy };
+  for (const key of ['project_name', 'pages_project_url', 'custom_domain']) {
+    if (Object.prototype.hasOwnProperty.call(deployment, key)) {
+      merged[key] = deployment[key];
+    }
+  }
+  return merged;
+}
+
+export function resolveCleanupBlockedProjectCandidates(deploy: DeployLike, deployment: DeployLike): string[] {
+  const finalProject = getString(deploy, 'project_name');
+  const cleanupCandidates: string[] = [];
+  for (const key of ['cleanup_blocked_project', 'share_project_cleanup_blocked_project']) {
+    const candidate = getString(deployment, key);
+    if (!candidate || candidate === finalProject || cleanupCandidates.includes(candidate)) {
+      continue;
+    }
+    cleanupCandidates.push(candidate);
+  }
+  return cleanupCandidates;
+}
+
+export function buildNoopCleanupBlockedProjectResult(deployment: DeployLike): Record<string, unknown> {
+  return {
+    cleanup_deleted: false,
+    cleanup_errors: deployment.cleanup_errors ?? []
+  };
 }
 
 export function selectPipelineStageBackend(stage: string, env: NodeJS.ProcessEnv = process.env): PipelineStageBackend {
