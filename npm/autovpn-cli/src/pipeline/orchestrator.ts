@@ -4,6 +4,7 @@ import path from 'node:path';
 import { parse } from '@iarna/toml';
 
 import { AutoVpnEvent } from '../events/schema.js';
+import { mergeProjectEnv } from '../runtime/env.js';
 import { resolveArtifactsRoot, resolveProfilePath } from '../runtime/paths.js';
 import { fetchSourceLinksWithBackend, ExtractedSourceResult, SourceConfigInput } from './extract.js';
 import { dedupeVmessLinksWithBackend } from './dedupe.js';
@@ -147,8 +148,8 @@ async function writeWorkerArtifacts(artifactDir: string, profile: PipelineProfil
 }
 
 export async function runNodePipeline(options: NodePipelineOptions, context: RunNodePipelineContext = {}): Promise<PipelineSummary> {
-  const env = { ...process.env, ...(context.env ?? {}) };
   const projectRoot = path.resolve(options.projectRoot);
+  const env = mergeProjectEnv(projectRoot, { ...process.env, ...(context.env ?? {}) });
   const artifactDir = await uniqueArtifactDir(resolveArtifactsRoot(projectRoot, env), formatTimestamp((context.now ?? (() => new Date()))()));
   const summary: PipelineSummary = {
     artifact_dir: artifactDir,

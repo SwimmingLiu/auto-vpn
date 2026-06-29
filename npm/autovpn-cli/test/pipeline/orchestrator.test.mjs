@@ -86,3 +86,33 @@ test('runNodePipeline emits compatible events and writes non-deploy artifacts', 
   assert.deepEqual(decoratedNames, ['\u{1F1FA}\u{1F1F8} US first', '\u{1F1FA}\u{1F1F8} US second']);
   assert.equal(JSON.parse(await readFile(path.join(artifactDir, 'pipeline_report.json'), 'utf8')).run_status, 'success');
 });
+
+test('runNodePipeline loads project .env before resolving profile and artifacts paths', async () => {
+  const projectRoot = await makeProject();
+  const artifactsRoot = path.join(projectRoot, 'env-artifacts');
+  await writeFile(path.join(projectRoot, '.env'), [
+    `VPN_AUTOMATION_PROFILE_PATH=${path.join(projectRoot, 'state', 'profile.toml')}`,
+    `VPN_AUTOMATION_ARTIFACTS_ROOT=${artifactsRoot}`,
+    ''
+  ].join('\n'), 'utf8');
+
+  const firstLink = vmessLink('first', 'one.example');
+  const result = await runNodePipeline({
+    projectRoot,
+    skipDeploy: true,
+    skipVerify: true,
+    output: 'jsonl'
+  }, {
+    now: () => new Date('2026-06-29T01:02:03Z'),
+    stages: {
+      extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink] }),
+      speedtest: async (links) => links.map((link) => ({ link, reachable: true, average_download_mb_s: 3, latency_ms: 20, error: '' })),
+      availability: async (results) => results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} })),
+      countryLookup: () => 'US',
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
+    }
+  });
+
+  assert.equal(result.run_status, 'success');
+  assert.equal(path.dirname(result.artifact_dir), artifactsRoot);
+});
