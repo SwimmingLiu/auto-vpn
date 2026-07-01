@@ -39,12 +39,12 @@ Current Node backend limits:
 
 - Detached job management runs in Node for `run --detach`, `jobs resume --detach`, and `jobs retry --detach`; `AUTOVPN_BACKEND=node run --detach` also uses the Node CLI worker.
 - Detached resume/retry worker commands remain Python-compatible until the worker runtimes are migrated.
-- Non-detached `retry-stage` now runs through the Node backend for retryable artifact stages from `speedtest` through `verify`; non-detached `resume pipeline` and `resume speedtest` continue existing sessions through the Node backend. The default Python backend remains production-compatible; Node-native `run --resume-latest` is the next v3 migration boundary.
+- Non-detached `retry-stage` now runs through the Node backend for retryable artifact stages from `speedtest` through `verify`; non-detached `resume pipeline`, `resume speedtest`, and `run --resume-latest` continue existing sessions through the Node backend. The default Python backend remains production-compatible; detached resume/retry worker migration is the next v3 boundary.
 - Add `--skip-deploy --skip-verify` when you want an offline Node pipeline check.
 - Plain Node foreground deploy/verify runs use Node for Wrangler deploy, primary blocked-project fallback, share-project sync/fallback, custom-domain binding, custom-domain DNS upsert, and verify.
 - Deploy and verify can be rolled back with `AUTOVPN_STAGE_BACKEND_DEPLOY=python` and `AUTOVPN_STAGE_BACKEND_VERIFY=python`.
 - `AUTOVPN_NO_PYTHON=1` disables implicit Python backend resolution and default Python runtime stage fallback. Use it as a v3 readiness gate. Empty offline runs now complete in Node, and Node has direct HTTP speedtest and availability runtimes. Node also has opt-in Mihomo-backed paths: set `AUTOVPN_SPEEDTEST_RUNTIME=mihomo` for controller delay probing and candidate downloads through the local Mihomo proxy, and set `AUTOVPN_AVAILABILITY_RUNTIME=mihomo` to check provider availability through the same per-node proxy runtime.
-- `--resume-latest` is not implemented for the Node backend yet.
+- Detached resume/retry workers still execute the compatible Python CLI command until those runtimes are migrated.
 - Project `.env` is loaded before resolving profile and artifact paths. Explicit process environment values still win over `.env`.
 
 Fallback flags for migrated commands:
