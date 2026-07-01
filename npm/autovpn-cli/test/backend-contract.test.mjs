@@ -788,6 +788,21 @@ test('NodeBackend retryStage uses the native retry path instead of unsupported f
   }, /artifact dir not found/);
 });
 
+test('NodeBackend resume pipeline uses the native resume path instead of unsupported fallback', async () => {
+  const projectRoot = await mkdir(path.join(os.tmpdir(), `autovpn-node-backend-resume-${Date.now()}`, 'project'), { recursive: true });
+  const session = path.join(projectRoot, 'missing-session');
+  const backend = new NodeBackend({
+    env: { VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime') },
+    cwd: projectRoot
+  });
+
+  await assert.rejects(async () => {
+    for await (const _event of backend.resume({ projectRoot, mode: 'pipeline', session, output: 'jsonl' })) {
+      // consume
+    }
+  }, /session.json not found/);
+});
+
 test('PythonBackend can stream normalized events from captured JSONL stdout', async () => {
   const child = new EventEmitter();
   child.stdout = new EventEmitter();

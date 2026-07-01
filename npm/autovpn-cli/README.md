@@ -39,7 +39,7 @@ Current Node backend limits:
 
 - Detached job management runs in Node for `run --detach`, `jobs resume --detach`, and `jobs retry --detach`; `AUTOVPN_BACKEND=node run --detach` also uses the Node CLI worker.
 - Detached resume/retry worker commands remain Python-compatible until the worker runtimes are migrated.
-- Non-detached `retry-stage` now runs through the Node backend for retryable artifact stages from `speedtest` through `verify`. The default Python backend remains production-compatible; Node-native `resume` is the next v3 migration boundary.
+- Non-detached `retry-stage` now runs through the Node backend for retryable artifact stages from `speedtest` through `verify`; non-detached `resume pipeline` continues existing sessions through the Node backend. The default Python backend remains production-compatible; Node-native `resume speedtest` is the next v3 migration boundary.
 - Add `--skip-deploy --skip-verify` when you want an offline Node pipeline check.
 - Plain Node foreground deploy/verify runs use Node for Wrangler deploy, primary blocked-project fallback, share-project sync/fallback, custom-domain binding, custom-domain DNS upsert, and verify.
 - Deploy and verify can be rolled back with `AUTOVPN_STAGE_BACKEND_DEPLOY=python` and `AUTOVPN_STAGE_BACKEND_VERIFY=python`.

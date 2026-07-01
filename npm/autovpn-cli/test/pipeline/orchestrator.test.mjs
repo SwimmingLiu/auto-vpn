@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { retryNodePipelineStage, runNodePipeline } from '../../dist/pipeline/orchestrator.js';
+import { resumeNodePipeline, retryNodePipelineStage, runNodePipeline } from '../../dist/pipeline/orchestrator.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '../../../..');
@@ -618,4 +618,210 @@ test('retryNodePipelineStage preserves custom bundle subdirectories for deploy r
   assert.equal(retry.run_status, 'success');
   assert.deepEqual(seenBundleDirs.map((bundleDir) => path.basename(bundleDir)), ['custom_bundle']);
   assert.equal(await readFile(path.join(retry.artifact_dir, 'custom_bundle', '_worker.js'), 'utf8'), await readFile(path.join(source.artifact_dir, 'custom_bundle', '_worker.js'), 'utf8'));
+});
+
+test('resumeNodePipeline continues pipeline sessions in the original artifact', async () => {
+  const projectRoot = await makeProject();
+  const firstLink = vmessLink('first', 'one.example');
+  const secondLink = vmessLink('second', 'two.example');
+  const runtimeRoot = path.join(projectRoot, '.runtime');
+  const profilePath = path.join(projectRoot, 'state', 'profile.toml');
+  const env = {
+    VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot,
+    VPN_AUTOMATION_PROFILE_PATH: profilePath
+  };
+  const source = await runNodePipeline({
+    projectRoot,
+    skipDeploy: true,
+    skipVerify: true,
+    output: 'jsonl'
+  }, {
+    env,
+    now: () => new Date('2026-06-29T01:02:03Z'),
+    stages: {
+      extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink, secondLink] }),
+      speedtest: async (links) => links.map((link, index) => ({ link, reachable: true, average_download_mb_s: index === 0 ? 2 : 5, latency_ms: 20, error: '' })),
+      availability: async () => [],
+      countryLookup: () => 'US',
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
+    }
+  });
+  const sessionDir = path.join(projectRoot, 'sessions', 'resume-pipeline');
+  const eventLog = path.join(sessionDir, 'events.jsonl');
+  const humanLog = path.join(sessionDir, 'human.log');
+  await mkdir(sessionDir, { recursive: true });
+  await writeFile(path.join(sessionDir, 'session.json'), JSON.stringify({
+    artifact_dir: source.artifact_dir,
+    event_log: eventLog,
+    human_log: humanLog
+  }), 'utf8');
+  const events = [];
+
+  const resumed = await resumeNodePipeline({
+    projectRoot,
+    mode: 'pipeline',
+    session: sessionDir,
+    output: 'jsonl'
+  }, {
+    env,
+    emit: (event) => events.push(event),
+    stages: {
+      availability: async (results) => {
+        assert.deepEqual(results.map((result) => vmessName(result.link)), ['second', 'first']);
+        return results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} }));
+      },
+      countryLookup: () => 'US',
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } }),
+      deploy: async ({ bundleDir }) => ({ returncode: 0, stdout: `deployed ${bundleDir}`, stderr: '', attempts: [{ mode: 'direct', returncode: 0 }] }),
+      verify: async () => ({ pages_domain_ok: true, secret_ok: true, subscription_ok: true })
+    }
+  });
+
+  assert.equal(resumed.artifact_dir, source.artifact_dir);
+  assert.equal(resumed.run_status, 'success');
+  assert.equal(resumed.stage_status.availability, 'success');
+  assert.equal(resumed.stage_status.deploy, 'success');
+  assert.equal(resumed.stage_status.verify, 'success');
+  assert.equal(events[0].type, 'resume_pipeline_state');
+  assert.equal(events[0].speedtest_links, 2);
+  assert.equal(events.at(-1).type, 'summary');
+  assert.equal(JSON.parse(await readFile(path.join(source.artifact_dir, 'pipeline_report.json'), 'utf8')).run_status, 'success');
+  assert.deepEqual((await readFile(path.join(source.artifact_dir, 'vpn_node_emoji.txt'), 'utf8')).trim().split(/\n/).map(vmessName), ['\u{1F1FA}\u{1F1F8} US second', '\u{1F1FA}\u{1F1F8} US first']);
+  assert.equal((await readFile(eventLog, 'utf8')).trim().split(/\n/).at(-1), JSON.stringify(events.at(-1)));
+  assert.match(await readFile(humanLog, 'utf8'), /\[summary\] run_status=success/);
+});
+
+test('resumeNodePipeline emits failed summary when restored speedtest results are empty', async () => {
+  const projectRoot = await makeProject();
+  const firstLink = vmessLink('first', 'one.example');
+  const runtimeRoot = path.join(projectRoot, '.runtime');
+  const profilePath = path.join(projectRoot, 'state', 'profile.toml');
+  const env = {
+    VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot,
+    VPN_AUTOMATION_PROFILE_PATH: profilePath
+  };
+  const source = await runNodePipeline({
+    projectRoot,
+    skipDeploy: true,
+    skipVerify: true,
+    output: 'jsonl'
+  }, {
+    env,
+    now: () => new Date('2026-06-29T01:02:03Z'),
+    stages: {
+      extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink] }),
+      speedtest: async (links) => links.map((link) => ({ link, reachable: true, average_download_mb_s: 3, latency_ms: 20, error: '' })),
+      availability: async () => [],
+      countryLookup: () => 'US',
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
+    }
+  });
+  await writeFile(path.join(source.artifact_dir, 'vpn_node_speedtest.txt'), '', 'utf8');
+  const sessionDir = path.join(projectRoot, 'sessions', 'empty-speedtest');
+  const eventLog = path.join(sessionDir, 'events.jsonl');
+  const humanLog = path.join(sessionDir, 'human.log');
+  await mkdir(sessionDir, { recursive: true });
+  await writeFile(path.join(sessionDir, 'session.json'), JSON.stringify({
+    artifact_dir: source.artifact_dir,
+    event_log: eventLog,
+    human_log: humanLog
+  }), 'utf8');
+  const events = [];
+
+  await assert.rejects(() => resumeNodePipeline({
+    projectRoot,
+    mode: 'pipeline',
+    session: sessionDir,
+    output: 'jsonl'
+  }, {
+    env,
+    emit: (event) => events.push(event)
+  }), /No speedtest results available to continue pipeline/);
+
+  assert.equal(events.at(-2).type, 'summary');
+  assert.equal(events.at(-2).run_status, 'failed');
+  assert.equal(events.at(-1).type, 'run_failed');
+  assert.match(await readFile(humanLog, 'utf8'), /\[summary\] run_status=failed/);
+  const report = JSON.parse(await readFile(path.join(source.artifact_dir, 'pipeline_report.json'), 'utf8'));
+  assert.equal(report.run_status, 'failed');
+  assert.equal(report.stage_status.speedtest, 'failed');
+  assert.match(report.error, /No speedtest results available/);
+});
+
+test('resumeNodePipeline rejects sessions without an artifact directory', async () => {
+  const projectRoot = await makeProject();
+  const sessionDir = path.join(projectRoot, 'sessions', 'missing-artifact-dir');
+  await mkdir(sessionDir, { recursive: true });
+  await writeFile(path.join(sessionDir, 'session.json'), JSON.stringify({}), 'utf8');
+
+  await assert.rejects(() => resumeNodePipeline({
+    projectRoot,
+    mode: 'pipeline',
+    session: sessionDir,
+    output: 'jsonl'
+  }), /session artifact_dir is required/);
+});
+
+test('resumeNodePipeline restores Python-compatible speedtest events when report file is absent', async () => {
+  const projectRoot = await makeProject();
+  const firstLink = vmessLink('first', 'one.example');
+  const secondLink = vmessLink('second', 'two.example');
+  const runtimeRoot = path.join(projectRoot, '.runtime');
+  const profilePath = path.join(projectRoot, 'state', 'profile.toml');
+  const env = {
+    VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot,
+    VPN_AUTOMATION_PROFILE_PATH: profilePath
+  };
+  const source = await runNodePipeline({
+    projectRoot,
+    skipDeploy: true,
+    skipVerify: true,
+    output: 'jsonl'
+  }, {
+    env,
+    now: () => new Date('2026-06-29T01:02:03Z'),
+    stages: {
+      extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink, secondLink] }),
+      speedtest: async (links) => links.map((link, index) => ({ link, reachable: true, average_download_mb_s: index === 0 ? 2 : 5, latency_ms: 20, error: '' })),
+      availability: async () => [],
+      countryLookup: () => 'US',
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
+    }
+  });
+  await writeFile(path.join(source.artifact_dir, 'vpn_node_speedtest_report.json'), '[]', 'utf8');
+  const sessionDir = path.join(projectRoot, 'sessions', 'python-events');
+  const eventLog = path.join(sessionDir, 'events.jsonl');
+  const humanLog = path.join(sessionDir, 'human.log');
+  await mkdir(sessionDir, { recursive: true });
+  await writeFile(eventLog, [
+    JSON.stringify({ type: 'speedtest_result', link: firstLink, reachable: true, average_download_mb_s: 2, latency_ms: 20, error: '' }),
+    JSON.stringify({ type: 'speedtest_result', link: secondLink, reachable: true, average_download_mb_s: 5, latency_ms: 20, error: '' })
+  ].join('\n'), 'utf8');
+  await writeFile(path.join(sessionDir, 'session.json'), JSON.stringify({
+    artifact_dir: source.artifact_dir,
+    event_log: eventLog,
+    human_log: humanLog
+  }), 'utf8');
+
+  const resumed = await resumeNodePipeline({
+    projectRoot,
+    mode: 'pipeline',
+    session: sessionDir,
+    output: 'jsonl'
+  }, {
+    env,
+    stages: {
+      availability: async (results) => {
+        assert.deepEqual(results.map((result) => vmessName(result.link)), ['second', 'first']);
+        return results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} }));
+      },
+      countryLookup: () => 'US',
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } }),
+      deploy: async ({ bundleDir }) => ({ returncode: 0, stdout: `deployed ${bundleDir}`, stderr: '', attempts: [{ mode: 'direct', returncode: 0 }] }),
+      verify: async () => ({ pages_domain_ok: true, secret_ok: true, subscription_ok: true })
+    }
+  });
+
+  assert.equal(resumed.run_status, 'success');
+  assert.equal(resumed.counts.speedtest_links, 2);
 });
