@@ -250,6 +250,248 @@ test('foreground Node run passes event and human log paths to backend', async ()
   assert.equal(seen[0].humanLog, '/tmp/human.log');
 });
 
+test('foreground Node retry-stage streams backend adapter events', async () => {
+  const io = createIo();
+  let executeCliCalled = false;
+  const seen = [];
+
+  const code = await runCliShell([
+    'retry-stage',
+    '--project-root',
+    '.',
+    '--artifact-dir',
+    '/tmp/artifact',
+    '--stage',
+    'deploy',
+    '--output',
+    'jsonl',
+    '--event-log',
+    '/tmp/events.jsonl',
+    '--human-log',
+    '/tmp/human.log'
+  ], {
+    packageVersion: '1.3.0',
+    cwd: '/repo',
+    io,
+    runForwarder: async () => 99,
+    createBackend: () => ({
+      kind: 'node',
+      executeCli: async () => {
+        executeCliCalled = true;
+        return 5;
+      },
+      async *retryStage(options) {
+        seen.push(options);
+        yield { type: 'stage', stage: options.stage, status: 'running' };
+        yield { type: 'summary', artifact_dir: '/repo/artifacts/retry', run_status: 'success' };
+      }
+    })
+  });
+
+  assert.equal(code, 0);
+  assert.equal(executeCliCalled, false);
+  assert.deepEqual(seen, [{
+    projectRoot: '/repo',
+    artifactDir: '/tmp/artifact',
+    stage: 'deploy',
+    output: 'jsonl',
+    eventLog: '/tmp/events.jsonl',
+    humanLog: '/tmp/human.log'
+  }]);
+  assert.deepEqual(io.stdout.trim().split(/\n/).map((line) => JSON.parse(line)), [
+    { type: 'stage', stage: 'deploy', status: 'running' },
+    { type: 'summary', artifact_dir: '/repo/artifacts/retry', run_status: 'success' }
+  ]);
+  assert.equal(io.stderr, '');
+});
+
+test('foreground Node resume streams backend adapter events', async () => {
+  const io = createIo();
+  let executeCliCalled = false;
+  const seen = [];
+
+  const code = await runCliShell([
+    'resume',
+    'pipeline',
+    '--project-root',
+    '.',
+    '--session',
+    '/tmp/session',
+    '--output',
+    'jsonl',
+    '--event-log',
+    '/tmp/events.jsonl',
+    '--human-log',
+    '/tmp/human.log'
+  ], {
+    packageVersion: '1.3.0',
+    cwd: '/repo',
+    io,
+    runForwarder: async () => 99,
+    createBackend: () => ({
+      kind: 'node',
+      executeCli: async () => {
+        executeCliCalled = true;
+        return 5;
+      },
+      async *resume(options) {
+        seen.push(options);
+        yield { type: 'stage', stage: 'resume', status: 'running' };
+        yield { type: 'summary', artifact_dir: '/repo/artifacts/resume', run_status: 'success' };
+      }
+    })
+  });
+
+  assert.equal(code, 0);
+  assert.equal(executeCliCalled, false);
+  assert.deepEqual(seen, [{
+    projectRoot: '/repo',
+    mode: 'pipeline',
+    session: '/tmp/session',
+    output: 'jsonl',
+    eventLog: '/tmp/events.jsonl',
+    humanLog: '/tmp/human.log'
+  }]);
+  assert.deepEqual(io.stdout.trim().split(/\n/).map((line) => JSON.parse(line)), [
+    { type: 'stage', stage: 'resume', status: 'running' },
+    { type: 'summary', artifact_dir: '/repo/artifacts/resume', run_status: 'success' }
+  ]);
+  assert.equal(io.stderr, '');
+});
+
+test('foreground Node resume supports speedtest mode and human output', async () => {
+  const io = createIo();
+  const seen = [];
+
+  const code = await runCliShell([
+    'resume',
+    'speedtest',
+    '--project-root',
+    '.',
+    '--session',
+    '/tmp/session',
+    '--output',
+    'human'
+  ], {
+    packageVersion: '1.3.0',
+    cwd: '/repo',
+    io,
+    runForwarder: async () => 99,
+    createBackend: () => ({
+      kind: 'node',
+      executeCli: async () => 5,
+      async *resume(options) {
+        seen.push(options);
+        yield { type: 'stage', stage: 'speedtest', status: 'running' };
+        yield { type: 'summary', artifact_dir: '/repo/artifacts/resume-speedtest', run_status: 'success' };
+      }
+    })
+  });
+
+  assert.equal(code, 0);
+  assert.deepEqual(seen, [{
+    projectRoot: '/repo',
+    mode: 'speedtest',
+    session: '/tmp/session',
+    output: 'human',
+    eventLog: undefined,
+    humanLog: undefined
+  }]);
+  assert.match(io.stdout, /\[speedtest\] running/);
+  assert.match(io.stdout, /summary: success \/repo\/artifacts\/resume-speedtest/);
+  assert.equal(io.stderr, '');
+});
+
+test('foreground Node retry-stage supports human output', async () => {
+  const io = createIo();
+
+  const code = await runCliShell([
+    'retry-stage',
+    '--project-root',
+    '.',
+    '--artifact-dir',
+    '/tmp/artifact',
+    '--stage',
+    'verify',
+    '--output',
+    'human'
+  ], {
+    packageVersion: '1.3.0',
+    cwd: '/repo',
+    io,
+    runForwarder: async () => 99,
+    createBackend: () => ({
+      kind: 'node',
+      executeCli: async () => 5,
+      async *retryStage() {
+        yield { type: 'stage', stage: 'verify', status: 'running' };
+        yield { type: 'summary', artifact_dir: '/repo/artifacts/retry-human', run_status: 'success' };
+      }
+    })
+  });
+
+  assert.equal(code, 0);
+  assert.match(io.stdout, /\[verify\] running/);
+  assert.match(io.stdout, /summary: success \/repo\/artifacts\/retry-human/);
+  assert.equal(io.stderr, '');
+});
+
+test('foreground Node resume rejects invalid subcommands and missing session before adapter dispatch', async () => {
+  for (const argv of [
+    ['resume', 'typo', '--project-root', '.', '--session', '/tmp/session', '--output', 'jsonl'],
+    ['resume', 'pipeline', '--project-root', '.', '--output', 'jsonl']
+  ]) {
+    const io = createIo();
+    let adapterCalled = false;
+    const code = await runCliShell(argv, {
+      packageVersion: '1.3.0',
+      cwd: '/repo',
+      io,
+      runForwarder: async () => 99,
+      createBackend: () => ({
+        kind: 'node',
+        executeCli: async () => 5,
+        async *resume() {
+          adapterCalled = true;
+          yield { type: 'summary', run_status: 'success' };
+        }
+      })
+    });
+
+    assert.equal(code, 2, argv.join(' '));
+    assert.equal(adapterCalled, false, argv.join(' '));
+    assert.match(io.stderr, /autovpn:/);
+  }
+});
+
+test('foreground Node retry-stage rejects missing required options before adapter dispatch', async () => {
+  for (const argv of [
+    ['retry-stage', '--project-root', '.', '--stage', 'deploy', '--output', 'jsonl'],
+    ['retry-stage', '--project-root', '.', '--artifact-dir', '/tmp/artifact', '--output', 'jsonl']
+  ]) {
+    const io = createIo();
+    let adapterCalled = false;
+    const code = await runCliShell(argv, {
+      packageVersion: '1.3.0',
+      cwd: '/repo',
+      io,
+      runForwarder: async () => 99,
+      createBackend: () => ({
+        kind: 'node',
+        executeCli: async () => 5,
+        async *retryStage() {
+          adapterCalled = true;
+          yield { type: 'summary', run_status: 'success' };
+        }
+      })
+    });
+
+    assert.equal(code, 2, argv.join(' '));
+    assert.equal(adapterCalled, false, argv.join(' '));
+    assert.match(io.stderr, /autovpn:/);
+  }
+});
+
 test('foreground Node run redacts raw backend errors written to stderr', async () => {
   const io = createIo();
 

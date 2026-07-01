@@ -15,12 +15,21 @@ const TOP_LEVEL_COMMANDS = new Set([
 ]);
 
 const JOBS_SUBCOMMANDS = new Set(['list', 'status', 'logs', 'stop', 'resume', 'retry']);
+const RESUME_SUBCOMMANDS = new Set(['pipeline', 'speedtest']);
 
 function validateChoice(commandLabel: string, optionName: string, value: string | undefined, choices: string[]): void {
   if (value === undefined || choices.includes(value)) {
     return;
   }
   throw new CliUsageError(`${commandLabel} ${optionName} must be one of: ${choices.join(', ')}`);
+}
+
+function requireOption(commandLabel: string, argv: string[], optionName: string): string {
+  const value = readOptionValue(argv, optionName);
+  if (value === undefined || value === '') {
+    throw new CliUsageError(`${commandLabel} requires ${optionName}`);
+  }
+  return value;
 }
 
 function findJobsSubcommand(argv: string[]): string {
@@ -62,6 +71,17 @@ export function validateCommand(argv: string[]): void {
 
   if (command === 'run' || command === 'retry-stage' || command === 'resume') {
     validateChoice(command, '--output', readOptionValue(argv, '--output'), ['jsonl', 'human']);
+    if (command === 'retry-stage') {
+      requireOption('retry-stage', argv, '--artifact-dir');
+      requireOption('retry-stage', argv, '--stage');
+    }
+    if (command === 'resume') {
+      const subcommand = argv[1] ?? '';
+      if (!RESUME_SUBCOMMANDS.has(subcommand)) {
+        throw new CliUsageError('resume subcommand must be one of: pipeline, speedtest');
+      }
+      requireOption('resume', argv, '--session');
+    }
     return;
   }
 

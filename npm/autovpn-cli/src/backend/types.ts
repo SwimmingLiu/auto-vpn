@@ -14,7 +14,7 @@ export interface RetryOptions {
   projectRoot: string;
   artifactDir: string;
   stage: string;
-  output?: 'jsonl';
+  output?: 'jsonl' | 'human';
   eventLog?: string;
   humanLog?: string;
 }
@@ -23,7 +23,7 @@ export interface ResumeOptions {
   projectRoot: string;
   mode: 'pipeline' | 'speedtest';
   session: string;
-  output?: 'jsonl';
+  output?: 'jsonl' | 'human';
   eventLog?: string;
   humanLog?: string;
 }
