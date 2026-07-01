@@ -25,7 +25,7 @@ function createIo() {
   };
 }
 
-async function runNode(argv, { cwd, env = {}, runForwarder } = {}) {
+async function runNode(argv, { cwd, env = {}, runForwarder, readStdin } = {}) {
   const io = createIo();
   const forwarded = [];
   const resolvedEnv = {
@@ -38,6 +38,7 @@ async function runNode(argv, { cwd, env = {}, runForwarder } = {}) {
     cwd,
     env: resolvedEnv,
     io,
+    readStdin,
     runForwarder: runForwarder ?? (async (forwardedArgv) => {
       forwarded.push(forwardedArgv);
       return 99;
@@ -217,6 +218,7 @@ test('Phase 3 low-risk commands run in Node by default', async () => {
     { argv: ['doctor', '--project-root', root, '--output', 'json'], codes: [0, 1] },
     { argv: ['profile', 'show', '--project-root', root], codes: [0] },
     { argv: ['profile', 'summary', '--project-root', root, '--json'], codes: [0] },
+    { argv: ['profile', 'save', '--project-root', root], codes: [0], readStdin: async () => JSON.stringify({ sources: {}, deploy: { project_name: 'saved-profile' } }) },
     { argv: ['artifacts', 'latest', '--project-root', root], codes: [0] },
     { argv: ['artifacts', 'list', '--project-root', root], codes: [0] },
     { argv: ['artifacts', 'preview', artifactDir, '--project-root', root, '--json'], codes: [0] },
@@ -227,8 +229,8 @@ test('Phase 3 low-risk commands run in Node by default', async () => {
     { argv: ['jobs', 'logs', '20260628-000000-abcdef', '--project-root', root, '--tail', '2'], codes: [0] }
   ];
 
-  for (const { argv, codes } of commands) {
-    const result = await runNode(argv, { cwd: root });
+  for (const { argv, codes, readStdin } of commands) {
+    const result = await runNode(argv, { cwd: root, readStdin });
     assert.ok(codes.includes(result.code), argv.join(' '));
     assert.equal(result.stderr, '', argv.join(' '));
     assert.deepEqual(result.forwarded, [], argv.join(' '));

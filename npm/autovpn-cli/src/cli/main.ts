@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import path from 'node:path';
+
 import { validateCommand } from './commands/index.js';
 import { CliUsageError } from './errors.js';
 import { normalizeProjectRootArgs } from './global-options.js';
@@ -5,10 +8,12 @@ import { JobRuntimeOptions, runNativeCommand } from './native-commands.js';
 import { CliIo, defaultIo, renderHelp } from './output.js';
 import { AutoVpnBackend, RunForwarder } from '../backend/types.js';
 import { selectBackend } from '../backend/select-backend.js';
+import { loadJob } from '../jobs/read.js';
 import { readOptionValue, resolveProjectRoot } from '../runtime/paths.js';
 import { redactText } from '../runtime/redaction.js';
 
 type ReadPackageVersion = () => string | Promise<string>;
+type ReadStdin = () => string | Promise<string>;
 type ShellBackend = Pick<AutoVpnBackend, 'executeCli'> & Partial<Pick<AutoVpnBackend, 'kind' | 'run' | 'retryStage' | 'resume'>>;
 type CreateBackend = (options: { env: NodeJS.ProcessEnv; cwd: string; runForwarder: RunForwarder }) => ShellBackend;
 
@@ -19,6 +24,7 @@ export interface CliShellOptions {
   runForwarder?: RunForwarder;
   createBackend?: CreateBackend;
   readPackageVersion?: ReadPackageVersion;
+  readStdin?: ReadStdin;
   cwd?: string;
   spawn?: JobRuntimeOptions['spawn'];
   now?: JobRuntimeOptions['now'];
@@ -42,6 +48,14 @@ async function defaultRunForwarder(argv: string[], options?: { env?: NodeJS.Proc
   return Number(await runner.runForwarder(argv, options));
 }
 
+async function defaultReadStdin(): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
 function isEnabled(value: string | undefined): boolean {
   return ['1', 'true', 'yes', 'on'].includes(String(value ?? '').trim().toLowerCase());
 }
@@ -62,6 +76,35 @@ function hasFlag(argv: string[], flag: string): boolean {
 
 function eventOutputFormat(argv: string[]): 'jsonl' | 'human' {
   return readOptionValue(argv, '--output') === 'human' ? 'human' : 'jsonl';
+}
+
+function positionalAfter(argv: string[], start: number): string {
+  for (let index = start; index < argv.length; index += 1) {
+    const value = argv[index];
+    if (value === '--project-root' || value === '--format' || value === '--tail' || value === '--output' || value === '--artifact-dir' || value === '--stage') {
+      index += 1;
+      continue;
+    }
+    if (value.startsWith('--')) {
+      continue;
+    }
+    return value;
+  }
+  return '';
+}
+
+function resolveResumeSessionDir(job: Record<string, any>): string {
+  const candidates = [
+    String(job.resume_from ?? ''),
+    String((job.options ?? {}).session_dir ?? ''),
+    String(job.session_dir ?? '')
+  ];
+  for (const candidate of candidates) {
+    if (candidate && fs.existsSync(path.join(candidate, 'session.json'))) {
+      return candidate;
+    }
+  }
+  return '';
 }
 
 async function runForegroundPipeline(argv: string[], backend: ShellBackend, io: CliIo, cwd: string): Promise<number | undefined> {
@@ -98,6 +141,36 @@ async function runForegroundPipeline(argv: string[], backend: ShellBackend, io: 
       eventLog: readOptionValue(argv, '--event-log'),
       humanLog: readOptionValue(argv, '--human-log')
     });
+  } else if (argv[0] === 'jobs' && argv[1] === 'retry' && !hasFlag(argv, '--detach') && typeof backend.retryStage === 'function') {
+    events = backend.retryStage({
+      projectRoot: resolveProjectRoot(argv, cwd),
+      artifactDir: path.resolve(cwd, readOptionValue(argv, '--artifact-dir') ?? ''),
+      stage: readOptionValue(argv, '--stage') ?? '',
+      output
+    });
+  } else if (argv[0] === 'jobs' && argv[1] === 'resume' && !hasFlag(argv, '--detach')) {
+    const projectRoot = resolveProjectRoot(argv, cwd);
+    const sourceJob = loadJob(projectRoot, positionalAfter(argv, 2));
+    const sessionDir = resolveResumeSessionDir(sourceJob);
+    if (!sessionDir && String(sourceJob.kind ?? '') === 'run' && typeof backend.run === 'function') {
+      const sourceOptions = sourceJob.options ?? {};
+      events = backend.run({
+        projectRoot,
+        resumeLatest: true,
+        skipDeploy: Boolean(sourceOptions.skip_deploy),
+        skipVerify: Boolean(sourceOptions.skip_verify),
+        output
+      });
+    } else if (sessionDir && typeof backend.resume === 'function') {
+      events = backend.resume({
+        projectRoot,
+        mode: 'pipeline',
+        session: sessionDir,
+        output
+      });
+    } else if (!sessionDir) {
+      throw new Error('cannot resume job without session.json');
+    }
   }
   if (!events) {
     return undefined;
@@ -161,6 +234,7 @@ export async function runCliShell(argv: string[], options: CliShellOptions = {})
       cwd,
       env,
       io,
+      readStdin: options.readStdin ?? defaultReadStdin,
       pythonFallback: runExplicitPythonFallback,
       spawn: options.spawn,
       now: options.now,
