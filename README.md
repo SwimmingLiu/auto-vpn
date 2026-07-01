@@ -89,13 +89,13 @@ autovpn run --project-root /opt/autovpn/vpn-subscription-automation --skip-deplo
 autovpn artifacts latest --project-root /opt/autovpn/vpn-subscription-automation
 ```
 
-The npm CLI defaults high-risk `run` execution to the Python backend for production compatibility. For v3 Node-backend validation, run the experimental Node orchestrator as a foreground pipeline:
+The npm CLI defaults high-risk `run` execution to the Python backend for production compatibility. For v3 Node-backend validation, run the experimental Node orchestrator as a foreground pipeline. Use the full form to exercise deploy/verify, or add `--skip-deploy --skip-verify` for an offline pipeline check:
 
 ```bash
-AUTOVPN_BACKEND=node autovpn run --project-root /opt/autovpn/vpn-subscription-automation --skip-deploy --skip-verify --output jsonl
+AUTOVPN_BACKEND=node autovpn run --project-root /opt/autovpn/vpn-subscription-automation --output jsonl
 ```
 
-This mode writes normal artifacts and JSONL events, loads project `.env` before resolving profile and artifact paths, and defaults runtime-heavy stages to Python fallback while the v3 migration continues. Node-native deploy and verify are available for plain Cloudflare Pages flows, including primary blocked-project fallback and share-project subscription sync; detached jobs, `retry-stage`, `resume`, and `--resume-latest` still use the Python backend.
+This mode writes normal artifacts and JSONL events, loads project `.env` before resolving profile and artifact paths, and uses the Node deploy/verify stages for plain Cloudflare Pages flows, including primary blocked-project fallback, share-project subscription sync, custom-domain binding, and custom-domain DNS upsert. Detached jobs, `retry-stage`, `resume`, and `--resume-latest` still use the Python backend.
 
 For long terminal or Agent runs, start a detached job and reconnect later:
 
@@ -173,7 +173,7 @@ npm test --prefix npm/autovpn-cli
 (cd npm/autovpn-cli && npm pack --pack-destination .)
 AUTOVPN_PYTHON_CLI="$(command -v autovpn)" AUTOVPN_NO_INSTALL=1 npx -y ./npm/autovpn-cli/*.tgz --version
 AUTOVPN_PYTHON_CLI="$(command -v autovpn)" AUTOVPN_NO_INSTALL=1 npx -y ./npm/autovpn-cli/*.tgz doctor --project-root "$PWD" --output json
-AUTOVPN_BACKEND=node npx -y ./npm/autovpn-cli/*.tgz run --project-root "$PWD" --skip-deploy --skip-verify --output jsonl
+AUTOVPN_BACKEND=node npx -y ./npm/autovpn-cli/*.tgz run --project-root "$PWD" --output jsonl
 ```
 
 Deploy under `AUTOVPN_BACKEND=node` is still experimental. Plain Wrangler Pages deploys, primary blocked-project fallback creation, share-project `SUB` sync, share-project fallback, custom-domain binding, custom-domain DNS upsert, fallback config cloning, and verify run in Node. Set `AUTOVPN_STAGE_BACKEND_DEPLOY=python` or `AUTOVPN_STAGE_BACKEND_VERIFY=python` only when you need to roll a stage back to the Python adapter.

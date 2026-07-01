@@ -392,14 +392,21 @@ test('selectBackend supports explicit Node backend opt-in', () => {
   assert.ok(backend instanceof NodeBackend);
 });
 
-test('NodeBackend rejects deploy runs before creating artifacts', async () => {
-  const backend = new NodeBackend({ env: {}, cwd: '/repo' });
+test('NodeBackend allows full foreground runs through the Node deploy and verify stages', async () => {
+  const projectRoot = await mkdir(path.join(os.tmpdir(), `autovpn-node-backend-full-run-${Date.now()}`, 'project'), { recursive: true });
+  const events = [];
+  const backend = new NodeBackend({
+    env: { VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime') },
+    cwd: projectRoot
+  });
 
   await assert.rejects(async () => {
-    for await (const _event of backend.run({ projectRoot: '/repo', skipDeploy: false, skipVerify: false, output: 'jsonl' })) {
-      // consume
+    for await (const event of backend.run({ projectRoot, skipDeploy: false, skipVerify: false, output: 'jsonl' })) {
+      events.push(event);
     }
-  }, /Node backend deploy is not available yet/);
+  }, /profile\.toml/);
+
+  assert.equal(events[0].type, 'run_started');
 });
 
 test('NodeBackend allows full runs when deploy Python fallback is explicit', async () => {
