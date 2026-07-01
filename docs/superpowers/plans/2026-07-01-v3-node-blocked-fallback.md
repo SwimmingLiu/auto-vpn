@@ -18,7 +18,7 @@ Move primary Cloudflare Pages blocked-project recovery from the Python deploy ad
 - `CloudflareDeployClient` extends the existing verify client so tests can inject a fake Cloudflare deploy surface without network access.
 - `CloudflareHttpClient` now owns Pages project list/get/create/update helpers plus `copyPagesProjectConfig`.
 - Secret cloning never reads secret values back from Cloudflare because Cloudflare does not expose them; values must come from profile/env defaults.
-- Custom-domain binding and share-project sync remain guarded behind explicit Python deploy fallback.
+- Custom-domain binding remains guarded behind explicit Python deploy fallback. Share-project sync is handled in the follow-up Node share sync slice.
 
 ## Tests
 
@@ -29,6 +29,5 @@ Move primary Cloudflare Pages blocked-project recovery from the Python deploy ad
 
 ## Remaining v3 Work
 
-- Port share-project subscription sync and share fallback.
 - Port custom-domain attach/detach and DNS upsert.
 - Add live/sandbox deploy tests when Cloudflare credentials are available.

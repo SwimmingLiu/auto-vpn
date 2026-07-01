@@ -95,7 +95,7 @@ The npm CLI defaults high-risk `run` execution to the Python backend for product
 AUTOVPN_BACKEND=node autovpn run --project-root /opt/autovpn/vpn-subscription-automation --skip-deploy --skip-verify --output jsonl
 ```
 
-This mode writes normal artifacts and JSONL events, loads project `.env` before resolving profile and artifact paths, and defaults runtime-heavy stages to Python fallback while the v3 migration continues. Node-native deploy and verify are available for plain Cloudflare Pages flows; detached jobs, `retry-stage`, `resume`, and `--resume-latest` still use the Python backend.
+This mode writes normal artifacts and JSONL events, loads project `.env` before resolving profile and artifact paths, and defaults runtime-heavy stages to Python fallback while the v3 migration continues. Node-native deploy and verify are available for plain Cloudflare Pages flows, including primary blocked-project fallback and share-project subscription sync; detached jobs, `retry-stage`, `resume`, and `--resume-latest` still use the Python backend.
 
 For long terminal or Agent runs, start a detached job and reconnect later:
 
@@ -176,7 +176,7 @@ AUTOVPN_PYTHON_CLI="$(command -v autovpn)" AUTOVPN_NO_INSTALL=1 npx -y ./npm/aut
 AUTOVPN_BACKEND=node npx -y ./npm/autovpn-cli/*.tgz run --project-root "$PWD" --skip-deploy --skip-verify --output jsonl
 ```
 
-Deploy under `AUTOVPN_BACKEND=node` is still experimental. Plain Wrangler Pages deploys, primary blocked-project fallback creation, fallback config cloning, and verify run in Node. Deploys that need custom-domain binding or share-project sync still require `AUTOVPN_STAGE_BACKEND_DEPLOY=python` and an absolute `AUTOVPN_PYTHON_CLI` path. Set `AUTOVPN_STAGE_BACKEND_VERIFY=python` only when you need to roll verify back to the Python adapter.
+Deploy under `AUTOVPN_BACKEND=node` is still experimental. Plain Wrangler Pages deploys, primary blocked-project fallback creation, share-project `SUB` sync, share-project fallback, fallback config cloning, and verify run in Node. Deploys that need custom-domain binding or custom-domain DNS upsert still require `AUTOVPN_STAGE_BACKEND_DEPLOY=python` and an absolute `AUTOVPN_PYTHON_CLI` path. Set `AUTOVPN_STAGE_BACKEND_VERIFY=python` only when you need to roll verify back to the Python adapter.
 
 For long terminal or Agent runs, start a detached job and reconnect later:
 

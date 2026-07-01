@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 
 import {
@@ -46,6 +49,14 @@ function fakeChild(stdoutPayload = '{}') {
     }
   };
   return child;
+}
+
+async function makeShareProjectRoot() {
+  const projectRoot = await mkdtemp(path.join(os.tmpdir(), 'autovpn-share-'));
+  const sourceDir = path.join(projectRoot, 'templates', 'share-worker');
+  await mkdir(sourceDir, { recursive: true });
+  await writeFile(path.join(sourceDir, 'vpn.js'), "export default { async fetch() { return new Response('share'); } }", 'utf8');
+  return projectRoot;
 }
 
 test('Cloudflare URL helpers match Python deploy semantics', () => {
@@ -402,13 +413,270 @@ test('CloudflareHttpClient copies Pages deployment configs with resolved secret 
   });
 });
 
-test('Node deploy backend keeps remaining complex deploy side effects on Python fallback', async () => {
-  await assert.rejects(() => deployPagesWithBackend({
-    projectRoot: '/repo',
-    bundleDir: '/repo/artifacts/pages_bundle',
-    deploy: { project_name: 'sub-nodes', share_project_name: 'sub-links-share-03', cloudflare_api_token: 'token-1' }
-  }, { env: {}, runCommand: async () => ({ returncode: 0, stdout: '', stderr: '' }) }), /share_project_name/);
+test('Node deploy backend syncs share project SUB to final Pages URL', async () => {
+  const projectRoot = await makeShareProjectRoot();
+  const calls = [];
+  const client = {
+    async getPagesProject(projectName) {
+      calls.push(['getPagesProject', projectName]);
+      assert.equal(projectName, 'sub-links-share-03');
+      return {
+        name: projectName,
+        deployment_configs: {
+          preview: { env_vars: { SUB: { type: 'plain_text', value: 'https://old.pages.dev' } } },
+          production: { env_vars: { SUB: { type: 'plain_text', value: 'https://old.pages.dev' } } }
+        }
+      };
+    },
+    async updatePagesProject(projectName, payload) {
+      calls.push(['updatePagesProject', projectName, payload]);
+      return { name: projectName };
+    },
+    async listPagesProjects() { return [{ name: 'sub-links-share-03' }]; },
+    async createPagesProject() { throw new Error('unexpected create'); },
+    async copyPagesProjectConfig() { throw new Error('unexpected copy'); },
+    async verifyUrl() { return true; },
+    async verifySubdomainCname() { return true; },
+    async deletePagesProject() { return {}; }
+  };
+  const runCalls = [];
+  const result = await deployPagesWithBackend({
+    projectRoot,
+    bundleDir: path.join(projectRoot, 'artifacts/pages_bundle'),
+    deploy: {
+      project_name: 'sub-nodes',
+      pages_project_url: 'https://sub-nodes.pages.dev',
+      subscription_url: 'https://origin.example/sub',
+      share_project_name: 'sub-links-share-03',
+      cloudflare_api_token: 'token-1'
+    }
+  }, {
+    env: {},
+    cloudflareDeployClient: client,
+    runCommand: async (command, options) => {
+      runCalls.push({ command, options });
+      return { returncode: 0, stdout: 'ok', stderr: '' };
+    }
+  });
 
+  assert.equal(result.returncode, 0);
+  assert.equal(result.share_project_sync_ok, true);
+  assert.equal(result.share_project_name, 'sub-links-share-03');
+  assert.equal(result.share_project_sub_value, 'https://sub-nodes.pages.dev/?serect_key=swimmingliu');
+  assert.equal(runCalls.length, 2);
+  assert.equal(runCalls[0].command[6], 'sub-nodes');
+  assert.equal(runCalls[1].command[6], 'sub-links-share-03');
+  assert.ok(runCalls[1].command[4].endsWith('/electron/runtime/share-worker/share_pages_bundle'));
+  const update = calls.find((call) => call[0] === 'updatePagesProject');
+  assert.equal(update[1], 'sub-links-share-03');
+  assert.equal(update[2].deployment_configs.preview.env_vars.SUB.value, 'https://sub-nodes.pages.dev/?serect_key=swimmingliu');
+  assert.equal(update[2].deployment_configs.production.env_vars.SUB.value, 'https://sub-nodes.pages.dev/?serect_key=swimmingliu');
+  assert.ok(String(result.share_project_worker_entry).endsWith('/share_pages_bundle/_worker.js'));
+});
+
+test('Node deploy backend falls back when share project update is blocked', async () => {
+  const projectRoot = await makeShareProjectRoot();
+  const calls = [];
+  const client = {
+    async getPagesProject(projectName) {
+      calls.push(['getPagesProject', projectName]);
+      return {
+        name: projectName,
+        deployment_configs: {
+          preview: { env_vars: { SUB: { type: 'plain_text', value: 'https://old.pages.dev' } } },
+          production: { env_vars: { SUB: { type: 'plain_text', value: 'https://old.pages.dev' } } }
+        }
+      };
+    },
+    async updatePagesProject(projectName, payload) {
+      calls.push(['updatePagesProject', projectName, payload]);
+      if (projectName === 'sub-links-share-03') {
+        throw new Error('Your Pages project has been blocked. Contact abusereply@cloudflare.com. [code: 8000119]');
+      }
+      return { name: projectName };
+    },
+    async listPagesProjects() {
+      calls.push(['listPagesProjects']);
+      return [{ name: 'sub-links-share-03' }];
+    },
+    async createPagesProject(projectName) {
+      calls.push(['createPagesProject', projectName]);
+      return { name: projectName };
+    },
+    async copyPagesProjectConfig(sourceProjectName, targetProjectName) {
+      calls.push(['copyPagesProjectConfig', sourceProjectName, targetProjectName]);
+      return { name: targetProjectName };
+    },
+    async verifyUrl() { return true; },
+    async verifySubdomainCname() { return true; },
+    async deletePagesProject() { return {}; }
+  };
+  const runCalls = [];
+  const result = await deployPagesWithBackend({
+    projectRoot,
+    bundleDir: path.join(projectRoot, 'artifacts/pages_bundle'),
+    deploy: {
+      project_name: 'sub-nodes',
+      pages_project_url: 'https://sub-nodes.pages.dev',
+      share_project_name: 'sub-links-share-03',
+      cloudflare_api_token: 'token-1'
+    }
+  }, {
+    env: {},
+    cloudflareDeployClient: client,
+    runCommand: async (command, options) => {
+      runCalls.push({ command, options });
+      return { returncode: 0, stdout: 'ok', stderr: '' };
+    }
+  });
+
+  assert.equal(result.returncode, 0);
+  assert.equal(result.share_project_sync_ok, true);
+  assert.equal(result.share_project_name, 'sub-links-share-04');
+  assert.equal(result.share_project_fallback_used, true);
+  assert.equal(result.share_project_cleanup_blocked_project, 'sub-links-share-03');
+  assert.equal(result.share_project_fallback_last_used_suffix, 4);
+  assert.deepEqual(result.share_project_fallback_candidate_names, ['sub-links-share-04']);
+  assert.deepEqual(result.share_project_redeploy_attempts, [{ mode: 'direct', returncode: 0 }]);
+  assert.deepEqual(calls.filter((call) => ['createPagesProject', 'copyPagesProjectConfig'].includes(call[0])), [
+    ['createPagesProject', 'sub-links-share-04'],
+    ['copyPagesProjectConfig', 'sub-links-share-03', 'sub-links-share-04']
+  ]);
+  assert.equal(runCalls.at(-1).command[6], 'sub-links-share-04');
+});
+
+test('Node deploy backend falls back when share project redeploy is blocked', async () => {
+  const projectRoot = await makeShareProjectRoot();
+  const calls = [];
+  const client = {
+    async getPagesProject(projectName) {
+      return {
+        name: projectName,
+        deployment_configs: {
+          preview: { env_vars: { SUB: { type: 'plain_text', value: 'https://old.pages.dev' } } },
+          production: { env_vars: { SUB: { type: 'plain_text', value: 'https://old.pages.dev' } } }
+        }
+      };
+    },
+    async updatePagesProject(projectName, payload) {
+      calls.push(['updatePagesProject', projectName, payload]);
+      return { name: projectName };
+    },
+    async listPagesProjects() {
+      return [{ name: 'sub-links-share-03' }];
+    },
+    async createPagesProject(projectName) {
+      calls.push(['createPagesProject', projectName]);
+      return { name: projectName };
+    },
+    async copyPagesProjectConfig(sourceProjectName, targetProjectName) {
+      calls.push(['copyPagesProjectConfig', sourceProjectName, targetProjectName]);
+      return { name: targetProjectName };
+    },
+    async verifyUrl() { return true; },
+    async verifySubdomainCname() { return true; },
+    async deletePagesProject() { return {}; }
+  };
+  const deployResults = [
+    { returncode: 0, stdout: 'primary ok', stderr: '' },
+    {
+      returncode: 1,
+      stdout: '',
+      stderr: 'Your Pages project has been blocked. Contact abusereply@cloudflare.com. [code: 8000119]'
+    },
+    { returncode: 0, stdout: 'fallback ok', stderr: '' }
+  ];
+  const runCalls = [];
+  const result = await deployPagesWithBackend({
+    projectRoot,
+    bundleDir: path.join(projectRoot, 'artifacts/pages_bundle'),
+    deploy: {
+      project_name: 'sub-nodes',
+      pages_project_url: 'https://sub-nodes.pages.dev',
+      share_project_name: 'sub-links-share-03',
+      cloudflare_api_token: 'token-1'
+    }
+  }, {
+    env: {},
+    cloudflareDeployClient: client,
+    runCommand: async (command) => {
+      runCalls.push(command);
+      return deployResults.shift();
+    }
+  });
+
+  assert.equal(result.returncode, 0);
+  assert.equal(result.share_project_name, 'sub-links-share-04');
+  assert.equal(result.share_project_fallback_used, true);
+  assert.equal(result.share_project_cleanup_blocked_project, 'sub-links-share-03');
+  assert.equal(result.share_project_fallback_last_used_suffix, 4);
+  assert.deepEqual(result.share_project_redeploy_attempts, [{ mode: 'direct', returncode: 0 }]);
+  assert.equal(runCalls[1][6], 'sub-links-share-03');
+  assert.equal(runCalls[2][6], 'sub-links-share-04');
+  assert.deepEqual(calls.filter((call) => ['createPagesProject', 'copyPagesProjectConfig'].includes(call[0])), [
+    ['createPagesProject', 'sub-links-share-04'],
+    ['copyPagesProjectConfig', 'sub-links-share-03', 'sub-links-share-04']
+  ]);
+});
+
+test('Node deploy backend recovers latest existing share project when requested share project is missing', async () => {
+  const projectRoot = await makeShareProjectRoot();
+  const client = {
+    async getPagesProject(projectName) {
+      if (projectName === 'sub-links-share-03') {
+        throw new Error('Cloudflare Pages project not found: sub-links-share-03');
+      }
+      assert.equal(projectName, 'sub-links-share-05');
+      return {
+        name: projectName,
+        deployment_configs: {
+          preview: { env_vars: { SUB: { type: 'plain_text', value: 'https://old.pages.dev' } } },
+          production: { env_vars: { SUB: { type: 'plain_text', value: 'https://old.pages.dev' } } }
+        }
+      };
+    },
+    async listPagesProjects() {
+      return [{ name: 'sub-nodes-04' }, { name: 'sub-links-share-05' }];
+    },
+    async updatePagesProject(projectName, payload) {
+      assert.equal(projectName, 'sub-links-share-05');
+      assert.equal(payload.deployment_configs.preview.env_vars.SUB.value, 'https://sub-nodes-04.pages.dev/?serect_key=swimmingliu');
+      return { name: projectName };
+    },
+    async createPagesProject() { throw new Error('unexpected create'); },
+    async copyPagesProjectConfig() { throw new Error('unexpected copy'); },
+    async verifyUrl() { return true; },
+    async verifySubdomainCname() { return true; },
+    async deletePagesProject() { return {}; }
+  };
+  const runCalls = [];
+  const result = await deployPagesWithBackend({
+    projectRoot,
+    bundleDir: path.join(projectRoot, 'artifacts/pages_bundle'),
+    deploy: {
+      project_name: 'sub-nodes-04',
+      pages_project_url: 'https://sub-nodes-04.pages.dev',
+      share_project_name: 'sub-links-share-03',
+      cloudflare_api_token: 'token-1'
+    }
+  }, {
+    env: {},
+    cloudflareDeployClient: client,
+    runCommand: async (command) => {
+      runCalls.push(command);
+      return { returncode: 0, stdout: 'ok', stderr: '' };
+    }
+  });
+
+  assert.equal(result.returncode, 0);
+  assert.equal(result.share_project_sync_ok, true);
+  assert.equal(result.share_project_requested_name, 'sub-links-share-03');
+  assert.equal(result.share_project_name, 'sub-links-share-05');
+  assert.equal(runCalls.length, 2);
+  assert.equal(runCalls[1][6], 'sub-links-share-05');
+});
+
+test('Node deploy backend keeps remaining complex deploy side effects on Python fallback', async () => {
   await assert.rejects(() => deployPagesWithBackend({
     projectRoot: '/repo',
     bundleDir: '/repo/artifacts/pages_bundle',
