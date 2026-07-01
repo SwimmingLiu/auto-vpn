@@ -64,19 +64,6 @@ function eventOutputFormat(argv: string[]): 'jsonl' | 'human' {
   return readOptionValue(argv, '--output') === 'human' ? 'human' : 'jsonl';
 }
 
-function nodeBackendUnsupportedArgv(argv: string[], backend: ShellBackend): string {
-  if (backend.kind !== 'node') {
-    return '';
-  }
-  if (argv[0] === 'run' && hasFlag(argv, '--detach')) {
-    return 'Node backend detached runs are not available yet; use AUTOVPN_BACKEND=python';
-  }
-  if (argv[0] === 'jobs' && (argv.includes('resume') || argv.includes('retry')) && hasFlag(argv, '--detach')) {
-    return 'Node backend detached resume/retry is not available yet; use AUTOVPN_BACKEND=python';
-  }
-  return '';
-}
-
 async function runForegroundPipeline(argv: string[], backend: ShellBackend, io: CliIo, cwd: string): Promise<number | undefined> {
   if (argv[0] !== 'run' || hasFlag(argv, '--detach') || backend.kind !== 'node' || typeof backend.run !== 'function') {
     return undefined;
@@ -135,10 +122,6 @@ export async function runCliShell(argv: string[], options: CliShellOptions = {})
     validateCommand(normalizedArgv);
     const createBackend = options.createBackend ?? defaultCreateBackend;
     const backend = createBackend({ env, cwd, runForwarder });
-    const unsupportedNodeBackendCommand = nodeBackendUnsupportedArgv(normalizedArgv, backend);
-    if (unsupportedNodeBackendCommand) {
-      throw new Error(unsupportedNodeBackendCommand);
-    }
     const nativeResult = await runNativeCommand(normalizedArgv, {
       cwd,
       env,
