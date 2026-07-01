@@ -125,6 +125,43 @@ test('run --detach --json is owned by Node job manager and spawns Python worker'
   assert.equal(spawns[0].options.detached, process.platform !== 'win32');
 });
 
+test('AUTOVPN_BACKEND=node run --detach spawns the Node CLI worker', async () => {
+  const projectRoot = await createProject();
+  const spawns = [];
+  const io = createIo();
+
+  const code = await runCliShell(['run', '--project-root', projectRoot, '--skip-deploy', '--skip-verify', '--detach', '--json'], {
+    cwd: projectRoot,
+    packageVersion: '1.3.0',
+    env: runtimeEnv({ AUTOVPN_BACKEND: 'node', AUTOVPN_PYTHON_CLI: '/venv/bin/autovpn' }),
+    io,
+    createBackend: () => ({
+      kind: 'node',
+      executeCli: async () => {
+        throw new Error('detached run should not be forwarded to backend.executeCli');
+      }
+    }),
+    runForwarder: async () => {
+      throw new Error('detached run should not use direct forwarder');
+    },
+    spawn: fakeSpawn(spawns, 6789),
+    now: () => '2026-06-28T00:01:00+00:00',
+    jobId: () => '20260628-000100-node-worker'
+  });
+
+  const payload = JSON.parse(io.stdout);
+  assert.equal(code, 0);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.job_id, '20260628-000100-node-worker');
+  assert.equal(payload.pid, 6789);
+  assert.equal(spawns.length, 1);
+  assert.equal(spawns[0].command, process.execPath);
+  assert.match(spawns[0].args[0], /bin[\\/]autovpn\.mjs$/);
+  assert.deepEqual(spawns[0].args.slice(1), [
+    'run', '--project-root', payload.project_root, '--output', 'jsonl', '--event-log', payload.event_log, '--human-log', payload.human_log, '--skip-deploy', '--skip-verify'
+  ]);
+});
+
 test('Node job manager stop marks job stopped and targets process group', async () => {
   const projectRoot = await createProject();
   const store = createJobStore(projectRoot, { now: () => '2026-06-28T00:00:00+00:00', jobId: () => '20260628-000000-node03' });

@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn as defaultSpawn, ChildProcess } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 import { publicJobPayload } from './read.js';
 import { createJobStore, JobRecord, JobStoreOptions } from './store.js';
@@ -9,6 +10,11 @@ import { StopProcessOptions, processMatchesJob as defaultProcessMatchesJob, term
 type SpawnLike = (command: string, args: string[], options?: Record<string, unknown>) => ChildProcess;
 
 interface ResolvedPythonCli {
+  command: string;
+  args: string[];
+}
+
+interface ResolvedWorkerCli {
   command: string;
   args: string[];
 }
@@ -50,6 +56,22 @@ async function defaultResolvePythonCli(env: NodeJS.ProcessEnv): Promise<Resolved
   return runner.resolveOrInstallPythonCli({ env });
 }
 
+function defaultResolveNodeCli(): ResolvedWorkerCli {
+  const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+  return { command: process.execPath, args: [path.join(packageRoot, 'bin', 'autovpn.mjs')] };
+}
+
+function wantsNodeWorker(env: NodeJS.ProcessEnv): boolean {
+  return String(env.AUTOVPN_BACKEND ?? '').trim().toLowerCase() === 'node';
+}
+
+async function resolveDetachedRunWorker(env: NodeJS.ProcessEnv, options: JobCommandOptions): Promise<ResolvedWorkerCli> {
+  if (wantsNodeWorker(env)) {
+    return defaultResolveNodeCli();
+  }
+  return options.resolvePythonCli ? await options.resolvePythonCli() : await defaultResolvePythonCli(env);
+}
+
 function pushFlag(argv: string[], enabled: boolean | undefined, flag: string): void {
   if (enabled) argv.push(flag);
 }
@@ -75,8 +97,8 @@ function spawnDetached(command: string, args: string[], job: JobRecord, options:
 export async function startDetachedRun(command: DetachedRunCommand, options: JobCommandOptions = {}): Promise<JobRecord> {
   const outputFormat = command.outputFormat ?? 'jsonl';
   const jobStore = createJobStore(command.projectRoot, options);
-  const pythonArgs = ['run', '--project-root', command.projectRoot, '--output', outputFormat];
-  const resolved = options.resolvePythonCli ? await options.resolvePythonCli() : await defaultResolvePythonCli(options.env ?? process.env);
+  const runArgs = ['run', '--project-root', command.projectRoot, '--output', outputFormat];
+  const resolved = await resolveDetachedRunWorker(options.env ?? process.env, options);
   const job = jobStore.createRunningJob({
     kind: 'run',
     command: [],
@@ -89,12 +111,12 @@ export async function startDetachedRun(command: DetachedRunCommand, options: Job
       output_format: outputFormat
     }
   });
-  pythonArgs.push('--event-log', String(job.event_log), '--human-log', String(job.human_log));
-  pushFlag(pythonArgs, command.resumeLatest, '--resume-latest');
-  pushFlag(pythonArgs, command.skipDeploy, '--skip-deploy');
-  pushFlag(pythonArgs, command.skipVerify, '--skip-verify');
-  job.command = [resolved.command, ...resolved.args, ...pythonArgs];
-  const child = spawnDetached(resolved.command, [...resolved.args, ...pythonArgs], job, options);
+  runArgs.push('--event-log', String(job.event_log), '--human-log', String(job.human_log));
+  pushFlag(runArgs, command.resumeLatest, '--resume-latest');
+  pushFlag(runArgs, command.skipDeploy, '--skip-deploy');
+  pushFlag(runArgs, command.skipVerify, '--skip-verify');
+  job.command = [resolved.command, ...resolved.args, ...runArgs];
+  const child = spawnDetached(resolved.command, [...resolved.args, ...runArgs], job, options);
   job.pid = Number(child.pid ?? 0);
   job.pgid = Number(child.pid ?? 0);
   return jobStore.writeJob(job);

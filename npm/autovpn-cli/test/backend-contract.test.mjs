@@ -318,9 +318,9 @@ test('Node backend allows detached run through the Node job manager', async () =
   assert.equal(payload.options.skip_deploy, true);
   assert.equal(payload.options.skip_verify, true);
   assert.equal(executeCliCalled, false);
-  assert.deepEqual(spawns.map((item) => [item.command, item.args.slice(0, 7)]), [
-    ['/venv/bin/autovpn', ['run', '--project-root', '/repo', '--output', 'jsonl', '--event-log', payload.event_log]]
-  ]);
+  assert.equal(spawns[0].command, process.execPath);
+  assert.match(spawns[0].args[0], /bin[\\/]autovpn\.mjs$/);
+  assert.deepEqual(spawns[0].args.slice(1, 8), ['run', '--project-root', '/repo', '--output', 'jsonl', '--event-log', payload.event_log]);
 });
 
 test('Node backend allows detached retry through the Node job manager', async () => {
