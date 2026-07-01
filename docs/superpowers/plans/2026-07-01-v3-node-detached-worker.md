@@ -4,7 +4,7 @@
 
 **Goal:** Make `AUTOVPN_BACKEND=node autovpn run --detach` spawn the Node CLI worker instead of requiring the compatible Python CLI worker.
 
-**Architecture:** Keep the existing Node job manager and job metadata format. Only change `startDetachedRun()` worker resolution: default production detached runs still use the compatible Python CLI, while `AUTOVPN_BACKEND=node` run workers execute `process.execPath bin/autovpn.mjs ...` so the child process enters the Node backend path. Detached resume/retry workers remain Python-compatible until non-detached `resume` and `retry-stage` are migrated.
+**Architecture:** Keep the existing Node job manager and job metadata format. The original slice changed `startDetachedRun()` worker resolution so default production detached runs still used the compatible Python CLI, while `AUTOVPN_BACKEND=node` run workers executed `process.execPath bin/autovpn.mjs ...`. A later v3 slice extended the same Node worker choice to detached resume/retry workers after foreground resume and retry paths became Node-native.
 
 **Tech Stack:** Node.js ESM, TypeScript, `node:test`, existing AutoVPN npm CLI job manager.
 
@@ -84,7 +84,7 @@ function wantsNodeWorker(env: NodeJS.ProcessEnv): boolean {
 
 - [x] **Step 2: Use Node worker only for detached run**
 
-Change `startDetachedRun()` to call `resolveDetachedRunWorker()`, returning Node CLI when `AUTOVPN_BACKEND=node` and Python CLI otherwise. Leave `startDetachedResume()` and `startDetachedRetry()` on `defaultResolvePythonCli()`.
+Change `startDetachedRun()` to call `resolveDetachedRunWorker()`, returning Node CLI when `AUTOVPN_BACKEND=node` and Python CLI otherwise. In the later detached resume/retry worker slice, `startDetachedResume()` and `startDetachedRetry()` use the same worker resolver.
 
 - [x] **Step 3: Run target tests**
 
@@ -100,7 +100,7 @@ Expected: PASS.
 
 - [x] **Step 1: Update docs**
 
-Document that `AUTOVPN_BACKEND=node run --detach` uses the Node CLI worker and detached resume/retry workers remain Python-compatible until those runtimes are migrated.
+Document that `AUTOVPN_BACKEND=node run --detach` uses the Node CLI worker. Later documentation also notes that detached resume/retry workers use the Node CLI worker under `AUTOVPN_BACKEND=node`.
 
 - [x] **Step 2: Run npm CLI tests**
 

@@ -348,7 +348,56 @@ test('jobs resume and retry detached are dispatched by Node with compatible meta
   assert.equal(JSON.parse(retryIo.stdout).retry.stage, 'deploy');
 });
 
-test('jobs resume detached falls back to resume-latest for run jobs without session metadata', async () => {
+test('AUTOVPN_BACKEND=node jobs resume and retry detached spawn Node CLI workers', async () => {
+  const projectRoot = await createProject();
+  const sessionDir = path.join(jobsRoot(), 'source-node-job');
+  await mkdir(sessionDir, { recursive: true });
+  await writeFile(path.join(sessionDir, 'session.json'), '{}\n', 'utf8');
+  const store = createJobStore(projectRoot, { now: () => '2026-06-28T00:00:00+00:00', jobId: () => 'source-node-job' });
+  store.createRunningJob({
+    kind: 'run',
+    command: [process.execPath, 'autovpn.mjs', 'run'],
+    pid: 1111,
+    options: { session_dir: sessionDir, output_format: 'jsonl' }
+  });
+  const artifactDir = path.join(projectRoot, 'artifacts', '20260628-000000');
+  await mkdir(artifactDir, { recursive: true });
+  const spawns = [];
+
+  const resume = await runCliShell(['jobs', 'resume', 'source-node-job', '--project-root', projectRoot, '--detach', '--json'], {
+    cwd: projectRoot,
+    packageVersion: '1.3.0',
+    env: runtimeEnv({ AUTOVPN_BACKEND: 'node', AUTOVPN_PYTHON_CLI: '/venv/bin/autovpn' }),
+    io: createIo(),
+    createBackend: () => ({ kind: 'node', executeCli: async () => 99 }),
+    spawn: fakeSpawn(spawns, 5555),
+    now: () => '2026-06-28T00:00:01+00:00',
+    jobId: () => 'node-resume-job'
+  });
+  const retry = await runCliShell(['jobs', 'retry', '--project-root', projectRoot, '--artifact-dir', artifactDir, '--stage', 'deploy', '--detach', '--json'], {
+    cwd: projectRoot,
+    packageVersion: '1.3.0',
+    env: runtimeEnv({ AUTOVPN_BACKEND: 'node', AUTOVPN_PYTHON_CLI: '/venv/bin/autovpn' }),
+    io: createIo(),
+    createBackend: () => ({ kind: 'node', executeCli: async () => 99 }),
+    spawn: fakeSpawn(spawns, 6666),
+    now: () => '2026-06-28T00:00:02+00:00',
+    jobId: () => 'node-retry-job'
+  });
+
+  assert.equal(resume, 0);
+  assert.equal(retry, 0);
+  assert.equal(spawns[0].command, process.execPath);
+  assert.match(spawns[0].args[0], /bin[/\\]autovpn\.mjs$/);
+  assert.deepEqual(spawns[0].args.slice(1, 4), ['resume', 'pipeline', '--project-root']);
+  assert.equal(spawns[0].args[5], '--session');
+  assert.equal(spawns[1].command, process.execPath);
+  assert.match(spawns[1].args[0], /bin[/\\]autovpn\.mjs$/);
+  assert.deepEqual(spawns[1].args.slice(1, 3), ['retry-stage', '--project-root']);
+  assert.deepEqual(spawns[1].args.slice(4, 8), ['--artifact-dir', artifactDir, '--stage', 'deploy']);
+});
+
+test('AUTOVPN_BACKEND=node jobs resume detached uses Node resume-latest worker for run jobs without session metadata', async () => {
   const projectRoot = await createProject();
   const store = createJobStore(projectRoot, { now: () => '2026-06-28T00:00:00+00:00', jobId: () => 'source-run' });
   store.createRunningJob({
@@ -383,7 +432,8 @@ test('jobs resume detached falls back to resume-latest for run jobs without sess
   assert.equal(payload.options.resume_latest, true);
   assert.equal(payload.options.skip_deploy, true);
   assert.equal(payload.options.skip_verify, true);
-  assert.equal(spawns[0].command, '/venv/bin/autovpn');
+  assert.equal(spawns[0].command, process.execPath);
+  assert.match(spawns[0].args[0], /bin[/\\]autovpn\.mjs$/);
   assert.ok(spawns[0].args.includes('--resume-latest'));
 });
 

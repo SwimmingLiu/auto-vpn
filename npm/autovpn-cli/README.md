@@ -25,7 +25,7 @@ autovpn artifacts latest --project-root .
 The CLI is currently hybrid:
 
 - Node.js handles `--help`, `--version`, argument validation, `doctor --output json`, `profile summary --json`, `artifacts latest/list/preview`, `status --json`, `logs`, read-only `jobs` commands, and detached job management.
-- Python remains the default backend for production pipeline actions, selected through the backend adapter boundary. Under `AUTOVPN_BACKEND=node`, `run --detach` now spawns the Node CLI worker; detached resume/retry workers still execute the compatible Python CLI command until those runtimes are migrated.
+- Python remains the default backend for production pipeline actions, selected through the backend adapter boundary. Under `AUTOVPN_BACKEND=node`, detached run/resume/retry workers spawn the Node CLI worker.
 - The experimental Node backend can orchestrate foreground pipeline runs when explicitly selected with `AUTOVPN_BACKEND=node`. Plain Cloudflare Pages deploy, primary blocked-project fallback, share-project `SUB` sync, share-project fallback, custom-domain binding, custom-domain DNS upsert, and verify are Node-native. Python stage fallback remains available for rollback while the native Node runtime continues toward v3.
 
 Experimental Node-orchestrated foreground run:
@@ -37,14 +37,12 @@ autovpn run --project-root . --output jsonl
 
 Current Node backend limits:
 
-- Detached job management runs in Node for `run --detach`, `jobs resume --detach`, and `jobs retry --detach`; `AUTOVPN_BACKEND=node run --detach` also uses the Node CLI worker.
-- Detached resume/retry worker commands remain Python-compatible until the worker runtimes are migrated.
-- Non-detached `retry-stage` now runs through the Node backend for retryable artifact stages from `speedtest` through `verify`; non-detached `resume pipeline`, `resume speedtest`, and `run --resume-latest` continue existing sessions through the Node backend. The default Python backend remains production-compatible; detached resume/retry worker migration is the next v3 boundary.
+- Detached job management runs in Node for `run --detach`, `jobs resume --detach`, and `jobs retry --detach`; under `AUTOVPN_BACKEND=node`, detached run/resume/retry workers also use the Node CLI worker.
+- Non-detached `retry-stage` now runs through the Node backend for retryable artifact stages from `speedtest` through `verify`; non-detached `resume pipeline`, `resume speedtest`, and `run --resume-latest` continue existing sessions through the Node backend. The default Python backend remains production-compatible; the final v3 cutover audit is the next boundary.
 - Add `--skip-deploy --skip-verify` when you want an offline Node pipeline check.
 - Plain Node foreground deploy/verify runs use Node for Wrangler deploy, primary blocked-project fallback, share-project sync/fallback, custom-domain binding, custom-domain DNS upsert, and verify.
 - Deploy and verify can be rolled back with `AUTOVPN_STAGE_BACKEND_DEPLOY=python` and `AUTOVPN_STAGE_BACKEND_VERIFY=python`.
 - `AUTOVPN_NO_PYTHON=1` disables implicit Python backend resolution and default Python runtime stage fallback. Use it as a v3 readiness gate. Empty offline runs now complete in Node, and Node has direct HTTP speedtest and availability runtimes. Node also has opt-in Mihomo-backed paths: set `AUTOVPN_SPEEDTEST_RUNTIME=mihomo` for controller delay probing and candidate downloads through the local Mihomo proxy, and set `AUTOVPN_AVAILABILITY_RUNTIME=mihomo` to check provider availability through the same per-node proxy runtime.
-- Detached resume/retry workers still execute the compatible Python CLI command until those runtimes are migrated.
 - Project `.env` is loaded before resolving profile and artifact paths. Explicit process environment values still win over `.env`.
 
 Fallback flags for migrated commands:

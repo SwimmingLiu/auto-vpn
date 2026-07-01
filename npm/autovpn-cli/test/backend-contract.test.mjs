@@ -622,9 +622,9 @@ test('Node backend allows detached retry through the Node job manager', async ()
   assert.equal(payload.kind, 'retry');
   assert.equal(payload.pid, 4567);
   assert.equal(payload.retry.stage, 'deploy');
-  assert.deepEqual(spawns.map((item) => [item.command, item.args.slice(0, 7)]), [
-    ['/venv/bin/autovpn', ['retry-stage', '--project-root', '/repo', '--artifact-dir', '/repo/artifacts/1', '--stage', 'deploy']]
-  ]);
+  assert.equal(spawns[0].command, process.execPath);
+  assert.match(spawns[0].args[0], /bin[\\/]autovpn\.mjs$/);
+  assert.deepEqual(spawns[0].args.slice(1, 8), ['retry-stage', '--project-root', '/repo', '--artifact-dir', '/repo/artifacts/1', '--stage', 'deploy']);
 });
 
 test('non-detached resume and retry commands are executed through backend adapter', async () => {

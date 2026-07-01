@@ -61,12 +61,12 @@ function defaultResolveNodeCli(): ResolvedWorkerCli {
   return { command: process.execPath, args: [path.join(packageRoot, 'bin', 'autovpn.mjs')] };
 }
 
-function wantsNodeWorker(env: NodeJS.ProcessEnv, command: DetachedRunCommand): boolean {
-  return String(env.AUTOVPN_BACKEND ?? '').trim().toLowerCase() === 'node' && !command.resumeLatest;
+function wantsNodeWorker(env: NodeJS.ProcessEnv): boolean {
+  return String(env.AUTOVPN_BACKEND ?? '').trim().toLowerCase() === 'node';
 }
 
-async function resolveDetachedRunWorker(command: DetachedRunCommand, env: NodeJS.ProcessEnv, options: JobCommandOptions): Promise<ResolvedWorkerCli> {
-  if (wantsNodeWorker(env, command)) {
+async function resolveDetachedWorker(env: NodeJS.ProcessEnv, options: JobCommandOptions): Promise<ResolvedWorkerCli> {
+  if (wantsNodeWorker(env)) {
     return defaultResolveNodeCli();
   }
   return options.resolvePythonCli ? await options.resolvePythonCli() : await defaultResolvePythonCli(env);
@@ -98,7 +98,7 @@ export async function startDetachedRun(command: DetachedRunCommand, options: Job
   const outputFormat = command.outputFormat ?? 'jsonl';
   const jobStore = createJobStore(command.projectRoot, options);
   const runArgs = ['run', '--project-root', command.projectRoot, '--output', outputFormat];
-  const resolved = await resolveDetachedRunWorker(command, options.env ?? process.env, options);
+  const resolved = await resolveDetachedWorker(options.env ?? process.env, options);
   const job = jobStore.createRunningJob({
     kind: 'run',
     command: [],
@@ -125,7 +125,7 @@ export async function startDetachedRun(command: DetachedRunCommand, options: Job
 export async function startDetachedResume(command: DetachedResumeCommand, options: JobCommandOptions = {}): Promise<JobRecord> {
   const outputFormat = command.outputFormat ?? 'jsonl';
   const jobStore = createJobStore(command.projectRoot, options);
-  const resolved = options.resolvePythonCli ? await options.resolvePythonCli() : await defaultResolvePythonCli(options.env ?? process.env);
+  const resolved = await resolveDetachedWorker(options.env ?? process.env, options);
   const job = jobStore.createRunningJob({
     kind: 'resume',
     command: [],
@@ -157,7 +157,7 @@ export async function startDetachedResume(command: DetachedResumeCommand, option
 export async function startDetachedRetry(command: DetachedRetryCommand, options: JobCommandOptions = {}): Promise<JobRecord> {
   const outputFormat = command.outputFormat ?? 'jsonl';
   const jobStore = createJobStore(command.projectRoot, options);
-  const resolved = options.resolvePythonCli ? await options.resolvePythonCli() : await defaultResolvePythonCli(options.env ?? process.env);
+  const resolved = await resolveDetachedWorker(options.env ?? process.env, options);
   const retry = { source_artifact_dir: command.artifactDir, stage: command.stage };
   const job = jobStore.createRunningJob({
     kind: 'retry',
