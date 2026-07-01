@@ -50,6 +50,8 @@ export interface NodeResumeOptions {
   projectRoot: string;
   mode: 'pipeline' | 'speedtest';
   session: string;
+  skipDeploy?: boolean;
+  skipVerify?: boolean;
   output?: 'jsonl' | 'human';
   eventLog?: string;
   humanLog?: string;
@@ -1146,26 +1148,35 @@ export async function resumeNodePipeline(options: NodeResumeOptions, context: Ru
     const bundleDir = await writeWorkerArtifacts(artifactDir, profile, rendered.rendered_source, workerArtifacts);
     await setStage('obfuscate', 'success');
 
-    await setStage('deploy', 'running');
-    const deployment = context.stages?.deploy
-      ? await context.stages.deploy({ projectRoot, bundleDir, profile })
-      : await deployPagesWithBackend({ projectRoot, bundleDir, deploy: profile.deploy ?? {} }, { cwd: projectRoot, env });
-    if (Number(deployment.returncode ?? 1) !== 0) {
+    if (options.skipDeploy) {
+      await setStage('deploy', 'skipped');
+      await setStage('verify', 'skipped');
+    } else {
+      await setStage('deploy', 'running');
+      const deployment = context.stages?.deploy
+        ? await context.stages.deploy({ projectRoot, bundleDir, profile })
+        : await deployPagesWithBackend({ projectRoot, bundleDir, deploy: profile.deploy ?? {} }, { cwd: projectRoot, env });
+      if (Number(deployment.returncode ?? 1) !== 0) {
+        summary.deployment = safeDeployment(deployment);
+        throw new Error(`Cloudflare deployment failed: ${JSON.stringify(summary.deployment)}`);
+      }
       summary.deployment = safeDeployment(deployment);
-      throw new Error(`Cloudflare deployment failed: ${JSON.stringify(summary.deployment)}`);
-    }
-    summary.deployment = safeDeployment(deployment);
-    await setStage('deploy', 'success');
+      await setStage('deploy', 'success');
 
-    await setStage('verify', 'running');
-    const verification = context.stages?.verify
-      ? await context.stages.verify({ projectRoot, profile, deployment: summary.deployment })
-      : await verifyDeploymentWithBackend({ projectRoot, deploy: profile.deploy ?? {}, deployment: summary.deployment }, { cwd: projectRoot, env });
-    summary.deployment = safeDeployment({ ...summary.deployment, ...verification });
-    if (!isVerifySuccess(verification)) {
-      throw new Error(`Verification failed: ${JSON.stringify(summary.deployment)}`);
+      if (options.skipVerify) {
+        await setStage('verify', 'skipped');
+      } else {
+        await setStage('verify', 'running');
+        const verification = context.stages?.verify
+          ? await context.stages.verify({ projectRoot, profile, deployment: summary.deployment })
+          : await verifyDeploymentWithBackend({ projectRoot, deploy: profile.deploy ?? {}, deployment: summary.deployment }, { cwd: projectRoot, env });
+        summary.deployment = safeDeployment({ ...summary.deployment, ...verification });
+        if (!isVerifySuccess(verification)) {
+          throw new Error(`Verification failed: ${JSON.stringify(summary.deployment)}`);
+        }
+        await setStage('verify', 'success');
+      }
     }
-    await setStage('verify', 'success');
   } catch (error) {
     summary.run_status = 'failed';
     summary.error = errorMessage(error);

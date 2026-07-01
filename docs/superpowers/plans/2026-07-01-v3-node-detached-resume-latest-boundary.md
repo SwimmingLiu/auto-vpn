@@ -4,7 +4,7 @@
 
 **Goal:** Keep detached `resume-latest` fallback on the compatible Python worker while `AUTOVPN_BACKEND=node run --detach` uses the Node worker.
 
-**Architecture:** `startDetachedRun()` now has two worker choices. Plain detached run under `AUTOVPN_BACKEND=node` uses the Node CLI worker, but `resumeLatest` still resolves the Python CLI because `NodeBackend.run()` intentionally rejects `--resume-latest` until that runtime is migrated.
+**Architecture:** `startDetachedRun()` now has two worker choices. Plain detached run under `AUTOVPN_BACKEND=node` uses the Node CLI worker, but detached `resumeLatest` still resolves the Python CLI until detached resume/retry workers are migrated. This plan captured the earlier boundary before foreground `run --resume-latest` became Node-native.
 
 **Tech Stack:** Node.js ESM, TypeScript, `node:test`, existing AutoVPN npm CLI job manager.
 

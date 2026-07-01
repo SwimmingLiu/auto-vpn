@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
 import { EventEmitter } from 'node:events';
 import { mkdir, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -10,6 +11,26 @@ import { normalizeEvent, parseEventLine } from '../dist/events/schema.js';
 import { NodeBackend } from '../dist/backend/node-backend.js';
 import { PythonBackend } from '../dist/backend/python-backend.js';
 import { selectBackend } from '../dist/backend/select-backend.js';
+
+const require = createRequire(import.meta.url);
+
+function vmessLink(name, address) {
+  return `vmess://${Buffer.from(JSON.stringify({
+    v: 2,
+    ps: name,
+    add: address,
+    port: '443',
+    id: '11111111-1111-1111-1111-111111111111',
+    aid: '0',
+    scy: 'auto',
+    net: 'ws',
+    type: 'dtls',
+    host: address,
+    path: '/',
+    tls: 'tls',
+    sni: address
+  }), 'utf8').toString('base64url')}`;
+}
 
 function createIo() {
   return {
@@ -816,6 +837,87 @@ test('NodeBackend resume speedtest uses the native resume path instead of unsupp
       // consume
     }
   }, /session.json not found/);
+});
+
+test('NodeBackend run resume-latest uses the latest incomplete run database', async () => {
+  const projectRoot = await mkdir(path.join(os.tmpdir(), `autovpn-node-backend-resume-latest-${Date.now()}`, 'project'), { recursive: true });
+  const runtimeRoot = path.join(projectRoot, '.runtime');
+  const artifactsRoot = path.join(runtimeRoot, 'artifacts');
+  const artifactDir = path.join(artifactsRoot, '20260701-010203');
+  const link = vmessLink('resume-latest', 'resume.example');
+  await mkdir(path.join(projectRoot, 'templates'), { recursive: true });
+  await mkdir(path.join(projectRoot, 'state'), { recursive: true });
+  await mkdir(artifactDir, { recursive: true });
+  await writeFile(path.join(projectRoot, 'pyproject.toml'), '[project]\nname = "fixture"\n', 'utf8');
+  await writeFile(path.join(projectRoot, 'templates', 'vmess_node.js'), 'const MainData = `__MAIN_DATA__`;\n', 'utf8');
+  await writeFile(path.join(projectRoot, 'state', 'profile.toml'), [
+    'availability_targets = []',
+    '',
+    '[speed_test]',
+    'min_download_mb_s = 1',
+    'timeout_seconds = 20',
+    'concurrency = 1',
+    '',
+    '[deploy]',
+    'project_name = "fixture-project"',
+    'subscription_url = "https://sub.example.invalid/?serect_key=fixture"',
+    'pages_project_url = "https://fixture-project.pages.dev"',
+    'secret_query = "serect_key=fixture"',
+    '',
+    '[worker_build]',
+    'entry_filename = "_worker.js"',
+    'bundle_subdir = "pages_bundle"',
+    'manifest_filename = "manifest.json"',
+    'emit_sidecar_modules = false',
+    ''
+  ].join('\n'), 'utf8');
+  await writeFile(path.join(artifactDir, 'vpn_node_raw.txt'), `${link}\n`, 'utf8');
+  await writeFile(path.join(artifactDir, 'vpn_node_deduped.txt'), `${link}\n`, 'utf8');
+  await writeFile(path.join(artifactDir, 'vpn_node_speedtest.txt'), `${link}\n`, 'utf8');
+  await writeFile(path.join(artifactDir, 'vpn_node_speedtest_report.json'), JSON.stringify([
+    { link, reachable: true, average_download_mb_s: 2, latency_ms: 20, error: '' }
+  ]), 'utf8');
+  await writeFile(path.join(artifactDir, 'pipeline_report.json'), JSON.stringify({
+    artifact_dir: artifactDir,
+    stage_status: { speedtest: 'success' },
+    counts: { speedtest_links: 1 },
+    source_counts: {},
+    deployment: {},
+    retry_context: {},
+    run_status: 'running',
+    error: ''
+  }), 'utf8');
+  const { DatabaseSync } = require('node:sqlite');
+  const db = new DatabaseSync(path.join(artifactDir, 'run.db'));
+  db.exec(`
+    CREATE TABLE runs (run_id INTEGER PRIMARY KEY AUTOINCREMENT, artifact_dir TEXT NOT NULL, status TEXT NOT NULL);
+    CREATE TABLE stage_events (stage_name TEXT NOT NULL, status TEXT NOT NULL);
+  `);
+  db.prepare('INSERT INTO runs (artifact_dir, status) VALUES (?, ?)').run(artifactDir, 'running');
+  db.prepare('INSERT INTO stage_events (stage_name, status) VALUES (?, ?)').run('speedtest', 'success');
+  db.close();
+
+  const backend = new NodeBackend({
+    env: {
+      AUTOVPN_NO_PYTHON: '1',
+      VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot,
+      VPN_AUTOMATION_PROFILE_PATH: path.join(projectRoot, 'state', 'profile.toml')
+    },
+    cwd: projectRoot
+  });
+  const events = [];
+
+  for await (const event of backend.run({ projectRoot, resumeLatest: true, skipDeploy: true, skipVerify: true, output: 'jsonl' })) {
+    events.push(event);
+  }
+
+  assert.equal(events[0].type, 'resume_latest_state');
+  assert.equal(events[0].artifact_dir, artifactDir);
+  assert.ok(events.some((event) => event.type === 'resume_pipeline_state'));
+  assert.equal(events.at(-1).type, 'summary');
+  assert.equal(events.at(-1).run_status, 'success');
+  assert.equal(events.at(-1).stage_status.deploy, 'skipped');
+  assert.equal(events.at(-1).stage_status.verify, 'skipped');
 });
 
 test('PythonBackend can stream normalized events from captured JSONL stdout', async () => {
