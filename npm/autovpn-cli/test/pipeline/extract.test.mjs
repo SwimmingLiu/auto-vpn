@@ -71,6 +71,43 @@ test('extract backend selection supports Node default and Python rollback flags'
   assert.deepEqual(fallbackCalls, [input]);
 });
 
+test('Node extract backend fetches encrypted runtime source without Python fallback', async () => {
+  const input = JSON.parse(await readFile(path.join(fixtureDir, 'input.json'), 'utf8'));
+  const calls = [];
+
+  const result = await fetchSourceLinksWithBackend({
+    source_name: input.source_name,
+    source: {
+      url: 'https://fixture.example/source',
+      key: input.key,
+      max_iterations: 2,
+      min_iterations: 1,
+      plateau_limit: 1,
+      failure_limit: 1,
+      max_runtime_seconds: 0
+    }
+  }, {
+    env: { AUTOVPN_NO_PYTHON: '1' },
+    fetch: async (url) => {
+      calls.push(String(url));
+      return {
+        ok: true,
+        status: 200,
+        text: async () => input.cipher_text
+      };
+    }
+  });
+
+  assert.deepEqual(result, {
+    source_name: input.source_name,
+    requested_iterations: 2,
+    successful_iterations: 2,
+    failed_iterations: 0,
+    links: ['vmess://fixture']
+  });
+  assert.deepEqual(calls, ['https://fixture.example/source', 'https://fixture.example/source']);
+});
+
 test('Python extract rollback adapter invokes backend venv Python when no callback is injected', async () => {
   const spawns = [];
   const input = { source_name: 'leiting', source: { url: 'https://example.com/api', key: 'abcdabcdabcdabcd', max_iterations: 0 } };

@@ -287,6 +287,9 @@ function emitEvent(callback: AvailabilityBackendOptions['eventCallback'], eventT
 }
 
 async function checkBatchInNode(input: AvailabilityBatchInput, options: AvailabilityBackendOptions): Promise<AvailabilityResultDict[]> {
+  if (input.results.length === 0) {
+    return [];
+  }
   if (!options.checkLinkAvailability) {
     throw new Error('Node availability backend requires a checkLinkAvailability implementation; use Python backend for runtime checks');
   }

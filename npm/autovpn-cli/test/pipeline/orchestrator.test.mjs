@@ -208,8 +208,39 @@ test('runNodePipeline loads project .env before resolving profile and artifacts 
 
 test('AUTOVPN_NO_PYTHON disables default runtime Python stage fallback', async () => {
   const projectRoot = await makeProject();
+  const profilePath = path.join(projectRoot, 'state', 'profile.toml');
+  await writeFile(profilePath, [
+    '[sources]',
+    '[sources.empty]',
+    'url = "https://fixture.example/source"',
+    'key = "abcdabcdabcdabcd"',
+    'enabled = true',
+    'max_iterations = 0',
+    'min_iterations = 0',
+    'plateau_limit = 1',
+    'failure_limit = 1',
+    'max_runtime_seconds = 0',
+    '',
+    '[speed_test]',
+    'min_download_mb_s = 1',
+    'timeout_seconds = 20',
+    'concurrency = 1',
+    '',
+    '[deploy]',
+    'project_name = "fixture-project"',
+    'subscription_url = "https://sub.example.invalid/?serect_key=fixture"',
+    'pages_project_url = "https://fixture-project.pages.dev"',
+    'secret_query = "serect_key=fixture"',
+    '',
+    '[worker_build]',
+    'entry_filename = "_worker.js"',
+    'bundle_subdir = "pages_bundle"',
+    'manifest_filename = "manifest.json"',
+    'emit_sidecar_modules = false',
+    ''
+  ].join('\n'), 'utf8');
 
-  await assert.rejects(() => runNodePipeline({
+  const result = await runNodePipeline({
     projectRoot,
     skipDeploy: true,
     skipVerify: true,
@@ -219,10 +250,72 @@ test('AUTOVPN_NO_PYTHON disables default runtime Python stage fallback', async (
       AUTOVPN_NO_PYTHON: '1',
       AUTOVPN_NO_INSTALL: '1',
       VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'),
-      VPN_AUTOMATION_PROFILE_PATH: path.join(projectRoot, 'state', 'profile.toml')
+      VPN_AUTOMATION_PROFILE_PATH: profilePath
     },
     now: () => new Date('2026-06-29T01:02:03Z')
-  }), /Node extract backend requires a fetchSourceLinks implementation/);
+  });
+
+  assert.equal(result.run_status, 'success');
+  assert.equal(result.counts.raw_links, 0);
+});
+
+test('AUTOVPN_NO_PYTHON offline run succeeds when no sources have URL and key configured', async () => {
+  const projectRoot = await makeProject();
+  const profilePath = path.join(projectRoot, 'state', 'profile.toml');
+  await writeFile(profilePath, [
+    '[sources]',
+    '[sources.missing_url]',
+    'url = ""',
+    'key = "abcdabcdabcdabcd"',
+    'enabled = true',
+    'max_iterations = 1',
+    'min_iterations = 0',
+    'plateau_limit = 1',
+    'failure_limit = 1',
+    'max_runtime_seconds = 0',
+    '',
+    '[speed_test]',
+    'min_download_mb_s = 1',
+    'timeout_seconds = 20',
+    'concurrency = 1',
+    'urls = ["https://speed.example/10mb"]',
+    'probe_url = "https://www.gstatic.com/generate_204"',
+    'max_download_bytes = 1000',
+    'startup_wait_seconds = 1',
+    'max_download_candidates = 0',
+    '',
+    '[deploy]',
+    'project_name = "fixture-project"',
+    'subscription_url = "https://sub.example.invalid/?serect_key=fixture"',
+    'pages_project_url = "https://fixture-project.pages.dev"',
+    'secret_query = "serect_key=fixture"',
+    '',
+    '[worker_build]',
+    'entry_filename = "_worker.js"',
+    'bundle_subdir = "pages_bundle"',
+    'manifest_filename = "manifest.json"',
+    'emit_sidecar_modules = false',
+    ''
+  ].join('\n'), 'utf8');
+
+  const result = await runNodePipeline({
+    projectRoot,
+    skipDeploy: true,
+    skipVerify: true,
+    output: 'jsonl'
+  }, {
+    env: {
+      AUTOVPN_NO_PYTHON: '1',
+      VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'),
+      VPN_AUTOMATION_PROFILE_PATH: profilePath
+    },
+    now: () => new Date('2026-06-29T01:02:03Z')
+  });
+
+  assert.equal(result.run_status, 'success');
+  assert.equal(result.counts.raw_links, 0);
+  assert.equal(result.counts.availability_links, 0);
+  assert.equal(await readFile(path.join(result.artifact_dir, 'vpn_node_raw.txt'), 'utf8'), '');
 });
 
 test('runNodePipeline marks the active stage failed and writes a summary on errors', async () => {
