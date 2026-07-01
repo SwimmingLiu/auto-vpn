@@ -30,7 +30,7 @@ AutoVPN is a desktop control center for turning raw VPN node sources into tested
 
 ## Installation
 
-Download the latest installer from [GitHub Releases](https://github.com/SwimmingLiu/auto-vpn/releases).
+Download the latest installer from [GitHub Releases](https://github.com/SwimmingLiu/auto-vpn/releases). The current release is [AutoVPN v1.4.0](https://github.com/SwimmingLiu/auto-vpn/releases/tag/v1.4.0); replace `<version>` with `1.4.0` in the asset names and install commands below.
 
 | Platform | Assets |
 | --- | --- |
