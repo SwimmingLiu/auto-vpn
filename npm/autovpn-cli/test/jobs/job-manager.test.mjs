@@ -439,6 +439,80 @@ test('default jobs resume detached uses Node resume-latest worker for run jobs w
   assert.ok(spawns[0].args.includes('--resume-latest'));
 });
 
+test('default jobs retry without detach streams through Node backend retryStage', async () => {
+  const projectRoot = await createProject();
+  const artifactDir = path.join(projectRoot, 'artifacts', '20260628-000000');
+  await mkdir(artifactDir, { recursive: true });
+  const io = createIo();
+  let executeCliCalled = false;
+  const retryCalls = [];
+
+  const code = await runCliShell(['jobs', 'retry', '--project-root', projectRoot, '--artifact-dir', artifactDir, '--stage', 'render', '--output', 'jsonl'], {
+    cwd: projectRoot,
+    packageVersion: '1.4.0',
+    env: runtimeEnv({ AUTOVPN_NO_PYTHON: '1' }),
+    io,
+    createBackend: () => ({
+      kind: 'node',
+      executeCli: async () => {
+        executeCliCalled = true;
+        return 5;
+      },
+      async *retryStage(options) {
+        retryCalls.push(options);
+        yield { type: 'summary', run_status: 'success', artifact_dir: artifactDir };
+      }
+    })
+  });
+
+  assert.equal(code, 0);
+  assert.equal(executeCliCalled, false);
+  assert.equal(retryCalls[0].artifactDir, artifactDir);
+  assert.equal(retryCalls[0].stage, 'render');
+  assert.deepEqual(JSON.parse(io.stdout), { type: 'summary', run_status: 'success', artifact_dir: artifactDir });
+});
+
+test('default jobs resume without detach streams through Node backend resume', async () => {
+  const projectRoot = await createProject();
+  const sessionDir = path.join(jobsRoot(), 'source-resume-job');
+  await mkdir(sessionDir, { recursive: true });
+  await writeFile(path.join(sessionDir, 'session.json'), '{}\n', 'utf8');
+  const store = createJobStore(projectRoot, { now: () => '2026-06-28T00:00:00+00:00', jobId: () => 'source-resume-job' });
+  store.createRunningJob({
+    kind: 'run',
+    command: [process.execPath, 'autovpn.mjs', 'run'],
+    pid: 1111,
+    options: { session_dir: sessionDir, output_format: 'jsonl' }
+  });
+  const io = createIo();
+  let executeCliCalled = false;
+  const resumeCalls = [];
+
+  const code = await runCliShell(['jobs', 'resume', 'source-resume-job', '--project-root', projectRoot, '--output', 'jsonl'], {
+    cwd: projectRoot,
+    packageVersion: '1.4.0',
+    env: runtimeEnv({ AUTOVPN_NO_PYTHON: '1' }),
+    io,
+    createBackend: () => ({
+      kind: 'node',
+      executeCli: async () => {
+        executeCliCalled = true;
+        return 5;
+      },
+      async *resume(options) {
+        resumeCalls.push(options);
+        yield { type: 'summary', run_status: 'success', artifact_dir: '/tmp/resumed' };
+      }
+    })
+  });
+
+  assert.equal(code, 0);
+  assert.equal(executeCliCalled, false);
+  assert.equal(resumeCalls[0].mode, 'pipeline');
+  assert.equal(resumeCalls[0].session, sessionDir);
+  assert.deepEqual(JSON.parse(io.stdout), { type: 'summary', run_status: 'success', artifact_dir: '/tmp/resumed' });
+});
+
 test('logs --follow is handled by Node for completed jobs', async () => {
   const projectRoot = await createProject();
   const store = createJobStore(projectRoot, { now: () => '2026-06-28T00:00:00+00:00', jobId: () => 'completed-job' });

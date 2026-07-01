@@ -15,6 +15,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 env:
   RELEASE_TAG_NAME: ${{ github.event.inputs.tag_name || github.event.release.tag_name || github.ref_name }}
@@ -311,6 +312,7 @@ jobs:
         with:
           node-version: 24
           cache: npm
+          registry-url: https://registry.npmjs.org
 
       - name: Build CLI package
         run: |
@@ -322,6 +324,24 @@ jobs:
           npm test --prefix npm/autovpn-cli
           cd npm/autovpn-cli
           npm pack --json --pack-destination ../../dist
+        shell: bash
+
+      - name: Publish npm CLI package
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          PACKAGE_NAME="$(node -p "require('./npm/autovpn-cli/package.json').name")"
+          PACKAGE_VERSION="$(node -p "require('./npm/autovpn-cli/package.json').version")"
+          if npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version --registry=https://registry.npmjs.org >/dev/null 2>&1; then
+            echo "${PACKAGE_NAME}@${PACKAGE_VERSION} is already published; skipping npm publish."
+            exit 0
+          fi
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "NPM_TOKEN is required to publish ${PACKAGE_NAME}@${PACKAGE_VERSION}."
+            exit 1
+          fi
+          cd npm/autovpn-cli
+          npm publish --access public --provenance --registry=https://registry.npmjs.org
         shell: bash
 
       - name: Verify CLI artifacts exist

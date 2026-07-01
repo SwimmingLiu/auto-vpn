@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { EventEmitter } from 'node:events';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -215,6 +215,73 @@ test('profile without subcommand returns usage error before backend executeCli',
   assert.equal(executeCliCalled, false);
   assert.equal(io.stdout, '');
   assert.match(io.stderr, /profile subcommand must be one of: show, save, summary/);
+});
+
+test('artifact and job commands validate required subcommands before backend executeCli', async () => {
+  const cases = [
+    { argv: ['artifacts'], message: /artifacts subcommand must be one of: latest, list, preview/ },
+    { argv: ['jobs'], message: /jobs subcommand must be one of: list, status, logs, stop, resume, retry/ },
+    { argv: ['jobs', 'retry', '--stage', 'render'], message: /jobs retry requires --artifact-dir/ },
+    { argv: ['jobs', 'retry', '--artifact-dir', '/tmp/artifact'], message: /jobs retry requires --stage/ },
+    { argv: ['jobs', 'resume'], message: /jobs resume requires job_id/ }
+  ];
+
+  for (const item of cases) {
+    const io = createIo();
+    let executeCliCalled = false;
+    const code = await runCliShell(item.argv, {
+      packageVersion: '1.4.0',
+      cwd: '/repo',
+      env: { PATH: '/bin' },
+      io,
+      createBackend: () => ({
+        kind: 'node',
+        executeCli: async () => {
+          executeCliCalled = true;
+          return 5;
+        }
+      })
+    });
+
+    assert.equal(code, 2, item.argv.join(' '));
+    assert.equal(executeCliCalled, false, item.argv.join(' '));
+    assert.match(io.stderr, item.message, item.argv.join(' '));
+  }
+});
+
+test('profile save is handled by Node shell without installing Python backend', async () => {
+  const root = await mkdir(path.join(os.tmpdir(), `autovpn-profile-save-${Date.now()}`), { recursive: true });
+  const profilePath = path.join(root, 'profile.toml');
+  const io = createIo();
+  let executeCliCalled = false;
+
+  const code = await runCliShell(['profile', 'save', '--project-root', root], {
+    packageVersion: '1.4.0',
+    cwd: root,
+    env: { PATH: '/bin', VPN_AUTOMATION_PROFILE_PATH: profilePath },
+    io,
+    readStdin: async () => JSON.stringify({
+      sources: {
+        leiting: { enabled: true, url: 'https://source.example', key: 'secret-key' }
+      },
+      deploy: { project_name: 'sub-nodes', pages_project_url: 'https://sub-nodes.pages.dev' }
+    }),
+    createBackend: () => ({
+      kind: 'node',
+      executeCli: async () => {
+        executeCliCalled = true;
+        return 5;
+      }
+    })
+  });
+
+  assert.equal(code, 0);
+  assert.equal(executeCliCalled, false);
+  const payload = JSON.parse(io.stdout);
+  assert.equal(payload.sources.leiting.key, 'secret-key');
+  assert.equal(payload.deploy.project_name, 'sub-nodes');
+  assert.match(await readFile(profilePath, 'utf8'), /project_name = "sub-nodes"/);
+  assert.equal(io.stderr, '');
 });
 
 test('foreground run streams Node backend events when explicitly selected', async () => {

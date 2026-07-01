@@ -36,7 +36,7 @@ Download the latest installer from [GitHub Releases](https://github.com/Swimming
 | macOS | `AutoVPN-<version>-arm64.dmg`, `AutoVPN-<version>-x64.dmg` |
 | Linux | `AutoVPN-<version>-amd64.deb`, `AutoVPN-<version>-arm64.deb`, `AutoVPN-<version>-x86_64.rpm`, `AutoVPN-<version>-aarch64.rpm` |
 | Windows | `AutoVPN-<version>-x64-setup.exe`, `AutoVPN-<version>-x64-portable.exe`, `AutoVPN-<version>-arm64-setup.exe`, `AutoVPN-<version>-arm64-portable.exe` |
-| CLI | `swimmingliu-autovpn-<version>.tgz`, `vpn_subscription_automation-<version>-py3-none-any.whl`, `vpn_subscription_automation-<version>.tar.gz` |
+| CLI | npm package `@swimmingliu/autovpn`, release assets `swimmingliu-autovpn-<version>.tgz`, `vpn_subscription_automation-<version>-py3-none-any.whl`, `vpn_subscription_automation-<version>.tar.gz` |
 
 Desktop installers do not install the terminal `autovpn` command. Install the CLI separately for Linux servers, headless hosts, CI, or Agents.
 
@@ -45,8 +45,8 @@ Desktop installers do not install the terminal `autovpn` command. Install the CL
 The v3 npm CLI is the recommended Agent/server entrypoint. It exposes `autovpn`, defaults pipeline runs to the pure Node backend, and keeps `AUTOVPN_BACKEND=python` as rollback.
 
 ```bash
-npx -y https://github.com/SwimmingLiu/auto-vpn/releases/download/v<version>/swimmingliu-autovpn-<version>.tgz --version
-npm install -g https://github.com/SwimmingLiu/auto-vpn/releases/download/v<version>/swimmingliu-autovpn-<version>.tgz
+npx -y @swimmingliu/autovpn@1.4.0 --version
+npm install -g @swimmingliu/autovpn@1.4.0
 autovpn doctor --project-root /opt/autovpn/vpn-subscription-automation --output human
 autovpn run --project-root /opt/autovpn/vpn-subscription-automation --skip-deploy --skip-verify --output jsonl
 ```
@@ -79,7 +79,11 @@ pipx install https://github.com/SwimmingLiu/auto-vpn/releases/download/v<version
 python -m venv .venv
 ```
 
-The npm package is currently shipped as a GitHub Release `.tgz`, not published to the public npm registry yet. Registry publishing needs an npm account/scope, `NPM_TOKEN`, `npm publish --access public`, and release workflow gates for provenance and idempotent publish.
+If the public npm registry is unavailable, install the release tarball directly:
+
+```bash
+npm install -g https://github.com/SwimmingLiu/auto-vpn/releases/download/v<version>/swimmingliu-autovpn-<version>.tgz
+```
 
 ## Project Structure
 

@@ -5,12 +5,16 @@ Node-first npm CLI for AutoVPN headless and Agent workflows.
 ## Usage
 
 ```bash
-npx -y https://github.com/SwimmingLiu/auto-vpn/releases/download/v<version>/swimmingliu-autovpn-<version>.tgz doctor --project-root . --output json
-npm install -g https://github.com/SwimmingLiu/auto-vpn/releases/download/v<version>/swimmingliu-autovpn-<version>.tgz
+npx -y @swimmingliu/autovpn@1.4.0 doctor --project-root . --output json
+npm install -g @swimmingliu/autovpn@1.4.0
 autovpn run --project-root . --skip-deploy --skip-verify --output jsonl
 ```
 
-The public npm registry package is not enabled in Phase 1. Use the GitHub Release `.tgz` until license, provenance, and idempotent publishing gates are complete.
+GitHub Release tarballs remain available for pinned/offline installs:
+
+```bash
+npm install -g https://github.com/SwimmingLiu/auto-vpn/releases/download/v<version>/swimmingliu-autovpn-<version>.tgz
+```
 
 For Agent-friendly JSONL output, prefer foreground runs:
 

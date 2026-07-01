@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { parse } from '@iarna/toml';
+import { parse, stringify } from '@iarna/toml';
 
 import { resolveArtifactsRoot, resolveProfilePath } from '../runtime/paths.js';
 
@@ -76,4 +76,14 @@ export function profilePayload(projectRoot: string, env: NodeJS.ProcessEnv = pro
     paths,
     workspace: paths
   };
+}
+
+export function saveProfilePayload(projectRoot: string, payload: Record<string, unknown>, env: NodeJS.ProcessEnv = process.env): Record<string, unknown> {
+  const profilePath = resolveProfilePath(projectRoot, env);
+  fs.mkdirSync(path.dirname(profilePath), { recursive: true });
+  const persisted = { ...payload };
+  delete (persisted as Record<string, unknown>).paths;
+  delete (persisted as Record<string, unknown>).workspace;
+  fs.writeFileSync(profilePath, stringify(persisted as any), 'utf8');
+  return profilePayload(projectRoot, env);
 }

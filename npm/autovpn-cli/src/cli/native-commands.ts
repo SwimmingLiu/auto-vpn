@@ -4,7 +4,7 @@ import fs from 'node:fs';
 
 import { artifactLatest, artifactList } from '../artifacts/list.js';
 import { previewArtifact } from '../artifacts/preview.js';
-import { profilePayload, profileSummary } from '../config/profile.js';
+import { profilePayload, profileSummary, saveProfilePayload } from '../config/profile.js';
 import { runDoctor } from '../doctor/checks.js';
 import { publicStartedPayload, startDetachedResume, startDetachedRetry, startDetachedRun, stopManagedJob } from '../jobs/commands.js';
 import { followLog } from '../jobs/logs.js';
@@ -25,6 +25,7 @@ interface NativeContext extends JobRuntimeOptions {
   cwd: string;
   env: NodeJS.ProcessEnv;
   io: CliIo;
+  readStdin: () => string | Promise<string>;
   pythonFallback: PythonFallback;
 }
 
@@ -113,7 +114,9 @@ export async function runNativeCommand(argv: string[], context: NativeContext): 
       return 0;
     }
     if (argv[1] === 'save') {
-      return context.pythonFallback(argv);
+      const payload = JSON.parse(await context.readStdin()) as Record<string, unknown>;
+      context.io.writeStdout(jsonLine(saveProfilePayload(projectRoot, payload, context.env)));
+      return 0;
     }
   }
 
