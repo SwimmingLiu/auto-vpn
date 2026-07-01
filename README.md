@@ -97,7 +97,7 @@ AUTOVPN_BACKEND=node autovpn run --project-root /opt/autovpn/vpn-subscription-au
 
 This mode writes normal artifacts and JSONL events, loads project `.env` before resolving profile and artifact paths, and uses the Node deploy/verify stages for plain Cloudflare Pages flows, including primary blocked-project fallback, share-project subscription sync, custom-domain binding, and custom-domain DNS upsert. Detached job creation, status, logs, stop, detached resume, and detached retry are managed by the Node job manager; `AUTOVPN_BACKEND=node run --detach` now spawns the Node CLI worker, while detached resume/retry workers still execute the compatible Python CLI command until those runtimes are migrated.
 
-`AUTOVPN_NO_PYTHON=1` is the v3 cutover gate: it disables implicit Python backend resolution and Python stage fallback. Offline Node runs can complete without Python when no source returns nodes, and Node now has direct HTTP speedtest and availability runtimes. Node also has the Mihomo runtime lifecycle and opt-in controller delay probe path via `AUTOVPN_SPEEDTEST_RUNTIME=mihomo`; wiring download speed tests and availability checks through the local Mihomo proxy remains follow-up work.
+`AUTOVPN_NO_PYTHON=1` is the v3 cutover gate: it disables implicit Python backend resolution and Python stage fallback. Offline Node runs can complete without Python when no source returns nodes, and Node now has direct HTTP speedtest and availability runtimes. Node also has an opt-in Mihomo speedtest path via `AUTOVPN_SPEEDTEST_RUNTIME=mihomo` for controller delay probing and candidate downloads through the local Mihomo proxy; wiring availability checks through Mihomo remains follow-up work.
 
 For long terminal or Agent runs, start a detached job and reconnect later:
 
