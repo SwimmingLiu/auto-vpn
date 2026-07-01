@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import test from 'node:test';
 
-import { main, resolvePythonCli, runForwarder } from '../lib/runner.mjs';
+import { main, resolveOrInstallPythonCli, resolvePythonCli, runForwarder } from '../lib/runner.mjs';
 
 test('resolvePythonCli prefers AUTOVPN_PYTHON_CLI without probing PATH', () => {
   const calls = [];
@@ -79,6 +79,24 @@ test('resolvePythonCli refuses PATH autovpn with mismatched version', () => {
     }),
     /compatible Python autovpn CLI/
   );
+});
+
+test('AUTOVPN_NO_PYTHON disables Python backend resolution and install fallback', () => {
+  let installerCalled = false;
+
+  assert.throws(
+    () => resolveOrInstallPythonCli({
+      env: { AUTOVPN_NO_PYTHON: '1' },
+      packageVersion: '1.3.0',
+      spawnSync: () => ({ status: 1, stdout: '', stderr: '' }),
+      installer: () => {
+        installerCalled = true;
+        return { command: '/should/not/run', args: [], source: 'installer' };
+      }
+    }),
+    /Python backend is disabled by AUTOVPN_NO_PYTHON/
+  );
+  assert.equal(installerCalled, false);
 });
 
 test('runForwarder forwards argv and returns child exit code', async () => {
