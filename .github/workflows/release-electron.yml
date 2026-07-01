@@ -336,9 +336,10 @@ jobs:
             echo "${PACKAGE_NAME}@${PACKAGE_VERSION} is already published; skipping npm publish."
             exit 0
           fi
-          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
-            echo "NPM_TOKEN is required to publish ${PACKAGE_NAME}@${PACKAGE_VERSION}."
-            exit 1
+          if [ -n "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "Publishing ${PACKAGE_NAME}@${PACKAGE_VERSION} with NPM_TOKEN."
+          else
+            echo "Publishing ${PACKAGE_NAME}@${PACKAGE_VERSION} with npm trusted publishing/OIDC."
           fi
           cd npm/autovpn-cli
           npm publish --access public --provenance --registry=https://registry.npmjs.org
