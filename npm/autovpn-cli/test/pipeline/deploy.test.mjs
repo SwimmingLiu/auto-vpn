@@ -19,6 +19,7 @@ import {
   derivePagesProjectUrl,
   generateFallbackProjectName,
   isVerifySuccess,
+  isBlockedPagesError,
   mergeDeployVerificationTarget,
   resolveCloudflareCredentials,
   resolveCleanupBlockedProjectCandidates,
@@ -210,16 +211,108 @@ test('Cloudflare credential and Wrangler env helpers match Python precedence', (
   });
 });
 
-test('deploy backend selection requires explicit Python fallback', async () => {
+test('deploy backend selection supports explicit Python rollback', async () => {
   assert.equal(selectPipelineStageBackend('deploy', {}), 'node');
   assert.equal(selectPipelineStageBackend('deploy', { AUTOVPN_STAGE_BACKEND_DEPLOY: ' python ' }), 'python');
   assert.equal(selectPipelineStageBackend('deploy', { AUTOVPN_PIPELINE_BACKEND: ' python ' }), 'python');
+});
+
+test('Node deploy backend runs Wrangler and returns Python-compatible base metadata', async () => {
+  const calls = [];
+  const result = await deployPagesWithBackend({
+    projectRoot: '/repo',
+    bundleDir: '/repo/artifacts/pages_bundle',
+    deploy: {
+      project_name: 'sub-nodes',
+      pages_project_url: '',
+      share_project_name: '',
+      cloudflare_api_token: 'token-1',
+      account_id: 'account-1',
+      fallback_last_used_suffix: 7
+    }
+  }, {
+    env: {},
+    runCommand: async (command, options) => {
+      calls.push({ command, options });
+      return { returncode: 0, stdout: 'deployed', stderr: '' };
+    }
+  });
+
+  assert.equal(result.returncode, 0);
+  assert.deepEqual(result.command, ['npx', 'wrangler', 'pages', 'deploy', '/repo/artifacts/pages_bundle', '--project-name', 'sub-nodes', '--branch', 'main']);
+  assert.equal(result.project_name, 'sub-nodes');
+  assert.equal(result.pages_project_url, 'https://sub-nodes.pages.dev');
+  assert.equal(result.fallback_used, false);
+  assert.equal(result.fallback_last_used_suffix, 7);
+  assert.equal(result.share_project_sync_ok, true);
+  assert.equal(result.bundle_dir, '/repo/artifacts/pages_bundle');
+  assert.equal(result.worker_entry, '/repo/artifacts/pages_bundle/_worker.js');
+  assert.equal(result.module_manifest_path, '/repo/artifacts/pages_bundle/manifest.json');
+  assert.deepEqual(result.attempts, [{ mode: 'direct', returncode: 0 }]);
+  assert.equal(calls[0].options.cwd, '/repo/artifacts/pages_bundle');
+  assert.equal(calls[0].options.env.CLOUDFLARE_API_TOKEN, 'token-1');
+  assert.equal(calls[0].options.env.CLOUDFLARE_ACCOUNT_ID, 'account-1');
+});
+
+test('Node deploy backend retries transient failures and uses configured proxy last', async () => {
+  const calls = [];
+  const results = [
+    { returncode: 1, stdout: '', stderr: 'fetch failed UND_ERR_SOCKET' },
+    { returncode: 1, stdout: '', stderr: 'fetch failed UND_ERR_SOCKET' },
+    { returncode: 0, stdout: 'ok', stderr: '' }
+  ];
+  const result = await deployPagesWithBackend({
+    projectRoot: '/repo',
+    bundleDir: '/repo/artifacts/pages_bundle',
+    deploy: { project_name: 'sub-nodes', share_project_name: '', cloudflare_api_token: 'token-1' }
+  }, {
+    env: { VPN_AUTOMATION_DEPLOY_PROXY: 'http://127.0.0.1:7897' },
+    runCommand: async (_command, options) => {
+      calls.push(options);
+      return results.shift();
+    }
+  });
+
+  assert.equal(result.returncode, 0);
+  assert.deepEqual(result.attempts, [
+    { mode: 'direct', returncode: 1 },
+    { mode: 'direct-retry', returncode: 1 },
+    { mode: 'proxy', returncode: 0 }
+  ]);
+  assert.equal(calls[0].env.HTTP_PROXY, undefined);
+  assert.equal(calls[1].env.HTTP_PROXY, undefined);
+  assert.equal(calls[2].env.HTTP_PROXY, 'http://127.0.0.1:7897');
+  assert.equal(calls[2].env.HTTPS_PROXY, 'http://127.0.0.1:7897');
+  assert.equal(calls[2].env.ALL_PROXY, 'http://127.0.0.1:7897');
+});
+
+test('Node deploy backend keeps complex deploy side effects on Python fallback', async () => {
+  await assert.rejects(() => deployPagesWithBackend({
+    projectRoot: '/repo',
+    bundleDir: '/repo/artifacts/pages_bundle',
+    deploy: { project_name: 'sub-nodes', share_project_name: 'sub-links-share-03', cloudflare_api_token: 'token-1' }
+  }, { env: {}, runCommand: async () => ({ returncode: 0, stdout: '', stderr: '' }) }), /share_project_name/);
 
   await assert.rejects(() => deployPagesWithBackend({
     projectRoot: '/repo',
     bundleDir: '/repo/artifacts/pages_bundle',
-    deploy: {}
-  }, { env: {} }), /Node deploy backend is not available yet/);
+    deploy: { project_name: 'sub-nodes', custom_domain: 'vpn.example.com', cloudflare_api_token: 'token-1' }
+  }, { env: {}, runCommand: async () => ({ returncode: 0, stdout: '', stderr: '' }) }), /custom_domain/);
+
+  await assert.rejects(() => deployPagesWithBackend({
+    projectRoot: '/repo',
+    bundleDir: '/repo/artifacts/pages_bundle',
+    deploy: { project_name: 'sub-nodes', share_project_name: '', cloudflare_api_token: 'token-1' }
+  }, {
+    env: {},
+    runCommand: async () => ({
+      returncode: 1,
+      stdout: '',
+      stderr: 'Your Pages project has been blocked. Contact abusereply@cloudflare.com. [code: 8000119]'
+    })
+  }), /blocked Pages fallback/);
+
+  assert.equal(isBlockedPagesError('', 'Your Pages project has been blocked. [code: 8000119]'), true);
 });
 
 test('Node verify backend verifies deployment target and cleans blocked projects', async () => {

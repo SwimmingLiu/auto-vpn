@@ -6,6 +6,10 @@ export type PipelineStageBackend = 'node' | 'python';
 
 type SpawnLike = (command: string, args: string[], options?: Record<string, unknown>) => ChildProcess;
 type DeployLike = Record<string, unknown>;
+type RunCommandLike = (
+  command: string[],
+  options: { cwd: string; env: Record<string, string> }
+) => Promise<{ returncode: number; stdout: string; stderr: string }>;
 
 interface ResolvedPythonCli {
   command: string;
@@ -47,6 +51,7 @@ export interface DeployVerifyBackendOptions {
   pythonVerify?: (input: VerifyInput) => Record<string, unknown> | Promise<Record<string, unknown>>;
   cloudflareClient?: CloudflareVerifyClient;
   fetch?: typeof fetch;
+  runCommand?: RunCommandLike;
 }
 
 const PYTHON_DEPLOY_HELPER = `
@@ -97,6 +102,20 @@ sys.stdout.write("\\n")
 const PAGES_PRODUCTION_BRANCH = 'main';
 const FALLBACK_SUFFIX_PATTERN = /^(?<prefix>.+)-(?<suffix>\d+)$/;
 const CLOUDFLARE_API_BASE_URL = 'https://api.cloudflare.com/client/v4';
+const NETWORK_ERROR_MARKERS = [
+  'fetch failed',
+  'connectivity issue',
+  'und_err_socket',
+  'other side closed',
+  'econnreset',
+  'etimedout'
+];
+const BLOCKED_PAGES_MARKERS = [
+  '8000119',
+  'your pages project has been blocked',
+  'pages project has been blocked',
+  'contact abusereply@cloudflare.com'
+];
 
 function clean(value: unknown): string {
   return value ? String(value).trim() : '';
@@ -293,6 +312,111 @@ export function buildWranglerAuthEnv(credentials: CloudflareCredentials): Record
     env.CLOUDFLARE_API_TOKEN = credentials.api_token;
   }
   return env;
+}
+
+function buildProxyEnv(proxyUrl: string): Record<string, string> {
+  return {
+    HTTP_PROXY: proxyUrl,
+    HTTPS_PROXY: proxyUrl,
+    ALL_PROXY: proxyUrl
+  };
+}
+
+function isTransientDeployFailure(stdout: string, stderr: string): boolean {
+  const combined = `${stdout}\n${stderr}`.toLowerCase();
+  return NETWORK_ERROR_MARKERS.some((marker) => combined.includes(marker));
+}
+
+export function isBlockedPagesError(stdout: string, stderr = ''): boolean {
+  const combined = `${stdout}\n${stderr}`.toLowerCase();
+  return BLOCKED_PAGES_MARKERS.some((marker) => combined.includes(marker));
+}
+
+function resolveDeployProxyUrl(env: NodeJS.ProcessEnv): string {
+  for (const key of [
+    'VPN_AUTOMATION_DEPLOY_PROXY',
+    'VPN_AUTOMATION_CLOUDFLARE_PROXY',
+    'VPN_AUTOMATION_UPSTREAM_PROXY',
+    'HTTPS_PROXY',
+    'https_proxy',
+    'HTTP_PROXY',
+    'http_proxy',
+    'ALL_PROXY',
+    'all_proxy'
+  ]) {
+    const value = clean(env[key]);
+    if (!value) {
+      continue;
+    }
+    if (['off', 'none', 'false', '0'].includes(value.toLowerCase())) {
+      return '';
+    }
+    return value;
+  }
+  return '';
+}
+
+function runCommandWithSpawn(
+  command: string[],
+  options: { cwd: string; env: Record<string, string> },
+  spawnImpl: SpawnLike = defaultSpawn
+): Promise<{ returncode: number; stdout: string; stderr: string }> {
+  const [executable, ...args] = command;
+  const child = spawnImpl(executable, args, {
+    cwd: options.cwd,
+    env: { ...process.env, ...options.env },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  let stdout = '';
+  let stderr = '';
+  child.stdout?.on('data', (chunk) => {
+    stdout += String(chunk);
+  });
+  child.stderr?.on('data', (chunk) => {
+    stderr += String(chunk);
+  });
+  return new Promise((resolve, reject) => {
+    child.on('error', reject);
+    child.on('close', (exitCode) => {
+      resolve({ returncode: exitCode ?? 1, stdout, stderr });
+    });
+  });
+}
+
+async function runPagesDeployAttempts(
+  command: string[],
+  baseEnv: Record<string, string>,
+  proxyUrl: string,
+  options: { cwd: string; runCommand: RunCommandLike }
+): Promise<{ result: { returncode: number; stdout: string; stderr: string }; attempts: Array<Record<string, unknown>> }> {
+  const attempts: Array<{ mode: string; env: Record<string, string> }> = [
+    { mode: 'direct', env: baseEnv },
+    { mode: 'direct-retry', env: baseEnv }
+  ];
+  if (proxyUrl) {
+    attempts.push({ mode: 'proxy', env: { ...baseEnv, ...buildProxyEnv(proxyUrl) } });
+  }
+
+  let result: { returncode: number; stdout: string; stderr: string } | undefined;
+  const attemptLog: Array<Record<string, unknown>> = [];
+  for (let index = 0; index < attempts.length; index += 1) {
+    const attempt = attempts[index];
+    result = await options.runCommand(command, { cwd: options.cwd, env: attempt.env });
+    attemptLog.push({ mode: attempt.mode, returncode: result.returncode });
+    if (result.returncode === 0) {
+      break;
+    }
+    if (!isTransientDeployFailure(result.stdout, result.stderr)) {
+      break;
+    }
+    if (index === attempts.length - 1) {
+      break;
+    }
+  }
+  if (!result) {
+    throw new Error('Wrangler deploy did not run');
+  }
+  return { result, attempts: attemptLog };
 }
 
 export function mergeDeployVerificationTarget(deploy: DeployLike, deployment: DeployLike): Record<string, unknown> {
@@ -570,7 +694,65 @@ async function runPythonJsonHelper(
 
 export async function deployPagesWithBackend(input: DeployInput, options: DeployVerifyBackendOptions = {}): Promise<Record<string, unknown>> {
   if (selectPipelineStageBackend('deploy', options.env ?? process.env) !== 'python') {
-    throw new Error('Node deploy backend is not available yet; set AUTOVPN_STAGE_BACKEND_DEPLOY=python to use the Python deployment adapter');
+    const cwd = options.cwd ?? process.cwd();
+    const env = mergeProjectEnv(cwd, options.env ?? process.env);
+    const deploy = input.deploy;
+    const projectName = getString(deploy, 'project_name');
+    if (!projectName) {
+      throw new Error('Cloudflare Pages project name is missing');
+    }
+    if (getString(deploy, 'custom_domain') || getString(deploy, 'share_project_name')) {
+      throw new Error('Node deploy backend does not support custom_domain or share_project_name yet; set AUTOVPN_STAGE_BACKEND_DEPLOY=python');
+    }
+    const credentials = resolveCloudflareCredentials(deploy, env);
+    const command = buildPagesDeployCommand(input.bundleDir, projectName);
+    const baseEnv = buildWranglerAuthEnv(credentials);
+    const runCommand = options.runCommand ?? ((commandToRun, runOptions) => runCommandWithSpawn(commandToRun, runOptions, options.spawn));
+    const { result, attempts } = await runPagesDeployAttempts(command, baseEnv, resolveDeployProxyUrl(env), {
+      cwd: input.bundleDir,
+      runCommand
+    });
+    if (
+      result.returncode !== 0
+      && Boolean(deploy.auto_create_project_on_blocked ?? true)
+      && isBlockedPagesError(result.stdout, result.stderr)
+    ) {
+      throw new Error('Node deploy backend does not support blocked Pages fallback yet; set AUTOVPN_STAGE_BACKEND_DEPLOY=python');
+    }
+    const pagesProjectUrl = getString(deploy, 'pages_project_url') || derivePagesProjectUrl(projectName);
+    return {
+      command,
+      returncode: result.returncode,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      attempts,
+      requested_project_name: projectName,
+      fallback_candidate_names: [],
+      cleanup_blocked_project: '',
+      cleanup_deleted: false,
+      cleanup_errors: [],
+      project_name: projectName,
+      pages_project_url: pagesProjectUrl,
+      custom_domain: '',
+      custom_domain_dns_name: '',
+      custom_domain_dns_target: '',
+      custom_domain_dns_proxied: false,
+      custom_domain_dns_ok: false,
+      fallback_used: false,
+      fallback_last_used_suffix: nonNegativeInt(deploy.fallback_last_used_suffix),
+      share_project_requested_name: '',
+      share_project_name: '',
+      share_project_fallback_used: false,
+      share_project_cleanup_blocked_project: '',
+      share_project_sub_value: '',
+      share_project_sync_ok: true,
+      share_project_sync_error: '',
+      share_project_fallback_candidate_names: [],
+      share_project_fallback_last_used_suffix: nonNegativeInt(deploy.share_project_fallback_last_used_suffix),
+      bundle_dir: input.bundleDir,
+      worker_entry: path.join(input.bundleDir, '_worker.js'),
+      module_manifest_path: path.join(input.bundleDir, 'manifest.json')
+    };
   }
   if (options.pythonDeploy) {
     return options.pythonDeploy(input);
