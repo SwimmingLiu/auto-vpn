@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { runNodePipeline } from '../../dist/pipeline/orchestrator.js';
+import { retryNodePipelineStage, runNodePipeline } from '../../dist/pipeline/orchestrator.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '../../../..');
@@ -389,4 +389,233 @@ test('runNodePipeline writes event and human logs for Node runs', async () => {
   assert.equal(eventLines[0].type, 'run_started');
   assert.equal(eventLines.at(-1).type, 'summary');
   assert.match(await readFile(humanLog, 'utf8'), /\[summary\] run_status=success/);
+});
+
+test('retryNodePipelineStage retries render from an existing artifact into a fresh artifact', async () => {
+  const projectRoot = await makeProject();
+  const firstLink = vmessLink('first', 'one.example');
+  const runtimeRoot = path.join(projectRoot, '.runtime');
+  const profilePath = path.join(projectRoot, 'state', 'profile.toml');
+  const env = {
+    VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot,
+    VPN_AUTOMATION_PROFILE_PATH: profilePath
+  };
+  const source = await runNodePipeline({
+    projectRoot,
+    skipDeploy: true,
+    skipVerify: true,
+    output: 'jsonl'
+  }, {
+    env,
+    now: () => new Date('2026-06-29T01:02:03Z'),
+    stages: {
+      extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink] }),
+      speedtest: async (links) => links.map((link) => ({ link, reachable: true, average_download_mb_s: 3, latency_ms: 20, error: '' })),
+      availability: async (results) => results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} })),
+      countryLookup: () => 'US',
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
+    }
+  });
+  const events = [];
+  const eventLog = path.join(projectRoot, 'logs', 'retry-events.jsonl');
+  const humanLog = path.join(projectRoot, 'logs', 'retry-human.log');
+  await writeFile(path.join(projectRoot, 'templates', 'vmess_node.js'), 'export default __MAIN_DATA__;\n// retry render\n', 'utf8');
+
+  const retry = await retryNodePipelineStage({
+    projectRoot,
+    artifactDir: source.artifact_dir,
+    stage: 'render',
+    output: 'jsonl',
+    eventLog,
+    humanLog
+  }, {
+    env,
+    now: () => new Date('2026-06-29T01:02:04Z'),
+    emit: (event) => events.push(event),
+    stages: {
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } }),
+      deploy: async ({ bundleDir }) => ({ returncode: 0, stdout: `deployed ${bundleDir}`, stderr: '', attempts: [{ mode: 'direct', returncode: 0 }] }),
+      verify: async () => ({ pages_domain_ok: true, secret_ok: true, subscription_ok: true })
+    }
+  });
+
+  assert.equal(retry.run_status, 'success');
+  assert.notEqual(retry.artifact_dir, source.artifact_dir);
+  assert.deepEqual(retry.retry_context, {
+    source_artifact_dir: source.artifact_dir,
+    source_artifact_name: path.basename(source.artifact_dir),
+    start_stage: 'render'
+  });
+  assert.equal(retry.stage_status.doctor, 'success');
+  assert.equal(retry.stage_status.postprocess, 'success');
+  assert.equal(retry.stage_status.render, 'success');
+  assert.equal(retry.stage_status.obfuscate, 'success');
+  assert.equal(retry.stage_status.deploy, 'success');
+  assert.equal(retry.stage_status.verify, 'success');
+  assert.match(await readFile(path.join(retry.artifact_dir, 'vmess_node.js'), 'utf8'), /retry render/);
+  assert.equal((await readFile(path.join(retry.artifact_dir, 'vpn_node_emoji.txt'), 'utf8')).trim(), (await readFile(path.join(source.artifact_dir, 'vpn_node_emoji.txt'), 'utf8')).trim());
+  assert.equal(events[0].type, 'run_started');
+  assert.equal(events[0].retry_stage, 'render');
+  assert.equal(events[0].source_artifact_dir, source.artifact_dir);
+  assert.equal(events.at(-1).type, 'summary');
+  assert.equal(JSON.parse(await readFile(path.join(retry.artifact_dir, 'pipeline_report.json'), 'utf8')).retry_context.start_stage, 'render');
+  assert.equal((await readFile(eventLog, 'utf8')).trim().split(/\n/).at(-1), JSON.stringify(events.at(-1)));
+  assert.match(await readFile(humanLog, 'utf8'), /\[summary\] run_status=success/);
+});
+
+test('retryNodePipelineStage passes only speedtest winners into availability when retrying speedtest', async () => {
+  const projectRoot = await makeProject();
+  const firstLink = vmessLink('first', 'one.example');
+  const secondLink = vmessLink('second', 'two.example');
+  const runtimeRoot = path.join(projectRoot, '.runtime');
+  const profilePath = path.join(projectRoot, 'state', 'profile.toml');
+  const env = {
+    VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot,
+    VPN_AUTOMATION_PROFILE_PATH: profilePath
+  };
+  const source = await runNodePipeline({
+    projectRoot,
+    skipDeploy: true,
+    skipVerify: true,
+    output: 'jsonl'
+  }, {
+    env,
+    now: () => new Date('2026-06-29T01:02:03Z'),
+    stages: {
+      extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink, secondLink] }),
+      speedtest: async (links) => links.map((link) => ({ link, reachable: true, average_download_mb_s: 3, latency_ms: 20, error: '' })),
+      availability: async (results) => results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} })),
+      countryLookup: () => 'US',
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
+    }
+  });
+  const availabilityInputs = [];
+
+  await retryNodePipelineStage({
+    projectRoot,
+    artifactDir: source.artifact_dir,
+    stage: 'speedtest',
+    output: 'jsonl'
+  }, {
+    env,
+    now: () => new Date('2026-06-29T01:02:04Z'),
+    stages: {
+      speedtest: async () => [
+        { link: firstLink, reachable: true, average_download_mb_s: 3, latency_ms: 20, error: '' },
+        { link: secondLink, reachable: false, average_download_mb_s: 0, latency_ms: 0, error: 'timeout' }
+      ],
+      availability: async (results) => {
+        availabilityInputs.push(results.map((result) => result.link));
+        return results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} }));
+      },
+      countryLookup: () => 'US',
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } }),
+      deploy: async ({ bundleDir }) => ({ returncode: 0, stdout: `deployed ${bundleDir}`, stderr: '', attempts: [] }),
+      verify: async () => ({ pages_domain_ok: true, secret_ok: true, subscription_ok: true })
+    }
+  });
+
+  assert.deepEqual(availabilityInputs, [[firstLink]]);
+});
+
+test('retryNodePipelineStage rejects and emits run_failed when retry stage has no winners', async () => {
+  const projectRoot = await makeProject();
+  const firstLink = vmessLink('first', 'one.example');
+  const runtimeRoot = path.join(projectRoot, '.runtime');
+  const profilePath = path.join(projectRoot, 'state', 'profile.toml');
+  const env = {
+    VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot,
+    VPN_AUTOMATION_PROFILE_PATH: profilePath
+  };
+  const source = await runNodePipeline({
+    projectRoot,
+    skipDeploy: true,
+    skipVerify: true,
+    output: 'jsonl'
+  }, {
+    env,
+    now: () => new Date('2026-06-29T01:02:03Z'),
+    stages: {
+      extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink] }),
+      speedtest: async (links) => links.map((link) => ({ link, reachable: true, average_download_mb_s: 3, latency_ms: 20, error: '' })),
+      availability: async (results) => results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} })),
+      countryLookup: () => 'US',
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
+    }
+  });
+  const events = [];
+
+  await assert.rejects(() => retryNodePipelineStage({
+    projectRoot,
+    artifactDir: source.artifact_dir,
+    stage: 'speedtest',
+    output: 'jsonl'
+  }, {
+    env,
+    now: () => new Date('2026-06-29T01:02:04Z'),
+    emit: (event) => events.push(event),
+    stages: {
+      speedtest: async () => [
+        { link: firstLink, reachable: false, average_download_mb_s: 0, latency_ms: 0, error: 'timeout' }
+      ]
+    }
+  }), /No links passed speed test/);
+
+  assert.equal(events.at(-2).type, 'summary');
+  assert.equal(events.at(-2).run_status, 'failed');
+  assert.equal(events.at(-1).type, 'run_failed');
+});
+
+test('retryNodePipelineStage preserves custom bundle subdirectories for deploy retry', async () => {
+  const projectRoot = await makeProject();
+  const firstLink = vmessLink('first', 'one.example');
+  const runtimeRoot = path.join(projectRoot, '.runtime');
+  const profilePath = path.join(projectRoot, 'state', 'profile.toml');
+  await writeFile(
+    profilePath,
+    (await readFile(profilePath, 'utf8')).replace('bundle_subdir = "pages_bundle"', 'bundle_subdir = "custom_bundle"'),
+    'utf8'
+  );
+  const env = {
+    VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot,
+    VPN_AUTOMATION_PROFILE_PATH: profilePath
+  };
+  const source = await runNodePipeline({
+    projectRoot,
+    skipDeploy: true,
+    skipVerify: true,
+    output: 'jsonl'
+  }, {
+    env,
+    now: () => new Date('2026-06-29T01:02:03Z'),
+    stages: {
+      extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink] }),
+      speedtest: async (links) => links.map((link) => ({ link, reachable: true, average_download_mb_s: 3, latency_ms: 20, error: '' })),
+      availability: async (results) => results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} })),
+      countryLookup: () => 'US',
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
+    }
+  });
+  const seenBundleDirs = [];
+
+  const retry = await retryNodePipelineStage({
+    projectRoot,
+    artifactDir: source.artifact_dir,
+    stage: 'deploy',
+    output: 'jsonl'
+  }, {
+    env,
+    now: () => new Date('2026-06-29T01:02:04Z'),
+    stages: {
+      deploy: async ({ bundleDir }) => {
+        seenBundleDirs.push(bundleDir);
+        return { returncode: 0, stdout: `deployed ${bundleDir}`, stderr: '', attempts: [] };
+      },
+      verify: async () => ({ pages_domain_ok: true, secret_ok: true, subscription_ok: true })
+    }
+  });
+
+  assert.equal(retry.run_status, 'success');
+  assert.deepEqual(seenBundleDirs.map((bundleDir) => path.basename(bundleDir)), ['custom_bundle']);
+  assert.equal(await readFile(path.join(retry.artifact_dir, 'custom_bundle', '_worker.js'), 'utf8'), await readFile(path.join(source.artifact_dir, 'custom_bundle', '_worker.js'), 'utf8'));
 });

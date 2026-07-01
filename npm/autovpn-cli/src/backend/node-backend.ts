@@ -1,5 +1,5 @@
 import { AutoVpnEvent } from '../events/schema.js';
-import { runNodePipeline } from '../pipeline/orchestrator.js';
+import { retryNodePipelineStage, runNodePipeline } from '../pipeline/orchestrator.js';
 import {
   AutoVpnBackend,
   DetachedRunOptions,
@@ -80,8 +80,32 @@ export class NodeBackend implements AutoVpnBackend {
     }
   }
 
-  async *retryStage(_options: RetryOptions): AsyncIterable<AutoVpnEvent> {
-    throw unsupported('retry-stage');
+  async *retryStage(options: RetryOptions): AsyncIterable<AutoVpnEvent> {
+    const queue: EventQueueState = { events: [], wake: [], done: false };
+    void retryNodePipelineStage({
+        projectRoot: options.projectRoot,
+        artifactDir: options.artifactDir,
+        stage: options.stage,
+        output: options.output,
+        eventLog: options.eventLog,
+        humanLog: options.humanLog
+      }, {
+        env: this.env,
+        emit: (event) => pushEvent(queue, event)
+      })
+      .then(() => finishQueue(queue))
+      .catch((error) => finishQueue(queue, error));
+
+    while (!queue.done || queue.events.length > 0) {
+      if (queue.events.length === 0) {
+        await waitForEvent(queue);
+        continue;
+      }
+      yield queue.events.shift() as AutoVpnEvent;
+    }
+    if (queue.error) {
+      throw queue.error;
+    }
   }
 
   async *resume(_options: ResumeOptions): AsyncIterable<AutoVpnEvent> {

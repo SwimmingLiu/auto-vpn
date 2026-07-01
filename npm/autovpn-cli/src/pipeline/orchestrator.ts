@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import fs from 'node:fs';
 import path from 'node:path';
 import { parse } from '@iarna/toml';
@@ -24,6 +24,15 @@ export interface NodePipelineOptions {
   projectRoot: string;
   skipDeploy?: boolean;
   skipVerify?: boolean;
+  output?: 'jsonl' | 'human';
+  eventLog?: string;
+  humanLog?: string;
+}
+
+export interface NodeRetryStageOptions {
+  projectRoot: string;
+  artifactDir: string;
+  stage: string;
   output?: 'jsonl' | 'human';
   eventLog?: string;
   humanLog?: string;
@@ -67,6 +76,7 @@ interface PipelineProfile {
 }
 
 const STAGES: StageName[] = ['doctor', 'extract', 'dedupe', 'speedtest', 'availability', 'postprocess', 'render', 'obfuscate', 'deploy', 'verify'];
+const RETRYABLE_STAGES: StageName[] = ['speedtest', 'availability', 'postprocess', 'render', 'obfuscate', 'deploy', 'verify'];
 const DEFAULT_PYTHON_RUNTIME_STAGES = ['EXTRACT', 'SPEEDTEST', 'AVAILABILITY'];
 
 function isEnabled(value: string | undefined): boolean {
@@ -125,6 +135,36 @@ async function writeLines(artifactDir: string, filename: string, lines: string[]
 
 async function writeJson(artifactDir: string, filename: string, payload: unknown): Promise<void> {
   await writeFile(path.join(artifactDir, filename), `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+}
+
+async function readJson<T = Record<string, unknown>>(filePath: string, fallback: T): Promise<T> {
+  if (!fs.existsSync(filePath)) {
+    return fallback;
+  }
+  return JSON.parse(await readFile(filePath, 'utf8')) as T;
+}
+
+async function readLines(filePath: string): Promise<string[]> {
+  if (!fs.existsSync(filePath)) {
+    return [];
+  }
+  return (await readFile(filePath, 'utf8')).split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+}
+
+async function copyIfExists(source: string, destination: string): Promise<void> {
+  if (!fs.existsSync(source)) {
+    return;
+  }
+  await mkdir(path.dirname(destination), { recursive: true });
+  await copyFile(source, destination);
+}
+
+function copyDirectoryIfExists(source: string, destination: string): void {
+  if (!fs.existsSync(source)) {
+    return;
+  }
+  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  fs.cpSync(source, destination, { recursive: true });
 }
 
 function appendTextFile(filePath: string | undefined, text: string): void {
@@ -206,6 +246,66 @@ function orderPreservingUnique(values: string[]): string[] {
 
 function defaultCountryFor(_link: string, _speedResult: SpeedTestResult, _availabilityResult: AvailabilityResultDict): string {
   return 'US';
+}
+
+function normalizeRetryStage(stage: string): StageName {
+  if ((RETRYABLE_STAGES as string[]).includes(stage)) {
+    return stage as StageName;
+  }
+  throw new Error(`Unsupported retry stage: ${stage}`);
+}
+
+function isStageAtOrAfter(candidate: StageName, target: StageName): boolean {
+  return STAGES.indexOf(candidate) >= STAGES.indexOf(target);
+}
+
+function seedCompletedStages(summary: PipelineSummary, stage: StageName): void {
+  for (const name of STAGES) {
+    if (name === stage) {
+      return;
+    }
+    summary.stage_status[name] = 'success';
+  }
+}
+
+async function seedRetryArtifact(sourceArtifactDir: string, retryArtifactDir: string, stage: StageName, retryContext: Record<string, unknown>, bundleSubdir: string): Promise<PipelineSummary> {
+  const sourceReport = await readJson<Record<string, unknown>>(path.join(sourceArtifactDir, 'pipeline_report.json'), {});
+  const summary: PipelineSummary = {
+    artifact_dir: retryArtifactDir,
+    stage_status: stageStatus(),
+    counts: { ...((sourceReport.counts ?? {}) as Record<string, number>) },
+    source_counts: { ...((sourceReport.source_counts ?? {}) as Record<string, Record<string, number>>) },
+    deployment: { ...((sourceReport.deployment ?? {}) as Record<string, unknown>) },
+    retry_context: retryContext,
+    run_status: 'success',
+    error: ''
+  };
+
+  await copyIfExists(path.join(sourceArtifactDir, 'vpn_node_raw.txt'), path.join(retryArtifactDir, 'vpn_node_raw.txt'));
+  await copyIfExists(path.join(sourceArtifactDir, 'vpn_node_deduped.txt'), path.join(retryArtifactDir, 'vpn_node_deduped.txt'));
+  if (isStageAtOrAfter(stage, 'availability')) {
+    await copyIfExists(path.join(sourceArtifactDir, 'vpn_node_speedtest.txt'), path.join(retryArtifactDir, 'vpn_node_speedtest.txt'));
+    await copyIfExists(path.join(sourceArtifactDir, 'vpn_node_speedtest_report.json'), path.join(retryArtifactDir, 'vpn_node_speedtest_report.json'));
+  }
+  if (isStageAtOrAfter(stage, 'postprocess')) {
+    await copyIfExists(path.join(sourceArtifactDir, 'vpn_node_availability.txt'), path.join(retryArtifactDir, 'vpn_node_availability.txt'));
+    await copyIfExists(path.join(sourceArtifactDir, 'vpn_node_availability_report.json'), path.join(retryArtifactDir, 'vpn_node_availability_report.json'));
+  }
+  if (isStageAtOrAfter(stage, 'render')) {
+    await copyIfExists(path.join(sourceArtifactDir, 'vpn_node_emoji.txt'), path.join(retryArtifactDir, 'vpn_node_emoji.txt'));
+  }
+  if (isStageAtOrAfter(stage, 'obfuscate')) {
+    await copyIfExists(path.join(sourceArtifactDir, 'vmess_node.js'), path.join(retryArtifactDir, 'vmess_node.js'));
+  }
+  if (isStageAtOrAfter(stage, 'deploy')) {
+    await copyIfExists(path.join(sourceArtifactDir, 'worker_transformed.js'), path.join(retryArtifactDir, 'worker_transformed.js'));
+    await copyIfExists(path.join(sourceArtifactDir, '_worker.js'), path.join(retryArtifactDir, '_worker.js'));
+    copyDirectoryIfExists(path.join(sourceArtifactDir, bundleSubdir), path.join(retryArtifactDir, bundleSubdir));
+  }
+
+  seedCompletedStages(summary, stage);
+  await writeJson(retryArtifactDir, 'pipeline_report.json', summary);
+  return summary;
 }
 
 async function writeWorkerArtifacts(artifactDir: string, profile: PipelineProfile, renderedSource: string, artifacts: WorkerBuildArtifacts): Promise<string> {
@@ -400,6 +500,231 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
     throw error;
   }
 
+  await writeReport();
+  emit('summary', summary as unknown as Record<string, unknown>);
+  return summary;
+}
+
+export async function retryNodePipelineStage(options: NodeRetryStageOptions, context: RunNodePipelineContext = {}): Promise<PipelineSummary> {
+  const projectRoot = path.resolve(options.projectRoot);
+  const sourceArtifactDir = path.resolve(options.artifactDir);
+  if (!fs.existsSync(sourceArtifactDir)) {
+    throw new Error(`artifact dir not found: ${sourceArtifactDir}`);
+  }
+  const stage = normalizeRetryStage(options.stage);
+  const env = mergeProjectEnv(projectRoot, { ...process.env, ...(context.env ?? {}) });
+  const runtimeStageEnv = defaultRuntimeStageEnv(env);
+  const profile = await readProfile(projectRoot, env);
+  const retryArtifactDir = await uniqueArtifactDir(resolveArtifactsRoot(projectRoot, env), formatTimestamp((context.now ?? (() => new Date()))()));
+  const retryContext = {
+    source_artifact_dir: sourceArtifactDir,
+    source_artifact_name: path.basename(sourceArtifactDir),
+    start_stage: stage
+  };
+  const summary = await seedRetryArtifact(
+    sourceArtifactDir,
+    retryArtifactDir,
+    stage,
+    retryContext,
+    String(profile.worker_build?.bundle_subdir ?? 'pages_bundle')
+  );
+
+  const emit = (type: string, payload: Record<string, unknown> = {}) => {
+    const event = { type, ...payload } as AutoVpnEvent;
+    appendTextFile(options.eventLog, eventLogLine(event));
+    appendTextFile(options.humanLog, humanLogLine(event));
+    context.emit?.(event);
+  };
+  const writeReport = () => writeJson(retryArtifactDir, 'pipeline_report.json', summary);
+  let activeStage: StageName | undefined;
+  const setStage = async (stageName: StageName, status: StageStatus) => {
+    summary.stage_status[stageName] = status;
+    activeStage = status === 'running' ? stageName : activeStage === stageName ? undefined : activeStage;
+    emit('stage', { stage: stageName, status });
+    await writeReport();
+  };
+
+  const runtimePath = path.join(retryArtifactDir, 'runtime');
+  let speedResults: SpeedTestResult[] = [];
+  let availabilityResults: AvailabilityResultDict[] = [];
+  let finalLinks: string[] = [];
+  let bundleDir = path.join(retryArtifactDir, String(profile.worker_build?.bundle_subdir ?? 'pages_bundle'));
+
+  emit('run_started', {
+    artifact_dir: retryArtifactDir,
+    skip_deploy: false,
+    skip_verify: false,
+    retry_stage: stage,
+    source_artifact_dir: sourceArtifactDir
+  });
+  emit('log', { message: `[retry] source=${path.basename(sourceArtifactDir)} stage=${stage}` });
+
+  try {
+    if (stage === 'speedtest') {
+      const dedupedLinks = await readLines(path.join(sourceArtifactDir, 'vpn_node_deduped.txt'));
+      if (dedupedLinks.length === 0) {
+        throw new Error('No deduped links available to retry speedtest');
+      }
+      summary.counts.raw_links = (await readLines(path.join(sourceArtifactDir, 'vpn_node_raw.txt'))).length;
+      summary.counts.deduped_links = dedupedLinks.length;
+      await setStage('speedtest', 'running');
+      speedResults = context.stages?.speedtest
+        ? await context.stages.speedtest(dedupedLinks, profile.speed_test ?? {}, runtimePath)
+        : await speedtestLinksWithBackend({ links: dedupedLinks, config: profile.speed_test as any, runtime_path: runtimePath }, { cwd: projectRoot, env: runtimeStageEnv });
+      const passedSpeedLinks = speedResults
+        .filter((result) => result.reachable && result.average_download_mb_s >= Number(profile.speed_test?.min_download_mb_s ?? 0))
+        .map((result) => result.link);
+      summary.counts.speedtest_links = passedSpeedLinks.length;
+      await writeLines(retryArtifactDir, 'vpn_node_speedtest.txt', passedSpeedLinks);
+      await writeJson(retryArtifactDir, 'vpn_node_speedtest_report.json', speedResults);
+      if (passedSpeedLinks.length === 0) {
+        await setStage('speedtest', 'failed');
+        summary.run_status = 'failed';
+        summary.error = 'Error: No links passed speed test';
+        await writeReport();
+        throw new Error('No links passed speed test');
+      }
+      speedResults = speedResults.filter((result) => passedSpeedLinks.includes(result.link));
+      await setStage('speedtest', 'success');
+    } else {
+      const passedSpeedLinks = new Set(await readLines(path.join(retryArtifactDir, 'vpn_node_speedtest.txt')));
+      speedResults = (await readJson<SpeedTestResult[]>(path.join(retryArtifactDir, 'vpn_node_speedtest_report.json'), []))
+        .filter((result) => passedSpeedLinks.has(result.link));
+    }
+
+    if (isStageAtOrAfter('availability', stage)) {
+      if (speedResults.length === 0) {
+        throw new Error('No speedtest results available to retry availability');
+      }
+      await setStage('availability', 'running');
+      availabilityResults = context.stages?.availability
+        ? await context.stages.availability(speedResults, profile.speed_test ?? {}, runtimePath, profile.availability_targets)
+        : await checkLinkAvailabilityBatchWithBackend({
+          results: speedResults,
+          config: profile.speed_test ?? {},
+          runtime_path: runtimePath,
+          targets: profile.availability_targets as any
+        }, { cwd: projectRoot, env: runtimeStageEnv });
+      const availableLinks = availabilityResults.filter((result) => result.all_passed).map((result) => result.link);
+      summary.counts.availability_links = availableLinks.length;
+      await writeLines(retryArtifactDir, 'vpn_node_availability.txt', availableLinks);
+      await writeJson(retryArtifactDir, 'vpn_node_availability_report.json', availabilityResults);
+      if (availableLinks.length === 0) {
+        await setStage('availability', 'failed');
+        summary.run_status = 'failed';
+        summary.error = 'Error: No links passed availability';
+        await writeReport();
+        throw new Error('No links passed availability');
+      }
+      await setStage('availability', 'success');
+    } else if (isStageAtOrAfter(stage, 'postprocess')) {
+      const availableLinks = new Set(await readLines(path.join(retryArtifactDir, 'vpn_node_availability.txt')));
+      availabilityResults = (await readJson<AvailabilityResultDict[]>(path.join(retryArtifactDir, 'vpn_node_availability_report.json'), []))
+        .filter((result) => availableLinks.has(result.link));
+    }
+
+    if (isStageAtOrAfter('postprocess', stage)) {
+      if (availabilityResults.length === 0) {
+        throw new Error('No availability inputs available to retry postprocess');
+      }
+      await setStage('postprocess', 'running');
+      const speedResultByLink = new Map(speedResults.map((result) => [result.link, result]));
+      const countryLookup = context.stages?.countryLookup ?? defaultCountryFor;
+      const rankedLinks = availabilityResults.map((availabilityResult) => ({
+        link: availabilityResult.link,
+        country_code: countryLookup(availabilityResult.link, speedResultByLink.get(availabilityResult.link) ?? availabilityResult, availabilityResult)
+      }));
+      const postprocessed = context.stages?.countryLookup
+        ? { links: rankedLinks.map((item) => decorateLinkWithCountry(item.link, item.country_code)) }
+        : await postprocessLinksWithBackend({ ranked_links: rankedLinks, filters: profile.filters as any }, { cwd: projectRoot, env });
+      finalLinks = postprocessed.links;
+      summary.counts.final_links = finalLinks.length;
+      summary.counts.postprocess_links = finalLinks.length;
+      await writeLines(retryArtifactDir, 'vpn_node_emoji.txt', finalLinks);
+      if (finalLinks.length === 0) {
+        await setStage('postprocess', 'failed');
+        summary.run_status = 'failed';
+        summary.error = 'Error: No links remained after postprocess filters';
+        await writeReport();
+        throw new Error('No links remained after postprocess filters');
+      }
+      await setStage('postprocess', 'success');
+    } else if (isStageAtOrAfter(stage, 'render')) {
+      finalLinks = await readLines(path.join(retryArtifactDir, 'vpn_node_emoji.txt'));
+    }
+
+    if (isStageAtOrAfter('render', stage)) {
+      if (finalLinks.length === 0) {
+        throw new Error('No postprocess output available to retry render');
+      }
+      await setStage('render', 'running');
+      const template = await readFile(path.join(projectRoot, 'templates', 'vmess_node.js'), 'utf8');
+      const rendered = await renderMainDataWithBackend({ template, links: finalLinks }, { cwd: projectRoot, env });
+      await writeFile(path.join(retryArtifactDir, 'vmess_node.js'), rendered.rendered_source, 'utf8');
+      await setStage('render', 'success');
+    }
+
+    if (isStageAtOrAfter('obfuscate', stage)) {
+      const renderedPath = path.join(retryArtifactDir, 'vmess_node.js');
+      if (!fs.existsSync(renderedPath)) {
+        throw new Error('No rendered template available to retry obfuscate');
+      }
+      await setStage('obfuscate', 'running');
+      const renderedSource = await readFile(renderedPath, 'utf8');
+      const secretQuery = String(profile.deploy?.secret_query ?? '');
+      const workerArtifacts = context.stages?.obfuscate
+        ? await context.stages.obfuscate({ transformedSource: renderedSource, config: profile.worker_build ?? {}, secretQuery })
+        : await buildWorkerArtifactsWithBackend({
+          rendered_source: renderedSource,
+          config: profile.worker_build as any,
+          secret_query: secretQuery
+        }, { cwd: projectRoot, env });
+      bundleDir = await writeWorkerArtifacts(retryArtifactDir, profile, renderedSource, workerArtifacts);
+      await setStage('obfuscate', 'success');
+    }
+
+    if (isStageAtOrAfter('deploy', stage)) {
+      if (!fs.existsSync(bundleDir)) {
+        throw new Error('No Pages bundle available to retry deploy');
+      }
+      await setStage('deploy', 'running');
+      const deployment = context.stages?.deploy
+        ? await context.stages.deploy({ projectRoot, bundleDir, profile })
+        : await deployPagesWithBackend({ projectRoot, bundleDir, deploy: profile.deploy ?? {} }, { cwd: projectRoot, env });
+      if (Number(deployment.returncode ?? 1) !== 0) {
+        summary.deployment = safeDeployment(deployment);
+        throw new Error(`Cloudflare deployment failed: ${JSON.stringify(summary.deployment)}`);
+      }
+      summary.deployment = safeDeployment(deployment);
+      await setStage('deploy', 'success');
+    }
+
+    if (isStageAtOrAfter('verify', stage)) {
+      await setStage('verify', 'running');
+      const verification = context.stages?.verify
+        ? await context.stages.verify({ projectRoot, profile, deployment: summary.deployment })
+        : await verifyDeploymentWithBackend({ projectRoot, deploy: profile.deploy ?? {}, deployment: summary.deployment }, { cwd: projectRoot, env });
+      summary.deployment = safeDeployment({ ...summary.deployment, ...verification });
+      if (!isVerifySuccess(verification)) {
+        throw new Error(`Verification failed: ${JSON.stringify(summary.deployment)}`);
+      }
+      await setStage('verify', 'success');
+    }
+  } catch (error) {
+    summary.run_status = 'failed';
+    summary.error = errorMessage(error);
+    if (activeStage && summary.stage_status[activeStage] === 'running') {
+      summary.stage_status[activeStage] = 'failed';
+      emit('stage', { stage: activeStage, status: 'failed' });
+    }
+    await writeReport();
+    emit('summary', summary as unknown as Record<string, unknown>);
+    emit('run_failed', { error: summary.error });
+    throw error;
+  }
+
+  summary.run_status = 'success';
+  summary.error = '';
   await writeReport();
   emit('summary', summary as unknown as Record<string, unknown>);
   return summary;
