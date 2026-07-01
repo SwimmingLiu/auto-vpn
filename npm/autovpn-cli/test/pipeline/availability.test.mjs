@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import http from 'node:http';
+import net from 'node:net';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
@@ -9,6 +11,7 @@ import {
   availabilityResultToDict,
   checkLinkAvailabilityBatchWithBackend,
   evaluateProviderResponse,
+  fetchUrlViaHttpProxy,
   normalizeProviderTargets,
   selectPipelineStageBackend
 } from '../../dist/pipeline/availability.js';
@@ -24,6 +27,31 @@ const speedResult = {
   latency_ms: 80,
   error: ''
 };
+
+function createForwardingHttpProxy(proxyRequests) {
+  return http.createServer((clientRequest, clientResponse) => {
+    proxyRequests.push(String(clientRequest.url));
+    const target = new URL(String(clientRequest.url));
+    const upstreamRequest = http.request({
+      hostname: target.hostname,
+      port: Number(target.port),
+      path: `${target.pathname}${target.search}`,
+      method: clientRequest.method
+    }, (upstreamResponse) => {
+      clientResponse.writeHead(upstreamResponse.statusCode ?? 502, upstreamResponse.headers);
+      upstreamResponse.pipe(clientResponse);
+    });
+    upstreamRequest.once('error', (error) => {
+      clientResponse.writeHead(502, { 'content-type': 'text/plain' });
+      clientResponse.end(error instanceof Error ? error.message : String(error));
+    });
+    if (clientRequest.method === 'GET' || clientRequest.method === 'HEAD') {
+      upstreamRequest.end();
+    } else {
+      clientRequest.pipe(upstreamRequest);
+    }
+  });
+}
 
 test('normalizeProviderTargets matches Python defaults and custom target handling', () => {
   assert.deepEqual(normalizeProviderTargets().map((target) => target.name), ['gemini', 'chatgpt_ios', 'chatgpt_web', 'claude']);
@@ -164,6 +192,149 @@ test('Node availability backend can run direct fetch runtime without Python fall
   assert.equal(result[0].all_passed, true);
   assert.equal(result[0].provider_results.custom.reason, 'ok');
   assert.equal(result[0].provider_results.custom.final_url, 'https://custom.example/');
+});
+
+test('Node availability backend can check providers through Mihomo proxy when requested', async () => {
+  const opened = [];
+  const closed = [];
+  const fetches = [];
+  const result = await checkLinkAvailabilityBatchWithBackend({
+    results: [speedResult],
+    config: { concurrency: 1, timeout_seconds: 20, startup_wait_seconds: 1 },
+    runtime_path: '/opt/mihomo',
+    targets: {
+      custom: { url: 'http://custom.example/ok', enabled: true, allowed_hosts: ['custom.example'], negative_phrases: ['blocked'] }
+    }
+  }, {
+    env: { AUTOVPN_AVAILABILITY_RUNTIME: 'mihomo' },
+    openMihomoRuntime: async (link, options) => {
+      opened.push({ link, options });
+      return {
+        proxies: {
+          http: 'http://127.0.0.1:18080',
+          https: 'http://127.0.0.1:18080'
+        },
+        close: async () => closed.push(link)
+      };
+    },
+    fetchUrlViaHttpProxy: async (url, proxyUrl, timeoutSeconds) => {
+      fetches.push({ url, proxyUrl, timeoutSeconds });
+      return {
+        final_url: url,
+        status_code: 200,
+        body: '<html><title>OK</title><body>available</body></html>'
+      };
+    }
+  });
+
+  assert.deepEqual(opened, [{
+    link: 'vmess://node',
+    options: {
+      runtimePath: '/opt/mihomo',
+      startupWaitSeconds: 1,
+      env: { AUTOVPN_AVAILABILITY_RUNTIME: 'mihomo' }
+    }
+  }]);
+  assert.deepEqual(fetches, [{
+    url: 'http://custom.example/ok',
+    proxyUrl: 'http://127.0.0.1:18080',
+    timeoutSeconds: 20
+  }]);
+  assert.deepEqual(closed, ['vmess://node']);
+  assert.equal(result[0].all_passed, true);
+  assert.equal(result[0].provider_results.custom.reason, 'ok');
+});
+
+test('fetchUrlViaHttpProxy returns provider status and body through an HTTP proxy', async () => {
+  const upstream = http.createServer((request, response) => {
+    assert.equal(request.url, '/ok');
+    response.writeHead(202, { 'content-type': 'text/html' });
+    response.end('<html><title>OK</title><body>available</body></html>');
+  });
+  const proxyRequests = [];
+  const proxy = createForwardingHttpProxy(proxyRequests);
+  await new Promise((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+  await new Promise((resolve) => proxy.listen(0, '127.0.0.1', resolve));
+  const upstreamPort = upstream.address().port;
+  const proxyPort = proxy.address().port;
+
+  try {
+    const response = await fetchUrlViaHttpProxy(
+      `http://127.0.0.1:${upstreamPort}/ok`,
+      `http://127.0.0.1:${proxyPort}`,
+      5
+    );
+
+    assert.deepEqual(response, {
+      final_url: `http://127.0.0.1:${upstreamPort}/ok`,
+      status_code: 202,
+      body: '<html><title>OK</title><body>available</body></html>'
+    });
+    assert.deepEqual(proxyRequests, [`http://127.0.0.1:${upstreamPort}/ok`]);
+  } finally {
+    await new Promise((resolve) => proxy.close(resolve));
+    await new Promise((resolve) => upstream.close(resolve));
+  }
+});
+
+test('fetchUrlViaHttpProxy follows redirects and reports the final provider URL', async () => {
+  const upstream = http.createServer((request, response) => {
+    if (request.url === '/start') {
+      response.writeHead(302, { location: '/final' });
+      response.end();
+      return;
+    }
+    assert.equal(request.url, '/final');
+    response.writeHead(200, { 'content-type': 'text/html' });
+    response.end('<html><title>Final</title><body>available</body></html>');
+  });
+  const proxyRequests = [];
+  const proxy = createForwardingHttpProxy(proxyRequests);
+  await new Promise((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+  await new Promise((resolve) => proxy.listen(0, '127.0.0.1', resolve));
+  const upstreamPort = upstream.address().port;
+  const proxyPort = proxy.address().port;
+
+  try {
+    const response = await fetchUrlViaHttpProxy(
+      `http://127.0.0.1:${upstreamPort}/start`,
+      `http://127.0.0.1:${proxyPort}`,
+      5
+    );
+
+    assert.deepEqual(response, {
+      final_url: `http://127.0.0.1:${upstreamPort}/final`,
+      status_code: 200,
+      body: '<html><title>Final</title><body>available</body></html>'
+    });
+    assert.deepEqual(proxyRequests, [
+      `http://127.0.0.1:${upstreamPort}/start`,
+      `http://127.0.0.1:${upstreamPort}/final`
+    ]);
+  } finally {
+    await new Promise((resolve) => proxy.close(resolve));
+    await new Promise((resolve) => upstream.close(resolve));
+  }
+});
+
+test('fetchUrlViaHttpProxy rejects an HTTPS tunnel that closes before a provider response', async () => {
+  const proxy = net.createServer((socket) => {
+    socket.once('data', () => {
+      socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+      socket.end();
+    });
+  });
+  await new Promise((resolve) => proxy.listen(0, '127.0.0.1', resolve));
+  const proxyPort = proxy.address().port;
+
+  try {
+    await assert.rejects(
+      () => fetchUrlViaHttpProxy('https://example.com/', `http://127.0.0.1:${proxyPort}`, 1),
+      /TLS|socket|closed|ended|reset|hang up/i
+    );
+  } finally {
+    await new Promise((resolve) => proxy.close(resolve));
+  }
 });
 
 test('availability backend selection supports Node default and Python rollback flags', async () => {

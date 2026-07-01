@@ -2,7 +2,7 @@
 
 **Goal:** Add the deterministic Node foundation needed for full per-node Mihomo proxy speedtest and availability parity.
 
-**Architecture:** Port the Python proxy runtime's vmess parsing, Mihomo config generation, proxy environment cleanup, process lifecycle, controller proxy selection, and controller delay probe into a Node module. Keep this slice deterministic and covered by unit tests; proxied download and availability requests remain the next implementation slice.
+**Architecture:** Port the Python proxy runtime's vmess parsing, Mihomo config generation, proxy environment cleanup, process lifecycle, controller proxy selection, controller delay probe, proxied speedtest downloads, and proxied availability checks into Node modules. Keep each slice deterministic and covered by unit tests while preserving Python rollback flags until v3 cutover is complete.
 
 ## Tasks
 
@@ -16,14 +16,15 @@
 - [x] Implement controller `GLOBAL` proxy selection and `/delay` probe helpers.
 - [x] Wire Node speedtest probe phase to Mihomo controller delay when `AUTOVPN_SPEEDTEST_RUNTIME=mihomo`.
 - [x] Wire Node speedtest candidate downloads through the local Mihomo HTTP proxy when `AUTOVPN_SPEEDTEST_RUNTIME=mihomo`.
+- [x] Wire Node availability checks through the local Mihomo HTTP proxy when `AUTOVPN_AVAILABILITY_RUNTIME=mihomo`.
 - [x] Update CLI docs to distinguish Mihomo runtime foundation from full proxy parity.
 - [x] PR, CI, merge, cleanup, and package latest main for runtime lifecycle foundation.
 - [x] PR, CI, merge, cleanup, and package latest main for speedtest probe wiring.
-- [ ] PR, CI, merge, cleanup, and package latest main for proxied speedtest downloads.
+- [x] PR, CI, merge, cleanup, and package latest main for proxied speedtest downloads.
+- [ ] PR, CI, merge, cleanup, and package latest main for proxied availability checks.
 
 ## Follow-Up Boundaries
 
-- Run availability targets through the local Mihomo proxy.
 - `resume-latest`, non-detached `resume`, and non-detached `retry-stage`.
 
 ## Validation

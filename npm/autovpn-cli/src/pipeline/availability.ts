@@ -1,6 +1,14 @@
 import path from 'node:path';
 import { spawn as defaultSpawn, ChildProcess } from 'node:child_process';
+import http from 'node:http';
+import net from 'node:net';
+import tls from 'node:tls';
 import { mergeProjectEnv } from '../runtime/env.js';
+import {
+  openMihomoRuntime as defaultOpenMihomoRuntime,
+  MihomoRuntime,
+  OpenMihomoRuntimeOptions
+} from './proxy-runtime.js';
 
 export type PipelineStageBackend = 'node' | 'python';
 
@@ -11,6 +19,16 @@ type FetchLike = (url: string, init?: Record<string, unknown>) => Promise<{
   url?: string;
   text(): Promise<string>;
 }>;
+
+export interface ProxiedFetchResponse {
+  final_url: string;
+  status_code: number;
+  body: string;
+}
+
+interface ProxiedHttpResponse extends ProxiedFetchResponse {
+  headers: Record<string, string | string[] | undefined>;
+}
 
 interface ResolvedPythonCli {
   command: string;
@@ -71,6 +89,8 @@ export interface AvailabilityBackendOptions {
   spawn?: SpawnLike;
   fetch?: FetchLike;
   resolvePythonCli?: () => ResolvedPythonCli | Promise<ResolvedPythonCli>;
+  openMihomoRuntime?: (link: string, options: OpenMihomoRuntimeOptions) => Promise<Pick<MihomoRuntime, 'proxies' | 'close'>>;
+  fetchUrlViaHttpProxy?: (url: string, proxyUrl: string, timeoutSeconds: number) => Promise<ProxiedFetchResponse>;
   checkLinkAvailability?: (speedResult: SpeedTestResult, config: Record<string, unknown>, options: { runtime_path: string; targets: ProviderTarget[] }) => AvailabilityResult | Promise<AvailabilityResult>;
   pythonAvailability?: (input: AvailabilityBatchInput) => AvailabilityResultDict[] | Promise<AvailabilityResultDict[]>;
   progressCallback?: (message: string) => void;
@@ -350,13 +370,365 @@ async function checkLinkAvailabilityDirect(
   };
 }
 
+function socketConnect(host: string, port: number, timeoutMs: number): Promise<net.Socket> {
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection({ host, port });
+    const timer = setTimeout(() => {
+      socket.destroy();
+      reject(new Error(`proxy connection timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    socket.once('connect', () => {
+      clearTimeout(timer);
+      resolve(socket);
+    });
+    socket.once('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+  });
+}
+
+function splitHttpHeaders(buffer: Buffer): { head: Buffer; body: Buffer } | undefined {
+  const marker = buffer.indexOf('\r\n\r\n');
+  if (marker < 0) {
+    return undefined;
+  }
+  return {
+    head: buffer.subarray(0, marker),
+    body: buffer.subarray(marker + 4)
+  };
+}
+
+function parseHttpStatus(head: Buffer): number {
+  const firstLine = head.toString('latin1').split('\r\n')[0] ?? '';
+  const match = /^HTTP\/\d(?:\.\d)?\s+(\d+)/i.exec(firstLine);
+  if (!match) {
+    throw new Error(`invalid HTTP response: ${firstLine}`);
+  }
+  return Number(match[1]);
+}
+
+function parseHttpHeaders(head: Buffer): Record<string, string | string[] | undefined> {
+  const headers: Record<string, string | string[] | undefined> = {};
+  for (const line of head.toString('latin1').split('\r\n').slice(1)) {
+    const separator = line.indexOf(':');
+    if (separator < 0) {
+      continue;
+    }
+    const key = line.slice(0, separator).trim().toLowerCase();
+    const value = line.slice(separator + 1).trim();
+    const existing = headers[key];
+    if (Array.isArray(existing)) {
+      existing.push(value);
+    } else if (existing) {
+      headers[key] = [existing, value];
+    } else {
+      headers[key] = value;
+    }
+  }
+  return headers;
+}
+
+function headerValue(headers: Record<string, string | string[] | undefined>, name: string): string {
+  const value = headers[name.toLowerCase()];
+  return Array.isArray(value) ? (value[0] ?? '') : (value ?? '');
+}
+
+function redirectTarget(current: URL, response: ProxiedHttpResponse): URL | undefined {
+  if (response.status_code < 300 || response.status_code >= 400) {
+    return undefined;
+  }
+  const location = headerValue(response.headers, 'location');
+  return location ? new URL(location, current) : undefined;
+}
+
+function fetchHttpUrlViaHttpProxy(target: URL, proxy: URL, timeoutMs: number): Promise<ProxiedHttpResponse> {
+  return new Promise((resolve, reject) => {
+    const request = http.request({
+      hostname: proxy.hostname,
+      port: Number(proxy.port || 80),
+      method: 'GET',
+      path: target.toString(),
+      headers: {
+        Host: target.host,
+        Connection: 'close'
+      },
+      agent: false,
+      timeout: timeoutMs
+    }, (response) => {
+      const chunks: Buffer[] = [];
+      response.on('data', (chunk: Buffer) => chunks.push(chunk));
+      response.once('end', () => {
+        resolve({
+          final_url: target.toString(),
+          status_code: Number(response.statusCode ?? 0),
+          body: Buffer.concat(chunks).toString('utf8'),
+          headers: response.headers
+        });
+      });
+    });
+    request.once('timeout', () => {
+      request.destroy(new Error(`proxy fetch timed out after ${timeoutMs}ms`));
+    });
+    request.once('error', reject);
+    request.end();
+  });
+}
+
+function readHttpResponse(socket: net.Socket | tls.TLSSocket, timeoutMs: number): Promise<{ status: number; headers: Record<string, string | string[] | undefined>; body: string }> {
+  return new Promise((resolve, reject) => {
+    let buffered = Buffer.alloc(0);
+    let headersParsed = false;
+    let status = 0;
+    let headers: Record<string, string | string[] | undefined> = {};
+    const chunks: Buffer[] = [];
+    const timer = setTimeout(() => {
+      cleanup();
+      socket.destroy();
+      reject(new Error(`proxy fetch timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      socket.off('data', onData);
+      socket.off('end', onEnd);
+      socket.off('error', onError);
+    };
+    const onError = (error: Error): void => {
+      cleanup();
+      reject(error);
+    };
+    const onEnd = (): void => {
+      cleanup();
+      if (!headersParsed) {
+        reject(new Error('proxy response ended before HTTP headers were received'));
+        return;
+      }
+      resolve({ status, headers, body: Buffer.concat(chunks).toString('utf8') });
+    };
+    const onData = (chunk: Buffer): void => {
+      if (!headersParsed) {
+        buffered = Buffer.concat([buffered, chunk]);
+        const split = splitHttpHeaders(buffered);
+        if (!split) {
+          return;
+        }
+        status = parseHttpStatus(split.head);
+        headers = parseHttpHeaders(split.head);
+        headersParsed = true;
+        if (split.body.byteLength > 0) {
+          chunks.push(split.body);
+        }
+        return;
+      }
+      chunks.push(chunk);
+    };
+    socket.on('data', onData);
+    socket.once('end', onEnd);
+    socket.once('error', onError);
+  });
+}
+
+function readConnectResponse(socket: net.Socket, timeoutMs: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let buffered = Buffer.alloc(0);
+    const timer = setTimeout(() => {
+      cleanup();
+      socket.destroy();
+      reject(new Error(`proxy CONNECT timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      socket.off('data', onData);
+      socket.off('error', onError);
+    };
+    const onError = (error: Error): void => {
+      cleanup();
+      reject(error);
+    };
+    const onData = (chunk: Buffer): void => {
+      buffered = Buffer.concat([buffered, chunk]);
+      const split = splitHttpHeaders(buffered);
+      if (!split) {
+        return;
+      }
+      const status = parseHttpStatus(split.head);
+      cleanup();
+      if (status < 200 || status >= 300) {
+        socket.destroy();
+        reject(new Error(`proxy CONNECT failed with status ${status}`));
+        return;
+      }
+      resolve();
+    };
+    socket.on('data', onData);
+    socket.once('error', onError);
+  });
+}
+
+function waitForSecureConnect(socket: tls.TLSSocket, timeoutMs: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      socket.destroy();
+      reject(new Error(`proxy TLS handshake timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      socket.off('secureConnect', onSecureConnect);
+      socket.off('error', onError);
+    };
+    const onSecureConnect = (): void => {
+      cleanup();
+      resolve();
+    };
+    const onError = (error: Error): void => {
+      cleanup();
+      reject(error);
+    };
+    socket.once('secureConnect', onSecureConnect);
+    socket.once('error', onError);
+  });
+}
+
+async function fetchUrlViaHttpProxyTarget(
+  target: URL,
+  proxy: URL,
+  timeoutMs: number,
+  redirectsRemaining: number
+): Promise<ProxiedFetchResponse> {
+  if (target.protocol === 'http:') {
+    const response = await fetchHttpUrlViaHttpProxy(target, proxy, timeoutMs);
+    const next = redirectTarget(target, response);
+    if (next) {
+      if (redirectsRemaining <= 0) {
+        throw new Error(`too many redirects while fetching ${target.toString()}`);
+      }
+      return fetchUrlViaHttpProxyTarget(next, proxy, timeoutMs, redirectsRemaining - 1);
+    }
+    return {
+      final_url: response.final_url,
+      status_code: response.status_code,
+      body: response.body
+    };
+  }
+
+  if (target.protocol !== 'https:') {
+    throw new Error(`unsupported availability URL protocol: ${target.protocol}`);
+  }
+
+  const proxyPort = Number(proxy.port || 80);
+  const socket = await socketConnect(proxy.hostname, proxyPort, timeoutMs);
+  const targetPort = Number(target.port || 443);
+  socket.write([
+    `CONNECT ${target.hostname}:${targetPort} HTTP/1.1`,
+    `Host: ${target.hostname}:${targetPort}`,
+    'Connection: keep-alive',
+    '',
+    ''
+  ].join('\r\n'));
+  await readConnectResponse(socket, timeoutMs);
+  const secureSocket = tls.connect({
+    socket,
+    servername: target.hostname,
+    rejectUnauthorized: true
+  });
+  await waitForSecureConnect(secureSocket, timeoutMs);
+  secureSocket.write([
+    `GET ${target.pathname || '/'}${target.search} HTTP/1.1`,
+    `Host: ${target.host}`,
+    'Connection: close',
+    '',
+    ''
+  ].join('\r\n'));
+  const response = await readHttpResponse(secureSocket, timeoutMs);
+  const proxiedResponse: ProxiedHttpResponse = {
+    final_url: target.toString(),
+    status_code: response.status,
+    body: response.body,
+    headers: response.headers
+  };
+  const next = redirectTarget(target, proxiedResponse);
+  if (next) {
+    if (redirectsRemaining <= 0) {
+      throw new Error(`too many redirects while fetching ${target.toString()}`);
+    }
+    return fetchUrlViaHttpProxyTarget(next, proxy, timeoutMs, redirectsRemaining - 1);
+  }
+  return {
+    final_url: target.toString(),
+    status_code: response.status,
+    body: response.body
+  };
+}
+
+export async function fetchUrlViaHttpProxy(
+  url: string,
+  proxyUrl: string,
+  timeoutSeconds: number
+): Promise<ProxiedFetchResponse> {
+  const timeoutMs = Math.max(1, timeoutSeconds) * 1000;
+  return fetchUrlViaHttpProxyTarget(new URL(url), new URL(proxyUrl), timeoutMs, 5);
+}
+
+async function checkLinkAvailabilityMihomo(
+  speedResult: SpeedTestResult,
+  config: Record<string, unknown>,
+  options: AvailabilityBackendOptions & { targets: ProviderTarget[]; runtimePath: string }
+): Promise<AvailabilityResult> {
+  const openRuntime = options.openMihomoRuntime ?? defaultOpenMihomoRuntime;
+  const fetchViaProxy = options.fetchUrlViaHttpProxy ?? fetchUrlViaHttpProxy;
+  let runtime: Pick<MihomoRuntime, 'proxies' | 'close'> | undefined;
+  try {
+    runtime = await openRuntime(speedResult.link, {
+      runtimePath: options.runtimePath,
+      startupWaitSeconds: numberOrDefault(config.startup_wait_seconds, 1),
+      env: options.env
+    });
+    const providerResults: Record<string, ProviderCheckResult> = {};
+    const timeoutSeconds = Math.max(1, numberOrDefault(config.timeout_seconds, 20));
+    for (const target of options.targets) {
+      try {
+        const response = await fetchViaProxy(target.url, runtime.proxies.http, timeoutSeconds);
+        providerResults[target.name] = evaluateProviderResponse(target, {
+          final_url: response.final_url,
+          status_code: response.status_code,
+          title: extractTitle(response.body),
+          body: response.body
+        });
+      } catch (error) {
+        providerResults[target.name] = {
+          provider: target.name,
+          passed: false,
+          reason: 'runtime_error',
+          status_code: 0,
+          final_url: target.url,
+          matched_phrase: error instanceof Error ? error.message : String(error)
+        };
+      }
+    }
+    return {
+      speed_result: speedResult,
+      provider_results: providerResults
+    };
+  } finally {
+    await runtime?.close();
+  }
+}
+
 async function checkBatchInNode(input: AvailabilityBatchInput, options: AvailabilityBackendOptions): Promise<AvailabilityResultDict[]> {
   if (input.results.length === 0) {
     return [];
   }
   const targets = normalizeProviderTargets(input.targets);
+  const useMihomoRuntime = String((options.env ?? process.env).AUTOVPN_AVAILABILITY_RUNTIME ?? '').trim().toLowerCase() === 'mihomo';
   const checkLinkAvailability = options.checkLinkAvailability ?? ((speedResult: SpeedTestResult, config: Record<string, unknown>) => (
-    checkLinkAvailabilityDirect(speedResult, config, { targets, fetch: options.fetch })
+    useMihomoRuntime
+      ? checkLinkAvailabilityMihomo(speedResult, config, {
+        ...options,
+        targets,
+        runtimePath: input.runtime_path ?? ''
+      })
+      : checkLinkAvailabilityDirect(speedResult, config, { targets, fetch: options.fetch })
   ));
   const output: AvailabilityResultDict[] = [];
   for (let index = 0; index < input.results.length; index += 1) {
