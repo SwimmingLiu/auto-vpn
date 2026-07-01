@@ -14,12 +14,15 @@
 - [x] Implement temp config creation, Mihomo child process startup, port waiting, and cleanup.
 - [x] Implement automatic local port allocation.
 - [x] Implement controller `GLOBAL` proxy selection and `/delay` probe helpers.
+- [x] Wire Node speedtest probe phase to Mihomo controller delay when `AUTOVPN_SPEEDTEST_RUNTIME=mihomo`.
 - [x] Update CLI docs to distinguish Mihomo runtime foundation from full proxy parity.
-- [ ] PR, CI, merge, cleanup, and package latest main.
+- [x] PR, CI, merge, cleanup, and package latest main for runtime lifecycle foundation.
+- [ ] PR, CI, merge, cleanup, and package latest main for speedtest probe wiring.
 
 ## Follow-Up Boundaries
 
-- Run speedtest download URLs and availability targets through the local Mihomo proxy.
+- Run speedtest download URLs through the local Mihomo proxy.
+- Run availability targets through the local Mihomo proxy.
 - `resume-latest`, non-detached `resume`, and non-detached `retry-stage`.
 
 ## Validation
