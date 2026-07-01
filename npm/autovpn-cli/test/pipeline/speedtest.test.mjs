@@ -73,6 +73,42 @@ test('Node speedtest backend preserves order semantics, emits progress and event
   assert.equal(events[1].candidate_count, 2);
 });
 
+test('Node speedtest backend can run direct fetch runtime without Python fallback', async () => {
+  const calls = [];
+  const timeline = [1000, 1030, 2000, 2100];
+  const results = await speedtestLinksWithBackend({
+    links: ['vmess://direct'],
+    config: {
+      min_download_mb_s: 1,
+      timeout_seconds: 20,
+      concurrency: 1,
+      urls: ['https://speed.example/bytes'],
+      probe_url: 'https://probe.example/204',
+      max_download_bytes: 1024,
+      max_download_candidates: 1
+    }
+  }, {
+    env: { AUTOVPN_NO_PYTHON: '1' },
+    now: () => timeline.shift(),
+    fetch: async (url) => {
+      calls.push(String(url));
+      if (String(url) === 'https://probe.example/204') {
+        return { ok: true, status: 204, arrayBuffer: async () => new ArrayBuffer(0) };
+      }
+      return { ok: true, status: 200, arrayBuffer: async () => new Uint8Array(1024).buffer };
+    }
+  });
+
+  assert.deepEqual(calls, ['https://probe.example/204', 'https://speed.example/bytes']);
+  assert.deepEqual(results, [{
+    link: 'vmess://direct',
+    reachable: true,
+    average_download_mb_s: 0.01,
+    latency_ms: 30,
+    error: ''
+  }]);
+});
+
 test('speedtest backend selection supports Node default and Python rollback flags', async () => {
   assert.equal(selectPipelineStageBackend('speedtest', {}), 'node');
   assert.equal(selectPipelineStageBackend('speedtest', { AUTOVPN_PIPELINE_BACKEND: ' HYBRID ' }), 'node');

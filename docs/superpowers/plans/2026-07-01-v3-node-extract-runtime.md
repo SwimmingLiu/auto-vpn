@@ -20,7 +20,7 @@
 ## Follow-Up Boundaries
 
 - Node extract proxy retry and structured extract event parity.
-- Non-empty Node speedtest runtime without injected `probeLinks` / `testLink`.
+- Full per-node Mihomo proxy speedtest runtime parity. Node now has direct HTTP speedtest runtime without injected `probeLinks` / `testLink`.
 - Non-empty Node availability runtime without injected `checkLinkAvailability`.
 - `resume-latest`, non-detached `resume`, and non-detached `retry-stage`.
 
