@@ -43,7 +43,7 @@ Current Node backend limits:
 - Add `--skip-deploy --skip-verify` when you want an offline Node pipeline check.
 - Plain Node foreground deploy/verify runs use Node for Wrangler deploy, primary blocked-project fallback, share-project sync/fallback, custom-domain binding, custom-domain DNS upsert, and verify.
 - Deploy and verify can be rolled back with `AUTOVPN_STAGE_BACKEND_DEPLOY=python` and `AUTOVPN_STAGE_BACKEND_VERIFY=python`.
-- `AUTOVPN_NO_PYTHON=1` disables implicit Python backend resolution and default Python runtime stage fallback. Use it as a v3 readiness gate. Empty offline runs now complete in Node, and Node has direct HTTP speedtest and availability runtimes; full per-node Mihomo proxy speed tests remain follow-up work.
+- `AUTOVPN_NO_PYTHON=1` disables implicit Python backend resolution and default Python runtime stage fallback. Use it as a v3 readiness gate. Empty offline runs now complete in Node, and Node has direct HTTP speedtest and availability runtimes. Node also has the Mihomo runtime config/environment foundation; full per-node Mihomo proxy speed tests remain follow-up work.
 - `--resume-latest` is not implemented for the Node backend yet.
 - Project `.env` is loaded before resolving profile and artifact paths. Explicit process environment values still win over `.env`.
 
