@@ -6,6 +6,11 @@ import { mergeProjectEnv } from '../runtime/env.js';
 export type PipelineStageBackend = 'node' | 'python';
 
 type SpawnLike = (command: string, args: string[], options?: Record<string, unknown>) => ChildProcess;
+type FetchLike = (url: string, init?: Record<string, unknown>) => Promise<{
+  ok?: boolean;
+  status?: number;
+  text(): Promise<string>;
+}>;
 
 interface ResolvedPythonCli {
   command: string;
@@ -44,6 +49,7 @@ export interface ExtractBackendOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   spawn?: SpawnLike;
+  fetch?: FetchLike;
   resolvePythonCli?: () => ResolvedPythonCli | Promise<ResolvedPythonCli>;
   fetchSourceLinks?: (input: ExtractInput) => ExtractedSourceResult | Promise<ExtractedSourceResult>;
   pythonExtract?: (input: ExtractInput) => ExtractedSourceResult | Promise<ExtractedSourceResult>;
@@ -191,6 +197,100 @@ function pythonCommandFor(resolved: ResolvedPythonCli): string {
   return process.platform === 'win32' ? 'python.exe' : 'python3';
 }
 
+function numberOrDefault(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+async function fetchWithTimeout(fetchImpl: FetchLike, url: string, timeoutMs: number): Promise<Awaited<ReturnType<FetchLike>>> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetchImpl(url, { signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchSourceLinksInNode(input: ExtractInput, options: ExtractBackendOptions): Promise<ExtractedSourceResult> {
+  const source = input.source;
+  const maxIterations = Math.max(0, Math.trunc(numberOrDefault(source.max_iterations, 0)));
+  const minIterations = Math.max(0, Math.trunc(numberOrDefault(source.min_iterations, 0)));
+  const plateauLimit = Math.max(1, Math.trunc(numberOrDefault(source.plateau_limit, 1)));
+  const failureLimit = Math.max(1, Math.trunc(numberOrDefault(source.failure_limit, 1)));
+  const maxRuntimeSeconds = Math.max(0, numberOrDefault(source.max_runtime_seconds, 0));
+  const startIteration = Math.max(1, Math.trunc(numberOrDefault(source.resume_from_iteration, 1)));
+  const fetchImpl = options.fetch ?? globalThis.fetch?.bind(globalThis);
+
+  if (!fetchImpl) {
+    throw new Error('Node extract backend requires fetch support');
+  }
+  if (!String(source.url ?? '').trim() || !String(source.key ?? '').trim()) {
+    return {
+      source_name: input.source_name,
+      requested_iterations: maxIterations,
+      successful_iterations: 0,
+      failed_iterations: 0,
+      links: []
+    };
+  }
+
+  const links: string[] = [];
+  const seen = new Set<string>();
+  let plateau = 0;
+  let successes = 0;
+  let failures = 0;
+  const startedAt = Date.now();
+
+  for (let iteration = startIteration - 1; iteration < maxIterations; iteration += 1) {
+    const attempt = iteration + 1;
+    if (maxRuntimeSeconds > 0 && attempt > minIterations && (Date.now() - startedAt) / 1000 >= maxRuntimeSeconds) {
+      break;
+    }
+
+    try {
+      const url = buildRuntimeSourceUrl(source, iteration);
+      const response = await fetchWithTimeout(fetchImpl, url, 20_000);
+      if (response.ok === false || Number(response.status ?? 200) >= 400) {
+        throw new Error(`HTTP ${Number(response.status ?? 0)}`);
+      }
+      const plaintext = decryptPayload((await response.text()).trim(), source.key);
+      const extracted = extractLinksFromPlaintext(input.source_name, plaintext);
+      successes += 1;
+      failures = 0;
+      let newItems = 0;
+      for (const link of extracted) {
+        if (seen.has(link)) {
+          continue;
+        }
+        seen.add(link);
+        links.push(link);
+        newItems += 1;
+      }
+      plateau = newItems === 0 ? plateau + 1 : 0;
+      if (plateau >= plateauLimit && attempt >= minIterations) {
+        break;
+      }
+    } catch (error) {
+      failures += 1;
+      if (failures >= failureLimit && attempt >= minIterations) {
+        break;
+      }
+      if (attempt >= maxIterations) {
+        throw new Error(`Node extract request failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  }
+
+  return {
+    source_name: input.source_name,
+    requested_iterations: maxIterations,
+    successful_iterations: successes,
+    failed_iterations: failures,
+    links
+  };
+}
+
 async function extractWithPython(input: ExtractInput, options: ExtractBackendOptions): Promise<ExtractedSourceResult> {
   const env = mergeProjectEnv(options.cwd ?? process.cwd(), options.env ?? process.env);
   const resolved = options.resolvePythonCli ? await options.resolvePythonCli() : await defaultResolvePythonCli(env);
@@ -230,8 +330,5 @@ export async function fetchSourceLinksWithBackend(input: ExtractInput, options: 
   if (selectPipelineStageBackend('extract', options.env ?? process.env) === 'python') {
     return options.pythonExtract ? options.pythonExtract(input) : extractWithPython(input, options);
   }
-  if (!options.fetchSourceLinks) {
-    throw new Error('Node extract backend requires a fetchSourceLinks implementation; use Python backend for runtime extraction');
-  }
-  return options.fetchSourceLinks(input);
+  return options.fetchSourceLinks ? options.fetchSourceLinks(input) : fetchSourceLinksInNode(input, options);
 }

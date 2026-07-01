@@ -17,7 +17,7 @@
 
 ## Expected Behavior
 
-`AUTOVPN_NO_PYTHON=1 AUTOVPN_BACKEND=node autovpn run --skip-deploy --skip-verify` must not install or launch Python. Until Node extract/speedtest/availability runtime implementations are complete, it may fail, but the failure must point at the first unmigrated Node boundary.
+`AUTOVPN_NO_PYTHON=1 AUTOVPN_BACKEND=node autovpn run --skip-deploy --skip-verify` must not install or launch Python. Empty offline runs can now complete fully in Node. Until non-empty speedtest and availability runtime implementations are complete, runs that reach those boundaries may still fail, but the failure must point at the first unmigrated Node boundary.
 
 ## Validation
 

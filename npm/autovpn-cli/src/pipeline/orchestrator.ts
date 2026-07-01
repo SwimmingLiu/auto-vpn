@@ -108,7 +108,11 @@ async function readProfile(projectRoot: string, env: NodeJS.ProcessEnv): Promise
 }
 
 function enabledSources(profile: PipelineProfile): Array<[string, SourceConfigInput]> {
-  return Object.entries(profile.sources ?? {}).filter(([, source]) => source.enabled !== false);
+  return Object.entries(profile.sources ?? {}).filter(([, source]) => (
+    source.enabled !== false
+    && String(source.url ?? '').trim()
+    && String(source.key ?? '').trim()
+  ));
 }
 
 function linesText(lines: string[]): string {

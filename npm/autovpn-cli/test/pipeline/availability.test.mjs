@@ -127,6 +127,17 @@ test('Node availability batch preserves order, emits events, and downgrades runt
   assert.deepEqual(events.map((event) => event.type), ['availability_link_result', 'availability_link_result']);
 });
 
+test('Node availability returns an empty result without requiring a runtime checker', async () => {
+  assert.deepEqual(await checkLinkAvailabilityBatchWithBackend({
+    results: [],
+    config: {},
+    runtime_path: '/tmp/runtime',
+    targets: null
+  }, {
+    env: { AUTOVPN_NO_PYTHON: '1' }
+  }), []);
+});
+
 test('availability backend selection supports Node default and Python rollback flags', async () => {
   assert.equal(selectPipelineStageBackend('availability', {}), 'node');
   assert.equal(selectPipelineStageBackend('availability', { AUTOVPN_PIPELINE_BACKEND: ' HYBRID ' }), 'node');

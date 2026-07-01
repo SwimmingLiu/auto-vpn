@@ -97,7 +97,7 @@ AUTOVPN_BACKEND=node autovpn run --project-root /opt/autovpn/vpn-subscription-au
 
 This mode writes normal artifacts and JSONL events, loads project `.env` before resolving profile and artifact paths, and uses the Node deploy/verify stages for plain Cloudflare Pages flows, including primary blocked-project fallback, share-project subscription sync, custom-domain binding, and custom-domain DNS upsert. Detached job creation, status, logs, stop, detached resume, and detached retry are managed by the Node job manager; `AUTOVPN_BACKEND=node run --detach` now spawns the Node CLI worker, while detached resume/retry workers still execute the compatible Python CLI command until those runtimes are migrated.
 
-`AUTOVPN_NO_PYTHON=1` is the v3 cutover gate: it disables implicit Python backend resolution and Python stage fallback. Before the remaining runtime stages are fully Node-native, this mode is expected to fail clearly at the first unmigrated runtime boundary instead of installing or launching Python.
+`AUTOVPN_NO_PYTHON=1` is the v3 cutover gate: it disables implicit Python backend resolution and Python stage fallback. Offline Node runs can complete without Python when no source returns nodes; non-empty speedtest and availability runtime checks remain the next Node-native boundary.
 
 For long terminal or Agent runs, start a detached job and reconnect later:
 
@@ -180,7 +180,7 @@ AUTOVPN_BACKEND=node npx -y ./npm/autovpn-cli/*.tgz run --project-root "$PWD" --
 
 Deploy under `AUTOVPN_BACKEND=node` is still experimental. Plain Wrangler Pages deploys, primary blocked-project fallback creation, share-project `SUB` sync, share-project fallback, custom-domain binding, custom-domain DNS upsert, fallback config cloning, and verify run in Node. Set `AUTOVPN_STAGE_BACKEND_DEPLOY=python` or `AUTOVPN_STAGE_BACKEND_VERIFY=python` only when you need to roll a stage back to the Python adapter.
 
-Use `AUTOVPN_NO_PYTHON=1` when validating v3 cutover readiness. It prevents the wrapper and Node orchestrator from silently resolving, installing, or launching the Python backend; until every runtime stage is migrated, failures should identify the first remaining Node boundary.
+Use `AUTOVPN_NO_PYTHON=1` when validating v3 cutover readiness. It prevents the wrapper and Node orchestrator from silently resolving, installing, or launching the Python backend. Empty offline runs now complete in Node; runs that reach an unmigrated non-empty runtime boundary should fail clearly instead of falling back.
 
 For long terminal or Agent runs, start a detached job and reconnect later:
 
