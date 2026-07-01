@@ -18,7 +18,7 @@
 ## Follow-Up Boundaries
 
 - Full per-node Mihomo proxy speedtest parity in Node.
-- Non-empty Node availability runtime without injected `checkLinkAvailability`.
+- Full proxy-based availability parity in Node. Node now has direct HTTP availability runtime without injected `checkLinkAvailability`.
 - `resume-latest`, non-detached `resume`, and non-detached `retry-stage`.
 
 ## Validation

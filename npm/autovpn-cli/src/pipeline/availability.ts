@@ -5,6 +5,12 @@ import { mergeProjectEnv } from '../runtime/env.js';
 export type PipelineStageBackend = 'node' | 'python';
 
 type SpawnLike = (command: string, args: string[], options?: Record<string, unknown>) => ChildProcess;
+type FetchLike = (url: string, init?: Record<string, unknown>) => Promise<{
+  ok?: boolean;
+  status?: number;
+  url?: string;
+  text(): Promise<string>;
+}>;
 
 interface ResolvedPythonCli {
   command: string;
@@ -63,6 +69,7 @@ export interface AvailabilityBackendOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   spawn?: SpawnLike;
+  fetch?: FetchLike;
   resolvePythonCli?: () => ResolvedPythonCli | Promise<ResolvedPythonCli>;
   checkLinkAvailability?: (speedResult: SpeedTestResult, config: Record<string, unknown>, options: { runtime_path: string; targets: ProviderTarget[] }) => AvailabilityResult | Promise<AvailabilityResult>;
   pythonAvailability?: (input: AvailabilityBatchInput) => AvailabilityResultDict[] | Promise<AvailabilityResultDict[]>;
@@ -286,20 +293,77 @@ function emitEvent(callback: AvailabilityBackendOptions['eventCallback'], eventT
   }
 }
 
+function numberOrDefault(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+async function fetchWithTimeout(fetchImpl: FetchLike, url: string, timeoutMs: number): Promise<Awaited<ReturnType<FetchLike>>> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetchImpl(url, { signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function extractTitle(html: string): string {
+  return /<title[^>]*>([\s\S]*?)<\/title>/i.exec(html)?.[1]?.trim() ?? '';
+}
+
+async function checkLinkAvailabilityDirect(
+  speedResult: SpeedTestResult,
+  config: Record<string, unknown>,
+  options: { targets: ProviderTarget[]; fetch?: FetchLike }
+): Promise<AvailabilityResult> {
+  const fetchImpl = options.fetch ?? globalThis.fetch?.bind(globalThis);
+  if (!fetchImpl) {
+    throw new Error('Node availability backend requires fetch support');
+  }
+  const timeoutMs = Math.max(1, numberOrDefault(config.timeout_seconds, 20)) * 1000;
+  const providerResults: Record<string, ProviderCheckResult> = {};
+  for (const target of options.targets) {
+    try {
+      const response = await fetchWithTimeout(fetchImpl, target.url, timeoutMs);
+      const body = await response.text();
+      providerResults[target.name] = evaluateProviderResponse(target, {
+        final_url: String(response.url ?? target.url),
+        status_code: Number(response.status ?? 200),
+        title: extractTitle(body),
+        body
+      });
+    } catch (error) {
+      providerResults[target.name] = {
+        provider: target.name,
+        passed: false,
+        reason: 'runtime_error',
+        status_code: 0,
+        final_url: target.url,
+        matched_phrase: error instanceof Error ? error.message : String(error)
+      };
+    }
+  }
+  return {
+    speed_result: speedResult,
+    provider_results: providerResults
+  };
+}
+
 async function checkBatchInNode(input: AvailabilityBatchInput, options: AvailabilityBackendOptions): Promise<AvailabilityResultDict[]> {
   if (input.results.length === 0) {
     return [];
   }
-  if (!options.checkLinkAvailability) {
-    throw new Error('Node availability backend requires a checkLinkAvailability implementation; use Python backend for runtime checks');
-  }
   const targets = normalizeProviderTargets(input.targets);
+  const checkLinkAvailability = options.checkLinkAvailability ?? ((speedResult: SpeedTestResult, config: Record<string, unknown>) => (
+    checkLinkAvailabilityDirect(speedResult, config, { targets, fetch: options.fetch })
+  ));
   const output: AvailabilityResultDict[] = [];
   for (let index = 0; index < input.results.length; index += 1) {
     const speedResult = input.results[index];
     let availability: AvailabilityResultDict;
     try {
-      availability = availabilityResultToDict(await options.checkLinkAvailability(speedResult, input.config, {
+      availability = availabilityResultToDict(await checkLinkAvailability(speedResult, input.config, {
         runtime_path: input.runtime_path ?? '',
         targets
       }));

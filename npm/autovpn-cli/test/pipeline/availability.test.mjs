@@ -138,6 +138,34 @@ test('Node availability returns an empty result without requiring a runtime chec
   }), []);
 });
 
+test('Node availability backend can run direct fetch runtime without Python fallback', async () => {
+  const calls = [];
+  const result = await checkLinkAvailabilityBatchWithBackend({
+    results: [speedResult],
+    config: { concurrency: 1, timeout_seconds: 20 },
+    runtime_path: '/tmp/runtime',
+    targets: {
+      custom: { url: 'https://custom.example/', enabled: true, allowed_hosts: ['custom.example'], negative_phrases: ['blocked'] }
+    }
+  }, {
+    env: { AUTOVPN_NO_PYTHON: '1' },
+    fetch: async (url) => {
+      calls.push(String(url));
+      return {
+        ok: true,
+        status: 200,
+        url: String(url),
+        text: async () => '<html><title>OK</title><body>available</body></html>'
+      };
+    }
+  });
+
+  assert.deepEqual(calls, ['https://custom.example/']);
+  assert.equal(result[0].all_passed, true);
+  assert.equal(result[0].provider_results.custom.reason, 'ok');
+  assert.equal(result[0].provider_results.custom.final_url, 'https://custom.example/');
+});
+
 test('availability backend selection supports Node default and Python rollback flags', async () => {
   assert.equal(selectPipelineStageBackend('availability', {}), 'node');
   assert.equal(selectPipelineStageBackend('availability', { AUTOVPN_PIPELINE_BACKEND: ' HYBRID ' }), 'node');
