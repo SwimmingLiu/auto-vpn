@@ -9,7 +9,7 @@ import { readOptionValue, resolveProjectRoot } from '../runtime/paths.js';
 import { redactText } from '../runtime/redaction.js';
 
 type ReadPackageVersion = () => string | Promise<string>;
-type ShellBackend = Pick<AutoVpnBackend, 'executeCli'> & Partial<Pick<AutoVpnBackend, 'run' | 'kind'>>;
+type ShellBackend = Pick<AutoVpnBackend, 'executeCli'> & Partial<Pick<AutoVpnBackend, 'kind' | 'run' | 'retryStage' | 'resume'>>;
 type CreateBackend = (options: { env: NodeJS.ProcessEnv; cwd: string; runForwarder: RunForwarder }) => ShellBackend;
 
 export interface CliShellOptions {
@@ -65,30 +65,56 @@ function eventOutputFormat(argv: string[]): 'jsonl' | 'human' {
 }
 
 async function runForegroundPipeline(argv: string[], backend: ShellBackend, io: CliIo, cwd: string): Promise<number | undefined> {
-  if (argv[0] !== 'run' || hasFlag(argv, '--detach') || backend.kind !== 'node' || typeof backend.run !== 'function') {
+  if (backend.kind !== 'node') {
     return undefined;
   }
   const output = eventOutputFormat(argv);
-  for await (const event of backend.run({
-    projectRoot: resolveProjectRoot(argv, cwd),
-    skipDeploy: hasFlag(argv, '--skip-deploy'),
-    skipVerify: hasFlag(argv, '--skip-verify'),
-    resumeLatest: hasFlag(argv, '--resume-latest'),
-    output,
-    eventLog: readOptionValue(argv, '--event-log'),
-    humanLog: readOptionValue(argv, '--human-log')
-  })) {
+  let events: AsyncIterable<unknown> | undefined;
+  if (argv[0] === 'run' && !hasFlag(argv, '--detach') && typeof backend.run === 'function') {
+    events = backend.run({
+      projectRoot: resolveProjectRoot(argv, cwd),
+      skipDeploy: hasFlag(argv, '--skip-deploy'),
+      skipVerify: hasFlag(argv, '--skip-verify'),
+      resumeLatest: hasFlag(argv, '--resume-latest'),
+      output,
+      eventLog: readOptionValue(argv, '--event-log'),
+      humanLog: readOptionValue(argv, '--human-log')
+    });
+  } else if (argv[0] === 'retry-stage' && typeof backend.retryStage === 'function') {
+    events = backend.retryStage({
+      projectRoot: resolveProjectRoot(argv, cwd),
+      artifactDir: readOptionValue(argv, '--artifact-dir') ?? '',
+      stage: readOptionValue(argv, '--stage') ?? '',
+      output,
+      eventLog: readOptionValue(argv, '--event-log'),
+      humanLog: readOptionValue(argv, '--human-log')
+    });
+  } else if (argv[0] === 'resume' && typeof backend.resume === 'function') {
+    events = backend.resume({
+      projectRoot: resolveProjectRoot(argv, cwd),
+      mode: argv[1] === 'speedtest' ? 'speedtest' : 'pipeline',
+      session: readOptionValue(argv, '--session') ?? '',
+      output,
+      eventLog: readOptionValue(argv, '--event-log'),
+      humanLog: readOptionValue(argv, '--human-log')
+    });
+  }
+  if (!events) {
+    return undefined;
+  }
+  for await (const event of events) {
+    const backendEvent = event as Record<string, unknown>;
     if (output === 'human') {
-      if (event.type === 'log' && typeof event.message === 'string') {
-        io.writeStdout(`${event.message}\n`);
-      } else if (event.type === 'stage') {
-        io.writeStdout(`[${String(event.stage ?? '')}] ${String(event.status ?? '')}\n`);
-      } else if (event.type === 'summary') {
-        io.writeStdout(`summary: ${String(event.run_status ?? '')} ${String(event.artifact_dir ?? '')}\n`);
+      if (backendEvent.type === 'log' && typeof backendEvent.message === 'string') {
+        io.writeStdout(`${backendEvent.message}\n`);
+      } else if (backendEvent.type === 'stage') {
+        io.writeStdout(`[${String(backendEvent.stage ?? '')}] ${String(backendEvent.status ?? '')}\n`);
+      } else if (backendEvent.type === 'summary') {
+        io.writeStdout(`summary: ${String(backendEvent.run_status ?? '')} ${String(backendEvent.artifact_dir ?? '')}\n`);
       }
       continue;
     }
-    io.writeStdout(`${JSON.stringify(event)}\n`);
+    io.writeStdout(`${JSON.stringify(backendEvent)}\n`);
   }
   return 0;
 }
