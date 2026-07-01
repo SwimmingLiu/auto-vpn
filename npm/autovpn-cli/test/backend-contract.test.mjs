@@ -773,6 +773,21 @@ test('NodeBackend streams events before pipeline completion', async () => {
   }, /profile\.toml/);
 });
 
+test('NodeBackend retryStage uses the native retry path instead of unsupported fallback', async () => {
+  const projectRoot = await mkdir(path.join(os.tmpdir(), `autovpn-node-backend-retry-${Date.now()}`, 'project'), { recursive: true });
+  const artifactDir = path.join(projectRoot, 'missing-artifact');
+  const backend = new NodeBackend({
+    env: { VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime') },
+    cwd: projectRoot
+  });
+
+  await assert.rejects(async () => {
+    for await (const _event of backend.retryStage({ projectRoot, artifactDir, stage: 'render', output: 'jsonl' })) {
+      // consume
+    }
+  }, /artifact dir not found/);
+});
+
 test('PythonBackend can stream normalized events from captured JSONL stdout', async () => {
   const child = new EventEmitter();
   child.stdout = new EventEmitter();
