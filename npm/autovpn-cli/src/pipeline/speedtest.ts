@@ -1,5 +1,7 @@
 import path from 'node:path';
 import { spawn as defaultSpawn, ChildProcess } from 'node:child_process';
+import net from 'node:net';
+import tls from 'node:tls';
 import { mergeProjectEnv } from '../runtime/env.js';
 import {
   openMihomoRuntime as defaultOpenMihomoRuntime,
@@ -62,8 +64,9 @@ export interface SpeedTestBackendOptions {
   fetch?: FetchLike;
   now?: () => number;
   resolvePythonCli?: () => ResolvedPythonCli | Promise<ResolvedPythonCli>;
-  openMihomoRuntime?: (link: string, options: OpenMihomoRuntimeOptions) => Promise<Pick<MihomoRuntime, 'controllerUrl' | 'proxyName' | 'close'>>;
+  openMihomoRuntime?: (link: string, options: OpenMihomoRuntimeOptions) => Promise<Pick<MihomoRuntime, 'controllerUrl' | 'proxyName' | 'proxies' | 'close'>>;
   probeMihomoProxyDelay?: (controllerUrl: string, proxyName: string, probeUrl: string, timeoutSeconds: number) => Promise<number>;
+  downloadUrlViaHttpProxy?: (url: string, proxyUrl: string, maxBytes: number, timeoutSeconds: number) => Promise<number>;
   probeLinks?: (links: string[], config: Required<SpeedTestConfigInput>, options: { runtime_path: string }) => ProbeResult[] | Promise<ProbeResult[]>;
   testLink?: (link: string, config: Required<SpeedTestConfigInput>, options: { runtime_path: string }) => SpeedTestResult | Promise<SpeedTestResult>;
   pythonSpeedtest?: (input: SpeedTestInput) => SpeedTestResult[] | Promise<SpeedTestResult[]>;
@@ -187,6 +190,201 @@ function requireOkResponse(response: Awaited<ReturnType<FetchLike>>, allowedStat
   }
 }
 
+function socketConnect(host: string, port: number, timeoutMs: number): Promise<net.Socket> {
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection({ host, port });
+    const timer = setTimeout(() => {
+      socket.destroy();
+      reject(new Error(`proxy connection timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    socket.once('connect', () => {
+      clearTimeout(timer);
+      resolve(socket);
+    });
+    socket.once('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+  });
+}
+
+function splitHttpHeaders(buffer: Buffer): { head: Buffer; body: Buffer } | undefined {
+  const marker = buffer.indexOf('\r\n\r\n');
+  if (marker < 0) {
+    return undefined;
+  }
+  return {
+    head: buffer.subarray(0, marker).subarray(0),
+    body: buffer.subarray(marker + 4).subarray(0)
+  };
+}
+
+function parseHttpStatus(head: Buffer): number {
+  const firstLine = head.toString('latin1').split('\r\n')[0] ?? '';
+  const match = /^HTTP\/\d(?:\.\d)?\s+(\d+)/i.exec(firstLine);
+  if (!match) {
+    throw new Error(`invalid HTTP response: ${firstLine}`);
+  }
+  return Number(match[1]);
+}
+
+function readHttpBodyBytes(socket: net.Socket | tls.TLSSocket, maxBytes: number, timeoutMs: number): Promise<number> {
+  return new Promise((resolve, reject) => {
+    let buffered = Buffer.alloc(0);
+    let headersParsed = false;
+    let total = 0;
+    const timer = setTimeout(() => {
+      cleanup();
+      socket.destroy();
+      reject(new Error(`proxy download timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      socket.off('data', onData);
+      socket.off('end', onEnd);
+      socket.off('error', onError);
+    };
+    const finish = (bytes: number): void => {
+      cleanup();
+      socket.destroy();
+      resolve(bytes);
+    };
+    const onError = (error: Error): void => {
+      cleanup();
+      reject(error);
+    };
+    const onEnd = (): void => {
+      cleanup();
+      resolve(total);
+    };
+    const countBody = (chunk: Buffer): void => {
+      total += Math.min(chunk.byteLength, Math.max(maxBytes - total, 0));
+      if (total >= maxBytes) {
+        finish(maxBytes);
+      }
+    };
+    const onData = (chunk: Buffer): void => {
+      if (!headersParsed) {
+        buffered = Buffer.concat([buffered, chunk]);
+        const split = splitHttpHeaders(buffered);
+        if (!split) {
+          return;
+        }
+        const status = parseHttpStatus(split.head);
+        if (status < 200 || status >= 300) {
+          cleanup();
+          socket.destroy();
+          reject(new Error(`unexpected status ${status}`));
+          return;
+        }
+        headersParsed = true;
+        if (split.body.byteLength > 0) {
+          countBody(split.body);
+        }
+        return;
+      }
+      countBody(chunk);
+    };
+    socket.on('data', onData);
+    socket.once('end', onEnd);
+    socket.once('error', onError);
+  });
+}
+
+function readConnectResponse(socket: net.Socket, timeoutMs: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let buffered = Buffer.alloc(0);
+    const timer = setTimeout(() => {
+      cleanup();
+      socket.destroy();
+      reject(new Error(`proxy CONNECT timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      socket.off('data', onData);
+      socket.off('error', onError);
+    };
+    const onError = (error: Error): void => {
+      cleanup();
+      reject(error);
+    };
+    const onData = (chunk: Buffer): void => {
+      buffered = Buffer.concat([buffered, chunk]);
+      const split = splitHttpHeaders(buffered);
+      if (!split) {
+        return;
+      }
+      const status = parseHttpStatus(split.head);
+      cleanup();
+      if (status < 200 || status >= 300) {
+        socket.destroy();
+        reject(new Error(`proxy CONNECT failed with status ${status}`));
+        return;
+      }
+      resolve();
+    };
+    socket.on('data', onData);
+    socket.once('error', onError);
+  });
+}
+
+export async function downloadUrlViaHttpProxy(
+  url: string,
+  proxyUrl: string,
+  maxBytes: number,
+  timeoutSeconds: number
+): Promise<number> {
+  const target = new URL(url);
+  const proxy = new URL(proxyUrl);
+  const timeoutMs = Math.max(1, timeoutSeconds) * 1000;
+  const proxyPort = Number(proxy.port || 80);
+  const socket = await socketConnect(proxy.hostname, proxyPort, timeoutMs);
+  const requestPath = `${target.pathname || '/'}${target.search}`;
+  const targetPort = Number(target.port || (target.protocol === 'https:' ? 443 : 80));
+
+  if (target.protocol === 'http:') {
+    socket.write([
+      `GET ${target.toString()} HTTP/1.1`,
+      `Host: ${target.host}`,
+      'Connection: close',
+      '',
+      ''
+    ].join('\r\n'));
+    return await readHttpBodyBytes(socket, Math.max(1, maxBytes), timeoutMs);
+  }
+
+  if (target.protocol !== 'https:') {
+    socket.destroy();
+    throw new Error(`unsupported speedtest URL protocol: ${target.protocol}`);
+  }
+
+  socket.write([
+    `CONNECT ${target.hostname}:${targetPort} HTTP/1.1`,
+    `Host: ${target.hostname}:${targetPort}`,
+    'Connection: keep-alive',
+    '',
+    ''
+  ].join('\r\n'));
+  await readConnectResponse(socket, timeoutMs);
+  const secureSocket = tls.connect({
+    socket,
+    servername: target.hostname,
+    rejectUnauthorized: false
+  });
+  await new Promise<void>((resolve, reject) => {
+    secureSocket.once('secureConnect', resolve);
+    secureSocket.once('error', reject);
+  });
+  secureSocket.write([
+    `GET ${requestPath} HTTP/1.1`,
+    `Host: ${target.host}`,
+    'Connection: close',
+    '',
+    ''
+  ].join('\r\n'));
+  return await readHttpBodyBytes(secureSocket, Math.max(1, maxBytes), timeoutMs);
+}
+
 async function probeLinksDirect(
   links: string[],
   config: Required<SpeedTestConfigInput>,
@@ -284,6 +482,63 @@ async function testLinkDirect(
   };
 }
 
+async function testLinkMihomo(
+  link: string,
+  config: Required<SpeedTestConfigInput>,
+  runtimePath: string,
+  options: SpeedTestBackendOptions
+): Promise<SpeedTestResult> {
+  const openRuntime = options.openMihomoRuntime ?? defaultOpenMihomoRuntime;
+  const downloadViaProxy = options.downloadUrlViaHttpProxy ?? downloadUrlViaHttpProxy;
+  let runtime: Pick<MihomoRuntime, 'proxies' | 'close'> | undefined;
+  try {
+    runtime = await openRuntime(link, {
+      runtimePath,
+      startupWaitSeconds: config.startup_wait_seconds,
+      env: options.env
+    });
+    const now = options.now ?? defaultNow;
+    const speedValues: number[] = [];
+    const failures: string[] = [];
+    for (const url of config.urls) {
+      const started = now();
+      try {
+        const total = await downloadViaProxy(url, runtime.proxies.http, Math.max(1, Number(config.max_download_bytes)), config.timeout_seconds);
+        const elapsedSeconds = Math.max((now() - started) / 1000, 0.001);
+        speedValues.push(total / elapsedSeconds / 1024 / 1024);
+      } catch (error) {
+        failures.push(`${url}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    if (speedValues.length === 0) {
+      return {
+        link,
+        reachable: false,
+        average_download_mb_s: 0,
+        latency_ms: 0,
+        error: failures.join('; ') || 'all speed test urls failed'
+      };
+    }
+    return {
+      link,
+      reachable: true,
+      average_download_mb_s: aggregateSpeedMeasurements(speedValues),
+      latency_ms: 0,
+      error: failures.join('; ')
+    };
+  } catch (error) {
+    return {
+      link,
+      reachable: false,
+      average_download_mb_s: 0,
+      latency_ms: 0,
+      error: error instanceof Error ? error.message : String(error)
+    };
+  } finally {
+    await runtime?.close();
+  }
+}
+
 async function speedtestInNode(input: SpeedTestInput, options: SpeedTestBackendOptions): Promise<SpeedTestResult[]> {
   if (input.links.length === 0) {
     return [];
@@ -298,7 +553,11 @@ async function speedtestInNode(input: SpeedTestInput, options: SpeedTestBackendO
       ? probeLinksMihomo(links, config, runtimePath, options)
       : probeLinksDirect(links, config, options)
   ));
-  const testLink = options.testLink ?? ((link: string) => testLinkDirect(link, config, options));
+  const testLink = options.testLink ?? ((link: string) => (
+    useMihomoRuntime
+      ? testLinkMihomo(link, config, runtimePath, options)
+      : testLinkDirect(link, config, options)
+  ));
   const runtimeCore = useMihomoRuntime || options.probeLinks || options.testLink ? 'mihomo' : 'direct';
   options.progressCallback?.(`[speedtest] runtime_core=${runtimeCore} probe_url=${config.probe_url}`);
   emitEvent(options.eventCallback, 'speedtest_runtime', {

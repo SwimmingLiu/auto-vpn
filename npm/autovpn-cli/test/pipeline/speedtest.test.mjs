@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
@@ -7,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   aggregateSpeedMeasurements,
+  downloadUrlViaHttpProxy,
   selectPipelineStageBackend,
   selectSpeedtestCandidates,
   speedtestLinksWithBackend
@@ -152,6 +154,100 @@ test('Node speedtest backend can probe links through Mihomo runtime when request
     { link: 'vmess://down', reachable: false, average_download_mb_s: 0, latency_ms: 0, error: 'mihomo delay failed' },
     { link: 'vmess://ok', reachable: true, average_download_mb_s: 2, latency_ms: 42, error: '' }
   ]);
+});
+
+test('downloadUrlViaHttpProxy downloads bytes through an HTTP proxy', async () => {
+  const upstream = http.createServer((request, response) => {
+    assert.equal(request.url, '/bytes');
+    response.writeHead(200, { 'content-type': 'application/octet-stream' });
+    response.end(Buffer.alloc(1024, 7));
+  });
+  const proxyRequests = [];
+  const proxy = http.createServer((clientRequest, clientResponse) => {
+    proxyRequests.push(String(clientRequest.url));
+    const target = new URL(String(clientRequest.url));
+    const upstreamRequest = http.request({
+      hostname: target.hostname,
+      port: Number(target.port),
+      path: `${target.pathname}${target.search}`,
+      method: clientRequest.method
+    }, (upstreamResponse) => {
+      clientResponse.writeHead(upstreamResponse.statusCode ?? 502, upstreamResponse.headers);
+      upstreamResponse.pipe(clientResponse);
+    });
+    clientRequest.pipe(upstreamRequest);
+  });
+  await new Promise((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+  await new Promise((resolve) => proxy.listen(0, '127.0.0.1', resolve));
+  const upstreamPort = upstream.address().port;
+  const proxyPort = proxy.address().port;
+
+  try {
+    const bytes = await downloadUrlViaHttpProxy(
+      `http://127.0.0.1:${upstreamPort}/bytes`,
+      `http://127.0.0.1:${proxyPort}`,
+      512,
+      5
+    );
+
+    assert.equal(bytes, 512);
+    assert.deepEqual(proxyRequests, [`http://127.0.0.1:${upstreamPort}/bytes`]);
+  } finally {
+    await new Promise((resolve) => proxy.close(resolve));
+    await new Promise((resolve) => upstream.close(resolve));
+  }
+});
+
+test('Node speedtest backend downloads candidate URLs through Mihomo proxy when requested', async () => {
+  const downloads = [];
+  const closed = [];
+  const results = await speedtestLinksWithBackend({
+    links: ['vmess://ok'],
+    config: {
+      min_download_mb_s: 0.001,
+      timeout_seconds: 20,
+      concurrency: 1,
+      urls: ['http://speed.example/bytes'],
+      probe_url: 'https://probe.example/204',
+      max_download_bytes: 1024,
+      max_download_candidates: 1
+    }
+  }, {
+    env: { AUTOVPN_SPEEDTEST_RUNTIME: 'mihomo' },
+    now: (() => {
+      const timeline = [1000, 2000];
+      return () => timeline.shift();
+    })(),
+    openMihomoRuntime: async (link) => ({
+      controllerUrl: 'http://controller/ok',
+      proxyName: 'runtime-node',
+      proxies: {
+        http: 'http://127.0.0.1:18080',
+        https: 'http://127.0.0.1:18080'
+      },
+      close: async () => closed.push(link)
+    }),
+    probeMihomoProxyDelay: async () => 33,
+    downloadUrlViaHttpProxy: async (url, proxyUrl, maxBytes, timeoutSeconds) => {
+      downloads.push({ url, proxyUrl, maxBytes, timeoutSeconds });
+      return 1024;
+    }
+  });
+
+  assert.deepEqual(downloads, [{
+    url: 'http://speed.example/bytes',
+    proxyUrl: 'http://127.0.0.1:18080',
+    maxBytes: 1024,
+    timeoutSeconds: 20
+  }]);
+  assert.deepEqual(closed, ['vmess://ok', 'vmess://ok']);
+  assert.deepEqual(results, [{
+    link: 'vmess://ok',
+    reachable: true,
+    average_download_mb_s: 0.001,
+    latency_ms: 33,
+    error: ''
+  }]);
 });
 
 test('speedtest backend selection supports Node default and Python rollback flags', async () => {
