@@ -29,6 +29,10 @@ export function resolvePythonCli({
   packageVersion = readPackageVersion(),
   spawnSync = defaultSpawnSync
 } = {}) {
+  if (isEnabled(env.AUTOVPN_NO_PYTHON)) {
+    throw new WrapperError('Python backend is disabled by AUTOVPN_NO_PYTHON.');
+  }
+
   const explicit = String(env.AUTOVPN_PYTHON_CLI ?? '').trim();
   if (explicit) {
     return { command: explicit, args: [], source: 'AUTOVPN_PYTHON_CLI' };
@@ -59,6 +63,9 @@ export function resolveOrInstallPythonCli({
   try {
     return resolvePythonCli({ env, packageVersion, spawnSync });
   } catch (error) {
+    if (isEnabled(env.AUTOVPN_NO_PYTHON)) {
+      throw error;
+    }
     return installer({ env, packageVersion, spawnSync });
   }
 }

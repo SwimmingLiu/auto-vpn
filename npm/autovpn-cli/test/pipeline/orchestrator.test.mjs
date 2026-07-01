@@ -206,6 +206,25 @@ test('runNodePipeline loads project .env before resolving profile and artifacts 
   assert.equal(path.dirname(result.artifact_dir), artifactsRoot);
 });
 
+test('AUTOVPN_NO_PYTHON disables default runtime Python stage fallback', async () => {
+  const projectRoot = await makeProject();
+
+  await assert.rejects(() => runNodePipeline({
+    projectRoot,
+    skipDeploy: true,
+    skipVerify: true,
+    output: 'jsonl'
+  }, {
+    env: {
+      AUTOVPN_NO_PYTHON: '1',
+      AUTOVPN_NO_INSTALL: '1',
+      VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'),
+      VPN_AUTOMATION_PROFILE_PATH: path.join(projectRoot, 'state', 'profile.toml')
+    },
+    now: () => new Date('2026-06-29T01:02:03Z')
+  }), /Node extract backend requires a fetchSourceLinks implementation/);
+});
+
 test('runNodePipeline marks the active stage failed and writes a summary on errors', async () => {
   const projectRoot = await makeProject();
   const events = [];
