@@ -28,16 +28,17 @@ The CLI is currently hybrid:
 - Python remains the default backend for high-risk pipeline actions such as `run`, `retry-stage`, `resume`, detached job creation, stop, speedtest, deploy, and verify, selected through the backend adapter boundary.
 - The experimental Node backend can orchestrate foreground pipeline runs when explicitly selected with `AUTOVPN_BACKEND=node`. Plain Cloudflare Pages deploy, primary blocked-project fallback, share-project `SUB` sync, share-project fallback, custom-domain binding, custom-domain DNS upsert, and verify are Node-native. Python stage fallback remains available for rollback while the native Node runtime continues toward v3.
 
-Experimental Node-orchestrated dry run:
+Experimental Node-orchestrated foreground run:
 
 ```bash
 AUTOVPN_BACKEND=node \
-autovpn run --project-root . --skip-deploy --skip-verify --output jsonl
+autovpn run --project-root . --output jsonl
 ```
 
 Current Node backend limits:
 
 - `--detach`, `retry-stage`, and `resume` remain Python-backed.
+- Add `--skip-deploy --skip-verify` when you want an offline Node pipeline check.
 - Plain Node foreground deploy/verify runs use Node for Wrangler deploy, primary blocked-project fallback, share-project sync/fallback, custom-domain binding, custom-domain DNS upsert, and verify.
 - Deploy and verify can be rolled back with `AUTOVPN_STAGE_BACKEND_DEPLOY=python` and `AUTOVPN_STAGE_BACKEND_VERIFY=python`.
 - `--resume-latest` is not implemented for the Node backend yet.
@@ -85,6 +86,8 @@ For Python-backed commands, the wrapper forwards argv, stdin, stdout, stderr, an
 - `AUTOVPN_STAGE_BACKEND_POSTPROCESS`
 - `AUTOVPN_STAGE_BACKEND_RENDER`
 - `AUTOVPN_STAGE_BACKEND_OBFUSCATE`
+- `AUTOVPN_STAGE_BACKEND_DEPLOY`
+- `AUTOVPN_STAGE_BACKEND_VERIFY`
 - `AUTOVPN_DOCTOR_BACKEND`
 - `AUTOVPN_PROFILE_BACKEND`
 - `AUTOVPN_ARTIFACTS_BACKEND`
