@@ -25,7 +25,7 @@ autovpn artifacts latest --project-root .
 The CLI is currently hybrid:
 
 - Node.js handles `--help`, `--version`, argument validation, `doctor --output json`, `profile summary --json`, `artifacts latest/list/preview`, `status --json`, `logs`, read-only `jobs` commands, and detached job management.
-- Python remains the default backend for production pipeline actions, selected through the backend adapter boundary. Detached workers still execute the compatible Python CLI command until the worker runtime is migrated.
+- Python remains the default backend for production pipeline actions, selected through the backend adapter boundary. Under `AUTOVPN_BACKEND=node`, `run --detach` now spawns the Node CLI worker; detached resume/retry workers still execute the compatible Python CLI command until those runtimes are migrated.
 - The experimental Node backend can orchestrate foreground pipeline runs when explicitly selected with `AUTOVPN_BACKEND=node`. Plain Cloudflare Pages deploy, primary blocked-project fallback, share-project `SUB` sync, share-project fallback, custom-domain binding, custom-domain DNS upsert, and verify are Node-native. Python stage fallback remains available for rollback while the native Node runtime continues toward v3.
 
 Experimental Node-orchestrated foreground run:
@@ -37,7 +37,8 @@ autovpn run --project-root . --output jsonl
 
 Current Node backend limits:
 
-- Detached job management runs in Node for `run --detach`, `jobs resume --detach`, and `jobs retry --detach`; the spawned worker command is still Python-compatible.
+- Detached job management runs in Node for `run --detach`, `jobs resume --detach`, and `jobs retry --detach`; `AUTOVPN_BACKEND=node run --detach` also uses the Node CLI worker.
+- Detached resume/retry worker commands remain Python-compatible until non-detached `resume` and `retry-stage` are migrated.
 - Non-detached `retry-stage` and `resume` remain Python-backed.
 - Add `--skip-deploy --skip-verify` when you want an offline Node pipeline check.
 - Plain Node foreground deploy/verify runs use Node for Wrangler deploy, primary blocked-project fallback, share-project sync/fallback, custom-domain binding, custom-domain DNS upsert, and verify.
