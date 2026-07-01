@@ -151,6 +151,7 @@ Set `VPN_AUTOMATION_RUNTIME_ROOT` to move them together.
 ## Release Packaging
 
 `.github/workflows/release-electron.yml` packages AutoVPN when a GitHub Release is published, a matching version tag is pushed, or a release rebuild is manually dispatched. It validates versions, runs tests, builds native installers, uploads CLI assets, and rewrites release notes.
+The release workflow also publishes `@swimmingliu/autovpn` to npm with provenance, using either npm trusted publishing/OIDC or the `NPM_TOKEN` repository secret.
 
 ```bash
 npm run package:electron

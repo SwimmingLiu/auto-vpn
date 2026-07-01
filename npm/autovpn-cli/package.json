@@ -3,6 +3,11 @@
   "version": "1.4.0",
   "description": "npm wrapper for the AutoVPN headless CLI",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SwimmingLiu/auto-vpn.git",
+    "directory": "npm/autovpn-cli"
+  },
   "bin": {
     "autovpn": "bin/autovpn.mjs"
   },
