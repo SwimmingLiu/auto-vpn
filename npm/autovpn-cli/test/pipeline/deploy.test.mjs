@@ -358,6 +358,176 @@ test('Node deploy backend falls back when primary Pages project is blocked', asy
   ]);
 });
 
+test('Node deploy backend binds custom domain and upserts DNS after successful deploy', async () => {
+  const calls = [];
+  const client = {
+    async listPagesDomains(projectName) {
+      calls.push(['listPagesDomains', projectName]);
+      return [];
+    },
+    async attachCustomDomain(projectName, domain) {
+      calls.push(['attachCustomDomain', projectName, domain]);
+      return { name: domain };
+    },
+    async detachCustomDomain(projectName, domain) {
+      calls.push(['detachCustomDomain', projectName, domain]);
+      return { success: true };
+    },
+    async upsertSubdomainCname(hostname, target, proxied) {
+      calls.push(['upsertSubdomainCname', hostname, target, proxied]);
+      return { name: hostname, content: target, proxied };
+    },
+    async listPagesProjects() { return []; },
+    async getPagesProject() { return {}; },
+    async createPagesProject() { return {}; },
+    async updatePagesProject() { return {}; },
+    async copyPagesProjectConfig() { return {}; },
+    async verifyUrl() { return true; },
+    async verifySubdomainCname() { return true; },
+    async deletePagesProject() { return {}; }
+  };
+  const result = await deployPagesWithBackend({
+    projectRoot: '/repo',
+    bundleDir: '/repo/artifacts/pages_bundle',
+    deploy: {
+      project_name: 'sub-nodes',
+      pages_project_url: 'https://sub-nodes.pages.dev',
+      share_project_name: '',
+      custom_domain: 'vpn.example.com',
+      cloudflare_api_token: 'token-1'
+    }
+  }, {
+    env: {},
+    cloudflareDeployClient: client,
+    runCommand: async () => ({ returncode: 0, stdout: 'ok', stderr: '' })
+  });
+
+  assert.equal(result.returncode, 0);
+  assert.equal(result.custom_domain, 'vpn.example.com');
+  assert.equal(result.custom_domain_dns_name, 'vpn.example.com');
+  assert.equal(result.custom_domain_dns_target, 'sub-nodes.pages.dev');
+  assert.equal(result.custom_domain_dns_proxied, false);
+  assert.equal(result.custom_domain_dns_ok, true);
+  assert.deepEqual(calls, [
+    ['listPagesDomains', 'sub-nodes'],
+    ['attachCustomDomain', 'sub-nodes', 'vpn.example.com'],
+    ['upsertSubdomainCname', 'vpn.example.com', 'sub-nodes.pages.dev', false]
+  ]);
+});
+
+test('Node deploy backend rebinds custom domain when primary fallback is used', async () => {
+  const calls = [];
+  let attachAttempts = 0;
+  const client = {
+    async listPagesProjects() {
+      calls.push(['listPagesProjects']);
+      return [{ name: 'sub-nodes' }];
+    },
+    async createPagesProject(projectName) {
+      calls.push(['createPagesProject', projectName]);
+      return { name: projectName };
+    },
+    async copyPagesProjectConfig(sourceProjectName, targetProjectName) {
+      calls.push(['copyPagesProjectConfig', sourceProjectName, targetProjectName]);
+      return { name: targetProjectName };
+    },
+    async listPagesDomains(projectName) {
+      calls.push(['listPagesDomains', projectName]);
+      return [];
+    },
+    async attachCustomDomain(projectName, domain) {
+      calls.push(['attachCustomDomain', projectName, domain]);
+      attachAttempts += 1;
+      if (projectName === 'sub-nodes-01' && attachAttempts === 1) {
+        throw new Error('domain already exists on another project');
+      }
+      return { name: domain };
+    },
+    async detachCustomDomain(projectName, domain) {
+      calls.push(['detachCustomDomain', projectName, domain]);
+      return { success: true };
+    },
+    async upsertSubdomainCname(hostname, target, proxied) {
+      calls.push(['upsertSubdomainCname', hostname, target, proxied]);
+      return { name: hostname, content: target, proxied };
+    },
+    async getPagesProject() { return {}; },
+    async updatePagesProject() { return {}; },
+    async verifyUrl() { return true; },
+    async verifySubdomainCname() { return true; },
+    async deletePagesProject() { return {}; }
+  };
+  const deployResults = [
+    { returncode: 1, stdout: '', stderr: 'Your Pages project has been blocked. [code: 8000119]' },
+    { returncode: 0, stdout: 'fallback ok', stderr: '' }
+  ];
+  const result = await deployPagesWithBackend({
+    projectRoot: '/repo',
+    bundleDir: '/repo/artifacts/pages_bundle',
+    deploy: {
+      project_name: 'sub-nodes',
+      share_project_name: '',
+      custom_domain: 'vpn.example.com',
+      cloudflare_api_token: 'token-1'
+    }
+  }, {
+    env: {},
+    cloudflareDeployClient: client,
+    runCommand: async () => deployResults.shift()
+  });
+
+  assert.equal(result.returncode, 0);
+  assert.equal(result.project_name, 'sub-nodes-01');
+  assert.equal(result.pages_project_url, 'https://sub-nodes-01.pages.dev');
+  assert.equal(result.custom_domain_dns_target, 'sub-nodes-01.pages.dev');
+  assert.deepEqual(calls, [
+    ['listPagesProjects'],
+    ['createPagesProject', 'sub-nodes-01'],
+    ['copyPagesProjectConfig', 'sub-nodes', 'sub-nodes-01'],
+    ['listPagesDomains', 'sub-nodes-01'],
+    ['attachCustomDomain', 'sub-nodes-01', 'vpn.example.com'],
+    ['detachCustomDomain', 'sub-nodes', 'vpn.example.com'],
+    ['attachCustomDomain', 'sub-nodes-01', 'vpn.example.com'],
+    ['upsertSubdomainCname', 'vpn.example.com', 'sub-nodes-01.pages.dev', false]
+  ]);
+});
+
+test('Node deploy backend fails result when custom domain DNS upsert fails', async () => {
+  const client = {
+    async listPagesDomains() { return [{ name: 'vpn.example.com' }]; },
+    async attachCustomDomain() { throw new Error('unexpected attach'); },
+    async detachCustomDomain() { return {}; },
+    async upsertSubdomainCname() { throw new Error('Conflicting non-CNAME DNS records exist for vpn.example.com'); },
+    async listPagesProjects() { return []; },
+    async getPagesProject() { return {}; },
+    async createPagesProject() { return {}; },
+    async updatePagesProject() { return {}; },
+    async copyPagesProjectConfig() { return {}; },
+    async verifyUrl() { return true; },
+    async verifySubdomainCname() { return true; },
+    async deletePagesProject() { return {}; }
+  };
+  const result = await deployPagesWithBackend({
+    projectRoot: '/repo',
+    bundleDir: '/repo/artifacts/pages_bundle',
+    deploy: {
+      project_name: 'sub-nodes',
+      pages_project_url: 'https://sub-nodes.pages.dev',
+      share_project_name: '',
+      custom_domain: 'vpn.example.com',
+      cloudflare_api_token: 'token-1'
+    }
+  }, {
+    env: {},
+    cloudflareDeployClient: client,
+    runCommand: async () => ({ returncode: 0, stdout: 'ok', stderr: '' })
+  });
+
+  assert.equal(result.returncode, 1);
+  assert.match(result.stderr, /custom domain dns binding failed: Conflicting non-CNAME DNS records/);
+  assert.equal(result.custom_domain_dns_ok, false);
+});
+
 test('CloudflareHttpClient copies Pages deployment configs with resolved secret values', async () => {
   const requests = [];
   const fetchImpl = async (url, options = {}) => {
@@ -410,6 +580,96 @@ test('CloudflareHttpClient copies Pages deployment configs with resolved secret 
         usage_model: 'bundled'
       }
     }
+  });
+});
+
+test('CloudflareHttpClient manages Pages custom domains and DNS CNAME upserts', async () => {
+  const requests = [];
+  const fetchImpl = async (url, options = {}) => {
+    requests.push({ url, options });
+    if (url === 'https://api.cloudflare.com/client/v4/accounts/account-1/pages/projects/sub-nodes/domains') {
+      if ((options.method ?? 'GET') === 'POST') {
+        return new Response(JSON.stringify({ result: { name: 'vpn.example.com' } }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ result: [] }), { status: 200 });
+    }
+    if (url === 'https://api.cloudflare.com/client/v4/accounts/account-1/pages/projects/sub-nodes/domains/vpn.example.com') {
+      return new Response(JSON.stringify({ result: { success: true } }), { status: 200 });
+    }
+    if (url === 'https://api.cloudflare.com/client/v4/zones?name=example.com') {
+      return new Response(JSON.stringify({ result: [{ id: 'zone-1', name: 'example.com' }] }), { status: 200 });
+    }
+    if (url === 'https://api.cloudflare.com/client/v4/zones/zone-1/dns_records?name=vpn.example.com') {
+      return new Response(JSON.stringify({ result: [] }), { status: 200 });
+    }
+    if (url === 'https://api.cloudflare.com/client/v4/zones/zone-1/dns_records') {
+      return new Response(JSON.stringify({ result: { id: 'dns-1', name: 'vpn.example.com', content: 'sub-nodes.pages.dev' } }), { status: 200 });
+    }
+    return new Response('missing', { status: 404 });
+  };
+  const client = new CloudflareHttpClient({
+    auth_mode: 'api_token',
+    api_token: 'token-1',
+    account_id: 'account-1',
+    email: '',
+    global_api_key: ''
+  }, { fetch: fetchImpl });
+
+  assert.deepEqual(await client.listPagesDomains('sub-nodes'), []);
+  await client.attachCustomDomain('sub-nodes', 'vpn.example.com');
+  await client.detachCustomDomain('sub-nodes', 'vpn.example.com');
+  await client.upsertSubdomainCname('vpn.example.com', 'sub-nodes.pages.dev', false);
+
+  const attach = requests.find((request) => request.options.method === 'POST' && request.url.endsWith('/domains'));
+  assert.deepEqual(JSON.parse(attach.options.body), { name: 'vpn.example.com' });
+  const dnsCreate = requests.find((request) => request.options.method === 'POST' && request.url.endsWith('/dns_records'));
+  assert.deepEqual(JSON.parse(dnsCreate.options.body), {
+    type: 'CNAME',
+    name: 'vpn.example.com',
+    content: 'sub-nodes.pages.dev',
+    proxied: false
+  });
+});
+
+test('CloudflareHttpClient protects DNS CNAME upsert edge cases', async () => {
+  const requests = [];
+  const recordsByHost = {
+    'example.com': [],
+    'bad.example.com': [{ id: 'a-1', type: 'A', name: 'bad.example.com', content: '192.0.2.1' }],
+    'vpn.example.com': [{ id: 'cname-1', type: 'CNAME', name: 'vpn.example.com', content: 'old.pages.dev', proxied: true }]
+  };
+  const fetchImpl = async (url, options = {}) => {
+    requests.push({ url, options });
+    if (url === 'https://api.cloudflare.com/client/v4/zones?name=example.com') {
+      return new Response(JSON.stringify({ result: [{ id: 'zone-1', name: 'example.com' }] }), { status: 200 });
+    }
+    const dnsMatch = url.match(/^https:\/\/api.cloudflare.com\/client\/v4\/zones\/zone-1\/dns_records\?name=(.+)$/);
+    if (dnsMatch) {
+      return new Response(JSON.stringify({ result: recordsByHost[decodeURIComponent(dnsMatch[1])] ?? [] }), { status: 200 });
+    }
+    if (url === 'https://api.cloudflare.com/client/v4/zones/zone-1/dns_records/cname-1') {
+      return new Response(JSON.stringify({ result: { id: 'cname-1', content: 'new.pages.dev', proxied: false } }), { status: 200 });
+    }
+    return new Response('missing', { status: 404 });
+  };
+  const client = new CloudflareHttpClient({
+    auth_mode: 'api_token',
+    api_token: 'token-1',
+    account_id: 'account-1',
+    email: '',
+    global_api_key: ''
+  }, { fetch: fetchImpl });
+
+  await assert.rejects(() => client.upsertSubdomainCname('example.com', 'sub-nodes.pages.dev', false), /Apex custom domains/);
+  await assert.rejects(() => client.upsertSubdomainCname('bad.example.com', 'sub-nodes.pages.dev', false), /Conflicting non-CNAME DNS records/);
+  await client.upsertSubdomainCname('vpn.example.com', 'new.pages.dev', false);
+  const patch = requests.find((request) => request.options.method === 'PATCH');
+  assert.equal(patch.url, 'https://api.cloudflare.com/client/v4/zones/zone-1/dns_records/cname-1');
+  assert.deepEqual(JSON.parse(patch.options.body), {
+    type: 'CNAME',
+    name: 'vpn.example.com',
+    content: 'new.pages.dev',
+    proxied: false
   });
 });
 
@@ -565,6 +825,13 @@ test('Node deploy backend falls back when share project redeploy is blocked', as
     async listPagesProjects() {
       return [{ name: 'sub-links-share-03' }];
     },
+    async listPagesDomains(projectName) {
+      calls.push(['listPagesDomains', projectName]);
+      if (projectName === 'sub-links-share-03') {
+        return [{ name: 'share.example.com' }];
+      }
+      return [];
+    },
     async createPagesProject(projectName) {
       calls.push(['createPagesProject', projectName]);
       return { name: projectName };
@@ -572,6 +839,18 @@ test('Node deploy backend falls back when share project redeploy is blocked', as
     async copyPagesProjectConfig(sourceProjectName, targetProjectName) {
       calls.push(['copyPagesProjectConfig', sourceProjectName, targetProjectName]);
       return { name: targetProjectName };
+    },
+    async attachCustomDomain(projectName, domain) {
+      calls.push(['attachCustomDomain', projectName, domain]);
+      return { name: domain };
+    },
+    async detachCustomDomain(projectName, domain) {
+      calls.push(['detachCustomDomain', projectName, domain]);
+      return { success: true };
+    },
+    async upsertSubdomainCname(hostname, target, proxied) {
+      calls.push(['upsertSubdomainCname', hostname, target, proxied]);
+      return { name: hostname, content: target, proxied };
     },
     async verifyUrl() { return true; },
     async verifySubdomainCname() { return true; },
@@ -616,6 +895,10 @@ test('Node deploy backend falls back when share project redeploy is blocked', as
   assert.deepEqual(calls.filter((call) => ['createPagesProject', 'copyPagesProjectConfig'].includes(call[0])), [
     ['createPagesProject', 'sub-links-share-04'],
     ['copyPagesProjectConfig', 'sub-links-share-03', 'sub-links-share-04']
+  ]);
+  assert.deepEqual(calls.filter((call) => ['attachCustomDomain', 'upsertSubdomainCname'].includes(call[0])), [
+    ['attachCustomDomain', 'sub-links-share-04', 'share.example.com'],
+    ['upsertSubdomainCname', 'share.example.com', 'sub-links-share-04.pages.dev', false]
   ]);
 });
 
@@ -677,12 +960,6 @@ test('Node deploy backend recovers latest existing share project when requested 
 });
 
 test('Node deploy backend keeps remaining complex deploy side effects on Python fallback', async () => {
-  await assert.rejects(() => deployPagesWithBackend({
-    projectRoot: '/repo',
-    bundleDir: '/repo/artifacts/pages_bundle',
-    deploy: { project_name: 'sub-nodes', custom_domain: 'vpn.example.com', cloudflare_api_token: 'token-1' }
-  }, { env: {}, runCommand: async () => ({ returncode: 0, stdout: '', stderr: '' }) }), /custom_domain/);
-
   assert.equal(isBlockedPagesError('', 'Your Pages project has been blocked. [code: 8000119]'), true);
 });
 
