@@ -4,7 +4,7 @@
 
 **Goal:** Move Cloudflare Pages share-project `SUB` synchronization and share-project blocked fallback into the Node CLI deploy backend for plain deploy flows.
 
-**Architecture:** Keep all work inside the existing Node deploy stage boundary in `npm/autovpn-cli/src/pipeline/deploy.ts`. Reuse the Node Cloudflare client added for primary blocked fallback, add share-project-specific config rewriting and redeploy helpers, and continue to reject custom-domain binding until that final v3 slice is migrated.
+**Architecture:** Keep all work inside the existing Node deploy stage boundary in `npm/autovpn-cli/src/pipeline/deploy.ts`. Reuse the Node Cloudflare client added for primary blocked fallback, add share-project-specific config rewriting and redeploy helpers, and leave custom-domain binding to the follow-up v3 slice.
 
 **Tech Stack:** TypeScript, Node.js `fs/promises`, Cloudflare Pages REST API, Wrangler CLI via existing `runCommand`, `node:test`.
 
@@ -19,7 +19,6 @@
   - Let `deployPagesWithBackend()` allow `share_project_name` when `custom_domain` is empty.
 - Modify `npm/autovpn-cli/test/pipeline/deploy.test.mjs`
   - Add Node share sync tests mirroring the Python integration tests.
-  - Keep custom-domain rejection covered.
 - Modify `README.md` and `npm/autovpn-cli/README.md`
   - Update the Node/Python boundary so share-project sync is no longer listed as Python-only for plain deploy flows.
 - Create this plan document.
@@ -115,7 +114,7 @@ Expected: all deploy tests pass.
 
 - [ ] **Step 1: Update docs**
 
-State that Node deploy supports plain Wrangler deploy, primary blocked fallback, share-project `SUB` sync, share-project fallback, and verify. Keep custom-domain binding as Python-only.
+State that Node deploy supports plain Wrangler deploy, primary blocked fallback, share-project `SUB` sync, share-project fallback, and verify. Custom-domain binding is handled in the follow-up v3 Node custom-domain slice.
 
 - [ ] **Step 2: Run full validation**
 

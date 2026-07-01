@@ -37,6 +37,10 @@ export interface CloudflareDeployClient extends CloudflareVerifyClient {
   createPagesProject(projectName: string): Promise<unknown>;
   updatePagesProject(projectName: string, payload: Record<string, unknown>): Promise<unknown>;
   copyPagesProjectConfig(sourceProjectName: string, targetProjectName: string, runtimeEnv: Record<string, string | undefined>): Promise<unknown>;
+  listPagesDomains(projectName: string): Promise<Array<Record<string, unknown>>>;
+  attachCustomDomain(projectName: string, domain: string): Promise<unknown>;
+  detachCustomDomain(projectName: string, domain: string): Promise<unknown>;
+  upsertSubdomainCname(hostname: string, target: string, proxied?: boolean): Promise<unknown>;
 }
 
 export interface DeployInput {
@@ -627,7 +631,7 @@ function responseBodyText(response: Response): Promise<string> {
   return response.text().catch(() => '');
 }
 
-export class CloudflareHttpClient implements CloudflareVerifyClient {
+export class CloudflareHttpClient implements CloudflareDeployClient {
   private accountId: string;
   private readonly headers: Record<string, string>;
   private readonly fetchImpl: typeof fetch;
@@ -696,6 +700,26 @@ export class CloudflareHttpClient implements CloudflareVerifyClient {
     });
   }
 
+  async listPagesDomains(projectName: string): Promise<Array<Record<string, unknown>>> {
+    const accountId = await this.resolveAccountId();
+    return (await this.apiResult(`/accounts/${accountId}/pages/projects/${projectName}/domains`)) as Array<Record<string, unknown>>;
+  }
+
+  async attachCustomDomain(projectName: string, domain: string): Promise<unknown> {
+    const accountId = await this.resolveAccountId();
+    return this.apiResult(`/accounts/${accountId}/pages/projects/${projectName}/domains`, {
+      method: 'POST',
+      body: JSON.stringify({ name: domain })
+    });
+  }
+
+  async detachCustomDomain(projectName: string, domain: string): Promise<unknown> {
+    const accountId = await this.resolveAccountId();
+    return this.apiRequest(`/accounts/${accountId}/pages/projects/${projectName}/domains/${encodeURIComponent(domain)}`, {
+      method: 'DELETE'
+    });
+  }
+
   async resolveAccountId(): Promise<string> {
     if (this.accountId) {
       return this.accountId;
@@ -734,6 +758,49 @@ export class CloudflareHttpClient implements CloudflareVerifyClient {
 
   async listDnsRecords(zoneId: string, hostname: string): Promise<Record<string, unknown>[]> {
     return (await this.apiResult(`/zones/${zoneId}/dns_records?name=${encodeURIComponent(hostname)}`)) as Record<string, unknown>[];
+  }
+
+  async upsertSubdomainCname(hostname: string, target: string, proxied = true): Promise<unknown> {
+    const normalizedHost = normalizeHostname(hostname);
+    const normalizedTarget = normalizeHostname(target);
+    const zone = await this.resolveZoneForHostname(normalizedHost);
+    const zoneId = clean(zone.id);
+    const zoneName = normalizeHostname(clean(zone.name));
+    if (normalizedHost === zoneName) {
+      throw new Error('Apex custom domains require a different DNS strategy than CNAME');
+    }
+    const records = await this.listDnsRecords(zoneId, normalizedHost);
+    const conflicting = records.filter((record) => clean(record.type).toUpperCase() !== 'CNAME');
+    if (conflicting.length) {
+      throw new Error(`Conflicting non-CNAME DNS records exist for ${normalizedHost}`);
+    }
+    const cnameRecords = records.filter((record) => clean(record.type).toUpperCase() === 'CNAME');
+    const payload = {
+      type: 'CNAME',
+      name: normalizedHost,
+      content: normalizedTarget,
+      proxied
+    };
+    if (!cnameRecords.length) {
+      return this.apiResult(`/zones/${zoneId}/dns_records`, {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      });
+    }
+    if (cnameRecords.length > 1) {
+      throw new Error(`Multiple CNAME records exist for ${normalizedHost}`);
+    }
+    const current = cnameRecords[0];
+    if (
+      normalizeHostname(clean(current.content)) === normalizedTarget
+      && Boolean(current.proxied) === proxied
+    ) {
+      return current;
+    }
+    return this.apiResult(`/zones/${zoneId}/dns_records/${clean(current.id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload)
+    });
   }
 
   async verifySubdomainCname(hostname: string, target: string): Promise<boolean> {
@@ -967,6 +1034,9 @@ async function syncShareProjectSub(
   result.share_project_source_path = shareBundle.sourcePath;
   result.share_project_bundle_dir = shareBundle.bundleDir;
   result.share_project_worker_entry = shareBundle.workerEntry;
+  const shareCustomDomains = typeof options.client.listPagesDomains === 'function'
+    ? (await options.client.listPagesDomains(requestedName)).map((item) => clean(item.name)).filter(Boolean)
+    : [];
 
   const deployShareProject = async (projectName: string) => runPagesDeployAttempts(
     buildPagesDeployCommand(shareBundle.bundleDir, projectName),
@@ -990,6 +1060,10 @@ async function syncShareProjectSub(
     await options.client.createPagesProject(fallback.projectName);
     await options.client.copyPagesProjectConfig(requestedName, fallback.projectName, options.runtimeEnv);
     await options.client.updatePagesProject(fallback.projectName, payload);
+    for (const domain of shareCustomDomains) {
+      await ensureCustomDomainBound(options.client, fallback.projectName, domain, { previousProjectName: requestedName });
+      await options.client.upsertSubdomainCname(domain, `${fallback.projectName}.pages.dev`, false);
+    }
     const fallbackDeploy = await deployShareProject(fallback.projectName);
     if (fallbackDeploy.result.returncode !== 0) {
       result.share_project_sync_ok = false;
@@ -1031,6 +1105,37 @@ async function syncShareProjectSub(
   return fallbackShareProject();
 }
 
+async function ensureCustomDomainBound(
+  client: CloudflareDeployClient,
+  projectName: string,
+  customDomain: string,
+  options: { previousProjectName?: string } = {}
+): Promise<void> {
+  const normalizedDomain = clean(customDomain).toLowerCase();
+  if (!normalizedDomain) {
+    return;
+  }
+  const currentDomains = new Set(
+    (await client.listPagesDomains(projectName))
+      .map((item) => clean(item.name).toLowerCase())
+      .filter(Boolean)
+  );
+  if (currentDomains.has(normalizedDomain)) {
+    return;
+  }
+  try {
+    await client.attachCustomDomain(projectName, customDomain);
+  } catch (error) {
+    const previousProjectName = clean(options.previousProjectName);
+    if (previousProjectName && previousProjectName !== projectName) {
+      await client.detachCustomDomain(previousProjectName, customDomain);
+      await client.attachCustomDomain(projectName, customDomain);
+      return;
+    }
+    throw error;
+  }
+}
+
 export async function deployPagesWithBackend(input: DeployInput, options: DeployVerifyBackendOptions = {}): Promise<Record<string, unknown>> {
   if (selectPipelineStageBackend('deploy', options.env ?? process.env) !== 'python') {
     const cwd = options.cwd ?? process.cwd();
@@ -1040,9 +1145,7 @@ export async function deployPagesWithBackend(input: DeployInput, options: Deploy
     if (!projectName) {
       throw new Error('Cloudflare Pages project name is missing');
     }
-    if (getString(deploy, 'custom_domain')) {
-      throw new Error('Node deploy backend does not support custom_domain yet; set AUTOVPN_STAGE_BACKEND_DEPLOY=python');
-    }
+    const customDomain = getString(deploy, 'custom_domain');
     const runtimeEnv = {
       ...env,
       VPN_AUTOMATION_DEFAULT_PAGES_SECRET_ADMIN: getString(deploy, 'pages_secret_admin') || 'swimmingliu'
@@ -1057,6 +1160,9 @@ export async function deployPagesWithBackend(input: DeployInput, options: Deploy
     let pagesProjectUrl = getString(deploy, 'pages_project_url') || derivePagesProjectUrl(projectName);
     let fallbackUsed = false;
     let cleanupBlockedProject = '';
+    let dnsError = '';
+    let dnsTarget = '';
+    let customDomainBound = false;
     let fallbackLastUsedSuffix = nonNegativeInt(deploy.fallback_last_used_suffix);
     const fallbackCandidateNames: string[] = [];
     let shareSyncResult = buildShareProjectNoopResult(deploy);
@@ -1081,6 +1187,10 @@ export async function deployPagesWithBackend(input: DeployInput, options: Deploy
       fallbackCandidateNames.push(finalProjectName);
       await client.createPagesProject(finalProjectName);
       await client.copyPagesProjectConfig(projectName, finalProjectName, runtimeEnv);
+      if (customDomain) {
+        await ensureCustomDomainBound(client, finalProjectName, customDomain, { previousProjectName: projectName });
+        customDomainBound = true;
+      }
       activeCommand = buildPagesDeployCommand(input.bundleDir, finalProjectName);
       const fallbackDeploy = await runPagesDeployAttempts(activeCommand, baseEnv, proxyUrl, {
         cwd: input.bundleDir,
@@ -1110,13 +1220,31 @@ export async function deployPagesWithBackend(input: DeployInput, options: Deploy
         runCommand
       });
     }
+    if (result.returncode === 0 && customDomain) {
+      const client = options.cloudflareDeployClient ?? new CloudflareHttpClient(credentials, { fetch: options.fetch });
+      if (!customDomainBound) {
+        await ensureCustomDomainBound(client, finalProjectName, customDomain, {
+          previousProjectName: fallbackUsed ? projectName : ''
+        });
+      }
+      dnsTarget = pagesHostnameFromUrl(pagesProjectUrl) || `${finalProjectName}.pages.dev`;
+      try {
+        await client.upsertSubdomainCname(customDomain, dnsTarget, false);
+      } catch (error) {
+        dnsError = error instanceof Error ? error.message : String(error);
+      }
+    }
     const shareSyncError = shareSyncResult.share_project_sync_ok === false
       ? String(shareSyncResult.share_project_sync_error || 'share project sync failed')
       : '';
-    const finalReturncode = shareSyncError ? 1 : result.returncode;
-    const finalStderr = shareSyncError
-      ? `${result.stderr}\nshare project sync failed: ${shareSyncError}`.trim()
-      : result.stderr;
+    const finalReturncode = (shareSyncError || dnsError) ? 1 : result.returncode;
+    let finalStderr = result.stderr;
+    if (dnsError) {
+      finalStderr = `${finalStderr}\ncustom domain dns binding failed: ${dnsError}`.trim();
+    }
+    if (shareSyncError) {
+      finalStderr = `${finalStderr}\nshare project sync failed: ${shareSyncError}`.trim();
+    }
     return {
       command: activeCommand,
       returncode: finalReturncode,
@@ -1130,11 +1258,11 @@ export async function deployPagesWithBackend(input: DeployInput, options: Deploy
       cleanup_errors: [],
       project_name: finalProjectName,
       pages_project_url: pagesProjectUrl,
-      custom_domain: '',
-      custom_domain_dns_name: '',
-      custom_domain_dns_target: '',
+      custom_domain: customDomain,
+      custom_domain_dns_name: customDomain,
+      custom_domain_dns_target: dnsTarget,
       custom_domain_dns_proxied: false,
-      custom_domain_dns_ok: false,
+      custom_domain_dns_ok: Boolean(customDomain && dnsTarget && !dnsError),
       fallback_used: fallbackUsed,
       fallback_last_used_suffix: fallbackLastUsedSuffix,
       ...shareSyncResult,
