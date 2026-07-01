@@ -61,12 +61,12 @@ function defaultResolveNodeCli(): ResolvedWorkerCli {
   return { command: process.execPath, args: [path.join(packageRoot, 'bin', 'autovpn.mjs')] };
 }
 
-function wantsNodeWorker(env: NodeJS.ProcessEnv): boolean {
-  return String(env.AUTOVPN_BACKEND ?? '').trim().toLowerCase() === 'node';
+function wantsNodeWorker(env: NodeJS.ProcessEnv, command: DetachedRunCommand): boolean {
+  return String(env.AUTOVPN_BACKEND ?? '').trim().toLowerCase() === 'node' && !command.resumeLatest;
 }
 
-async function resolveDetachedRunWorker(env: NodeJS.ProcessEnv, options: JobCommandOptions): Promise<ResolvedWorkerCli> {
-  if (wantsNodeWorker(env)) {
+async function resolveDetachedRunWorker(command: DetachedRunCommand, env: NodeJS.ProcessEnv, options: JobCommandOptions): Promise<ResolvedWorkerCli> {
+  if (wantsNodeWorker(env, command)) {
     return defaultResolveNodeCli();
   }
   return options.resolvePythonCli ? await options.resolvePythonCli() : await defaultResolvePythonCli(env);
@@ -98,7 +98,7 @@ export async function startDetachedRun(command: DetachedRunCommand, options: Job
   const outputFormat = command.outputFormat ?? 'jsonl';
   const jobStore = createJobStore(command.projectRoot, options);
   const runArgs = ['run', '--project-root', command.projectRoot, '--output', outputFormat];
-  const resolved = await resolveDetachedRunWorker(options.env ?? process.env, options);
+  const resolved = await resolveDetachedRunWorker(command, options.env ?? process.env, options);
   const job = jobStore.createRunningJob({
     kind: 'run',
     command: [],

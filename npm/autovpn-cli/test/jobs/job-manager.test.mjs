@@ -363,9 +363,14 @@ test('jobs resume detached falls back to resume-latest for run jobs without sess
   const code = await runCliShell(['jobs', 'resume', 'source-run', '--project-root', projectRoot, '--detach', '--json'], {
     cwd: projectRoot,
     packageVersion: '1.3.0',
-    env: runtimeEnv({ AUTOVPN_PYTHON_CLI: '/venv/bin/autovpn' }),
+    env: runtimeEnv({ AUTOVPN_BACKEND: 'node', AUTOVPN_PYTHON_CLI: '/venv/bin/autovpn' }),
     io,
-    createBackend: () => ({ executeCli: async () => 99 }),
+    createBackend: () => ({
+      kind: 'node',
+      executeCli: async () => {
+        throw new Error('detached resume-latest should not call backend.executeCli');
+      }
+    }),
     spawn: fakeSpawn(spawns, 4444),
     now: () => '2026-06-28T00:00:01+00:00',
     jobId: () => 'resume-latest-job'
@@ -378,6 +383,7 @@ test('jobs resume detached falls back to resume-latest for run jobs without sess
   assert.equal(payload.options.resume_latest, true);
   assert.equal(payload.options.skip_deploy, true);
   assert.equal(payload.options.skip_verify, true);
+  assert.equal(spawns[0].command, '/venv/bin/autovpn');
   assert.ok(spawns[0].args.includes('--resume-latest'));
 });
 
