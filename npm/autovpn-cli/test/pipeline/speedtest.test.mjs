@@ -109,6 +109,51 @@ test('Node speedtest backend can run direct fetch runtime without Python fallbac
   }]);
 });
 
+test('Node speedtest backend can probe links through Mihomo runtime when requested', async () => {
+  const opened = [];
+  const closed = [];
+  const results = await speedtestLinksWithBackend({
+    links: ['vmess://ok', 'vmess://down'],
+    config: {
+      min_download_mb_s: 1,
+      timeout_seconds: 20,
+      concurrency: 1,
+      urls: ['https://speed.example/bytes'],
+      probe_url: 'https://probe.example/204',
+      max_download_candidates: 1
+    },
+    runtime_path: '/opt/mihomo'
+  }, {
+    env: { AUTOVPN_SPEEDTEST_RUNTIME: 'mihomo' },
+    openMihomoRuntime: async (link, options) => {
+      opened.push({ link, options });
+      return {
+        controllerUrl: `http://controller/${link.slice('vmess://'.length)}`,
+        proxyName: 'runtime-node',
+        close: async () => closed.push(link)
+      };
+    },
+    probeMihomoProxyDelay: async (controllerUrl, proxyName, probeUrl, timeoutSeconds) => {
+      assert.equal(proxyName, 'runtime-node');
+      assert.equal(probeUrl, 'https://probe.example/204');
+      assert.equal(timeoutSeconds, 20);
+      if (controllerUrl.endsWith('/down')) {
+        throw new Error('mihomo delay failed');
+      }
+      return 42;
+    },
+    testLink: async (link) => ({ link, reachable: true, average_download_mb_s: 2, latency_ms: 0, error: '' })
+  });
+
+  assert.deepEqual(opened.map((item) => item.link), ['vmess://ok', 'vmess://down']);
+  assert.deepEqual(opened.map((item) => item.options.runtimePath), ['/opt/mihomo', '/opt/mihomo']);
+  assert.deepEqual(closed, ['vmess://ok', 'vmess://down']);
+  assert.deepEqual(results, [
+    { link: 'vmess://down', reachable: false, average_download_mb_s: 0, latency_ms: 0, error: 'mihomo delay failed' },
+    { link: 'vmess://ok', reachable: true, average_download_mb_s: 2, latency_ms: 42, error: '' }
+  ]);
+});
+
 test('speedtest backend selection supports Node default and Python rollback flags', async () => {
   assert.equal(selectPipelineStageBackend('speedtest', {}), 'node');
   assert.equal(selectPipelineStageBackend('speedtest', { AUTOVPN_PIPELINE_BACKEND: ' HYBRID ' }), 'node');

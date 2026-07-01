@@ -1,6 +1,12 @@
 import path from 'node:path';
 import { spawn as defaultSpawn, ChildProcess } from 'node:child_process';
 import { mergeProjectEnv } from '../runtime/env.js';
+import {
+  openMihomoRuntime as defaultOpenMihomoRuntime,
+  probeMihomoProxyDelay as defaultProbeMihomoProxyDelay,
+  MihomoRuntime,
+  OpenMihomoRuntimeOptions
+} from './proxy-runtime.js';
 
 export type PipelineStageBackend = 'node' | 'python';
 
@@ -56,6 +62,8 @@ export interface SpeedTestBackendOptions {
   fetch?: FetchLike;
   now?: () => number;
   resolvePythonCli?: () => ResolvedPythonCli | Promise<ResolvedPythonCli>;
+  openMihomoRuntime?: (link: string, options: OpenMihomoRuntimeOptions) => Promise<Pick<MihomoRuntime, 'controllerUrl' | 'proxyName' | 'close'>>;
+  probeMihomoProxyDelay?: (controllerUrl: string, proxyName: string, probeUrl: string, timeoutSeconds: number) => Promise<number>;
   probeLinks?: (links: string[], config: Required<SpeedTestConfigInput>, options: { runtime_path: string }) => ProbeResult[] | Promise<ProbeResult[]>;
   testLink?: (link: string, config: Required<SpeedTestConfigInput>, options: { runtime_path: string }) => SpeedTestResult | Promise<SpeedTestResult>;
   pythonSpeedtest?: (input: SpeedTestInput) => SpeedTestResult[] | Promise<SpeedTestResult[]>;
@@ -205,6 +213,34 @@ async function probeLinksDirect(
   return results;
 }
 
+async function probeLinksMihomo(
+  links: string[],
+  config: Required<SpeedTestConfigInput>,
+  runtimePath: string,
+  options: SpeedTestBackendOptions
+): Promise<ProbeResult[]> {
+  const openRuntime = options.openMihomoRuntime ?? defaultOpenMihomoRuntime;
+  const probeDelay = options.probeMihomoProxyDelay ?? defaultProbeMihomoProxyDelay;
+  const results: ProbeResult[] = [];
+  for (const link of links) {
+    let runtime: Pick<MihomoRuntime, 'controllerUrl' | 'proxyName' | 'close'> | undefined;
+    try {
+      runtime = await openRuntime(link, {
+        runtimePath,
+        startupWaitSeconds: config.startup_wait_seconds,
+        env: options.env
+      });
+      const latencyMs = await probeDelay(runtime.controllerUrl, runtime.proxyName, config.probe_url, config.timeout_seconds);
+      results.push({ link, reachable: true, latency_ms: latencyMs, error: '' });
+    } catch (error) {
+      results.push({ link, reachable: false, latency_ms: 0, error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      await runtime?.close();
+    }
+  }
+  return results;
+}
+
 async function testLinkDirect(
   link: string,
   config: Required<SpeedTestConfigInput>,
@@ -255,9 +291,15 @@ async function speedtestInNode(input: SpeedTestInput, options: SpeedTestBackendO
 
   const config = normalizeConfig(input.config);
   const runtimePath = input.runtime_path ?? '';
-  const probeLinks = options.probeLinks ?? ((links: string[]) => probeLinksDirect(links, config, options));
+  const requestedRuntime = String((options.env ?? process.env).AUTOVPN_SPEEDTEST_RUNTIME ?? '').trim().toLowerCase();
+  const useMihomoRuntime = requestedRuntime === 'mihomo';
+  const probeLinks = options.probeLinks ?? ((links: string[]) => (
+    useMihomoRuntime
+      ? probeLinksMihomo(links, config, runtimePath, options)
+      : probeLinksDirect(links, config, options)
+  ));
   const testLink = options.testLink ?? ((link: string) => testLinkDirect(link, config, options));
-  const runtimeCore = options.probeLinks || options.testLink ? 'mihomo' : 'direct';
+  const runtimeCore = useMihomoRuntime || options.probeLinks || options.testLink ? 'mihomo' : 'direct';
   options.progressCallback?.(`[speedtest] runtime_core=${runtimeCore} probe_url=${config.probe_url}`);
   emitEvent(options.eventCallback, 'speedtest_runtime', {
     runtime_core: runtimeCore,
