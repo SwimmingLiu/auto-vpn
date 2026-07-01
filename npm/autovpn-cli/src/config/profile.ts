@@ -62,3 +62,18 @@ export function profileSummary(projectRoot: string, env: NodeJS.ProcessEnv = pro
     }
   };
 }
+
+export function profilePayload(projectRoot: string, env: NodeJS.ProcessEnv = process.env): Record<string, unknown> {
+  const profilePath = resolveProfilePath(projectRoot, env);
+  const paths = {
+    project_root: projectRoot,
+    artifacts_root: resolveArtifactsRoot(projectRoot, env),
+    state_root: path.dirname(profilePath),
+    profile_path: profilePath
+  };
+  return {
+    ...readProfile(profilePath),
+    paths,
+    workspace: paths
+  };
+}
