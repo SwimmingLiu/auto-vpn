@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { spawn as defaultSpawn, ChildProcess } from 'node:child_process';
+import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { mergeProjectEnv } from '../runtime/env.js';
 
 export type PipelineStageBackend = 'node' | 'python';
@@ -430,6 +431,90 @@ function cloneProjectDeploymentConfigs(projectPayload: Record<string, unknown>, 
   return cloned;
 }
 
+function rewriteShareProjectSubValue(
+  deploymentConfigs: Record<string, unknown>,
+  options: { envKey: string; subValue: string }
+): Record<string, unknown> {
+  const rewritten: Record<string, unknown> = {};
+  for (const [environmentName, config] of Object.entries(deploymentConfigs)) {
+    rewritten[environmentName] = { ...(config as Record<string, unknown>) };
+  }
+  for (const environmentName of ['preview', 'production']) {
+    const envConfig = { ...((rewritten[environmentName] as Record<string, unknown> | undefined) ?? {}) };
+    const envVars = { ...((envConfig.env_vars as Record<string, unknown> | undefined) ?? {}) };
+    envVars[options.envKey] = { type: 'plain_text', value: options.subValue };
+    envConfig.env_vars = envVars;
+    rewritten[environmentName] = envConfig;
+  }
+  return rewritten;
+}
+
+function buildShareProjectUpdatePayload(
+  sourceProject: Record<string, unknown>,
+  runtimeEnv: Record<string, string | undefined>,
+  options: { envKey: string; subValue: string }
+): Record<string, unknown> {
+  const clonedConfigs = cloneProjectDeploymentConfigs(sourceProject, runtimeEnv);
+  return {
+    deployment_configs: rewriteShareProjectSubValue(clonedConfigs, options)
+  };
+}
+
+async function fileExists(candidate: string): Promise<boolean> {
+  try {
+    await access(candidate);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function expandHomePath(candidate: string): string {
+  if (candidate === '~') {
+    return process.env.HOME || candidate;
+  }
+  if (candidate.startsWith('~/')) {
+    return process.env.HOME ? path.join(process.env.HOME, candidate.slice(2)) : candidate;
+  }
+  return candidate;
+}
+
+async function resolveShareProjectWorkerSourcePath(projectRoot: string, env: NodeJS.ProcessEnv): Promise<string> {
+  const candidates = [
+    clean(env.VPN_AUTOMATION_SHARE_WORKER_PATH),
+    path.join(projectRoot, 'electron', 'runtime', 'share-worker', 'vpn.js'),
+    path.join(projectRoot, 'templates', 'share-worker', 'vpn.js'),
+    path.join(path.dirname(projectRoot), 'cloudflarevpn', 'edgetunnel', 'vpn.js')
+  ].filter(Boolean).map((candidate) => path.resolve(expandHomePath(candidate)));
+  const seen = new Set<string>();
+  const uniqueCandidates = candidates.filter((candidate) => {
+    if (seen.has(candidate)) {
+      return false;
+    }
+    seen.add(candidate);
+    return true;
+  });
+  for (const candidate of uniqueCandidates) {
+    if (await fileExists(candidate)) {
+      return candidate;
+    }
+  }
+  throw new Error(`share worker source not found; tried: ${uniqueCandidates.join(', ')}`);
+}
+
+function buildShareProjectBundleDir(projectRoot: string): string {
+  return path.join(projectRoot, 'electron', 'runtime', 'share-worker', 'share_pages_bundle');
+}
+
+async function stageShareProjectWorkerBundle(projectRoot: string, env: NodeJS.ProcessEnv): Promise<{ sourcePath: string; bundleDir: string; workerEntry: string }> {
+  const sourcePath = await resolveShareProjectWorkerSourcePath(projectRoot, env);
+  const bundleDir = buildShareProjectBundleDir(projectRoot);
+  const workerEntry = path.join(bundleDir, '_worker.js');
+  await mkdir(bundleDir, { recursive: true });
+  await writeFile(workerEntry, await readFile(sourcePath, 'utf8'), 'utf8');
+  return { sourcePath, bundleDir, workerEntry };
+}
+
 function runCommandWithSpawn(
   command: string[],
   options: { cwd: string; env: Record<string, string> },
@@ -799,6 +884,153 @@ async function runPythonJsonHelper(
   return completion;
 }
 
+function buildShareProjectNoopResult(deploy: DeployLike): Record<string, unknown> {
+  return {
+    share_project_requested_name: getString(deploy, 'share_project_name'),
+    share_project_name: getString(deploy, 'share_project_name'),
+    share_project_fallback_used: false,
+    share_project_cleanup_blocked_project: '',
+    share_project_sub_value: '',
+    share_project_sync_ok: true,
+    share_project_sync_error: '',
+    share_project_fallback_candidate_names: [],
+    share_project_fallback_last_used_suffix: nonNegativeInt(deploy.share_project_fallback_last_used_suffix)
+  };
+}
+
+async function syncShareProjectSub(
+  deploy: DeployLike,
+  options: {
+    projectRoot: string;
+    pagesProjectUrl: string;
+    runtimeEnv: Record<string, string | undefined>;
+    credentials: CloudflareCredentials;
+    client: CloudflareDeployClient;
+    env: NodeJS.ProcessEnv;
+    runCommand: RunCommandLike;
+  }
+): Promise<Record<string, unknown>> {
+  let requestedName = getString(deploy, 'share_project_name');
+  const envKey = getString(deploy, 'share_project_sub_env_key') || 'SUB';
+  const subValue = buildSecretUrl({
+    ...deploy,
+    pages_project_url: options.pagesProjectUrl,
+    secret_query: getString(deploy, 'secret_query') || 'serect_key=swimmingliu'
+  });
+  const shareAutoFallback = deploy.share_project_auto_fallback ?? true;
+  let shareLastUsedSuffix = nonNegativeInt(deploy.share_project_fallback_last_used_suffix);
+  const result: Record<string, unknown> = {
+    share_project_requested_name: requestedName,
+    share_project_name: requestedName,
+    share_project_fallback_used: false,
+    share_project_cleanup_blocked_project: '',
+    share_project_sub_value: requestedName ? subValue : '',
+    share_project_sync_ok: true,
+    share_project_sync_error: '',
+    share_project_fallback_candidate_names: [],
+    share_project_fallback_last_used_suffix: shareLastUsedSuffix
+  };
+  if (!requestedName) {
+    return result;
+  }
+
+  let sourceProject: Record<string, unknown>;
+  try {
+    sourceProject = await options.client.getPagesProject(requestedName);
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    if (!shareAutoFallback || !errorMessage.toLowerCase().includes('not found')) {
+      result.share_project_sync_ok = false;
+      result.share_project_sync_error = errorMessage;
+      return result;
+    }
+    const existingNames = new Set((await options.client.listPagesProjects()).map((project) => clean(project.name)).filter(Boolean));
+    const recoveredName = resolveLatestExistingProjectName(
+      deriveFallbackProjectBaseName(getString(deploy, 'share_project_fallback_prefix'), requestedName),
+      existingNames
+    );
+    if (!recoveredName) {
+      result.share_project_sync_ok = false;
+      result.share_project_sync_error = errorMessage;
+      return result;
+    }
+    requestedName = recoveredName;
+    result.share_project_name = recoveredName;
+    sourceProject = await options.client.getPagesProject(requestedName);
+  }
+
+  const payload = buildShareProjectUpdatePayload(sourceProject, options.runtimeEnv, {
+    envKey,
+    subValue
+  });
+  const shareBundle = await stageShareProjectWorkerBundle(options.projectRoot, options.env);
+  result.share_project_source_path = shareBundle.sourcePath;
+  result.share_project_bundle_dir = shareBundle.bundleDir;
+  result.share_project_worker_entry = shareBundle.workerEntry;
+
+  const deployShareProject = async (projectName: string) => runPagesDeployAttempts(
+    buildPagesDeployCommand(shareBundle.bundleDir, projectName),
+    buildWranglerAuthEnv(options.credentials),
+    resolveDeployProxyUrl(options.env),
+    {
+      cwd: shareBundle.bundleDir,
+      runCommand: options.runCommand
+    }
+  );
+
+  const fallbackShareProject = async (): Promise<Record<string, unknown>> => {
+    const existingNames = new Set((await options.client.listPagesProjects()).map((project) => clean(project.name)).filter(Boolean));
+    const fallbackBaseName = deriveFallbackProjectBaseName(getString(deploy, 'share_project_fallback_prefix'), requestedName);
+    const fallback = generateFallbackProjectName(fallbackBaseName, existingNames, {
+      currentProjectName: requestedName,
+      lastUsedSuffix: shareLastUsedSuffix
+    });
+    shareLastUsedSuffix = fallback.suffix;
+    result.share_project_fallback_candidate_names = [fallback.projectName];
+    await options.client.createPagesProject(fallback.projectName);
+    await options.client.copyPagesProjectConfig(requestedName, fallback.projectName, options.runtimeEnv);
+    await options.client.updatePagesProject(fallback.projectName, payload);
+    const fallbackDeploy = await deployShareProject(fallback.projectName);
+    if (fallbackDeploy.result.returncode !== 0) {
+      result.share_project_sync_ok = false;
+      result.share_project_sync_error = fallbackDeploy.result.stderr || fallbackDeploy.result.stdout;
+      result.share_project_redeploy_attempts = fallbackDeploy.attempts;
+      return result;
+    }
+    result.share_project_name = fallback.projectName;
+    result.share_project_fallback_used = true;
+    result.share_project_cleanup_blocked_project = requestedName;
+    result.share_project_sync_ok = true;
+    result.share_project_sync_error = '';
+    result.share_project_fallback_last_used_suffix = shareLastUsedSuffix;
+    result.share_project_redeploy_attempts = fallbackDeploy.attempts;
+    return result;
+  };
+
+  try {
+    await options.client.updatePagesProject(requestedName, payload);
+    const redeploy = await deployShareProject(requestedName);
+    if (redeploy.result.returncode !== 0) {
+      if (shareAutoFallback && isBlockedPagesError(redeploy.result.stdout, redeploy.result.stderr)) {
+        return fallbackShareProject();
+      }
+      result.share_project_sync_ok = false;
+      result.share_project_sync_error = redeploy.result.stderr || redeploy.result.stdout;
+    }
+    result.share_project_redeploy_attempts = redeploy.attempts;
+    return result;
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    if (!shareAutoFallback || !isBlockedPagesError(errorMessage, '')) {
+      result.share_project_sync_ok = false;
+      result.share_project_sync_error = errorMessage;
+      return result;
+    }
+  }
+
+  return fallbackShareProject();
+}
+
 export async function deployPagesWithBackend(input: DeployInput, options: DeployVerifyBackendOptions = {}): Promise<Record<string, unknown>> {
   if (selectPipelineStageBackend('deploy', options.env ?? process.env) !== 'python') {
     const cwd = options.cwd ?? process.cwd();
@@ -808,8 +1040,8 @@ export async function deployPagesWithBackend(input: DeployInput, options: Deploy
     if (!projectName) {
       throw new Error('Cloudflare Pages project name is missing');
     }
-    if (getString(deploy, 'custom_domain') || getString(deploy, 'share_project_name')) {
-      throw new Error('Node deploy backend does not support custom_domain or share_project_name yet; set AUTOVPN_STAGE_BACKEND_DEPLOY=python');
+    if (getString(deploy, 'custom_domain')) {
+      throw new Error('Node deploy backend does not support custom_domain yet; set AUTOVPN_STAGE_BACKEND_DEPLOY=python');
     }
     const runtimeEnv = {
       ...env,
@@ -827,6 +1059,7 @@ export async function deployPagesWithBackend(input: DeployInput, options: Deploy
     let cleanupBlockedProject = '';
     let fallbackLastUsedSuffix = nonNegativeInt(deploy.fallback_last_used_suffix);
     const fallbackCandidateNames: string[] = [];
+    let shareSyncResult = buildShareProjectNoopResult(deploy);
     let { result, attempts } = await runPagesDeployAttempts(command, baseEnv, proxyUrl, {
       cwd: input.bundleDir,
       runCommand
@@ -865,11 +1098,30 @@ export async function deployPagesWithBackend(input: DeployInput, options: Deploy
       fallbackUsed = true;
       cleanupBlockedProject = projectName;
     }
+    if (result.returncode === 0 && getString(deploy, 'share_project_name')) {
+      const client = options.cloudflareDeployClient ?? new CloudflareHttpClient(credentials, { fetch: options.fetch });
+      shareSyncResult = await syncShareProjectSub(deploy, {
+        projectRoot: input.projectRoot,
+        pagesProjectUrl,
+        runtimeEnv,
+        credentials,
+        client,
+        env,
+        runCommand
+      });
+    }
+    const shareSyncError = shareSyncResult.share_project_sync_ok === false
+      ? String(shareSyncResult.share_project_sync_error || 'share project sync failed')
+      : '';
+    const finalReturncode = shareSyncError ? 1 : result.returncode;
+    const finalStderr = shareSyncError
+      ? `${result.stderr}\nshare project sync failed: ${shareSyncError}`.trim()
+      : result.stderr;
     return {
       command: activeCommand,
-      returncode: result.returncode,
+      returncode: finalReturncode,
       stdout: result.stdout,
-      stderr: result.stderr,
+      stderr: finalStderr,
       attempts,
       requested_project_name: projectName,
       fallback_candidate_names: fallbackCandidateNames,
@@ -885,15 +1137,7 @@ export async function deployPagesWithBackend(input: DeployInput, options: Deploy
       custom_domain_dns_ok: false,
       fallback_used: fallbackUsed,
       fallback_last_used_suffix: fallbackLastUsedSuffix,
-      share_project_requested_name: '',
-      share_project_name: '',
-      share_project_fallback_used: false,
-      share_project_cleanup_blocked_project: '',
-      share_project_sub_value: '',
-      share_project_sync_ok: true,
-      share_project_sync_error: '',
-      share_project_fallback_candidate_names: [],
-      share_project_fallback_last_used_suffix: nonNegativeInt(deploy.share_project_fallback_last_used_suffix),
+      ...shareSyncResult,
       bundle_dir: input.bundleDir,
       worker_entry: path.join(input.bundleDir, '_worker.js'),
       module_manifest_path: path.join(input.bundleDir, 'manifest.json')
