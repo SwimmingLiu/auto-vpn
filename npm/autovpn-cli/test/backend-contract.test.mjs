@@ -276,14 +276,30 @@ test('foreground Node run redacts raw backend errors written to stderr', async (
   assert.doesNotMatch(io.stderr, /SECRET|QUERY|vmess:\/\/abcdef/);
 });
 
-test('Node backend rejects detached run before native Python job handling', async () => {
+test('Node backend allows detached run through the Node job manager', async () => {
   const io = createIo();
   let executeCliCalled = false;
+  const spawns = [];
+  const runtimeRoot = path.join(os.tmpdir(), `autovpn-node-detached-runtime-${Date.now()}-run`);
 
   const code = await runCliShell(['run', '--project-root', '.', '--skip-deploy', '--skip-verify', '--detach', '--json'], {
     packageVersion: '1.3.0',
     cwd: '/repo',
+    env: {
+      AUTOVPN_BACKEND: 'node',
+      AUTOVPN_PYTHON_CLI: '/venv/bin/autovpn',
+      VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot
+    },
     io,
+    spawn: (command, args, options) => {
+      spawns.push({ command, args, options });
+      const child = new EventEmitter();
+      child.pid = 3456;
+      child.unref = () => {};
+      return child;
+    },
+    now: () => '2026-07-01T00:00:00+00:00',
+    jobId: () => '20260701-000000-node-detached',
     runForwarder: async () => 99,
     createBackend: () => ({
       kind: 'node',
@@ -294,9 +310,58 @@ test('Node backend rejects detached run before native Python job handling', asyn
     })
   });
 
-  assert.equal(code, 1);
+  const payload = JSON.parse(io.stdout);
+  assert.equal(code, 0);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.job_id, '20260701-000000-node-detached');
+  assert.equal(payload.pid, 3456);
+  assert.equal(payload.options.skip_deploy, true);
+  assert.equal(payload.options.skip_verify, true);
   assert.equal(executeCliCalled, false);
-  assert.match(io.stderr, /Node backend detached runs are not available yet/);
+  assert.deepEqual(spawns.map((item) => [item.command, item.args.slice(0, 7)]), [
+    ['/venv/bin/autovpn', ['run', '--project-root', '/repo', '--output', 'jsonl', '--event-log', payload.event_log]]
+  ]);
+});
+
+test('Node backend allows detached retry through the Node job manager', async () => {
+  const io = createIo();
+  const spawns = [];
+  const runtimeRoot = path.join(os.tmpdir(), `autovpn-node-detached-runtime-${Date.now()}-retry`);
+
+  const code = await runCliShell(['jobs', 'retry', '--project-root', '.', '--artifact-dir', '/repo/artifacts/1', '--stage', 'deploy', '--detach', '--json'], {
+    packageVersion: '1.3.0',
+    cwd: '/repo',
+    env: {
+      AUTOVPN_BACKEND: 'node',
+      AUTOVPN_PYTHON_CLI: '/venv/bin/autovpn',
+      VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot
+    },
+    io,
+    spawn: (command, args, options) => {
+      spawns.push({ command, args, options });
+      const child = new EventEmitter();
+      child.pid = 4567;
+      child.unref = () => {};
+      return child;
+    },
+    now: () => '2026-07-01T00:01:00+00:00',
+    jobId: () => '20260701-000100-node-retry',
+    runForwarder: async () => 99,
+    createBackend: () => ({
+      kind: 'node',
+      executeCli: async () => 5
+    })
+  });
+
+  const payload = JSON.parse(io.stdout);
+  assert.equal(code, 0);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.kind, 'retry');
+  assert.equal(payload.pid, 4567);
+  assert.equal(payload.retry.stage, 'deploy');
+  assert.deepEqual(spawns.map((item) => [item.command, item.args.slice(0, 7)]), [
+    ['/venv/bin/autovpn', ['retry-stage', '--project-root', '/repo', '--artifact-dir', '/repo/artifacts/1', '--stage', 'deploy']]
+  ]);
 });
 
 test('non-detached resume and retry commands are executed through backend adapter', async () => {

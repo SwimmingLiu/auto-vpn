@@ -24,8 +24,8 @@ autovpn artifacts latest --project-root .
 
 The CLI is currently hybrid:
 
-- Node.js handles `--help`, `--version`, argument validation, `doctor --output json`, `profile summary --json`, `artifacts latest/list/preview`, `status --json`, `logs`, and read-only `jobs` commands.
-- Python remains the default backend for high-risk pipeline actions such as `run`, `retry-stage`, `resume`, detached job creation, stop, speedtest, deploy, and verify, selected through the backend adapter boundary.
+- Node.js handles `--help`, `--version`, argument validation, `doctor --output json`, `profile summary --json`, `artifacts latest/list/preview`, `status --json`, `logs`, read-only `jobs` commands, and detached job management.
+- Python remains the default backend for production pipeline actions, selected through the backend adapter boundary. Detached workers still execute the compatible Python CLI command until the worker runtime is migrated.
 - The experimental Node backend can orchestrate foreground pipeline runs when explicitly selected with `AUTOVPN_BACKEND=node`. Plain Cloudflare Pages deploy, primary blocked-project fallback, share-project `SUB` sync, share-project fallback, custom-domain binding, custom-domain DNS upsert, and verify are Node-native. Python stage fallback remains available for rollback while the native Node runtime continues toward v3.
 
 Experimental Node-orchestrated foreground run:
@@ -37,7 +37,8 @@ autovpn run --project-root . --output jsonl
 
 Current Node backend limits:
 
-- `--detach`, `retry-stage`, and `resume` remain Python-backed.
+- Detached job management runs in Node for `run --detach`, `jobs resume --detach`, and `jobs retry --detach`; the spawned worker command is still Python-compatible.
+- Non-detached `retry-stage` and `resume` remain Python-backed.
 - Add `--skip-deploy --skip-verify` when you want an offline Node pipeline check.
 - Plain Node foreground deploy/verify runs use Node for Wrangler deploy, primary blocked-project fallback, share-project sync/fallback, custom-domain binding, custom-domain DNS upsert, and verify.
 - Deploy and verify can be rolled back with `AUTOVPN_STAGE_BACKEND_DEPLOY=python` and `AUTOVPN_STAGE_BACKEND_VERIFY=python`.

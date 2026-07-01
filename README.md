@@ -95,7 +95,7 @@ The npm CLI defaults high-risk `run` execution to the Python backend for product
 AUTOVPN_BACKEND=node autovpn run --project-root /opt/autovpn/vpn-subscription-automation --output jsonl
 ```
 
-This mode writes normal artifacts and JSONL events, loads project `.env` before resolving profile and artifact paths, and uses the Node deploy/verify stages for plain Cloudflare Pages flows, including primary blocked-project fallback, share-project subscription sync, custom-domain binding, and custom-domain DNS upsert. Detached jobs, `retry-stage`, `resume`, and `--resume-latest` still use the Python backend.
+This mode writes normal artifacts and JSONL events, loads project `.env` before resolving profile and artifact paths, and uses the Node deploy/verify stages for plain Cloudflare Pages flows, including primary blocked-project fallback, share-project subscription sync, custom-domain binding, and custom-domain DNS upsert. Detached job creation, status, logs, stop, detached resume, and detached retry are managed by the Node job manager; detached workers still execute the compatible Python CLI command until the worker runtime is migrated.
 
 For long terminal or Agent runs, start a detached job and reconnect later:
 
