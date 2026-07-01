@@ -176,7 +176,7 @@ AUTOVPN_PYTHON_CLI="$(command -v autovpn)" AUTOVPN_NO_INSTALL=1 npx -y ./npm/aut
 AUTOVPN_BACKEND=node npx -y ./npm/autovpn-cli/*.tgz run --project-root "$PWD" --skip-deploy --skip-verify --output jsonl
 ```
 
-Deploy under `AUTOVPN_BACKEND=node` is still experimental and remains Python-backed. To exercise the v3 Node orchestrator with Python deploy fallback and Node-native verify, set `AUTOVPN_STAGE_BACKEND_DEPLOY=python` and an absolute `AUTOVPN_PYTHON_CLI` path. Set `AUTOVPN_STAGE_BACKEND_VERIFY=python` only when you need to roll verify back to the Python adapter.
+Deploy under `AUTOVPN_BACKEND=node` is still experimental. Plain Wrangler Pages deploys run in Node; deploys that need custom-domain binding, share-project sync, or blocked-project fallback still require `AUTOVPN_STAGE_BACKEND_DEPLOY=python` and an absolute `AUTOVPN_PYTHON_CLI` path. Verify is Node-native by default; set `AUTOVPN_STAGE_BACKEND_VERIFY=python` only when you need to roll verify back to the Python adapter.
 
 For long terminal or Agent runs, start a detached job and reconnect later:
 
