@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Keep detached `resume-latest` fallback on the compatible Python worker while `AUTOVPN_BACKEND=node run --detach` uses the Node worker.
+**Goal:** Historical boundary plan: keep detached `resume-latest` fallback on the compatible Python worker while `AUTOVPN_BACKEND=node run --detach` uses the Node worker.
 
-**Architecture:** `startDetachedRun()` now has two worker choices. Plain detached run under `AUTOVPN_BACKEND=node` uses the Node CLI worker, but detached `resumeLatest` still resolves the Python CLI until detached resume/retry workers are migrated. This plan captured the earlier boundary before foreground `run --resume-latest` became Node-native.
+**Architecture:** `startDetachedRun()` originally had two worker choices. Plain detached run under `AUTOVPN_BACKEND=node` used the Node CLI worker, but detached `resumeLatest` still resolved the Python CLI. This plan captured that earlier boundary before foreground `run --resume-latest` and detached resume/retry workers became Node-native under `AUTOVPN_BACKEND=node`.
 
 **Tech Stack:** Node.js ESM, TypeScript, `node:test`, existing AutoVPN npm CLI job manager.
 

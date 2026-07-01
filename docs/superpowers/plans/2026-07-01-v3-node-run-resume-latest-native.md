@@ -15,7 +15,7 @@
 
 ## Follow-Up Boundaries
 
-- Migrate detached resume/retry worker commands from Python-compatible workers to Node workers.
+- Run the final v3 cutover audit now that detached resume/retry workers are Node-native under `AUTOVPN_BACKEND=node`.
 - Replace direct `node:sqlite` usage with the shared Node job/run-store abstraction if the run database grows beyond resume-latest discovery.
 - Run the final v3 cutover audit after all foreground and detached high-risk paths are Node-native.
 
