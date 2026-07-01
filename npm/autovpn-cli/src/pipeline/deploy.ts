@@ -30,6 +30,14 @@ export interface CloudflareVerifyClient {
   deletePagesProject(projectName: string): Promise<unknown>;
 }
 
+export interface CloudflareDeployClient extends CloudflareVerifyClient {
+  listPagesProjects(): Promise<Array<Record<string, unknown>>>;
+  getPagesProject(projectName: string): Promise<Record<string, unknown>>;
+  createPagesProject(projectName: string): Promise<unknown>;
+  updatePagesProject(projectName: string, payload: Record<string, unknown>): Promise<unknown>;
+  copyPagesProjectConfig(sourceProjectName: string, targetProjectName: string, runtimeEnv: Record<string, string | undefined>): Promise<unknown>;
+}
+
 export interface DeployInput {
   projectRoot: string;
   bundleDir: string;
@@ -50,6 +58,7 @@ export interface DeployVerifyBackendOptions {
   pythonDeploy?: (input: DeployInput) => Record<string, unknown> | Promise<Record<string, unknown>>;
   pythonVerify?: (input: VerifyInput) => Record<string, unknown> | Promise<Record<string, unknown>>;
   cloudflareClient?: CloudflareVerifyClient;
+  cloudflareDeployClient?: CloudflareDeployClient;
   fetch?: typeof fetch;
   runCommand?: RunCommandLike;
 }
@@ -116,6 +125,7 @@ const BLOCKED_PAGES_MARKERS = [
   'pages project has been blocked',
   'contact abusereply@cloudflare.com'
 ];
+const PAGES_SECRET_ENV_PREFIX = 'VPN_AUTOMATION_PAGES_SECRET_';
 
 function clean(value: unknown): string {
   return value ? String(value).trim() : '';
@@ -356,6 +366,70 @@ function resolveDeployProxyUrl(env: NodeJS.ProcessEnv): string {
   return '';
 }
 
+function resolvePagesSecretValue(secretName: string, runtimeEnv: Record<string, string | undefined>): string {
+  const configuredDefault = secretName === 'ADMIN'
+    ? clean(runtimeEnv.VPN_AUTOMATION_DEFAULT_PAGES_SECRET_ADMIN) || 'swimmingliu'
+    : '';
+  for (const key of [`${PAGES_SECRET_ENV_PREFIX}${secretName}`, secretName]) {
+    const value = clean(runtimeEnv[key]) || clean(process.env[key]);
+    if (value) {
+      return value;
+    }
+  }
+  if (configuredDefault) {
+    return configuredDefault;
+  }
+  throw new Error(`Missing Pages secret value for ${secretName}; set ${PAGES_SECRET_ENV_PREFIX}${secretName} or ${secretName}`);
+}
+
+function cloneEnvVars(envVars: Record<string, Record<string, unknown>>, runtimeEnv: Record<string, string | undefined>): Record<string, Record<string, unknown>> {
+  const cloned: Record<string, Record<string, unknown>> = {};
+  for (const [name, payload] of Object.entries(envVars)) {
+    const valueType = clean(payload.type) || 'plain_text';
+    if (valueType === 'secret_text') {
+      cloned[name] = { type: 'secret_text', value: resolvePagesSecretValue(name, runtimeEnv) };
+      continue;
+    }
+    cloned[name] = { type: valueType, value: payload.value ?? '' };
+  }
+  return cloned;
+}
+
+function cloneDeploymentConfig(config: Record<string, unknown>, runtimeEnv: Record<string, string | undefined>): Record<string, unknown> {
+  const cloned: Record<string, unknown> = {};
+  if (config.env_vars && typeof config.env_vars === 'object') {
+    cloned.env_vars = cloneEnvVars(config.env_vars as Record<string, Record<string, unknown>>, runtimeEnv);
+  }
+  if (config.kv_namespaces) {
+    cloned.kv_namespaces = config.kv_namespaces;
+  }
+  for (const key of [
+    'compatibility_date',
+    'compatibility_flags',
+    'build_image_major_version',
+    'usage_model',
+    'fail_open',
+    'always_use_latest_compatibility_date'
+  ]) {
+    if (Object.prototype.hasOwnProperty.call(config, key)) {
+      cloned[key] = config[key];
+    }
+  }
+  return cloned;
+}
+
+function cloneProjectDeploymentConfigs(projectPayload: Record<string, unknown>, runtimeEnv: Record<string, string | undefined>): Record<string, unknown> {
+  const deploymentConfigs = projectPayload.deployment_configs;
+  if (!deploymentConfigs || typeof deploymentConfigs !== 'object') {
+    return {};
+  }
+  const cloned: Record<string, unknown> = {};
+  for (const [environmentName, config] of Object.entries(deploymentConfigs as Record<string, Record<string, unknown>>)) {
+    cloned[environmentName] = cloneDeploymentConfig(config, runtimeEnv);
+  }
+  return cloned;
+}
+
 function runCommandWithSpawn(
   command: string[],
   options: { cwd: string; env: Record<string, string> },
@@ -502,6 +576,39 @@ export class CloudflareHttpClient implements CloudflareVerifyClient {
 
   async listAccounts(): Promise<Record<string, unknown>[]> {
     return (await this.apiResult('/accounts')) as Record<string, unknown>[];
+  }
+
+  async listPagesProjects(): Promise<Array<Record<string, unknown>>> {
+    const accountId = await this.resolveAccountId();
+    return (await this.apiResult(`/accounts/${accountId}/pages/projects`)) as Array<Record<string, unknown>>;
+  }
+
+  async getPagesProject(projectName: string): Promise<Record<string, unknown>> {
+    const accountId = await this.resolveAccountId();
+    return (await this.apiResult(`/accounts/${accountId}/pages/projects/${projectName}`)) as Record<string, unknown>;
+  }
+
+  async createPagesProject(projectName: string): Promise<unknown> {
+    const accountId = await this.resolveAccountId();
+    return this.apiResult(`/accounts/${accountId}/pages/projects`, {
+      method: 'POST',
+      body: JSON.stringify({ name: projectName, production_branch: PAGES_PRODUCTION_BRANCH })
+    });
+  }
+
+  async updatePagesProject(projectName: string, payload: Record<string, unknown>): Promise<unknown> {
+    const accountId = await this.resolveAccountId();
+    return this.apiResult(`/accounts/${accountId}/pages/projects/${projectName}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload)
+    });
+  }
+
+  async copyPagesProjectConfig(sourceProjectName: string, targetProjectName: string, runtimeEnv: Record<string, string | undefined>): Promise<unknown> {
+    const sourceProject = await this.getPagesProject(sourceProjectName);
+    return this.updatePagesProject(targetProjectName, {
+      deployment_configs: cloneProjectDeploymentConfigs(sourceProject, runtimeEnv)
+    });
   }
 
   async resolveAccountId(): Promise<string> {
@@ -704,11 +811,23 @@ export async function deployPagesWithBackend(input: DeployInput, options: Deploy
     if (getString(deploy, 'custom_domain') || getString(deploy, 'share_project_name')) {
       throw new Error('Node deploy backend does not support custom_domain or share_project_name yet; set AUTOVPN_STAGE_BACKEND_DEPLOY=python');
     }
-    const credentials = resolveCloudflareCredentials(deploy, env);
+    const runtimeEnv = {
+      ...env,
+      VPN_AUTOMATION_DEFAULT_PAGES_SECRET_ADMIN: getString(deploy, 'pages_secret_admin') || 'swimmingliu'
+    };
+    const credentials = resolveCloudflareCredentials(deploy, runtimeEnv);
     const command = buildPagesDeployCommand(input.bundleDir, projectName);
     const baseEnv = buildWranglerAuthEnv(credentials);
     const runCommand = options.runCommand ?? ((commandToRun, runOptions) => runCommandWithSpawn(commandToRun, runOptions, options.spawn));
-    const { result, attempts } = await runPagesDeployAttempts(command, baseEnv, resolveDeployProxyUrl(env), {
+    const proxyUrl = resolveDeployProxyUrl(env);
+    let activeCommand = command;
+    let finalProjectName = projectName;
+    let pagesProjectUrl = getString(deploy, 'pages_project_url') || derivePagesProjectUrl(projectName);
+    let fallbackUsed = false;
+    let cleanupBlockedProject = '';
+    let fallbackLastUsedSuffix = nonNegativeInt(deploy.fallback_last_used_suffix);
+    const fallbackCandidateNames: string[] = [];
+    let { result, attempts } = await runPagesDeployAttempts(command, baseEnv, proxyUrl, {
       cwd: input.bundleDir,
       runCommand
     });
@@ -717,29 +836,55 @@ export async function deployPagesWithBackend(input: DeployInput, options: Deploy
       && Boolean(deploy.auto_create_project_on_blocked ?? true)
       && isBlockedPagesError(result.stdout, result.stderr)
     ) {
-      throw new Error('Node deploy backend does not support blocked Pages fallback yet; set AUTOVPN_STAGE_BACKEND_DEPLOY=python');
+      const client = options.cloudflareDeployClient ?? new CloudflareHttpClient(credentials, { fetch: options.fetch });
+      const existingNames = new Set((await client.listPagesProjects()).map((project) => clean(project.name)).filter(Boolean));
+      const fallbackBaseName = deriveFallbackProjectBaseName(getString(deploy, 'fallback_project_prefix'), projectName);
+      const fallback = generateFallbackProjectName(fallbackBaseName, existingNames, {
+        currentProjectName: projectName,
+        lastUsedSuffix: fallbackLastUsedSuffix
+      });
+      finalProjectName = fallback.projectName;
+      fallbackLastUsedSuffix = fallback.suffix;
+      fallbackCandidateNames.push(finalProjectName);
+      await client.createPagesProject(finalProjectName);
+      await client.copyPagesProjectConfig(projectName, finalProjectName, runtimeEnv);
+      activeCommand = buildPagesDeployCommand(input.bundleDir, finalProjectName);
+      const fallbackDeploy = await runPagesDeployAttempts(activeCommand, baseEnv, proxyUrl, {
+        cwd: input.bundleDir,
+        runCommand
+      });
+      result = fallbackDeploy.result;
+      attempts = [
+        ...attempts,
+        ...fallbackDeploy.attempts.map((attempt) => ({
+          ...attempt,
+          mode: `fallback-${String(attempt.mode)}`
+        }))
+      ];
+      pagesProjectUrl = derivePagesProjectUrl(finalProjectName);
+      fallbackUsed = true;
+      cleanupBlockedProject = projectName;
     }
-    const pagesProjectUrl = getString(deploy, 'pages_project_url') || derivePagesProjectUrl(projectName);
     return {
-      command,
+      command: activeCommand,
       returncode: result.returncode,
       stdout: result.stdout,
       stderr: result.stderr,
       attempts,
       requested_project_name: projectName,
-      fallback_candidate_names: [],
-      cleanup_blocked_project: '',
+      fallback_candidate_names: fallbackCandidateNames,
+      cleanup_blocked_project: cleanupBlockedProject === finalProjectName ? '' : cleanupBlockedProject,
       cleanup_deleted: false,
       cleanup_errors: [],
-      project_name: projectName,
+      project_name: finalProjectName,
       pages_project_url: pagesProjectUrl,
       custom_domain: '',
       custom_domain_dns_name: '',
       custom_domain_dns_target: '',
       custom_domain_dns_proxied: false,
       custom_domain_dns_ok: false,
-      fallback_used: false,
-      fallback_last_used_suffix: nonNegativeInt(deploy.fallback_last_used_suffix),
+      fallback_used: fallbackUsed,
+      fallback_last_used_suffix: fallbackLastUsedSuffix,
       share_project_requested_name: '',
       share_project_name: '',
       share_project_fallback_used: false,

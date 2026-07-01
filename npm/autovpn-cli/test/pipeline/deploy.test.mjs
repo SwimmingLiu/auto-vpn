@@ -286,7 +286,123 @@ test('Node deploy backend retries transient failures and uses configured proxy l
   assert.equal(calls[2].env.ALL_PROXY, 'http://127.0.0.1:7897');
 });
 
-test('Node deploy backend keeps complex deploy side effects on Python fallback', async () => {
+test('Node deploy backend falls back when primary Pages project is blocked', async () => {
+  const calls = [];
+  const client = {
+    async listPagesProjects() {
+      calls.push(['listPagesProjects']);
+      return [{ name: 'sub-nodes' }, { name: 'sub-nodes-02' }];
+    },
+    async createPagesProject(projectName) {
+      calls.push(['createPagesProject', projectName]);
+      return { name: projectName };
+    },
+    async copyPagesProjectConfig(sourceProjectName, targetProjectName, runtimeEnv) {
+      calls.push(['copyPagesProjectConfig', sourceProjectName, targetProjectName, runtimeEnv.VPN_AUTOMATION_DEFAULT_PAGES_SECRET_ADMIN]);
+      return { name: targetProjectName };
+    },
+    async verifyUrl() { return true; },
+    async verifySubdomainCname() { return true; },
+    async deletePagesProject() { return {}; }
+  };
+  const deployResults = [
+    {
+      returncode: 1,
+      stdout: '',
+      stderr: 'Your Pages project has been blocked. Contact abusereply@cloudflare.com. [code: 8000119]'
+    },
+    { returncode: 0, stdout: 'fallback deployed', stderr: '' }
+  ];
+  const result = await deployPagesWithBackend({
+    projectRoot: '/repo',
+    bundleDir: '/repo/artifacts/pages_bundle',
+    deploy: {
+      project_name: 'sub-nodes',
+      share_project_name: '',
+      cloudflare_api_token: 'token-1',
+      fallback_last_used_suffix: 1,
+      pages_secret_admin: 'admin-secret'
+    }
+  }, {
+    env: {},
+    cloudflareDeployClient: client,
+    runCommand: async () => deployResults.shift()
+  });
+
+  assert.equal(result.returncode, 0);
+  assert.equal(result.project_name, 'sub-nodes-03');
+  assert.equal(result.pages_project_url, 'https://sub-nodes-03.pages.dev');
+  assert.equal(result.cleanup_blocked_project, 'sub-nodes');
+  assert.equal(result.fallback_used, true);
+  assert.equal(result.fallback_last_used_suffix, 3);
+  assert.deepEqual(result.fallback_candidate_names, ['sub-nodes-03']);
+  assert.deepEqual(result.attempts, [
+    { mode: 'direct', returncode: 1 },
+    { mode: 'fallback-direct', returncode: 0 }
+  ]);
+  assert.deepEqual(calls, [
+    ['listPagesProjects'],
+    ['createPagesProject', 'sub-nodes-03'],
+    ['copyPagesProjectConfig', 'sub-nodes', 'sub-nodes-03', 'admin-secret']
+  ]);
+});
+
+test('CloudflareHttpClient copies Pages deployment configs with resolved secret values', async () => {
+  const requests = [];
+  const fetchImpl = async (url, options = {}) => {
+    requests.push({ url, options });
+    if (url === 'https://api.cloudflare.com/client/v4/accounts/account-1/pages/projects/source-project') {
+      return new Response(JSON.stringify({
+        result: {
+          deployment_configs: {
+            production: {
+              env_vars: {
+                ADMIN: { type: 'secret_text' },
+                SUB: { type: 'plain_text', value: 'https://old.example/sub' }
+              },
+              kv_namespaces: [{ binding: 'KV', id: 'kv-1' }],
+              compatibility_date: '2026-01-01',
+              usage_model: 'bundled'
+            }
+          }
+        }
+      }), { status: 200 });
+    }
+    if (url === 'https://api.cloudflare.com/client/v4/accounts/account-1/pages/projects/target-project') {
+      return new Response(JSON.stringify({ result: { name: 'target-project' } }), { status: 200 });
+    }
+    return new Response('missing', { status: 404 });
+  };
+  const client = new CloudflareHttpClient({
+    auth_mode: 'api_token',
+    api_token: 'token-1',
+    account_id: 'account-1',
+    email: '',
+    global_api_key: ''
+  }, { fetch: fetchImpl });
+
+  await client.copyPagesProjectConfig('source-project', 'target-project', {
+    VPN_AUTOMATION_DEFAULT_PAGES_SECRET_ADMIN: 'admin-secret'
+  });
+
+  const patch = requests[1];
+  assert.equal(patch.options.method, 'PATCH');
+  assert.deepEqual(JSON.parse(patch.options.body), {
+    deployment_configs: {
+      production: {
+        env_vars: {
+          ADMIN: { type: 'secret_text', value: 'admin-secret' },
+          SUB: { type: 'plain_text', value: 'https://old.example/sub' }
+        },
+        kv_namespaces: [{ binding: 'KV', id: 'kv-1' }],
+        compatibility_date: '2026-01-01',
+        usage_model: 'bundled'
+      }
+    }
+  });
+});
+
+test('Node deploy backend keeps remaining complex deploy side effects on Python fallback', async () => {
   await assert.rejects(() => deployPagesWithBackend({
     projectRoot: '/repo',
     bundleDir: '/repo/artifacts/pages_bundle',
@@ -298,19 +414,6 @@ test('Node deploy backend keeps complex deploy side effects on Python fallback',
     bundleDir: '/repo/artifacts/pages_bundle',
     deploy: { project_name: 'sub-nodes', custom_domain: 'vpn.example.com', cloudflare_api_token: 'token-1' }
   }, { env: {}, runCommand: async () => ({ returncode: 0, stdout: '', stderr: '' }) }), /custom_domain/);
-
-  await assert.rejects(() => deployPagesWithBackend({
-    projectRoot: '/repo',
-    bundleDir: '/repo/artifacts/pages_bundle',
-    deploy: { project_name: 'sub-nodes', share_project_name: '', cloudflare_api_token: 'token-1' }
-  }, {
-    env: {},
-    runCommand: async () => ({
-      returncode: 1,
-      stdout: '',
-      stderr: 'Your Pages project has been blocked. Contact abusereply@cloudflare.com. [code: 8000119]'
-    })
-  }), /blocked Pages fallback/);
 
   assert.equal(isBlockedPagesError('', 'Your Pages project has been blocked. [code: 8000119]'), true);
 });
