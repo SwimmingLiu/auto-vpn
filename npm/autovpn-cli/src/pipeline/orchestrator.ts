@@ -98,12 +98,6 @@ interface PipelineProfile {
 
 const STAGES: StageName[] = ['doctor', 'extract', 'dedupe', 'speedtest', 'availability', 'postprocess', 'render', 'obfuscate', 'deploy', 'verify'];
 const RETRYABLE_STAGES: StageName[] = ['speedtest', 'availability', 'postprocess', 'render', 'obfuscate', 'deploy', 'verify'];
-const DEFAULT_PYTHON_RUNTIME_STAGES = ['EXTRACT', 'SPEEDTEST', 'AVAILABILITY'];
-
-function isEnabled(value: string | undefined): boolean {
-  return ['1', 'true', 'yes', 'on'].includes(String(value ?? '').trim().toLowerCase());
-}
-
 function formatTimestamp(date: Date): string {
   const pad = (value: number) => String(value).padStart(2, '0');
   return (
@@ -236,20 +230,7 @@ function errorMessage(error: unknown): string {
 }
 
 function defaultRuntimeStageEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const next = { ...env };
-  if (isEnabled(next.AUTOVPN_NO_PYTHON)) {
-    return next;
-  }
-  if (next.AUTOVPN_PIPELINE_BACKEND) {
-    return next;
-  }
-  for (const stage of DEFAULT_PYTHON_RUNTIME_STAGES) {
-    const key = `AUTOVPN_STAGE_BACKEND_${stage}`;
-    if (!next[key]) {
-      next[key] = 'python';
-    }
-  }
-  return next;
+  return { ...env };
 }
 
 function orderPreservingUnique(values: string[]): string[] {

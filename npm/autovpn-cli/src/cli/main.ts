@@ -148,11 +148,20 @@ export async function runCliShell(argv: string[], options: CliShellOptions = {})
     validateCommand(normalizedArgv);
     const createBackend = options.createBackend ?? defaultCreateBackend;
     const backend = createBackend({ env, cwd, runForwarder });
+    let pythonFallbackBackend: ShellBackend | undefined;
+    const runExplicitPythonFallback = (fallbackArgv: string[]): Promise<number> => {
+      pythonFallbackBackend ??= createBackend({
+        env: { ...env, AUTOVPN_BACKEND: 'python' },
+        cwd,
+        runForwarder
+      });
+      return pythonFallbackBackend.executeCli(fallbackArgv);
+    };
     const nativeResult = await runNativeCommand(normalizedArgv, {
       cwd,
       env,
       io,
-      pythonFallback: (fallbackArgv) => backend.executeCli(fallbackArgv),
+      pythonFallback: runExplicitPythonFallback,
       spawn: options.spawn,
       now: options.now,
       jobId: options.jobId,

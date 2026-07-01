@@ -87,7 +87,7 @@ test('Node job store creates Python-compatible job metadata and index', async ()
   assert.deepEqual(indexPayload.jobs.map((item) => item.job_id), ['20260628-000000-node01']);
 });
 
-test('run --detach --json is owned by Node job manager and spawns Python worker', async () => {
+test('AUTOVPN_BACKEND=python run --detach --json is owned by Node job manager and spawns Python worker', async () => {
   const projectRoot = await createProject();
   const spawns = [];
   const io = createIo();
@@ -95,7 +95,7 @@ test('run --detach --json is owned by Node job manager and spawns Python worker'
   const code = await runCliShell(['run', '--project-root', projectRoot, '--skip-deploy', '--skip-verify', '--detach', '--json'], {
     cwd: projectRoot,
     packageVersion: '1.3.0',
-    env: runtimeEnv({ AUTOVPN_PYTHON_CLI: '/venv/bin/autovpn' }),
+    env: runtimeEnv({ AUTOVPN_BACKEND: 'python', AUTOVPN_PYTHON_CLI: '/venv/bin/autovpn' }),
     io,
     createBackend: () => ({
       executeCli: async () => {
@@ -125,7 +125,7 @@ test('run --detach --json is owned by Node job manager and spawns Python worker'
   assert.equal(spawns[0].options.detached, process.platform !== 'win32');
 });
 
-test('AUTOVPN_BACKEND=node run --detach spawns the Node CLI worker', async () => {
+test('default run --detach spawns the Node CLI worker', async () => {
   const projectRoot = await createProject();
   const spawns = [];
   const io = createIo();
@@ -133,7 +133,7 @@ test('AUTOVPN_BACKEND=node run --detach spawns the Node CLI worker', async () =>
   const code = await runCliShell(['run', '--project-root', projectRoot, '--skip-deploy', '--skip-verify', '--detach', '--json'], {
     cwd: projectRoot,
     packageVersion: '1.3.0',
-    env: runtimeEnv({ AUTOVPN_BACKEND: 'node', AUTOVPN_PYTHON_CLI: '/venv/bin/autovpn' }),
+    env: runtimeEnv({ AUTOVPN_NO_PYTHON: '1' }),
     io,
     createBackend: () => ({
       kind: 'node',
@@ -301,7 +301,7 @@ test('top-level stop refuses to choose when multiple jobs are active', async () 
   assert.match(io.stderr, /multiple active jobs/);
 });
 
-test('jobs resume and retry detached are dispatched by Node with compatible metadata', async () => {
+test('AUTOVPN_BACKEND=python jobs resume and retry detached are dispatched by Node with compatible metadata', async () => {
   const projectRoot = await createProject();
   const sessionDir = path.join(jobsRoot(), 'source-job');
   await mkdir(sessionDir, { recursive: true });
@@ -320,7 +320,7 @@ test('jobs resume and retry detached are dispatched by Node with compatible meta
   const resume = await runCliShell(['jobs', 'resume', 'source-job', '--project-root', projectRoot, '--detach', '--json'], {
     cwd: projectRoot,
     packageVersion: '1.3.0',
-    env: runtimeEnv({ AUTOVPN_PYTHON_CLI: '/venv/bin/autovpn' }),
+    env: runtimeEnv({ AUTOVPN_BACKEND: 'python', AUTOVPN_PYTHON_CLI: '/venv/bin/autovpn' }),
     io: createIo(),
     createBackend: () => ({ executeCli: async () => 99 }),
     spawn: fakeSpawn(spawns, 2222),
@@ -331,7 +331,7 @@ test('jobs resume and retry detached are dispatched by Node with compatible meta
   const retry = await runCliShell(['jobs', 'retry', '--project-root', projectRoot, '--artifact-dir', artifactDir, '--stage', 'deploy', '--detach', '--json'], {
     cwd: projectRoot,
     packageVersion: '1.3.0',
-    env: runtimeEnv({ AUTOVPN_PYTHON_CLI: '/venv/bin/autovpn' }),
+    env: runtimeEnv({ AUTOVPN_BACKEND: 'python', AUTOVPN_PYTHON_CLI: '/venv/bin/autovpn' }),
     io: retryIo,
     createBackend: () => ({ executeCli: async () => 99 }),
     spawn: fakeSpawn(spawns, 3333),
@@ -342,13 +342,15 @@ test('jobs resume and retry detached are dispatched by Node with compatible meta
   assert.equal(resume, 0);
   assert.equal(retry, 0);
   const resumePayload = JSON.parse(await readFile(path.join(jobsRoot(), 'resume-job', 'job.json'), 'utf8'));
+  assert.equal(spawns[0].command, '/venv/bin/autovpn');
   assert.deepEqual(spawns[0].args.slice(0, 5), ['resume', 'pipeline', '--project-root', resumePayload.project_root, '--session']);
   assert.equal(spawns[0].args[5], sessionDir);
+  assert.equal(spawns[1].command, '/venv/bin/autovpn');
   assert.deepEqual(spawns[1].args.slice(0, 7), ['retry-stage', '--project-root', resumePayload.project_root, '--artifact-dir', artifactDir, '--stage', 'deploy']);
   assert.equal(JSON.parse(retryIo.stdout).retry.stage, 'deploy');
 });
 
-test('AUTOVPN_BACKEND=node jobs resume and retry detached spawn Node CLI workers', async () => {
+test('default jobs resume and retry detached spawn Node CLI workers', async () => {
   const projectRoot = await createProject();
   const sessionDir = path.join(jobsRoot(), 'source-node-job');
   await mkdir(sessionDir, { recursive: true });
@@ -367,7 +369,7 @@ test('AUTOVPN_BACKEND=node jobs resume and retry detached spawn Node CLI workers
   const resume = await runCliShell(['jobs', 'resume', 'source-node-job', '--project-root', projectRoot, '--detach', '--json'], {
     cwd: projectRoot,
     packageVersion: '1.3.0',
-    env: runtimeEnv({ AUTOVPN_BACKEND: 'node', AUTOVPN_PYTHON_CLI: '/venv/bin/autovpn' }),
+    env: runtimeEnv({ AUTOVPN_NO_PYTHON: '1' }),
     io: createIo(),
     createBackend: () => ({ kind: 'node', executeCli: async () => 99 }),
     spawn: fakeSpawn(spawns, 5555),
@@ -377,7 +379,7 @@ test('AUTOVPN_BACKEND=node jobs resume and retry detached spawn Node CLI workers
   const retry = await runCliShell(['jobs', 'retry', '--project-root', projectRoot, '--artifact-dir', artifactDir, '--stage', 'deploy', '--detach', '--json'], {
     cwd: projectRoot,
     packageVersion: '1.3.0',
-    env: runtimeEnv({ AUTOVPN_BACKEND: 'node', AUTOVPN_PYTHON_CLI: '/venv/bin/autovpn' }),
+    env: runtimeEnv({ AUTOVPN_NO_PYTHON: '1' }),
     io: createIo(),
     createBackend: () => ({ kind: 'node', executeCli: async () => 99 }),
     spawn: fakeSpawn(spawns, 6666),
@@ -397,7 +399,7 @@ test('AUTOVPN_BACKEND=node jobs resume and retry detached spawn Node CLI workers
   assert.deepEqual(spawns[1].args.slice(4, 8), ['--artifact-dir', artifactDir, '--stage', 'deploy']);
 });
 
-test('AUTOVPN_BACKEND=node jobs resume detached uses Node resume-latest worker for run jobs without session metadata', async () => {
+test('default jobs resume detached uses Node resume-latest worker for run jobs without session metadata', async () => {
   const projectRoot = await createProject();
   const store = createJobStore(projectRoot, { now: () => '2026-06-28T00:00:00+00:00', jobId: () => 'source-run' });
   store.createRunningJob({
@@ -412,7 +414,7 @@ test('AUTOVPN_BACKEND=node jobs resume detached uses Node resume-latest worker f
   const code = await runCliShell(['jobs', 'resume', 'source-run', '--project-root', projectRoot, '--detach', '--json'], {
     cwd: projectRoot,
     packageVersion: '1.3.0',
-    env: runtimeEnv({ AUTOVPN_BACKEND: 'node', AUTOVPN_PYTHON_CLI: '/venv/bin/autovpn' }),
+    env: runtimeEnv({ AUTOVPN_NO_PYTHON: '1' }),
     io,
     createBackend: () => ({
       kind: 'node',

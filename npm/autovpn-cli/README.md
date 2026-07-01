@@ -22,23 +22,22 @@ autovpn artifacts latest --project-root .
 
 ## Runtime Shape
 
-The CLI is currently hybrid:
+The CLI is currently Node-first with explicit Python rollback:
 
 - Node.js handles `--help`, `--version`, argument validation, `doctor --output json`, `profile summary --json`, `artifacts latest/list/preview`, `status --json`, `logs`, read-only `jobs` commands, and detached job management.
-- Python remains the default backend for production pipeline actions, selected through the backend adapter boundary. Under `AUTOVPN_BACKEND=node`, detached run/resume/retry workers spawn the Node CLI worker.
-- The experimental Node backend can orchestrate foreground pipeline runs when explicitly selected with `AUTOVPN_BACKEND=node`. Plain Cloudflare Pages deploy, primary blocked-project fallback, share-project `SUB` sync, share-project fallback, custom-domain binding, custom-domain DNS upsert, and verify are Node-native. Python stage fallback remains available for rollback while the native Node runtime continues toward v3.
+- Node is the default backend for pipeline actions. Detached run/resume/retry workers spawn the Node CLI worker.
+- Plain Cloudflare Pages deploy, primary blocked-project fallback, share-project `SUB` sync, share-project fallback, custom-domain binding, custom-domain DNS upsert, and verify are Node-native. Python backend and stage fallback remain available for rollback.
 
-Experimental Node-orchestrated foreground run:
+Node-orchestrated foreground run:
 
 ```bash
-AUTOVPN_BACKEND=node \
 autovpn run --project-root . --output jsonl
 ```
 
-Current Node backend limits:
+Current Node backend notes:
 
-- Detached job management runs in Node for `run --detach`, `jobs resume --detach`, and `jobs retry --detach`; under `AUTOVPN_BACKEND=node`, detached run/resume/retry workers also use the Node CLI worker.
-- Non-detached `retry-stage` now runs through the Node backend for retryable artifact stages from `speedtest` through `verify`; non-detached `resume pipeline`, `resume speedtest`, and `run --resume-latest` continue existing sessions through the Node backend. The default Python backend remains production-compatible; the final v3 cutover audit is the next boundary.
+- Detached job management runs in Node for `run --detach`, `jobs resume --detach`, and `jobs retry --detach`; detached run/resume/retry workers also use the Node CLI worker.
+- Non-detached `retry-stage` runs through the Node backend for retryable artifact stages from `speedtest` through `verify`; non-detached `resume pipeline`, `resume speedtest`, and `run --resume-latest` continue existing sessions through the Node backend.
 - Add `--skip-deploy --skip-verify` when you want an offline Node pipeline check.
 - Plain Node foreground deploy/verify runs use Node for Wrangler deploy, primary blocked-project fallback, share-project sync/fallback, custom-domain binding, custom-domain DNS upsert, and verify.
 - Deploy and verify can be rolled back with `AUTOVPN_STAGE_BACKEND_DEPLOY=python` and `AUTOVPN_STAGE_BACKEND_VERIFY=python`.
@@ -53,8 +52,9 @@ AUTOVPN_BACKEND=python autovpn run --project-root . --output jsonl
 AUTOVPN_DOCTOR_BACKEND=python autovpn doctor --output json
 AUTOVPN_PROFILE_BACKEND=python autovpn profile summary --json
 AUTOVPN_ARTIFACTS_BACKEND=python autovpn artifacts latest
-AUTOVPN_JOBS_BACKEND=python autovpn status --json
 ```
+
+Job state, logs, stop, detached run, detached resume, and detached retry commands are Node-owned in v3 and intentionally ignore the old `AUTOVPN_JOBS_BACKEND` rollback flag.
 
 ## Python Backend Resolution
 
@@ -92,7 +92,6 @@ For Python-backed commands, the wrapper forwards argv, stdin, stdout, stderr, an
 - `AUTOVPN_DOCTOR_BACKEND`
 - `AUTOVPN_PROFILE_BACKEND`
 - `AUTOVPN_ARTIFACTS_BACKEND`
-- `AUTOVPN_JOBS_BACKEND`
 - `VPN_AUTOMATION_RUNTIME_ROOT`
 - `VPN_AUTOMATION_PROFILE_PATH`
 - `VPN_AUTOMATION_ARTIFACTS_ROOT`

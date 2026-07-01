@@ -104,7 +104,7 @@ test('PythonBackend executeCli merges project .env before forwarding', async () 
   assert.equal(forwarded[0].options.env.PATH, '/bin');
 });
 
-test('default Python CLI foreground path merges project .env', async () => {
+test('explicit Python CLI foreground path merges project .env', async () => {
   const root = await mkdir(path.join(os.tmpdir(), `autovpn-shell-env-${Date.now()}`), { recursive: true });
   await writeFile(path.join(root, '.env'), 'EXTRA_FROM_DOTENV=value\n', 'utf8');
   const io = createIo();
@@ -113,7 +113,7 @@ test('default Python CLI foreground path merges project .env', async () => {
   const code = await runCliShell(['run', '--project-root', root, '--skip-deploy', '--skip-verify', '--output', 'jsonl'], {
     packageVersion: '1.3.0',
     cwd: '/repo',
-    env: { PATH: '/bin' },
+    env: { PATH: '/bin', AUTOVPN_BACKEND: 'python' },
     io,
     runForwarder: async (argv, options) => {
       forwarded.push({ argv, options });
@@ -184,7 +184,7 @@ test('foreground run streams Node backend events when explicitly selected', asyn
   assert.equal(io.stderr, '');
 });
 
-test('foreground run keeps Python backend executeCli forwarding by default', async () => {
+test('foreground run keeps explicit Python backend executeCli forwarding', async () => {
   const io = createIo();
   const backendCalls = [];
 
@@ -708,12 +708,15 @@ test('PythonBackend parses real JSON job payloads for job metadata methods', asy
   assert.deepEqual(spawns[1], ['/opt/autovpn/bin/autovpn', ['jobs', 'status', 'job-1', '--json', '--project-root', '/repo']]);
 });
 
-test('selectBackend defaults to Python backend and supports explicit Python fallback', () => {
-  assert.equal(selectBackend({ env: {} }).kind, 'python');
+test('selectBackend defaults to Node backend and supports explicit Python fallback', () => {
+  const backend = selectBackend({ env: {} });
+
+  assert.equal(backend.kind, 'node');
+  assert.ok(backend instanceof NodeBackend);
   assert.equal(selectBackend({ env: { AUTOVPN_BACKEND: 'python' } }).kind, 'python');
 });
 
-test('selectBackend supports explicit Node backend opt-in', () => {
+test('selectBackend supports explicit Node backend selection', () => {
   const backend = selectBackend({ env: { AUTOVPN_BACKEND: 'node' } });
 
   assert.equal(backend.kind, 'node');

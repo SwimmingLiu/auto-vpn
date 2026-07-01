@@ -62,7 +62,7 @@ function defaultResolveNodeCli(): ResolvedWorkerCli {
 }
 
 function wantsNodeWorker(env: NodeJS.ProcessEnv): boolean {
-  return String(env.AUTOVPN_BACKEND ?? '').trim().toLowerCase() === 'node';
+  return String(env.AUTOVPN_BACKEND ?? '').trim().toLowerCase() !== 'python';
 }
 
 async function resolveDetachedWorker(env: NodeJS.ProcessEnv, options: JobCommandOptions): Promise<ResolvedWorkerCli> {
