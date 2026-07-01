@@ -60,7 +60,7 @@ Use this map when planning each implementation PR. Every migration task must ide
 | profile summary | `src/vpn_automation/cli.py`, `src/vpn_automation/config/**` | `npm/autovpn-cli/src/config/profile.ts` | redacted profile JSON | `AUTOVPN_PROFILE_BACKEND=python` |
 | doctor | `src/vpn_automation/doctor.py` | `npm/autovpn-cli/src/doctor/checks.ts` | doctor JSON/human output | `AUTOVPN_DOCTOR_BACKEND=python` |
 | artifacts | `src/vpn_automation/artifact_preview.py`, `src/vpn_automation/backend.py` | `npm/autovpn-cli/src/artifacts/**` | artifact list/latest/preview JSON | `AUTOVPN_ARTIFACTS_BACKEND=python` |
-| jobs | `src/vpn_automation/jobs.py`, `src/vpn_automation/cli.py` | `npm/autovpn-cli/src/jobs/**` | `state/jobs/**` files, process lifecycle, logs | `AUTOVPN_JOBS_BACKEND=python` |
+| jobs | `src/vpn_automation/jobs.py`, `src/vpn_automation/cli.py` | `npm/autovpn-cli/src/jobs/**` | `state/jobs/**` files, process lifecycle, logs | Node-owned in v3; `AUTOVPN_JOBS_BACKEND` is ignored |
 | backend events | `src/vpn_automation/backend.py`, pipeline `event_callback` emitters | `npm/autovpn-cli/src/events/schema.ts` | JSONL events and redaction | `AUTOVPN_BACKEND=python` |
 | dedupe | `src/vpn_automation/pipeline/dedupe.py` | `npm/autovpn-cli/src/pipeline/dedupe.ts` | link list in/out | `AUTOVPN_STAGE_BACKEND_DEDUPE=python` |
 | postprocess | `src/vpn_automation/pipeline/postprocess.py` | `npm/autovpn-cli/src/pipeline/postprocess.ts` | filtered/decorated links | `AUTOVPN_STAGE_BACKEND_POSTPROCESS=python` |
@@ -775,7 +775,7 @@ Every phase must preserve a rollback path:
 - Phase 2 rollback: disable Node shell and forward all commands to Python.
 - Phase 3 rollback: set migrated command backend to Python.
 - Phase 4 rollback: select `AUTOVPN_BACKEND=python`.
-- Phase 5 rollback: use Python job manager for detached runs.
+- Phase 5 rollback: set `AUTOVPN_BACKEND=python` for detached workers while keeping job state, logs, stop, and detached command handling Node-owned.
 - Phase 6 rollback: set `AUTOVPN_STAGE_BACKEND_<STAGE>=python`.
 - Phase 7 rollback: keep Python deploy/verify backend.
 - Phase 8 rollback: package Python backend in Electron and switch service adapter.

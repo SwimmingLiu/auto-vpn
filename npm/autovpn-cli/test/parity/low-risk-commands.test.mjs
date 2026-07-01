@@ -261,11 +261,12 @@ test('Phase 3 migrated non-job commands support explicit Python fallback', async
   }
 });
 
-test('Phase 3 leaves doctor human output on the Python backend', async () => {
+test('Phase 3 leaves doctor human output on the Python backend when requested', async () => {
   const { root } = await createProjectFixture();
   const argv = ['doctor', '--project-root', root];
   const result = await runNode(argv, {
     cwd: root,
+    env: { AUTOVPN_DOCTOR_BACKEND: 'python' },
     runForwarder: async (forwardedArgv) => {
       assert.deepEqual(forwardedArgv, argv);
       return 7;

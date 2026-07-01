@@ -29,7 +29,7 @@ interface NativeContext extends JobRuntimeOptions {
 }
 
 function wantsPython(env: NodeJS.ProcessEnv, key: string): boolean {
-  return env[key] === 'python';
+  return String(env[key] ?? '').trim().toLowerCase() === 'python';
 }
 
 function jsonLine(payload: unknown): string {

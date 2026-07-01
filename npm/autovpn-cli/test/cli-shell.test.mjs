@@ -152,13 +152,14 @@ test('validates jobs subcommands when parent options precede the subcommand', as
   assert.deepEqual(forwarded, []);
 });
 
-test('normalizes provided project root and forwards business commands', async () => {
+test('normalizes provided project root and forwards business commands through explicit Python backend', async () => {
   const io = createIo();
   const forwarded = [];
   const rawRoot = path.join(process.cwd(), '.', 'nested', '..');
 
   const code = await runCliShell(['run', '--project-root', rawRoot, '--output', 'jsonl'], {
     packageVersion: '1.3.0',
+    env: { AUTOVPN_BACKEND: 'python' },
     io,
     runForwarder: async (argv) => {
       forwarded.push(argv);

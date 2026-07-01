@@ -8,11 +8,11 @@ export interface SelectBackendOptions extends PythonBackendOptions {
 
 export function selectBackend(options: SelectBackendOptions = {}): AutoVpnBackend {
   const backend = String(options.env?.AUTOVPN_BACKEND ?? '').trim().toLowerCase();
-  if (backend === 'node') {
-    return new NodeBackend(options);
+  if (backend === 'python') {
+    return new PythonBackend(options);
   }
-  if (backend && backend !== 'python') {
+  if (backend && backend !== 'node') {
     throw new Error(`Unsupported AUTOVPN_BACKEND: ${backend}`);
   }
-  return new PythonBackend(options);
+  return new NodeBackend(options);
 }
