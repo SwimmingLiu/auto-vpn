@@ -215,6 +215,7 @@ test('Phase 3 low-risk commands run in Node by default', async () => {
   const { root, artifactDir } = await createProjectFixture();
   const commands = [
     { argv: ['doctor', '--project-root', root, '--output', 'json'], codes: [0, 1] },
+    { argv: ['profile', 'show', '--project-root', root], codes: [0] },
     { argv: ['profile', 'summary', '--project-root', root, '--json'], codes: [0] },
     { argv: ['artifacts', 'latest', '--project-root', root], codes: [0] },
     { argv: ['artifacts', 'list', '--project-root', root], codes: [0] },
@@ -239,6 +240,7 @@ test('Phase 3 migrated non-job commands support explicit Python fallback', async
   const { root, artifactDir } = await createProjectFixture();
   const cases = [
     { argv: ['doctor', '--project-root', root, '--output', 'json'], env: { AUTOVPN_DOCTOR_BACKEND: 'python' } },
+    { argv: ['profile', 'show', '--project-root', root], env: { AUTOVPN_PROFILE_BACKEND: 'python' } },
     { argv: ['profile', 'summary', '--project-root', root, '--json'], env: { AUTOVPN_PROFILE_BACKEND: 'python' } },
     { argv: ['artifacts', 'latest', '--project-root', root], env: { AUTOVPN_ARTIFACTS_BACKEND: 'python' } },
     { argv: ['artifacts', 'list', '--project-root', root], env: { AUTOVPN_ARTIFACTS_BACKEND: 'python' } },

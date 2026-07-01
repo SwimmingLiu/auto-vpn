@@ -4,7 +4,7 @@ import fs from 'node:fs';
 
 import { artifactLatest, artifactList } from '../artifacts/list.js';
 import { previewArtifact } from '../artifacts/preview.js';
-import { profileSummary } from '../config/profile.js';
+import { profilePayload, profileSummary } from '../config/profile.js';
 import { runDoctor } from '../doctor/checks.js';
 import { publicStartedPayload, startDetachedResume, startDetachedRetry, startDetachedRun, stopManagedJob } from '../jobs/commands.js';
 import { followLog } from '../jobs/logs.js';
@@ -102,10 +102,19 @@ export async function runNativeCommand(argv: string[], context: NativeContext): 
     return result.code;
   }
 
-  if (command === 'profile' && argv[1] === 'summary') {
+  if (command === 'profile') {
     if (wantsPython(context.env, 'AUTOVPN_PROFILE_BACKEND')) return context.pythonFallback(argv);
-    context.io.writeStdout(jsonLine(profileSummary(projectRoot, context.env)));
-    return 0;
+    if (argv[1] === 'show') {
+      context.io.writeStdout(jsonLine(profilePayload(projectRoot, context.env)));
+      return 0;
+    }
+    if (argv[1] === 'summary') {
+      context.io.writeStdout(jsonLine(profileSummary(projectRoot, context.env)));
+      return 0;
+    }
+    if (argv[1] === 'save') {
+      return context.pythonFallback(argv);
+    }
   }
 
   if (command === 'artifacts') {

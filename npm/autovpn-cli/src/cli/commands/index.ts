@@ -16,6 +16,7 @@ const TOP_LEVEL_COMMANDS = new Set([
 
 const JOBS_SUBCOMMANDS = new Set(['list', 'status', 'logs', 'stop', 'resume', 'retry']);
 const RESUME_SUBCOMMANDS = new Set(['pipeline', 'speedtest']);
+const PROFILE_SUBCOMMANDS = new Set(['show', 'save', 'summary']);
 
 function validateChoice(commandLabel: string, optionName: string, value: string | undefined, choices: string[]): void {
   if (value === undefined || choices.includes(value)) {
@@ -66,6 +67,14 @@ export function validateCommand(argv: string[]): void {
 
   if (command === 'doctor') {
     validateChoice('doctor', '--output', readOptionValue(argv, '--output'), ['human', 'json']);
+    return;
+  }
+
+  if (command === 'profile') {
+    const subcommand = argv[1] ?? '';
+    if (!PROFILE_SUBCOMMANDS.has(subcommand)) {
+      throw new CliUsageError('profile subcommand must be one of: show, save, summary');
+    }
     return;
   }
 

@@ -153,6 +153,70 @@ test('high-risk CLI commands are executed through backend adapter', async () => 
   assert.deepEqual(backendCalls, [['run', '--project-root', '/repo', '--skip-deploy', '--skip-verify', '--output', 'jsonl']]);
 });
 
+test('profile show is handled by Node shell without backend executeCli', async () => {
+  const root = await mkdir(path.join(os.tmpdir(), `autovpn-profile-show-${Date.now()}`), { recursive: true });
+  const profilePath = path.join(root, 'profile.toml');
+  await writeFile(profilePath, [
+    '[sources.leiting]',
+    'enabled = true',
+    'url = "https://source.example"',
+    'key = "secret-key"',
+    '',
+    '[deploy]',
+    'project_name = "sub-nodes"',
+    'pages_project_url = "https://sub-nodes.pages.dev"'
+  ].join('\n'), 'utf8');
+  const io = createIo();
+  let executeCliCalled = false;
+
+  const code = await runCliShell(['profile', 'show', '--project-root', root], {
+    packageVersion: '1.4.0',
+    cwd: root,
+    env: { PATH: '/bin', VPN_AUTOMATION_PROFILE_PATH: profilePath },
+    io,
+    createBackend: () => ({
+      kind: 'node',
+      executeCli: async () => {
+        executeCliCalled = true;
+        return 5;
+      }
+    })
+  });
+
+  assert.equal(code, 0);
+  assert.equal(executeCliCalled, false);
+  const payload = JSON.parse(io.stdout);
+  assert.equal(payload.sources.leiting.key, 'secret-key');
+  assert.equal(payload.deploy.project_name, 'sub-nodes');
+  assert.equal(payload.paths.profile_path, profilePath);
+  assert.equal(path.basename(payload.workspace.project_root), path.basename(root));
+  assert.equal(io.stderr, '');
+});
+
+test('profile without subcommand returns usage error before backend executeCli', async () => {
+  const io = createIo();
+  let executeCliCalled = false;
+
+  const code = await runCliShell(['profile'], {
+    packageVersion: '1.4.0',
+    cwd: '/repo',
+    env: { PATH: '/bin' },
+    io,
+    createBackend: () => ({
+      kind: 'node',
+      executeCli: async () => {
+        executeCliCalled = true;
+        return 5;
+      }
+    })
+  });
+
+  assert.equal(code, 2);
+  assert.equal(executeCliCalled, false);
+  assert.equal(io.stdout, '');
+  assert.match(io.stderr, /profile subcommand must be one of: show, save, summary/);
+});
+
 test('foreground run streams Node backend events when explicitly selected', async () => {
   const io = createIo();
   let executeCliCalled = false;
