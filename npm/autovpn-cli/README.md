@@ -26,7 +26,7 @@ The CLI is currently hybrid:
 
 - Node.js handles `--help`, `--version`, argument validation, `doctor --output json`, `profile summary --json`, `artifacts latest/list/preview`, `status --json`, `logs`, and read-only `jobs` commands.
 - Python remains the default backend for high-risk pipeline actions such as `run`, `retry-stage`, `resume`, detached job creation, stop, speedtest, deploy, and verify, selected through the backend adapter boundary.
-- The experimental Node backend can orchestrate foreground pipeline runs when explicitly selected with `AUTOVPN_BACKEND=node`. Deploy and verify remain disabled by default and require explicit Python stage fallback while the native Node Cloudflare implementation is still being migrated.
+- The experimental Node backend can orchestrate foreground pipeline runs when explicitly selected with `AUTOVPN_BACKEND=node`. Plain Cloudflare Pages deploy, primary blocked-project fallback, and verify are Node-native; custom-domain binding and share-project sync still require explicit Python stage fallback while the native Node Cloudflare implementation is being migrated.
 
 Experimental Node-orchestrated dry run:
 
@@ -38,8 +38,8 @@ autovpn run --project-root . --skip-deploy --skip-verify --output jsonl
 Current Node backend limits:
 
 - `--detach`, `retry-stage`, and `resume` remain Python-backed.
-- A Node foreground non-deploy run requires both `--skip-deploy` and `--skip-verify`.
-- Plain Node foreground deploy/verify runs use Node for Wrangler deploy and verify. Deploys that need custom-domain binding, share-project sync, or blocked-project fallback require `AUTOVPN_STAGE_BACKEND_DEPLOY=python` and an absolute `AUTOVPN_PYTHON_CLI` path. Verify can be rolled back with `AUTOVPN_STAGE_BACKEND_VERIFY=python`.
+- Plain Node foreground deploy/verify runs use Node for Wrangler deploy, primary blocked-project fallback, and verify.
+- Deploys that need custom-domain binding or share-project sync require `AUTOVPN_STAGE_BACKEND_DEPLOY=python` and an absolute `AUTOVPN_PYTHON_CLI` path. Verify can be rolled back with `AUTOVPN_STAGE_BACKEND_VERIFY=python`.
 - `--resume-latest` is not implemented for the Node backend yet.
 - Project `.env` is loaded before resolving profile and artifact paths. Explicit process environment values still win over `.env`.
 
