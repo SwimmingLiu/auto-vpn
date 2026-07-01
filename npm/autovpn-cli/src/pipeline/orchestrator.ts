@@ -9,7 +9,15 @@ import { resolveArtifactsRoot, resolveProfilePath } from '../runtime/paths.js';
 import { redactText } from '../runtime/redaction.js';
 import { fetchSourceLinksWithBackend, ExtractedSourceResult, SourceConfigInput } from './extract.js';
 import { dedupeVmessLinksWithBackend } from './dedupe.js';
-import { speedtestLinksWithBackend, SpeedTestResult } from './speedtest.js';
+import {
+  normalizeSpeedTestConfig,
+  ProbeResult,
+  probeSpeedtestLinksInNode,
+  selectSpeedtestCandidates,
+  speedtestLinksWithBackend,
+  SpeedTestResult,
+  testSpeedtestLinkInNode
+} from './speedtest.js';
 import { checkLinkAvailabilityBatchWithBackend, AvailabilityResultDict } from './availability.js';
 import { decorateLinkWithCountry, postprocessLinksWithBackend } from './postprocess.js';
 import { renderMainDataWithBackend } from './render.js';
@@ -61,6 +69,8 @@ export interface PipelineSummary {
 export interface NodePipelineStageOverrides {
   extract?: (input: { source_name: string; source: SourceConfigInput }) => ExtractedSourceResult | Promise<ExtractedSourceResult>;
   speedtest?: (links: string[], config: Record<string, unknown>, runtimePath: string) => SpeedTestResult[] | Promise<SpeedTestResult[]>;
+  speedtestProbe?: (links: string[], config: Record<string, unknown>, runtimePath: string) => ProbeResult[] | Promise<ProbeResult[]>;
+  speedtestLink?: (link: string, config: Record<string, unknown>, runtimePath: string) => SpeedTestResult | Promise<SpeedTestResult>;
   availability?: (results: SpeedTestResult[], config: Record<string, unknown>, runtimePath: string, targets: unknown) => AvailabilityResultDict[] | Promise<AvailabilityResultDict[]>;
   countryLookup?: (link: string, speedResult: SpeedTestResult, availabilityResult: AvailabilityResultDict) => string;
   obfuscate?: (input: { transformedSource: string; config: Record<string, unknown>; secretQuery: string }) => WorkerBuildArtifacts | Promise<WorkerBuildArtifacts>;
@@ -376,6 +386,53 @@ async function restoreResumeSpeedResults(artifactDir: string, eventLog: string, 
     return artifactResults;
   }
   return speedResultsFromEventLog(eventLog, passedLinks);
+}
+
+async function forEachWithConcurrency<T>(items: T[], concurrency: number, mapper: (item: T) => Promise<void>): Promise<void> {
+  let nextIndex = 0;
+  const workerCount = Math.max(1, Math.min(Math.max(1, Math.floor(concurrency)), items.length));
+  await Promise.all(Array.from({ length: workerCount }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      await mapper(items[index]);
+    }
+  }));
+}
+
+async function speedtestResumeStateFromEventLog(eventLog: string): Promise<{ probes: Map<string, ProbeResult>; fullResults: Map<string, SpeedTestResult> }> {
+  const probes = new Map<string, ProbeResult>();
+  const fullResults = new Map<string, SpeedTestResult>();
+  if (!fs.existsSync(eventLog)) {
+    return { probes, fullResults };
+  }
+  for (const line of (await readFile(eventLog, 'utf8')).split(/\r?\n/)) {
+    if (!line.trim()) {
+      continue;
+    }
+    const payload = JSON.parse(line) as Record<string, unknown>;
+    const link = String(payload.link ?? '').trim();
+    if (!link) {
+      continue;
+    }
+    if (payload.type === 'speedtest_probe_result') {
+      probes.set(link, {
+        link,
+        reachable: Boolean(payload.reachable),
+        latency_ms: Number(payload.latency_ms ?? 0) || 0,
+        error: String(payload.error ?? '')
+      });
+    } else if (payload.type === 'speedtest_result') {
+      fullResults.set(link, {
+        link,
+        reachable: Boolean(payload.reachable),
+        average_download_mb_s: Number(payload.average_download_mb_s ?? 0) || 0,
+        latency_ms: Number(payload.latency_ms ?? 0) || 0,
+        error: String(payload.error ?? '')
+      });
+    }
+  }
+  return { probes, fullResults };
 }
 
 async function writeWorkerArtifacts(artifactDir: string, profile: PipelineProfile, renderedSource: string, artifacts: WorkerBuildArtifacts): Promise<string> {
@@ -800,9 +857,166 @@ export async function retryNodePipelineStage(options: NodeRetryStageOptions, con
   return summary;
 }
 
+async function resumeNodeSpeedtest(options: NodeResumeOptions, context: RunNodePipelineContext = {}): Promise<PipelineSummary> {
+  const projectRoot = path.resolve(options.projectRoot);
+  const sessionDir = path.resolve(options.session);
+  const sessionPath = path.join(sessionDir, 'session.json');
+  if (!fs.existsSync(sessionPath)) {
+    throw new Error(`session.json not found: ${sessionPath}`);
+  }
+  const sessionPayload = await readJson<Record<string, unknown>>(sessionPath, {});
+  const artifactDirRaw = String(sessionPayload.artifact_dir ?? '').trim();
+  if (!artifactDirRaw) {
+    throw new Error(`session artifact_dir is required: ${sessionPath}`);
+  }
+  const artifactDir = path.resolve(artifactDirRaw);
+  if (!artifactDir || !fs.existsSync(artifactDir)) {
+    throw new Error(`artifact dir not found: ${artifactDir}`);
+  }
+
+  const eventLog = options.eventLog ?? String(sessionPayload.event_log ?? path.join(sessionDir, 'events.jsonl'));
+  const resumeEventLog = String(sessionPayload.event_log ?? path.join(sessionDir, 'events.jsonl'));
+  const humanLog = options.humanLog ?? String(sessionPayload.human_log ?? path.join(sessionDir, 'human.log'));
+  const env = mergeProjectEnv(projectRoot, { ...process.env, ...(context.env ?? {}) });
+  const profile = await readProfile(projectRoot, env);
+  const report = await readJson<Record<string, unknown>>(path.join(artifactDir, 'pipeline_report.json'), {});
+  const summary = pipelineSummaryFromReport(artifactDir, report);
+  const runtimePath = path.join(artifactDir, 'runtime');
+
+  const emit = (type: string, payload: Record<string, unknown> = {}) => {
+    const event = { type, ...payload } as AutoVpnEvent;
+    appendTextFile(eventLog, eventLogLine(event));
+    appendTextFile(humanLog, humanLogLine(event));
+    context.emit?.(event);
+  };
+  const writeReport = () => writeJson(artifactDir, 'pipeline_report.json', summary);
+  const setStage = async (stageName: StageName, status: StageStatus) => {
+    summary.stage_status[stageName] = status;
+    emit('stage', { stage: stageName, status });
+    await writeReport();
+  };
+
+  const rawLinks = await readLines(path.join(artifactDir, 'vpn_node_raw.txt'));
+  const dedupedLinks = await readLines(path.join(artifactDir, 'vpn_node_deduped.txt'));
+  summary.counts.raw_links = rawLinks.length;
+  summary.counts.deduped_links = dedupedLinks.length;
+  for (const baseStage of ['doctor', 'extract', 'dedupe'] as StageName[]) {
+    if (summary.stage_status[baseStage] === 'pending') {
+      summary.stage_status[baseStage] = 'success';
+    }
+  }
+
+  const { probes, fullResults } = await speedtestResumeStateFromEventLog(resumeEventLog);
+  emit('speedtest_resume_state', {
+    resumed_probe_count: probes.size,
+    resumed_full_count: fullResults.size,
+    total_links: dedupedLinks.length
+  });
+  emit('log', { message: `[resume] speedtest resume from probe=${probes.size}/${dedupedLinks.length} full=${fullResults.size}` });
+
+  try {
+    await setStage('speedtest', 'running');
+    const speedConfig = normalizeSpeedTestConfig(profile.speed_test as any);
+    const requestedRuntime = String(env.AUTOVPN_SPEEDTEST_RUNTIME ?? '').trim().toLowerCase();
+    const usingInjectedSpeedtestStages = Boolean(context.stages?.speedtestProbe && context.stages?.speedtestLink);
+    if (requestedRuntime !== 'mihomo' && !usingInjectedSpeedtestStages) {
+      throw new Error('Node resume speedtest requires AUTOVPN_SPEEDTEST_RUNTIME=mihomo');
+    }
+    const remainingProbeLinks = dedupedLinks.filter((link) => !probes.has(link));
+    if (remainingProbeLinks.length > 0) {
+      const probeResults = context.stages?.speedtestProbe
+        ? await context.stages.speedtestProbe(remainingProbeLinks, profile.speed_test ?? {}, runtimePath)
+        : await probeSpeedtestLinksInNode({ links: remainingProbeLinks, config: profile.speed_test as any, runtime_path: runtimePath }, { cwd: projectRoot, env });
+      for (let index = 0; index < probeResults.length; index += 1) {
+        const result = probeResults[index];
+        probes.set(result.link, result);
+        const completed = probes.size;
+        emit('log', { message: `[speedtest:probe] ${completed}/${dedupedLinks.length} reachable=${result.reachable} latency=${result.latency_ms}ms` });
+        emit('speedtest_probe_result', {
+          completed,
+          total: dedupedLinks.length,
+          link: result.link,
+          reachable: result.reachable,
+          latency_ms: result.latency_ms,
+          error: result.error ?? ''
+        });
+      }
+    }
+
+    const orderedProbes = dedupedLinks.map((link) => probes.get(link)).filter((result): result is ProbeResult => Boolean(result));
+    const candidateLinks = selectSpeedtestCandidates(orderedProbes, speedConfig.max_download_candidates);
+    const reachableCount = orderedProbes.filter((probe) => probe.reachable).length;
+    emit('log', { message: `[speedtest] selected ${candidateLinks.length}/${reachableCount} reachable links for full download test` });
+    emit('speedtest_selected', {
+      total_links: dedupedLinks.length,
+      reachable_count: reachableCount,
+      candidate_count: candidateLinks.length
+    });
+
+    const remainingFullLinks = candidateLinks.filter((link) => !fullResults.has(link));
+    await forEachWithConcurrency(remainingFullLinks, speedConfig.concurrency, async (link) => {
+      const result = context.stages?.speedtestLink
+        ? await context.stages.speedtestLink(link, profile.speed_test ?? {}, runtimePath)
+        : await testSpeedtestLinkInNode({ link, config: profile.speed_test as any, runtime_path: runtimePath }, { cwd: projectRoot, env });
+      if (result.reachable && result.latency_ms <= 0) {
+        result.latency_ms = probes.get(result.link)?.latency_ms ?? 0;
+      }
+      fullResults.set(result.link, result);
+      const completed = fullResults.size;
+      const passedThreshold = result.reachable && result.average_download_mb_s >= speedConfig.min_download_mb_s;
+      emit('log', { message: `[speedtest] ${completed}/${candidateLinks.length} reachable=${result.reachable} speed=${result.average_download_mb_s}MB/s` });
+      emit('speedtest_result', {
+        completed,
+        total: candidateLinks.length,
+        link: result.link,
+        reachable: result.reachable,
+        average_download_mb_s: result.average_download_mb_s,
+        latency_ms: result.latency_ms,
+        passed_threshold: passedThreshold,
+        error: result.error ?? ''
+      });
+    });
+
+    const orderedFullResults = candidateLinks.map((link) => fullResults.get(link)).filter((result): result is SpeedTestResult => Boolean(result));
+    const fastResults = orderedFullResults
+      .filter((result) => result.reachable && result.average_download_mb_s >= speedConfig.min_download_mb_s)
+      .sort((left, right) => right.average_download_mb_s - left.average_download_mb_s);
+    await writeLines(artifactDir, 'vpn_node_speedtest.txt', fastResults.map((result) => result.link));
+    await writeJson(artifactDir, 'vpn_node_speedtest_report.json', fastResults);
+    summary.counts.speedtest_links = fastResults.length;
+    emit('log', { message: `[speedtest] kept ${fastResults.length} links above threshold` });
+
+    if (fastResults.length === 0) {
+      await setStage('speedtest', 'failed');
+      summary.run_status = 'failed';
+      summary.error = 'Error: No links passed speed test';
+      await writeReport();
+      throw new Error('No links passed speed test');
+    }
+
+    await setStage('speedtest', 'success');
+    summary.run_status = 'success';
+    summary.error = '';
+    await writeReport();
+    emit('summary', summary as unknown as Record<string, unknown>);
+    return summary;
+  } catch (error) {
+    summary.run_status = 'failed';
+    summary.error = errorMessage(error);
+    if (summary.stage_status.speedtest === 'running') {
+      summary.stage_status.speedtest = 'failed';
+      emit('stage', { stage: 'speedtest', status: 'failed' });
+    }
+    await writeReport();
+    emit('summary', summary as unknown as Record<string, unknown>);
+    emit('run_failed', { error: summary.error });
+    throw error;
+  }
+}
+
 export async function resumeNodePipeline(options: NodeResumeOptions, context: RunNodePipelineContext = {}): Promise<PipelineSummary> {
-  if (options.mode !== 'pipeline') {
-    throw new Error('Node backend resume speedtest is not available yet; use AUTOVPN_BACKEND=python');
+  if (options.mode === 'speedtest') {
+    return resumeNodeSpeedtest(options, context);
   }
   const projectRoot = path.resolve(options.projectRoot);
   const sessionDir = path.resolve(options.session);

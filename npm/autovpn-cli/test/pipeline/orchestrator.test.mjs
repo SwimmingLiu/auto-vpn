@@ -825,3 +825,387 @@ test('resumeNodePipeline restores Python-compatible speedtest events when report
   assert.equal(resumed.run_status, 'success');
   assert.equal(resumed.counts.speedtest_links, 2);
 });
+
+test('resumeNodePipeline resumes speedtest sessions from partial event logs', async () => {
+  const projectRoot = await makeProject();
+  const firstLink = vmessLink('first', 'one.example');
+  const secondLink = vmessLink('second', 'two.example');
+  const thirdLink = vmessLink('third', 'three.example');
+  const runtimeRoot = path.join(projectRoot, '.runtime');
+  const profilePath = path.join(projectRoot, 'state', 'profile.toml');
+  const env = {
+    VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot,
+    VPN_AUTOMATION_PROFILE_PATH: profilePath
+  };
+  const source = await runNodePipeline({
+    projectRoot,
+    skipDeploy: true,
+    skipVerify: true,
+    output: 'jsonl'
+  }, {
+    env,
+    now: () => new Date('2026-06-29T01:02:03Z'),
+    stages: {
+      extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink, secondLink, thirdLink] }),
+      speedtest: async (links) => links.map((link) => ({ link, reachable: true, average_download_mb_s: 1, latency_ms: 20, error: '' })),
+      availability: async () => [],
+      countryLookup: () => 'US',
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
+    }
+  });
+  await writeFile(path.join(source.artifact_dir, 'vpn_node_speedtest.txt'), '', 'utf8');
+  await writeFile(path.join(source.artifact_dir, 'vpn_node_speedtest_report.json'), '[]', 'utf8');
+  const sessionDir = path.join(projectRoot, 'sessions', 'resume-speedtest');
+  const eventLog = path.join(sessionDir, 'events.jsonl');
+  const humanLog = path.join(sessionDir, 'human.log');
+  await mkdir(sessionDir, { recursive: true });
+  await writeFile(eventLog, [
+    JSON.stringify({ type: 'speedtest_probe_result', completed: 1, total: 3, link: firstLink, reachable: true, latency_ms: 80, error: '' }),
+    JSON.stringify({ type: 'speedtest_result', completed: 1, total: 3, link: firstLink, reachable: true, average_download_mb_s: 2, latency_ms: 80, error: '' })
+  ].join('\n'), 'utf8');
+  await writeFile(path.join(sessionDir, 'session.json'), JSON.stringify({
+    artifact_dir: source.artifact_dir,
+    event_log: eventLog,
+    human_log: humanLog
+  }), 'utf8');
+  const events = [];
+  const probed = [];
+  const tested = [];
+
+  const resumed = await resumeNodePipeline({
+    projectRoot,
+    mode: 'speedtest',
+    session: sessionDir,
+    output: 'jsonl'
+  }, {
+    env,
+    emit: (event) => events.push(event),
+    stages: {
+      speedtestProbe: async (links) => {
+        probed.push(...links);
+        return links.map((link) => ({ link, reachable: true, latency_ms: link === secondLink ? 30 : 60, error: '' }));
+      },
+      speedtestLink: async (link) => {
+        tested.push(link);
+        return { link, reachable: true, average_download_mb_s: link === secondLink ? 4 : 3, latency_ms: link === secondLink ? 30 : 60, error: '' };
+      }
+    }
+  });
+
+  assert.deepEqual(probed.map(vmessName), ['second', 'third']);
+  assert.deepEqual(tested.map(vmessName), ['second', 'third']);
+  assert.equal(resumed.artifact_dir, source.artifact_dir);
+  assert.equal(resumed.run_status, 'success');
+  assert.equal(resumed.stage_status.speedtest, 'success');
+  assert.equal(resumed.counts.speedtest_links, 3);
+  assert.equal(events[0].type, 'speedtest_resume_state');
+  assert.equal(events[0].resumed_probe_count, 1);
+  assert.equal(events[0].resumed_full_count, 1);
+  assert.equal(events.at(-1).type, 'summary');
+  assert.deepEqual((await readFile(path.join(source.artifact_dir, 'vpn_node_speedtest.txt'), 'utf8')).trim().split(/\n/).map(vmessName), ['second', 'third', 'first']);
+  const report = JSON.parse(await readFile(path.join(source.artifact_dir, 'vpn_node_speedtest_report.json'), 'utf8'));
+  assert.deepEqual(report.map((result) => vmessName(result.link)), ['second', 'third', 'first']);
+  assert.match(await readFile(humanLog, 'utf8'), /\[summary\] run_status=success/);
+});
+
+test('resumeNodePipeline reads speedtest resume state from session log when output log is overridden', async () => {
+  const projectRoot = await makeProject();
+  const firstLink = vmessLink('first', 'one.example');
+  const secondLink = vmessLink('second', 'two.example');
+  const runtimeRoot = path.join(projectRoot, '.runtime');
+  const profilePath = path.join(projectRoot, 'state', 'profile.toml');
+  const env = {
+    VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot,
+    VPN_AUTOMATION_PROFILE_PATH: profilePath
+  };
+  const source = await runNodePipeline({
+    projectRoot,
+    skipDeploy: true,
+    skipVerify: true,
+    output: 'jsonl'
+  }, {
+    env,
+    now: () => new Date('2026-06-29T01:02:03Z'),
+    stages: {
+      extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink, secondLink] }),
+      speedtest: async (links) => links.map((link) => ({ link, reachable: true, average_download_mb_s: 1, latency_ms: 20, error: '' })),
+      availability: async () => [],
+      countryLookup: () => 'US',
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
+    }
+  });
+  await writeFile(path.join(source.artifact_dir, 'vpn_node_speedtest.txt'), '', 'utf8');
+  await writeFile(path.join(source.artifact_dir, 'vpn_node_speedtest_report.json'), '[]', 'utf8');
+  const sessionDir = path.join(projectRoot, 'sessions', 'resume-speedtest-override-log');
+  const sessionEventLog = path.join(sessionDir, 'events.jsonl');
+  const overrideEventLog = path.join(sessionDir, 'override-events.jsonl');
+  await mkdir(sessionDir, { recursive: true });
+  await writeFile(sessionEventLog, [
+    JSON.stringify({ type: 'speedtest_probe_result', completed: 1, total: 2, link: firstLink, reachable: true, latency_ms: 80, error: '' }),
+    JSON.stringify({ type: 'speedtest_result', completed: 1, total: 2, link: firstLink, reachable: true, average_download_mb_s: 2, latency_ms: 80, error: '' })
+  ].join('\n'), 'utf8');
+  await writeFile(path.join(sessionDir, 'session.json'), JSON.stringify({
+    artifact_dir: source.artifact_dir,
+    event_log: sessionEventLog,
+    human_log: path.join(sessionDir, 'human.log')
+  }), 'utf8');
+  const probed = [];
+  const tested = [];
+
+  await resumeNodePipeline({
+    projectRoot,
+    mode: 'speedtest',
+    session: sessionDir,
+    output: 'jsonl',
+    eventLog: overrideEventLog
+  }, {
+    env,
+    stages: {
+      speedtestProbe: async (links) => {
+        probed.push(...links);
+        return links.map((link) => ({ link, reachable: true, latency_ms: 30, error: '' }));
+      },
+      speedtestLink: async (link) => {
+        tested.push(link);
+        return { link, reachable: true, average_download_mb_s: 4, latency_ms: 30, error: '' };
+      }
+    }
+  });
+
+  assert.deepEqual(probed.map(vmessName), ['second']);
+  assert.deepEqual(tested.map(vmessName), ['second']);
+  assert.match(await readFile(overrideEventLog, 'utf8'), /speedtest_resume_state/);
+});
+
+test('resumeNodePipeline requires Mihomo runtime for native speedtest resume without injected stages', async () => {
+  const projectRoot = await makeProject();
+  const firstLink = vmessLink('first', 'one.example');
+  const runtimeRoot = path.join(projectRoot, '.runtime');
+  const profilePath = path.join(projectRoot, 'state', 'profile.toml');
+  const env = {
+    VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot,
+    VPN_AUTOMATION_PROFILE_PATH: profilePath
+  };
+  const source = await runNodePipeline({
+    projectRoot,
+    skipDeploy: true,
+    skipVerify: true,
+    output: 'jsonl'
+  }, {
+    env,
+    now: () => new Date('2026-06-29T01:02:03Z'),
+    stages: {
+      extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink] }),
+      speedtest: async (links) => links.map((link) => ({ link, reachable: true, average_download_mb_s: 1, latency_ms: 20, error: '' })),
+      availability: async () => [],
+      countryLookup: () => 'US',
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
+    }
+  });
+  await writeFile(path.join(source.artifact_dir, 'vpn_node_speedtest.txt'), '', 'utf8');
+  const sessionDir = path.join(projectRoot, 'sessions', 'resume-speedtest-direct-runtime');
+  await mkdir(sessionDir, { recursive: true });
+  await writeFile(path.join(sessionDir, 'session.json'), JSON.stringify({
+    artifact_dir: source.artifact_dir,
+    event_log: path.join(sessionDir, 'events.jsonl'),
+    human_log: path.join(sessionDir, 'human.log')
+  }), 'utf8');
+
+  await assert.rejects(() => resumeNodePipeline({
+    projectRoot,
+    mode: 'speedtest',
+    session: sessionDir,
+    output: 'jsonl'
+  }, {
+    env
+  }), /Node resume speedtest requires AUTOVPN_SPEEDTEST_RUNTIME=mihomo/);
+});
+
+test('resumeNodePipeline rejects partial speedtest stage injection without Mihomo runtime', async () => {
+  const projectRoot = await makeProject();
+  const firstLink = vmessLink('first', 'one.example');
+  const runtimeRoot = path.join(projectRoot, '.runtime');
+  const profilePath = path.join(projectRoot, 'state', 'profile.toml');
+  const env = {
+    VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot,
+    VPN_AUTOMATION_PROFILE_PATH: profilePath
+  };
+  const source = await runNodePipeline({
+    projectRoot,
+    skipDeploy: true,
+    skipVerify: true,
+    output: 'jsonl'
+  }, {
+    env,
+    now: () => new Date('2026-06-29T01:02:03Z'),
+    stages: {
+      extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink] }),
+      speedtest: async (links) => links.map((link) => ({ link, reachable: true, average_download_mb_s: 1, latency_ms: 20, error: '' })),
+      availability: async () => [],
+      countryLookup: () => 'US',
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
+    }
+  });
+  await writeFile(path.join(source.artifact_dir, 'vpn_node_speedtest.txt'), '', 'utf8');
+  const sessionDir = path.join(projectRoot, 'sessions', 'resume-speedtest-partial-injection');
+  await mkdir(sessionDir, { recursive: true });
+  await writeFile(path.join(sessionDir, 'session.json'), JSON.stringify({
+    artifact_dir: source.artifact_dir,
+    event_log: path.join(sessionDir, 'events.jsonl'),
+    human_log: path.join(sessionDir, 'human.log')
+  }), 'utf8');
+
+  await assert.rejects(() => resumeNodePipeline({
+    projectRoot,
+    mode: 'speedtest',
+    session: sessionDir,
+    output: 'jsonl'
+  }, {
+    env,
+    stages: {
+      speedtestProbe: async (links) => links.map((link) => ({ link, reachable: true, latency_ms: 20, error: '' }))
+    }
+  }), /Node resume speedtest requires AUTOVPN_SPEEDTEST_RUNTIME=mihomo/);
+});
+
+test('resumeNodePipeline emits concurrent speedtest results as each link completes', async () => {
+  const projectRoot = await makeProject();
+  const firstLink = vmessLink('first', 'one.example');
+  const secondLink = vmessLink('second', 'two.example');
+  const runtimeRoot = path.join(projectRoot, '.runtime');
+  const profilePath = path.join(projectRoot, 'state', 'profile.toml');
+  const env = {
+    VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot,
+    VPN_AUTOMATION_PROFILE_PATH: profilePath
+  };
+  await writeFile(profilePath, (await readFile(profilePath, 'utf8')).replace('concurrency = 1', 'concurrency = 2'), 'utf8');
+  const source = await runNodePipeline({
+    projectRoot,
+    skipDeploy: true,
+    skipVerify: true,
+    output: 'jsonl'
+  }, {
+    env,
+    now: () => new Date('2026-06-29T01:02:03Z'),
+    stages: {
+      extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink, secondLink] }),
+      speedtest: async (links) => links.map((link) => ({ link, reachable: true, average_download_mb_s: 1, latency_ms: 20, error: '' })),
+      availability: async () => [],
+      countryLookup: () => 'US',
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
+    }
+  });
+  await writeFile(path.join(source.artifact_dir, 'vpn_node_speedtest.txt'), '', 'utf8');
+  await writeFile(path.join(source.artifact_dir, 'vpn_node_speedtest_report.json'), '[]', 'utf8');
+  const sessionDir = path.join(projectRoot, 'sessions', 'resume-speedtest-concurrent');
+  const eventLog = path.join(sessionDir, 'events.jsonl');
+  await mkdir(sessionDir, { recursive: true });
+  await writeFile(eventLog, [
+    JSON.stringify({ type: 'speedtest_probe_result', completed: 1, total: 2, link: firstLink, reachable: true, latency_ms: 10, error: '' }),
+    JSON.stringify({ type: 'speedtest_probe_result', completed: 2, total: 2, link: secondLink, reachable: true, latency_ms: 20, error: '' })
+  ].join('\n'), 'utf8');
+  await writeFile(path.join(sessionDir, 'session.json'), JSON.stringify({
+    artifact_dir: source.artifact_dir,
+    event_log: eventLog,
+    human_log: path.join(sessionDir, 'human.log')
+  }), 'utf8');
+  const events = [];
+  let releaseSlow;
+  const slowResultAllowed = new Promise((resolve) => { releaseSlow = resolve; });
+  let fastResultReturned;
+  const fastResultReturnedPromise = new Promise((resolve) => { fastResultReturned = resolve; });
+
+  const resumePromise = resumeNodePipeline({
+    projectRoot,
+    mode: 'speedtest',
+    session: sessionDir,
+    output: 'jsonl'
+  }, {
+    env,
+    emit: (event) => events.push(event),
+    stages: {
+      speedtestProbe: async () => {
+        throw new Error('probe stage should be restored from the resume event log');
+      },
+      speedtestLink: async (link) => {
+        if (link === firstLink) {
+          fastResultReturned();
+          return { link, reachable: true, average_download_mb_s: 5, latency_ms: 10, error: '' };
+        }
+        await slowResultAllowed;
+        return { link, reachable: true, average_download_mb_s: 4, latency_ms: 20, error: '' };
+      }
+    }
+  });
+
+  await fastResultReturnedPromise;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(events.some((event) => event.type === 'speedtest_result' && event.link === firstLink));
+  assert.equal(events.some((event) => event.type === 'speedtest_result' && event.link === secondLink), false);
+  releaseSlow();
+  const resumed = await resumePromise;
+
+  assert.equal(resumed.run_status, 'success');
+  assert.deepEqual(events.filter((event) => event.type === 'speedtest_result').map((event) => vmessName(event.link)), ['first', 'second']);
+});
+
+test('resumeNodePipeline marks speedtest failed when resumed results do not pass threshold', async () => {
+  const projectRoot = await makeProject();
+  const firstLink = vmessLink('first', 'one.example');
+  const runtimeRoot = path.join(projectRoot, '.runtime');
+  const profilePath = path.join(projectRoot, 'state', 'profile.toml');
+  const env = {
+    VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot,
+    VPN_AUTOMATION_PROFILE_PATH: profilePath
+  };
+  const source = await runNodePipeline({
+    projectRoot,
+    skipDeploy: true,
+    skipVerify: true,
+    output: 'jsonl'
+  }, {
+    env,
+    now: () => new Date('2026-06-29T01:02:03Z'),
+    stages: {
+      extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink] }),
+      speedtest: async (links) => links.map((link) => ({ link, reachable: true, average_download_mb_s: 1, latency_ms: 20, error: '' })),
+      availability: async () => [],
+      countryLookup: () => 'US',
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
+    }
+  });
+  await writeFile(path.join(source.artifact_dir, 'vpn_node_speedtest.txt'), '', 'utf8');
+  await writeFile(path.join(source.artifact_dir, 'vpn_node_speedtest_report.json'), '[]', 'utf8');
+  const sessionDir = path.join(projectRoot, 'sessions', 'resume-speedtest-failed');
+  const eventLog = path.join(sessionDir, 'events.jsonl');
+  const humanLog = path.join(sessionDir, 'human.log');
+  await mkdir(sessionDir, { recursive: true });
+  await writeFile(path.join(sessionDir, 'session.json'), JSON.stringify({
+    artifact_dir: source.artifact_dir,
+    event_log: eventLog,
+    human_log: humanLog
+  }), 'utf8');
+  const events = [];
+
+  await assert.rejects(() => resumeNodePipeline({
+    projectRoot,
+    mode: 'speedtest',
+    session: sessionDir,
+    output: 'jsonl'
+  }, {
+    env,
+    emit: (event) => events.push(event),
+    stages: {
+      speedtestProbe: async (links) => links.map((link) => ({ link, reachable: true, latency_ms: 20, error: '' })),
+      speedtestLink: async (link) => ({ link, reachable: true, average_download_mb_s: 0.5, latency_ms: 20, error: '' })
+    }
+  }), /No links passed speed test/);
+
+  assert.equal(events.at(-2).type, 'summary');
+  assert.equal(events.at(-2).run_status, 'failed');
+  assert.equal(events.at(-1).type, 'run_failed');
+  const report = JSON.parse(await readFile(path.join(source.artifact_dir, 'pipeline_report.json'), 'utf8'));
+  assert.equal(report.run_status, 'failed');
+  assert.equal(report.stage_status.speedtest, 'failed');
+  assert.match(report.error, /No links passed speed test/);
+});
