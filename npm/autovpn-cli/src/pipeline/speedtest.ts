@@ -5,6 +5,12 @@ import { mergeProjectEnv } from '../runtime/env.js';
 export type PipelineStageBackend = 'node' | 'python';
 
 type SpawnLike = (command: string, args: string[], options?: Record<string, unknown>) => ChildProcess;
+type FetchLike = (url: string, init?: Record<string, unknown>) => Promise<{
+  ok?: boolean;
+  status?: number;
+  body?: ReadableStream<Uint8Array> | null;
+  arrayBuffer?: () => Promise<ArrayBuffer>;
+}>;
 
 interface ResolvedPythonCli {
   command: string;
@@ -47,6 +53,8 @@ export interface SpeedTestBackendOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   spawn?: SpawnLike;
+  fetch?: FetchLike;
+  now?: () => number;
   resolvePythonCli?: () => ResolvedPythonCli | Promise<ResolvedPythonCli>;
   probeLinks?: (links: string[], config: Required<SpeedTestConfigInput>, options: { runtime_path: string }) => ProbeResult[] | Promise<ProbeResult[]>;
   testLink?: (link: string, config: Required<SpeedTestConfigInput>, options: { runtime_path: string }) => SpeedTestResult | Promise<SpeedTestResult>;
@@ -127,25 +135,139 @@ function emitEvent(callback: SpeedTestBackendOptions['eventCallback'], eventType
   }
 }
 
+function defaultNow(): number {
+  return performance.now();
+}
+
+async function fetchWithTimeout(fetchImpl: FetchLike, url: string, timeoutMs: number): Promise<Awaited<ReturnType<FetchLike>>> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetchImpl(url, { signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function readResponseBytes(response: Awaited<ReturnType<FetchLike>>, maxBytes: number): Promise<number> {
+  if (response.body?.getReader) {
+    const reader = response.body.getReader();
+    let total = 0;
+    try {
+      while (total < maxBytes) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
+        total += Math.min(value.byteLength, maxBytes - total);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    return total;
+  }
+  if (response.arrayBuffer) {
+    return Math.min((await response.arrayBuffer()).byteLength, maxBytes);
+  }
+  return 0;
+}
+
+function requireOkResponse(response: Awaited<ReturnType<FetchLike>>, allowedStatuses: Set<number>): void {
+  const status = Number(response.status ?? 200);
+  if (response.ok === false || !allowedStatuses.has(status)) {
+    throw new Error(`unexpected status ${status}`);
+  }
+}
+
+async function probeLinksDirect(
+  links: string[],
+  config: Required<SpeedTestConfigInput>,
+  options: SpeedTestBackendOptions
+): Promise<ProbeResult[]> {
+  const fetchImpl = options.fetch ?? globalThis.fetch?.bind(globalThis);
+  if (!fetchImpl) {
+    throw new Error('Node speedtest backend requires fetch support');
+  }
+  const now = options.now ?? defaultNow;
+  const timeoutMs = Math.max(1, Number(config.timeout_seconds)) * 1000;
+  const results: ProbeResult[] = [];
+  for (const link of links) {
+    const started = now();
+    try {
+      const response = await fetchWithTimeout(fetchImpl, config.probe_url, timeoutMs);
+      const elapsed = Math.max(now() - started, 1);
+      requireOkResponse(response, new Set([200, 204]));
+      results.push({ link, reachable: true, latency_ms: Math.max(Math.round(elapsed), 1), error: '' });
+    } catch (error) {
+      results.push({ link, reachable: false, latency_ms: 0, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  return results;
+}
+
+async function testLinkDirect(
+  link: string,
+  config: Required<SpeedTestConfigInput>,
+  options: SpeedTestBackendOptions
+): Promise<SpeedTestResult> {
+  const fetchImpl = options.fetch ?? globalThis.fetch?.bind(globalThis);
+  if (!fetchImpl) {
+    throw new Error('Node speedtest backend requires fetch support');
+  }
+  const now = options.now ?? defaultNow;
+  const timeoutMs = Math.max(1, Number(config.timeout_seconds)) * 1000;
+  const speedValues: number[] = [];
+  const failures: string[] = [];
+  for (const url of config.urls) {
+    const started = now();
+    try {
+      const response = await fetchWithTimeout(fetchImpl, url, timeoutMs);
+      requireOkResponse(response, new Set([200]));
+      const total = await readResponseBytes(response, Math.max(1, Number(config.max_download_bytes)));
+      const elapsedSeconds = Math.max((now() - started) / 1000, 0.001);
+      speedValues.push(total / elapsedSeconds / 1024 / 1024);
+    } catch (error) {
+      failures.push(`${url}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  if (speedValues.length === 0) {
+    return {
+      link,
+      reachable: false,
+      average_download_mb_s: 0,
+      latency_ms: 0,
+      error: failures.join('; ') || 'all speed test urls failed'
+    };
+  }
+  return {
+    link,
+    reachable: true,
+    average_download_mb_s: aggregateSpeedMeasurements(speedValues),
+    latency_ms: 0,
+    error: failures.join('; ')
+  };
+}
+
 async function speedtestInNode(input: SpeedTestInput, options: SpeedTestBackendOptions): Promise<SpeedTestResult[]> {
   if (input.links.length === 0) {
     return [];
   }
-  if (!options.probeLinks || !options.testLink) {
-    throw new Error('Node speedtest backend requires probeLinks and testLink implementations; use Python backend for runtime speed tests');
-  }
 
   const config = normalizeConfig(input.config);
   const runtimePath = input.runtime_path ?? '';
-  options.progressCallback?.(`[speedtest] runtime_core=mihomo probe_url=${config.probe_url}`);
+  const probeLinks = options.probeLinks ?? ((links: string[]) => probeLinksDirect(links, config, options));
+  const testLink = options.testLink ?? ((link: string) => testLinkDirect(link, config, options));
+  const runtimeCore = options.probeLinks || options.testLink ? 'mihomo' : 'direct';
+  options.progressCallback?.(`[speedtest] runtime_core=${runtimeCore} probe_url=${config.probe_url}`);
   emitEvent(options.eventCallback, 'speedtest_runtime', {
-    runtime_core: 'mihomo',
+    runtime_core: runtimeCore,
     probe_url: config.probe_url,
     urls: [...config.urls]
   });
 
-  const probes = await options.probeLinks(input.links, config, { runtime_path: runtimePath });
+  const probes = await probeLinks(input.links, config, { runtime_path: runtimePath });
   const candidateLinks = selectSpeedtestCandidates(probes, config.max_download_candidates);
+  const probeByLink = new Map(probes.map((probe) => [probe.link, probe]));
   const candidateSet = new Set(candidateLinks);
   const reachableCount = probes.filter((probe) => probe.reachable).length;
   options.progressCallback?.(`[speedtest] selected ${candidateLinks.length}/${reachableCount} reachable links for full download test`);
@@ -166,7 +288,10 @@ async function speedtestInNode(input: SpeedTestInput, options: SpeedTestBackendO
     }));
 
   for (let index = 0; index < candidateLinks.length; index += 1) {
-    const result = await options.testLink(candidateLinks[index], config, { runtime_path: runtimePath });
+    const result = await testLink(candidateLinks[index], config, { runtime_path: runtimePath });
+    if (result.reachable && result.latency_ms <= 0) {
+      result.latency_ms = probeByLink.get(result.link)?.latency_ms ?? 0;
+    }
     results.push(result);
     const completed = index + 1;
     options.progressCallback?.(`[speedtest] ${completed}/${candidateSet.size} reachable=${result.reachable} speed=${result.average_download_mb_s}MB/s`);
