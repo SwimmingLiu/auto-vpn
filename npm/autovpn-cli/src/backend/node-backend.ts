@@ -1,5 +1,5 @@
 import { AutoVpnEvent } from '../events/schema.js';
-import { retryNodePipelineStage, runNodePipeline } from '../pipeline/orchestrator.js';
+import { resumeNodePipeline, retryNodePipelineStage, runNodePipeline } from '../pipeline/orchestrator.js';
 import {
   AutoVpnBackend,
   DetachedRunOptions,
@@ -108,8 +108,32 @@ export class NodeBackend implements AutoVpnBackend {
     }
   }
 
-  async *resume(_options: ResumeOptions): AsyncIterable<AutoVpnEvent> {
-    throw unsupported('resume');
+  async *resume(options: ResumeOptions): AsyncIterable<AutoVpnEvent> {
+    const queue: EventQueueState = { events: [], wake: [], done: false };
+    void resumeNodePipeline({
+        projectRoot: options.projectRoot,
+        mode: options.mode,
+        session: options.session,
+        output: options.output,
+        eventLog: options.eventLog,
+        humanLog: options.humanLog
+      }, {
+        env: this.env,
+        emit: (event) => pushEvent(queue, event)
+      })
+      .then(() => finishQueue(queue))
+      .catch((error) => finishQueue(queue, error));
+
+    while (!queue.done || queue.events.length > 0) {
+      if (queue.events.length === 0) {
+        await waitForEvent(queue);
+        continue;
+      }
+      yield queue.events.shift() as AutoVpnEvent;
+    }
+    if (queue.error) {
+      throw queue.error;
+    }
   }
 
   async startDetached(_options: DetachedRunOptions): Promise<JobSummary> {
