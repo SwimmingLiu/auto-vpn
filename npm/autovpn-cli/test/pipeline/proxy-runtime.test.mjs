@@ -1,9 +1,14 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
+import { access, readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import {
   buildMihomoRuntimeConfig,
+  openMihomoRuntime,
   parseVmessLink,
+  probeMihomoProxyDelay,
+  selectMihomoProxy,
   stripProxyEnv
 } from '../../dist/pipeline/proxy-runtime.js';
 
@@ -83,4 +88,119 @@ test('Node proxy runtime strips inherited proxy environment variables before sta
   });
 
   assert.deepEqual(env, { PATH: '/usr/bin' });
+});
+
+test('Node proxy runtime opens Mihomo with a temp config and cleans it on close', async () => {
+  const link = vmessLink({
+    add: 'edge.example.com',
+    port: '443',
+    id: '11111111-2222-3333-4444-555555555555',
+    aid: '0',
+    net: 'ws',
+    tls: 'tls'
+  });
+  const spawns = [];
+  const waitedPorts = [];
+  const selected = [];
+
+  const runtime = await openMihomoRuntime(link, {
+    runtimePath: '/opt/bin/mihomo',
+    mixedPort: 10001,
+    controllerPort: 10002,
+    env: {
+      PATH: '/usr/bin',
+      HTTP_PROXY: 'http://127.0.0.1:7890'
+    },
+    spawn: (command, args, options) => {
+      const child = new EventEmitter();
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.exitCode = null;
+      child.kill = (signal) => {
+        child.exitCode = 0;
+        child.emit('close', 0, signal);
+        return true;
+      };
+      spawns.push({ command, args, options, child });
+      return child;
+    },
+    waitForPort: async (port) => {
+      waitedPorts.push(port);
+    },
+    selectProxy: async (controllerUrl, proxyName, timeoutSeconds) => {
+      selected.push({ controllerUrl, proxyName, timeoutSeconds });
+    }
+  });
+
+  assert.equal(spawns[0].command, '/opt/bin/mihomo');
+  assert.deepEqual(spawns[0].args, ['-f', runtime.configPath]);
+  assert.equal(spawns[0].options.env.PATH, '/usr/bin');
+  assert.equal(spawns[0].options.env.HTTP_PROXY, undefined);
+  assert.deepEqual(waitedPorts, [10001, 10002]);
+  assert.deepEqual(selected, [{
+    controllerUrl: 'http://127.0.0.1:10002',
+    proxyName: 'runtime-node',
+    timeoutSeconds: 5
+  }]);
+  assert.deepEqual(runtime.proxies, {
+    http: 'http://127.0.0.1:10001',
+    https: 'http://127.0.0.1:10001'
+  });
+  assert.equal(JSON.parse(await readFile(runtime.configPath, 'utf8')).proxies[0].server, 'edge.example.com');
+
+  await runtime.close();
+  await assert.rejects(() => access(runtime.configPath));
+});
+
+test('Node proxy runtime allocates local ports when callers do not provide them', async () => {
+  const link = vmessLink({
+    add: 'edge.example.com',
+    port: '443',
+    id: '11111111-2222-3333-4444-555555555555'
+  });
+  const waitedPorts = [];
+
+  const runtime = await openMihomoRuntime(link, {
+    runtimePath: '/opt/bin/mihomo',
+    spawn: () => {
+      const child = new EventEmitter();
+      child.exitCode = null;
+      child.kill = (signal) => {
+        child.exitCode = 0;
+        child.emit('close', 0, signal);
+        return true;
+      };
+      return child;
+    },
+    waitForPort: async (port) => {
+      waitedPorts.push(port);
+    },
+    selectProxy: async () => {}
+  });
+
+  assert.equal(waitedPorts.length, 2);
+  assert.ok(waitedPorts.every((port) => Number.isInteger(port) && port > 0));
+  assert.notEqual(waitedPorts[0], waitedPorts[1]);
+  assert.equal(runtime.proxies.http, `http://127.0.0.1:${waitedPorts[0]}`);
+  assert.equal(runtime.controllerUrl, `http://127.0.0.1:${waitedPorts[1]}`);
+
+  await runtime.close();
+});
+
+test('Node proxy runtime selects proxies and probes Mihomo delay through controller API', async () => {
+  const calls = [];
+  const fetch = async (url, init) => {
+    calls.push({ url: String(url), init });
+    if (String(url).endsWith('/proxies/GLOBAL')) {
+      assert.equal(init.method, 'PUT');
+      assert.equal(init.body, JSON.stringify({ name: 'runtime-node' }));
+      return { ok: true, status: 204, json: async () => ({}) };
+    }
+    assert.equal(String(url), 'http://127.0.0.1:9090/proxies/runtime-node/delay?timeout=3000&url=https%3A%2F%2Fprobe.example%2F204');
+    return { ok: true, status: 200, json: async () => ({ delay: 123 }) };
+  };
+
+  await selectMihomoProxy('http://127.0.0.1:9090', 'runtime-node', 3, { fetch });
+  assert.equal(await probeMihomoProxyDelay('http://127.0.0.1:9090', 'runtime-node', 'https://probe.example/204', 3, { fetch }), 123);
+  assert.equal(calls.length, 2);
 });

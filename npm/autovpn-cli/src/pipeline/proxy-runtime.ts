@@ -1,3 +1,9 @@
+import { spawn as defaultSpawn, ChildProcess } from 'node:child_process';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import net from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
+
 export interface VmessPayload {
   add: string;
   port: string | number;
@@ -15,6 +21,34 @@ export interface VmessPayload {
 export interface MihomoRuntimePorts {
   mixedPort: number;
   controllerPort: number;
+}
+
+type SpawnLike = (command: string, args: string[], options?: Record<string, unknown>) => ChildProcess;
+type FetchLike = (url: string, init?: Record<string, unknown>) => Promise<{
+  ok?: boolean;
+  status?: number;
+  statusText?: string;
+  json?: () => Promise<unknown>;
+}>;
+
+export interface MihomoRuntime {
+  process: ChildProcess;
+  proxies: Record<'http' | 'https', string>;
+  configPath: string;
+  controllerUrl: string;
+  proxyName: string;
+  close: () => Promise<void>;
+}
+
+export interface OpenMihomoRuntimeOptions {
+  runtimePath?: string;
+  startupWaitSeconds?: number;
+  mixedPort?: number;
+  controllerPort?: number;
+  env?: NodeJS.ProcessEnv;
+  spawn?: SpawnLike;
+  waitForPort?: (port: number, timeoutSeconds: number) => Promise<void>;
+  selectProxy?: (controllerUrl: string, proxyName: string, timeoutSeconds: number) => Promise<void>;
 }
 
 export const PROXY_ENV_KEYS = [
@@ -92,4 +126,187 @@ export function stripProxyEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.Proc
     delete stripped[key];
   }
   return stripped;
+}
+
+function requireFetch(fetchImpl?: FetchLike): FetchLike {
+  const selected = fetchImpl ?? globalThis.fetch?.bind(globalThis) as FetchLike | undefined;
+  if (!selected) {
+    throw new Error('Node proxy runtime requires fetch support');
+  }
+  return selected;
+}
+
+function requireOkResponse(response: Awaited<ReturnType<FetchLike>>, context: string): void {
+  if (response.ok === false || Number(response.status ?? 200) >= 400) {
+    throw new Error(`${context} failed with status ${response.status ?? 0} ${response.statusText ?? ''}`.trim());
+  }
+}
+
+export async function selectMihomoProxy(
+  controllerUrl: string,
+  proxyName: string,
+  _timeoutSeconds: number,
+  options: { fetch?: FetchLike } = {}
+): Promise<void> {
+  if (!controllerUrl) {
+    return;
+  }
+  const fetchImpl = requireFetch(options.fetch);
+  const response = await fetchImpl(`${controllerUrl}/proxies/GLOBAL`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name: proxyName })
+  });
+  requireOkResponse(response, 'mihomo proxy selection');
+}
+
+export async function probeMihomoProxyDelay(
+  controllerUrl: string,
+  proxyName: string,
+  probeUrl: string,
+  timeoutSeconds: number,
+  options: { fetch?: FetchLike } = {}
+): Promise<number> {
+  const fetchImpl = requireFetch(options.fetch);
+  const url = new URL(`${controllerUrl}/proxies/${encodeURIComponent(proxyName)}/delay`);
+  url.searchParams.set('timeout', String(Math.trunc(timeoutSeconds * 1000)));
+  url.searchParams.set('url', probeUrl);
+  const response = await fetchImpl(url.toString(), { method: 'GET' });
+  requireOkResponse(response, 'mihomo proxy delay probe');
+  const payload = await response.json?.();
+  const delay = Number((payload as { delay?: unknown } | undefined)?.delay ?? -1);
+  if (!Number.isFinite(delay) || delay < 0) {
+    throw new Error(`mihomo returned invalid delay payload: ${JSON.stringify(payload)}`);
+  }
+  return Math.trunc(delay);
+}
+
+async function findFreePort(): Promise<number> {
+  return await new Promise<number>((resolve, reject) => {
+    const server = net.createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        if (typeof address === 'object' && address?.port) {
+          resolve(address.port);
+          return;
+        }
+        reject(new Error('failed to allocate a free local port'));
+      });
+    });
+  });
+}
+
+async function canConnectToPort(port: number): Promise<boolean> {
+  return await new Promise<boolean>((resolve) => {
+    const socket = net.createConnection({ host: '127.0.0.1', port });
+    socket.once('connect', () => {
+      socket.destroy();
+      resolve(true);
+    });
+    socket.once('error', () => {
+      socket.destroy();
+      resolve(false);
+    });
+  });
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+async function defaultWaitForPort(port: number, timeoutSeconds: number): Promise<void> {
+  const deadline = Date.now() + Math.max(timeoutSeconds, 0.1) * 1000;
+  while (Date.now() < deadline) {
+    if (await canConnectToPort(port)) {
+      return;
+    }
+    await sleep(100);
+  }
+  throw new Error(`proxy port ${port} did not open in time`);
+}
+
+async function closeChildProcess(process: ChildProcess): Promise<void> {
+  if (process.exitCode !== null || process.killed) {
+    return;
+  }
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(() => {
+      if (process.exitCode === null && !process.killed) {
+        process.kill('SIGKILL');
+      }
+      resolve();
+    }, 2000);
+    process.once('close', () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    process.kill('SIGTERM');
+  });
+}
+
+export async function openMihomoRuntime(link: string, options: OpenMihomoRuntimeOptions = {}): Promise<MihomoRuntime> {
+  const startupWaitSeconds = Number(options.startupWaitSeconds ?? 1);
+  const mixedPort = Number.isInteger(options.mixedPort) && Number(options.mixedPort) > 0
+    ? Number(options.mixedPort)
+    : await findFreePort();
+  const controllerPort = Number.isInteger(options.controllerPort) && Number(options.controllerPort) > 0
+    ? Number(options.controllerPort)
+    : await findFreePort();
+
+  const proxyName = 'runtime-node';
+  const controllerUrl = `http://127.0.0.1:${controllerPort}`;
+  const payload = parseVmessLink(link);
+  const config = buildMihomoRuntimeConfig(payload, { mixedPort, controllerPort });
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'autovpn-mihomo-'));
+  const configPath = path.join(tempDir, 'config.json');
+  await writeFile(configPath, JSON.stringify(config), 'utf8');
+
+  const child = (options.spawn ?? defaultSpawn)(options.runtimePath || 'mihomo', ['-f', configPath], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: stripProxyEnv(options.env ?? process.env)
+  });
+
+  let closed = false;
+  const close = async (): Promise<void> => {
+    if (closed) {
+      return;
+    }
+    closed = true;
+    await closeChildProcess(child);
+    await rm(tempDir, { recursive: true, force: true });
+  };
+
+  try {
+    const waitForPort = options.waitForPort ?? defaultWaitForPort;
+    await waitForPort(mixedPort, startupWaitSeconds + 4);
+    await waitForPort(controllerPort, startupWaitSeconds + 4);
+    await (options.selectProxy ?? ((url, name, timeoutSeconds) => selectMihomoProxy(url, name, timeoutSeconds)))(
+      controllerUrl,
+      proxyName,
+      startupWaitSeconds + 4
+    );
+  } catch (error) {
+    await close();
+    throw error;
+  }
+
+  return {
+    process: child,
+    proxies: {
+      http: `http://127.0.0.1:${mixedPort}`,
+      https: `http://127.0.0.1:${mixedPort}`
+    },
+    configPath,
+    controllerUrl,
+    proxyName,
+    close
+  };
 }

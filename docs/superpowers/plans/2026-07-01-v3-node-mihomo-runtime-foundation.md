@@ -2,7 +2,7 @@
 
 **Goal:** Add the deterministic Node foundation needed for full per-node Mihomo proxy speedtest and availability parity.
 
-**Architecture:** Port the Python proxy runtime's vmess parsing, Mihomo config generation, and proxy environment cleanup into a Node module first. Keep this slice deterministic and covered by golden-style tests; process lifecycle, controller delay probes, and proxied download/availability requests remain the next implementation slice.
+**Architecture:** Port the Python proxy runtime's vmess parsing, Mihomo config generation, proxy environment cleanup, process lifecycle, controller proxy selection, and controller delay probe into a Node module. Keep this slice deterministic and covered by unit tests; proxied download and availability requests remain the next implementation slice.
 
 ## Tasks
 
@@ -11,14 +11,14 @@
 - [x] Implement `parseVmessLink()`.
 - [x] Implement Python-compatible `buildMihomoRuntimeConfig()`.
 - [x] Implement `stripProxyEnv()`.
+- [x] Implement temp config creation, Mihomo child process startup, port waiting, and cleanup.
+- [x] Implement automatic local port allocation.
+- [x] Implement controller `GLOBAL` proxy selection and `/delay` probe helpers.
 - [x] Update CLI docs to distinguish Mihomo runtime foundation from full proxy parity.
 - [ ] PR, CI, merge, cleanup, and package latest main.
 
 ## Follow-Up Boundaries
 
-- Start and clean up Mihomo child processes from Node.
-- Select `GLOBAL` through Mihomo's external controller.
-- Probe per-node latency through Mihomo `/delay`.
 - Run speedtest download URLs and availability targets through the local Mihomo proxy.
 - `resume-latest`, non-detached `resume`, and non-detached `retry-stage`.
 
