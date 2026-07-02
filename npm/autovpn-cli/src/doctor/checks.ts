@@ -138,7 +138,7 @@ function checkProxyRuntime(env: NodeJS.ProcessEnv): DoctorCheck[] {
 }
 
 async function checkNodeTools(projectRoot: string, env: NodeJS.ProcessEnv, options: DoctorOptions = {}): Promise<DoctorCheck[]> {
-  const missing = ['node', 'npm', 'npx'].filter((name) => !commandPath(name, env));
+  const missing = ['node', 'npm'].filter((name) => !commandPath(name, env));
   const checks: DoctorCheck[] = [
     check(
       'node_binaries',

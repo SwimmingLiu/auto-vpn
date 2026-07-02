@@ -79,3 +79,24 @@ test('Node doctor resolves managed JavaScript tools without installing missing t
   assert.equal(checks.javascript_obfuscator.status, 'pass');
   assert.equal(checks.wrangler.status, 'pass');
 });
+
+test('Node doctor does not require npx when node and npm are present', async () => {
+  const { root, runtimeRoot } = await makeProjectRoot();
+  const binDir = await mkdtemp(path.join(os.tmpdir(), 'autovpn-doctor-bin-'));
+  await writeFile(path.join(binDir, 'node'), '', 'utf8');
+  await writeFile(path.join(binDir, 'npm'), '', 'utf8');
+
+  const result = await runDoctor(root, ['--deploy'], {
+    PATH: binDir,
+    VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot
+  }, {
+    resolveManagedNpmTool: async (options) => (
+      { command: `/managed/bin/${options.binaryName}`, args: [], source: 'managed', packageName: options.packageName, version: options.version }
+    ),
+    safeRun: () => ({ ok: true, message: 'ok' })
+  });
+  const checks = Object.fromEntries(result.payload.checks.map((item) => [item.name, item]));
+
+  assert.equal(checks.node_binaries.status, 'pass');
+  assert.deepEqual(checks.node_binaries.details.missing, []);
+});
