@@ -75,12 +75,21 @@ def _npm_available() -> bool:
 
 
 def _verify(executable: Path, runner: Runner, timeout_seconds: int) -> str:
-    code, stdout, stderr = runner(
-        [str(executable), "--version"],
-        None,
-        None,
-        timeout_seconds,
-    )
+    try:
+        code, stdout, stderr = runner(
+            [str(executable), "--version"],
+            None,
+            None,
+            timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ManagedToolError(
+            f"Managed tool verification timed out for {executable} after {exc.timeout} seconds"
+        ) from exc
+    except Exception as exc:
+        raise ManagedToolError(
+            f"Managed tool verification failed for {executable}: {exc.__class__.__name__}: {_truncate(str(exc))}"
+        ) from exc
     output = stdout or stderr
     if code != 0:
         raise ManagedToolError(
@@ -121,12 +130,22 @@ def resolve_managed_npm_tool(
         install_dir.mkdir(parents=True, exist_ok=True)
         package_spec = f"{spec.package}@{spec.version}"
         env = {"NPM_CONFIG_YES": "true", "npm_config_yes": "true"}
-        code, stdout, stderr = runner(
-            ["npm", "install", "--no-save", "--no-audit", "--no-fund", package_spec],
-            install_dir,
-            env,
-            timeout_seconds,
-        )
+        install_command = ["npm", "install", "--no-save", "--no-audit", "--no-fund", package_spec]
+        try:
+            code, stdout, stderr = runner(
+                install_command,
+                install_dir,
+                env,
+                timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise ManagedToolError(
+                f"Failed to install {spec.package} into {install_dir}: npm install timed out after {exc.timeout} seconds"
+            ) from exc
+        except Exception as exc:
+            raise ManagedToolError(
+                f"Failed to install {spec.package} into {install_dir}: {exc.__class__.__name__}: {_truncate(str(exc))}"
+            ) from exc
         if code != 0:
             raise ManagedToolError(
                 f"Failed to install {spec.package} into {install_dir}: "

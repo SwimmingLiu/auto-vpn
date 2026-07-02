@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -163,4 +164,37 @@ def test_resolve_reports_install_failure_without_prompting(tmp_path: Path) -> No
             project_root=tmp_path / "project",
             install_missing=True,
             runner=runner,
+        )
+
+
+def test_resolve_reports_install_timeout_as_managed_tool_error(tmp_path: Path) -> None:
+    def runner(command, cwd=None, env=None, timeout_seconds=0):
+        raise subprocess.TimeoutExpired(command, timeout_seconds)
+
+    with pytest.raises(ManagedToolError, match="npm install timed out after 3 seconds"):
+        resolve_managed_npm_tool(
+            ManagedToolSpec(package="wrangler", binary="wrangler", version="4.106.0"),
+            tools_root=tmp_path / "tools",
+            project_root=tmp_path / "project",
+            install_missing=True,
+            runner=runner,
+            timeout_seconds=3,
+        )
+
+
+def test_resolve_reports_version_timeout_as_managed_tool_error(tmp_path: Path) -> None:
+    tool_root = tmp_path / "tools"
+    _fake_bin(tool_root / "npm" / "wrangler" / "4.106.0", "wrangler")
+
+    def runner(command, cwd=None, env=None, timeout_seconds=0):
+        raise subprocess.TimeoutExpired(command, timeout_seconds)
+
+    with pytest.raises(ManagedToolError, match="verification timed out"):
+        resolve_managed_npm_tool(
+            ManagedToolSpec(package="wrangler", binary="wrangler", version="4.106.0"),
+            tools_root=tool_root,
+            project_root=tmp_path / "project",
+            install_missing=False,
+            runner=runner,
+            timeout_seconds=3,
         )
