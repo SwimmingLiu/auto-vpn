@@ -57,7 +57,7 @@ autovpn stop --project-root "$PROJECT_ROOT"
 If npm is unavailable, install the CLI tarball from the latest GitHub Release:
 
 ```bash
-export AUTOVPN_VERSION=1.4.1
+export AUTOVPN_VERSION=1.4.2
 npm install -g \
   "https://github.com/SwimmingLiu/auto-vpn/releases/download/v${AUTOVPN_VERSION}/swimmingliu-autovpn-${AUTOVPN_VERSION}.tgz"
 ```
