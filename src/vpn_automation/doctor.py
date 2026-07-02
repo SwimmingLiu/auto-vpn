@@ -14,9 +14,17 @@ import requests
 
 from vpn_automation.config.runtime import load_runtime_env, resolve_artifacts_root, resolve_env_file
 from vpn_automation.config.store import ProfileStore, resolve_profile_path
+from vpn_automation.integrations.managed_tools import ManagedToolError, ManagedToolSpec, resolve_managed_npm_tool
 
 
 Status = str
+
+JAVASCRIPT_OBFUSCATOR = ManagedToolSpec(
+    package="javascript-obfuscator",
+    binary="javascript-obfuscator",
+    version="5.4.3",
+)
+WRANGLER = ManagedToolSpec(package="wrangler", binary="wrangler", version="4.106.0")
 
 
 @dataclass
@@ -322,7 +330,7 @@ def _check_proxy_runtime() -> list[DoctorCheck]:
 
 def _check_node_tools(project_root: Path) -> list[DoctorCheck]:
     checks: list[DoctorCheck] = []
-    missing = [name for name in ("node", "npm", "npx") if not shutil.which(name)]
+    missing = [name for name in ("node", "npm") if not shutil.which(name)]
     checks.append(
         _check(
             "node_binaries",
@@ -358,23 +366,34 @@ def _check_node_tools(project_root: Path) -> list[DoctorCheck]:
         )
     )
 
-    npx = shutil.which("npx")
-    if not npx:
-        checks.append(_check("javascript_obfuscator", "fail", "npx is missing"))
-    else:
-        ok, message = _safe_run([npx, "javascript-obfuscator", "--version"])
+    try:
+        obfuscator = resolve_managed_npm_tool(
+            JAVASCRIPT_OBFUSCATOR,
+            install_missing=False,
+            project_root=project_root,
+        )
         checks.append(
             _check(
                 "javascript_obfuscator",
-                "pass" if ok else "fail",
-                "javascript-obfuscator is available" if ok else "javascript-obfuscator is not available",
-                result=message,
+                "pass",
+                "javascript-obfuscator is available",
+                source=obfuscator.source,
+                version=obfuscator.version,
+                path=str(obfuscator.executable),
             )
         )
+    except ManagedToolError as exc:
+        checks.append(_check("javascript_obfuscator", "fail", str(exc)))
     return checks
 
 
-def _check_cloudflare(profile: Any, runtime_env: dict[str, str], *, deploy: bool) -> list[DoctorCheck]:
+def _check_cloudflare(
+    profile: Any,
+    runtime_env: dict[str, str],
+    *,
+    project_root: Path,
+    deploy: bool,
+) -> list[DoctorCheck]:
     checks: list[DoctorCheck] = []
     has_credentials = _has_cloudflare_credentials(profile, runtime_env)
     if has_credentials:
@@ -425,22 +444,29 @@ def _check_cloudflare(profile: Any, runtime_env: dict[str, str], *, deploy: bool
         )
     )
 
-    npx = shutil.which("npx")
-    if not npx:
-        checks.append(_check("wrangler", "fail" if deploy else "warn", "npx is missing"))
-    else:
-        ok, message = _safe_run([npx, "wrangler", "pages", "deploy", "--help"])
+    try:
+        wrangler = resolve_managed_npm_tool(
+            WRANGLER,
+            install_missing=False,
+            project_root=project_root,
+        )
+        pages_help_ok, pages_help_message = _safe_run([str(wrangler.executable), "pages", "deploy", "--help"])
         checks.append(
             _check(
                 "wrangler",
-                "pass" if ok else ("fail" if deploy else "warn"),
+                "pass" if pages_help_ok else ("fail" if deploy else "warn"),
                 "Wrangler Pages deploy command is available"
-                if ok
+                if pages_help_ok
                 else "Wrangler Pages deploy command is not available",
-                result=message,
+                source=wrangler.source,
+                version=wrangler.version,
+                path=str(wrangler.executable),
+                result=pages_help_message,
                 deploy_required=deploy,
             )
         )
+    except ManagedToolError as exc:
+        checks.append(_check("wrangler", "fail" if deploy else "warn", str(exc), deploy_required=deploy))
     return checks
 
 
@@ -491,7 +517,7 @@ def run_doctor(project_root: Path, *, deploy: bool = False, strict: bool = False
     checks.extend(_check_proxy_runtime())
     checks.extend(_check_node_tools(project_root))
     checks.append(_check_network(profile))
-    checks.extend(_check_cloudflare(profile, _runtime_env(project_root), deploy=deploy))
+    checks.extend(_check_cloudflare(profile, _runtime_env(project_root), project_root=project_root, deploy=deploy))
 
     has_failures = any(check.status == "fail" for check in checks)
     has_warnings = any(check.status == "warn" for check in checks)

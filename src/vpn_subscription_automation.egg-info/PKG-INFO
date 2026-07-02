@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: vpn-subscription-automation
-Version: 1.4.1
+Version: 1.4.2
 License-Expression: AGPL-3.0-only
 Requires-Python: >=3.12
 License-File: LICENSE

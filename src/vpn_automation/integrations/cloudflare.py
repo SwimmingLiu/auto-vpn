@@ -10,6 +10,7 @@ import requests
 from vpn_automation.config.models import DeployConfig, resolve_repo_anchor
 from vpn_automation.config.runtime import load_runtime_env
 from vpn_automation.integrations.commands import run_command
+from vpn_automation.integrations.managed_tools import ManagedToolSpec, resolve_managed_npm_tool
 
 
 NETWORK_ERROR_MARKERS = (
@@ -29,6 +30,7 @@ BLOCKED_PAGES_MARKERS = (
 PAGES_PRODUCTION_BRANCH = "main"
 PAGES_SECRET_ENV_PREFIX = "VPN_AUTOMATION_PAGES_SECRET_"
 FALLBACK_SUFFIX_PATTERN = re.compile(r"^(?P<prefix>.+)-(?P<suffix>\d+)$")
+WRANGLER = ManagedToolSpec(package="wrangler", binary="wrangler", version="4.106.0")
 
 
 @dataclass(frozen=True)
@@ -44,10 +46,20 @@ def _clean(value: Any) -> str:
     return str(value or "").strip()
 
 
-def build_pages_deploy_command(bundle_dir: Path, project_name: str) -> list[str]:
+def build_pages_deploy_command(
+    bundle_dir: Path,
+    project_name: str,
+    wrangler_executable: Path | None = None,
+) -> list[str]:
+    executable = wrangler_executable
+    if executable is None:
+        executable = resolve_managed_npm_tool(
+            WRANGLER,
+            project_root=resolve_repo_anchor(Path(__file__)),
+        ).executable
+
     return [
-        "npx",
-        "wrangler",
+        str(executable.resolve()),
         "pages",
         "deploy",
         str(bundle_dir),

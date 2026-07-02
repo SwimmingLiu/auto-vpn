@@ -17,6 +17,7 @@ src/vpn_automation/config/store.py
 src/vpn_automation/integrations/__init__.py
 src/vpn_automation/integrations/cloudflare.py
 src/vpn_automation/integrations/commands.py
+src/vpn_automation/integrations/managed_tools.py
 src/vpn_automation/integrations/node_tools.py
 src/vpn_automation/integrations/packaging.py
 src/vpn_automation/pipeline/__init__.py

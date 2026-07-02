@@ -57,9 +57,35 @@ autovpn stop --project-root "$PROJECT_ROOT"
 If npm is unavailable, install the CLI tarball from the latest GitHub Release:
 
 ```bash
-export AUTOVPN_VERSION=1.4.1
+export AUTOVPN_VERSION=1.4.2
 npm install -g \
   "https://github.com/SwimmingLiu/auto-vpn/releases/download/v${AUTOVPN_VERSION}/swimmingliu-autovpn-${AUTOVPN_VERSION}.tgz"
+```
+
+For commands that still need Python fallback, the npm wrapper resolves `AUTOVPN_PYTHON_CLI`, a matching PATH `autovpn`, or a wrapper-managed virtualenv. Set `AUTOVPN_NO_INSTALL=1` in locked-down CI.
+
+AutoVPN manages npm runtime tools such as `javascript-obfuscator` and `wrangler`
+under `$HOME/.auto-vpn/tools/npm/`. Doctor/preflight checks verify those tools
+before a run, and runtime stages use the managed executables instead of relying
+on a source checkout's `node_modules`. AutoVPN does not silently install
+unmanaged OS-level dependencies such as Node.js, npm, or Mihomo; install those
+explicitly and rerun `autovpn doctor`.
+
+Pure Python install remains available:
+
+```bash
+python3.12 -m pip install --user pipx
+python3.12 -m pipx ensurepath
+pipx install https://github.com/SwimmingLiu/auto-vpn/releases/download/v<version>/vpn_subscription_automation-<version>-py3-none-any.whl
+python -m venv .venv
+```
+
+Runtime flags can be set per command:
+
+```bash
+VPN_AUTOMATION_RUNTIME_ROOT=/srv/autovpn autovpn run --project-root /opt/autovpn --output jsonl
+AUTOVPN_NO_PYTHON=1 autovpn doctor --project-root /opt/autovpn --output json
+AUTOVPN_BACKEND=python autovpn run --project-root /opt/autovpn --output jsonl
 ```
 
 ## Project Structure
@@ -87,6 +113,7 @@ AutoVPN reads and writes runtime files under `$HOME/.auto-vpn/` by default:
 - profile: `$HOME/.auto-vpn/profile.toml`
 - artifacts: `$HOME/.auto-vpn/artifacts/`
 - detached job logs: `$HOME/.auto-vpn/jobs/`
+- managed npm runtime tools: `$HOME/.auto-vpn/tools/npm/`
 
 The desktop app and CLI use the same default runtime root. When a packaged
 desktop app starts and `$HOME/.auto-vpn/profile.toml` does not exist, it can

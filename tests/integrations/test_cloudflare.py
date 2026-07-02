@@ -1,8 +1,10 @@
 from pathlib import Path
 
+import pytest
 import requests
 
 from vpn_automation.config.models import DeployConfig, WorkerBuildConfig
+from vpn_automation.integrations.managed_tools import ManagedToolSpec, ResolvedManagedTool
 from vpn_automation.integrations.cloudflare import (
     CloudflareClient,
     build_pages_deploy_command,
@@ -21,9 +23,67 @@ def _template_path() -> Path:
     return Path(__file__).resolve().parents[2] / "templates" / "vmess_node.js"
 
 
-def test_build_pages_deploy_command_contains_project_name() -> None:
+def _project_name_from_deploy_command(command: list[str]) -> str:
+    return command[command.index("--project-name") + 1]
+
+
+def _bundle_dir_from_deploy_command(command: list[str]) -> str:
+    return command[command.index("deploy") + 1]
+
+
+@pytest.fixture(autouse=True)
+def stub_managed_wrangler(monkeypatch, tmp_path) -> None:
+    wrangler = tmp_path / "tools" / "wrangler"
+    wrangler.parent.mkdir(parents=True)
+    wrangler.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "vpn_automation.integrations.cloudflare.resolve_managed_npm_tool",
+        lambda spec, *, project_root: ResolvedManagedTool(wrangler, "managed", "4.106.0", wrangler.parent),
+    )
+
+
+def test_build_pages_deploy_command_resolves_managed_wrangler(monkeypatch, tmp_path) -> None:
+    project_root = tmp_path / "repo"
+    wrangler = tmp_path / "custom-tools" / "wrangler"
+    wrangler.parent.mkdir(parents=True)
+    wrangler.write_text("#!/bin/sh\n", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    def fake_resolve_managed_npm_tool(spec: ManagedToolSpec, *, project_root: Path) -> ResolvedManagedTool:
+        captured["spec"] = spec
+        captured["project_root"] = project_root
+        return ResolvedManagedTool(wrangler, "managed", "4.106.0", wrangler.parent)
+
+    monkeypatch.setattr("vpn_automation.integrations.cloudflare.resolve_repo_anchor", lambda _candidate: project_root)
+    monkeypatch.setattr(
+        "vpn_automation.integrations.cloudflare.resolve_managed_npm_tool",
+        fake_resolve_managed_npm_tool,
+    )
+
     command = build_pages_deploy_command(Path("/tmp/pages_bundle"), "sub-nodes")
-    assert command[:4] == ["npx", "wrangler", "pages", "deploy"]
+
+    assert captured["spec"] == ManagedToolSpec(package="wrangler", binary="wrangler", version="4.106.0")
+    assert captured["project_root"] == project_root
+    assert command == [
+        str(wrangler.resolve()),
+        "pages",
+        "deploy",
+        "/tmp/pages_bundle",
+        "--project-name",
+        "sub-nodes",
+        "--branch",
+        "main",
+    ]
+
+
+def test_build_pages_deploy_command_contains_project_name() -> None:
+    command = build_pages_deploy_command(
+        Path("/tmp/pages_bundle"),
+        "sub-nodes",
+        wrangler_executable=Path("/opt/managed/bin/wrangler"),
+    )
+    assert command[:4] == ["/opt/managed/bin/wrangler", "pages", "deploy", "/tmp/pages_bundle"]
     assert "--project-name" in command
     assert "sub-nodes" in command
     assert "--branch" in command
@@ -421,8 +481,8 @@ def test_deploy_pages_bundle_redeploys_share_project_after_sub_update(monkeypatc
     assert result["share_project_sync_ok"] is True
     assert len(fake_client.updated) == 1
     assert len(run_calls) == 2
-    assert run_calls[0][6] == "sub-nodes"
-    assert run_calls[1][6] == "sub-links-share-03"
+    assert _project_name_from_deploy_command(run_calls[0]) == "sub-nodes"
+    assert _project_name_from_deploy_command(run_calls[1]) == "sub-links-share-03"
 
 
 def test_deploy_pages_bundle_falls_back_when_share_redeploy_is_blocked(monkeypatch, tmp_path) -> None:
@@ -529,12 +589,12 @@ def test_deploy_pages_bundle_falls_back_when_share_redeploy_is_blocked(monkeypat
     assert fake_client.attached == [("sub-links-share-04", "www.swimmingliu.online")]
     assert fake_client.dns_calls == [("www.swimmingliu.online", "sub-links-share-04.pages.dev", False)]
     assert len(run_calls) == 3
-    assert run_calls[1][6] == "sub-links-share-03"
-    assert run_calls[2][6] == "sub-links-share-04"
+    assert _project_name_from_deploy_command(run_calls[1]) == "sub-links-share-03"
+    assert _project_name_from_deploy_command(run_calls[2]) == "sub-links-share-04"
     assert result["share_project_source_path"] == str(share_worker_source)
     assert result["share_project_bundle_dir"].endswith("/share_pages_bundle")
     assert result["share_project_worker_entry"].endswith("/share_pages_bundle/_worker.js")
-    assert run_calls[2][4].endswith("/share_pages_bundle")
+    assert _bundle_dir_from_deploy_command(run_calls[2]).endswith("/share_pages_bundle")
 
 
 def test_deploy_pages_bundle_recovers_latest_existing_share_project_when_requested_share_project_is_missing(
@@ -599,4 +659,4 @@ def test_deploy_pages_bundle_recovers_latest_existing_share_project_when_request
     assert fake_client.updated[0][0] == "sub-links-share-05"
     assert fake_client.updated[0][1]["deployment_configs"]["preview"]["env_vars"]["SUB"]["value"] == "https://sub-nodes-04.pages.dev/?serect_key=swimmingliu"
     assert len(run_calls) == 2
-    assert run_calls[1][6] == "sub-links-share-05"
+    assert _project_name_from_deploy_command(run_calls[1]) == "sub-links-share-05"

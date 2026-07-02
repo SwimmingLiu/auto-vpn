@@ -340,7 +340,7 @@ test('Phase 3 Node doctor reports missing runtime tools', async () => {
   assert.equal(payload.ok, false);
   assert.equal(checks.mihomo.status, 'fail');
   assert.equal(checks.node_binaries.status, 'fail');
-  assert.ok(checks.node_binaries.details.missing.includes('npx'));
+  assert.deepEqual(checks.node_binaries.details.missing.sort(), ['node', 'npm']);
 });
 
 test('Phase 3 artifacts list ignores non-artifact directories', async () => {

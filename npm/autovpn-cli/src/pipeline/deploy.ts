@@ -2,6 +2,12 @@ import path from 'node:path';
 import { spawn as defaultSpawn, ChildProcess } from 'node:child_process';
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { mergeProjectEnv } from '../runtime/env.js';
+import {
+  normalizeManagedToolCommandForSpawn,
+  resolveManagedNpmTool,
+  type ResolveManagedNpmToolOptions,
+  type ManagedNpmToolResolution
+} from '../runtime/managed-tools.js';
 
 export type PipelineStageBackend = 'node' | 'python';
 
@@ -66,6 +72,7 @@ export interface DeployVerifyBackendOptions {
   cloudflareDeployClient?: CloudflareDeployClient;
   fetch?: typeof fetch;
   runCommand?: RunCommandLike;
+  resolveManagedNpmTool?: (options: ResolveManagedNpmToolOptions) => Promise<ManagedNpmToolResolution>;
 }
 
 const PYTHON_DEPLOY_HELPER = `
@@ -149,8 +156,8 @@ function getString(source: DeployLike, key: string): string {
   return clean(source[key]);
 }
 
-export function buildPagesDeployCommand(bundleDir: string, projectName: string): string[] {
-  return ['npx', 'wrangler', 'pages', 'deploy', bundleDir, '--project-name', projectName, '--branch', PAGES_PRODUCTION_BRANCH];
+export function buildPagesDeployCommand(wranglerExecutable: string, bundleDir: string, projectName: string): string[] {
+  return [wranglerExecutable, 'pages', 'deploy', bundleDir, '--project-name', projectName, '--branch', PAGES_PRODUCTION_BRANCH];
 }
 
 export function derivePagesProjectUrl(projectName: string): string {
@@ -524,7 +531,7 @@ function runCommandWithSpawn(
   options: { cwd: string; env: Record<string, string> },
   spawnImpl: SpawnLike = defaultSpawn
 ): Promise<{ returncode: number; stdout: string; stderr: string }> {
-  const [executable, ...args] = command;
+  const { executable, args } = normalizeManagedToolCommandForSpawn(command);
   const child = spawnImpl(executable, args, {
     cwd: options.cwd,
     env: { ...process.env, ...options.env },
@@ -975,6 +982,7 @@ async function syncShareProjectSub(
     client: CloudflareDeployClient;
     env: NodeJS.ProcessEnv;
     runCommand: RunCommandLike;
+    wranglerExecutable: string;
   }
 ): Promise<Record<string, unknown>> {
   let requestedName = getString(deploy, 'share_project_name');
@@ -1039,7 +1047,7 @@ async function syncShareProjectSub(
     : [];
 
   const deployShareProject = async (projectName: string) => runPagesDeployAttempts(
-    buildPagesDeployCommand(shareBundle.bundleDir, projectName),
+    buildPagesDeployCommand(options.wranglerExecutable, shareBundle.bundleDir, projectName),
     buildWranglerAuthEnv(options.credentials),
     resolveDeployProxyUrl(options.env),
     {
@@ -1151,9 +1159,15 @@ export async function deployPagesWithBackend(input: DeployInput, options: Deploy
       VPN_AUTOMATION_DEFAULT_PAGES_SECRET_ADMIN: getString(deploy, 'pages_secret_admin') || 'swimmingliu'
     };
     const credentials = resolveCloudflareCredentials(deploy, runtimeEnv);
-    const command = buildPagesDeployCommand(input.bundleDir, projectName);
     const baseEnv = buildWranglerAuthEnv(credentials);
     const runCommand = options.runCommand ?? ((commandToRun, runOptions) => runCommandWithSpawn(commandToRun, runOptions, options.spawn));
+    const wrangler = await (options.resolveManagedNpmTool ?? resolveManagedNpmTool)({
+      packageName: 'wrangler',
+      binaryName: 'wrangler',
+      version: '4.106.0',
+      projectRoot: input.projectRoot
+    });
+    const command = buildPagesDeployCommand(wrangler.command, input.bundleDir, projectName);
     const proxyUrl = resolveDeployProxyUrl(env);
     let activeCommand = command;
     let finalProjectName = projectName;
@@ -1191,7 +1205,7 @@ export async function deployPagesWithBackend(input: DeployInput, options: Deploy
         await ensureCustomDomainBound(client, finalProjectName, customDomain, { previousProjectName: projectName });
         customDomainBound = true;
       }
-      activeCommand = buildPagesDeployCommand(input.bundleDir, finalProjectName);
+      activeCommand = buildPagesDeployCommand(wrangler.command, input.bundleDir, finalProjectName);
       const fallbackDeploy = await runPagesDeployAttempts(activeCommand, baseEnv, proxyUrl, {
         cwd: input.bundleDir,
         runCommand
@@ -1217,7 +1231,8 @@ export async function deployPagesWithBackend(input: DeployInput, options: Deploy
         credentials,
         client,
         env,
-        runCommand
+        runCommand,
+        wranglerExecutable: wrangler.command
       });
     }
     if (result.returncode === 0 && customDomain) {

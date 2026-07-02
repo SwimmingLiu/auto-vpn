@@ -1,6 +1,6 @@
 {
   "name": "@swimmingliu/autovpn",
-  "version": "1.4.1",
+  "version": "1.4.2",
   "description": "npm wrapper for the AutoVPN headless CLI",
   "type": "module",
   "repository": {
@@ -23,7 +23,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "prepack": "npm run build",
-    "test": "npm run build && node --test test/*.test.mjs test/parity/*.test.mjs test/jobs/*.test.mjs test/pipeline/*.test.mjs test/runtime/*.test.mjs"
+    "test": "npm run build && node --test test/*.test.mjs test/doctor/*.test.mjs test/parity/*.test.mjs test/jobs/*.test.mjs test/pipeline/*.test.mjs test/runtime/*.test.mjs"
   },
   "engines": {
     "node": ">=22.5.0"
