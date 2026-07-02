@@ -1,5 +1,6 @@
 import io
 import json
+from importlib.metadata import version
 from pathlib import Path
 
 from vpn_automation import cli
@@ -10,7 +11,7 @@ def test_cli_version_prints_package_version(capsys) -> None:
 
     captured = capsys.readouterr()
     assert code == 0
-    assert captured.out.strip() == "autovpn 1.4.0"
+    assert captured.out.strip() == f"autovpn {version('vpn-subscription-automation')}"
 
 
 def test_profile_show_maps_to_backend_profile_json(tmp_path: Path, monkeypatch, capsys) -> None:
