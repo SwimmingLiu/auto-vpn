@@ -1,3 +1,5 @@
+DO NOT send optional commentary
+
 # Delivery Workflow
 
 ## Project scope convention
