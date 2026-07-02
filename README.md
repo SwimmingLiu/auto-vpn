@@ -70,6 +70,13 @@ AUTOVPN_BACKEND=python autovpn run --project-root /opt/autovpn/vpn-subscription-
 
 For commands that still need Python fallback, the npm wrapper resolves `AUTOVPN_PYTHON_CLI`, a matching PATH `autovpn`, or a wrapper-managed virtualenv. Set `AUTOVPN_NO_INSTALL=1` in locked-down CI.
 
+AutoVPN manages npm runtime tools such as `javascript-obfuscator` and `wrangler`
+under `$HOME/.auto-vpn/tools/npm/`. Doctor/preflight checks verify those tools
+before a run, and runtime stages use the managed executables instead of relying
+on a source checkout's `node_modules`. AutoVPN does not silently install
+unmanaged OS-level dependencies such as Node.js, npm, or Mihomo; install those
+explicitly and rerun `autovpn doctor`.
+
 Pure Python install remains available:
 
 ```bash
@@ -145,6 +152,7 @@ AutoVPN reads and writes runtime files under `$HOME/.auto-vpn/` by default:
 - profile: `$HOME/.auto-vpn/profile.toml`
 - artifacts: `$HOME/.auto-vpn/artifacts/`
 - detached job logs: `$HOME/.auto-vpn/jobs/`
+- managed npm runtime tools: `$HOME/.auto-vpn/tools/npm/`
 
 The desktop app and CLI use the same default runtime root. When a packaged
 desktop app starts and `$HOME/.auto-vpn/profile.toml` does not exist, it can

@@ -30,9 +30,15 @@ python3.12 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip
 pip install -e .[dev]
-npm ci
 npx playwright install --with-deps chromium-headless-shell
 ```
+
+AutoVPN manages npm runtime tools such as `javascript-obfuscator` and
+`wrangler` under `$HOME/.auto-vpn/tools/npm/`. Doctor/preflight checks verify
+those managed tools before a run, and runtime stages use the managed executables
+instead of requiring project-local `npx` installs. AutoVPN does not silently
+install unmanaged OS-level dependencies such as Node.js, npm, or Mihomo; install
+those with your system package manager or release binaries, then rerun doctor.
 
 ## Runtime Configuration
 
@@ -66,10 +72,10 @@ Do not place real secret values in documentation, tickets, screenshots, or Agent
 |---|---|---|
 | Python >= 3.12 | Python backend and CLI | `python_version`, `python_imports` |
 | Mihomo | speed/connectivity runtime | `mihomo`, `localhost_port` |
-| Node/npm/npx | availability probes, worker tooling | `node_binaries` |
-| `javascript-obfuscator` through npx | worker obfuscation stage | `javascript_obfuscator` |
+| Node/npm/npx | managed npm tool installation and availability probes | `node_binaries` |
+| Managed `javascript-obfuscator` | worker obfuscation stage | `javascript_obfuscator` |
 | Playwright package and Chromium/headless shell | availability checks | `playwright`, `playwright_browser` |
-| Cloudflare credentials | deploy/verify stages | `cloudflare_credentials`, `cloudflare_account`, `wrangler`, `deploy_urls` |
+| Cloudflare credentials and managed Wrangler | deploy/verify stages | `cloudflare_credentials`, `cloudflare_account`, `wrangler`, `deploy_urls` |
 
 ## Validation
 
@@ -106,7 +112,8 @@ autovpn run --project-root /opt/autovpn/vpn-subscription-automation --output hum
 | `mihomo` fails | Install Mihomo and ensure it is on `PATH`; run `mihomo -v`. |
 | `node_binaries` fails | Install Node.js/npm and confirm `node`, `npm`, and `npx` are on `PATH`. |
 | `playwright_browser` warns | Run `npx playwright install --with-deps chromium-headless-shell` from the project root. |
-| `javascript_obfuscator` fails | Run `npm ci`; confirm `npx javascript-obfuscator --version` works. |
+| `javascript_obfuscator` fails | Rerun `autovpn doctor` after Node.js/npm are available; AutoVPN verifies the managed tool under `$HOME/.auto-vpn/tools/npm/`. |
+| `wrangler` fails | Rerun `autovpn doctor --deploy` after Node.js/npm are available; AutoVPN verifies managed Wrangler under `$HOME/.auto-vpn/tools/npm/`. |
 | `cloudflare_credentials` fails in deploy mode | Set `CLOUDFLARE_API_TOKEN` or profile Cloudflare credentials. |
 | `cloudflare_account` fails | Set `CLOUDFLARE_ACCOUNT_ID` or profile `deploy.account_id`. |
 | `network_reachability` fails | Check server outbound network, proxy env vars, and configured speed/availability URLs. |
