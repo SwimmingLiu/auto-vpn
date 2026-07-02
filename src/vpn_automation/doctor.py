@@ -367,7 +367,11 @@ def _check_node_tools(project_root: Path) -> list[DoctorCheck]:
     )
 
     try:
-        obfuscator = resolve_managed_npm_tool(JAVASCRIPT_OBFUSCATOR, project_root=project_root)
+        obfuscator = resolve_managed_npm_tool(
+            JAVASCRIPT_OBFUSCATOR,
+            install_missing=False,
+            project_root=project_root,
+        )
         checks.append(
             _check(
                 "javascript_obfuscator",
@@ -441,15 +445,23 @@ def _check_cloudflare(
     )
 
     try:
-        wrangler = resolve_managed_npm_tool(WRANGLER, project_root=project_root)
+        wrangler = resolve_managed_npm_tool(
+            WRANGLER,
+            install_missing=False,
+            project_root=project_root,
+        )
+        pages_help_ok, pages_help_message = _safe_run([str(wrangler.executable), "pages", "deploy", "--help"])
         checks.append(
             _check(
                 "wrangler",
-                "pass",
-                "Wrangler Pages deploy command is available",
+                "pass" if pages_help_ok else ("fail" if deploy else "warn"),
+                "Wrangler Pages deploy command is available"
+                if pages_help_ok
+                else "Wrangler Pages deploy command is not available",
                 source=wrangler.source,
                 version=wrangler.version,
                 path=str(wrangler.executable),
+                result=pages_help_message,
                 deploy_required=deploy,
             )
         )

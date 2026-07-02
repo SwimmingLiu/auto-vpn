@@ -58,7 +58,7 @@ def _fake_successful_dependencies(monkeypatch) -> None:
     monkeypatch.setattr(
         doctor,
         "resolve_managed_npm_tool",
-        lambda spec, *, project_root: ResolvedManagedTool(
+        lambda spec, *, project_root, install_missing=None: ResolvedManagedTool(
             Path(f"/usr/bin/{spec.binary}"),
             "managed",
             spec.version,
@@ -141,7 +141,7 @@ def test_doctor_reports_missing_mihomo_and_npx(tmp_path: Path, monkeypatch, caps
     monkeypatch.setattr(
         doctor,
         "resolve_managed_npm_tool",
-        lambda spec, *, project_root: ResolvedManagedTool(
+        lambda spec, *, project_root, install_missing=None: ResolvedManagedTool(
             Path(f"/usr/bin/{spec.binary}"),
             "managed",
             spec.version,
@@ -187,7 +187,7 @@ def test_doctor_deploy_strict_requires_wrangler_and_account_id(tmp_path: Path, m
     monkeypatch.setattr(
         doctor,
         "resolve_managed_npm_tool",
-        lambda spec, *, project_root: (_ for _ in ()).throw(ManagedToolError("wrangler missing")),
+        lambda spec, *, project_root, install_missing=None: (_ for _ in ()).throw(ManagedToolError("wrangler missing")),
         raising=False,
     )
 
@@ -236,7 +236,7 @@ def test_doctor_reports_managed_obfuscator_details(tmp_path: Path, monkeypatch, 
     _write_minimal_project(project_root, api_token="CF-TOKEN-SECRET")
     _fake_successful_dependencies(monkeypatch)
 
-    def fake_resolver(spec, *, project_root):
+    def fake_resolver(spec, *, project_root, install_missing=None):
         if spec.binary == "javascript-obfuscator":
             return ResolvedManagedTool(
                 Path("/opt/tools/javascript-obfuscator"),
@@ -264,7 +264,7 @@ def test_doctor_reports_managed_obfuscator_error(tmp_path: Path, monkeypatch, ca
     _write_minimal_project(project_root, api_token="CF-TOKEN-SECRET")
     _fake_successful_dependencies(monkeypatch)
 
-    def fake_resolver(spec, *, project_root):
+    def fake_resolver(spec, *, project_root, install_missing=None):
         if spec.binary == "javascript-obfuscator":
             raise ManagedToolError("javascript-obfuscator unavailable")
         return ResolvedManagedTool(Path(f"/usr/bin/{spec.binary}"), "managed", spec.version, Path("/opt/tools"))
@@ -280,12 +280,31 @@ def test_doctor_reports_managed_obfuscator_error(tmp_path: Path, monkeypatch, ca
     assert check["message"] == "javascript-obfuscator unavailable"
 
 
+def test_doctor_resolves_managed_tools_without_installing(tmp_path: Path, monkeypatch, capsys) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    _write_minimal_project(project_root, api_token="CF-TOKEN-SECRET")
+    _fake_successful_dependencies(monkeypatch)
+    calls: list[tuple[str, bool | None]] = []
+
+    def fake_resolver(spec, *, project_root, install_missing=None):
+        calls.append((spec.binary, install_missing))
+        return ResolvedManagedTool(Path(f"/usr/bin/{spec.binary}"), "managed", spec.version, Path("/opt/tools"))
+
+    monkeypatch.setattr(doctor, "resolve_managed_npm_tool", fake_resolver, raising=False)
+
+    code = cli.main(["doctor", "--project-root", str(project_root), "--output", "json"])
+
+    assert code == 0
+    assert ("javascript-obfuscator", False) in calls
+    assert ("wrangler", False) in calls
+
+
 def test_doctor_reports_managed_wrangler_details(tmp_path: Path, monkeypatch, capsys) -> None:
     project_root = tmp_path / "vpn-subscription-automation"
     _write_minimal_project(project_root, api_token="CF-TOKEN-SECRET")
     _fake_successful_dependencies(monkeypatch)
 
-    def fake_resolver(spec, *, project_root):
+    def fake_resolver(spec, *, project_root, install_missing=None):
         if spec.binary == "wrangler":
             return ResolvedManagedTool(Path("/opt/tools/wrangler"), "managed", "4.106.0", Path("/opt/tools"))
         return ResolvedManagedTool(Path(f"/usr/bin/{spec.binary}"), "managed", spec.version, Path("/opt/tools"))
@@ -304,6 +323,58 @@ def test_doctor_reports_managed_wrangler_details(tmp_path: Path, monkeypatch, ca
     assert check["details"]["deploy_required"] is True
 
 
+def test_doctor_fails_for_wrangler_pages_deploy_help_failure_in_deploy_mode(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    _write_minimal_project(project_root, api_token="CF-TOKEN-SECRET")
+    _fake_successful_dependencies(monkeypatch)
+
+    def fake_safe_run(command):
+        if command[1:] == ["pages", "deploy", "--help"]:
+            return False, "help failed"
+        return True, "ok"
+
+    monkeypatch.setattr(doctor, "_safe_run", fake_safe_run)
+
+    code = cli.main(["doctor", "--project-root", str(project_root), "--deploy", "--output", "json"])
+
+    payload = json.loads(capsys.readouterr().out)
+    check = next(check for check in payload["checks"] if check["name"] == "wrangler")
+    assert code == 1
+    assert check["status"] == "fail"
+    assert check["message"] == "Wrangler Pages deploy command is not available"
+    assert check["details"]["result"] == "help failed"
+
+
+def test_doctor_warns_for_wrangler_pages_deploy_help_failure_when_deploy_not_required(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    _write_minimal_project(project_root, api_token="CF-TOKEN-SECRET")
+    _fake_successful_dependencies(monkeypatch)
+
+    def fake_safe_run(command):
+        if command[1:] == ["pages", "deploy", "--help"]:
+            return False, "help failed"
+        return True, "ok"
+
+    monkeypatch.setattr(doctor, "_safe_run", fake_safe_run)
+
+    code = cli.main(["doctor", "--project-root", str(project_root), "--output", "json"])
+
+    payload = json.loads(capsys.readouterr().out)
+    check = next(check for check in payload["checks"] if check["name"] == "wrangler")
+    assert code == 0
+    assert check["status"] == "warn"
+    assert check["message"] == "Wrangler Pages deploy command is not available"
+    assert check["details"]["result"] == "help failed"
+
+
 def test_doctor_warns_for_managed_wrangler_error_when_deploy_not_required(
     tmp_path: Path,
     monkeypatch,
@@ -313,7 +384,7 @@ def test_doctor_warns_for_managed_wrangler_error_when_deploy_not_required(
     _write_minimal_project(project_root, api_token="CF-TOKEN-SECRET")
     _fake_successful_dependencies(monkeypatch)
 
-    def fake_resolver(spec, *, project_root):
+    def fake_resolver(spec, *, project_root, install_missing=None):
         if spec.binary == "wrangler":
             raise ManagedToolError("wrangler unavailable")
         return ResolvedManagedTool(Path(f"/usr/bin/{spec.binary}"), "managed", spec.version, Path("/opt/tools"))
