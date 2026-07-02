@@ -45,8 +45,8 @@ Desktop installers do not install the terminal `autovpn` command. Install the CL
 The v3 npm CLI is the recommended Agent/server entrypoint. It exposes `autovpn`, defaults pipeline runs to the pure Node backend, and keeps `AUTOVPN_BACKEND=python` as rollback.
 
 ```bash
-npx -y @swimmingliu/autovpn@1.4.0 --version
-npm install -g @swimmingliu/autovpn@1.4.0
+npx -y @swimmingliu/autovpn --version
+npm install -g @swimmingliu/autovpn
 autovpn doctor --project-root /opt/autovpn/vpn-subscription-automation --output human
 autovpn run --project-root /opt/autovpn/vpn-subscription-automation --skip-deploy --skip-verify --output jsonl
 ```

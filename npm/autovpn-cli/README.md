@@ -5,8 +5,8 @@ Node-first npm CLI for AutoVPN headless and Agent workflows.
 ## Usage
 
 ```bash
-npx -y @swimmingliu/autovpn@1.4.0 doctor --project-root . --output json
-npm install -g @swimmingliu/autovpn@1.4.0
+npx -y @swimmingliu/autovpn doctor --project-root . --output json
+npm install -g @swimmingliu/autovpn
 autovpn run --project-root . --skip-deploy --skip-verify --output jsonl
 ```
 
