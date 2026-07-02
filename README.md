@@ -13,7 +13,7 @@ AutoVPN turns VPN node sources into tested subscription endpoints. It can run as
 
 - Extract, dedupe, speed-test, availability-test, render, obfuscate, deploy, and verify nodes.
 - Desktop workspace for normal users; `autovpn` CLI for servers, CI, and Agents.
-- Recoverable runs with SQLite checkpoints and runtime files under `~/.auto-vpn/`.
+- Recoverable runs with SQLite checkpoints and runtime files under `$HOME/.auto-vpn/`.
 - GitHub Release packaging for macOS, Linux, Windows, Python CLI, and npm CLI tarball.
 
 ## Tech Stack
@@ -23,7 +23,7 @@ AutoVPN turns VPN node sources into tested subscription endpoints. It can run as
 | Desktop | Electron 37 |
 | CLI | Node.js `>=22.5.0`, Python 3.12 fallback |
 | Backend | Node-first v3 pipeline, Python compatibility backend |
-| Runtime state | `~/.auto-vpn/profile.toml`, SQLite checkpoints |
+| Runtime state | `$HOME/.auto-vpn/profile.toml`, SQLite checkpoints |
 | Automation | Mihomo, Playwright, Cloudflare Wrangler |
 | Tests | pytest, node:test, Playwright-backed renderer checks |
 
@@ -140,11 +140,17 @@ npm run test:all
 
 ## Runtime Configuration
 
-AutoVPN reads and writes runtime files under `~/.auto-vpn/` by default:
+AutoVPN reads and writes runtime files under `$HOME/.auto-vpn/` by default:
 
-- profile: `~/.auto-vpn/profile.toml`
-- artifacts: `~/.auto-vpn/artifacts/`
-- detached job logs: `~/.auto-vpn/jobs/`
+- profile: `$HOME/.auto-vpn/profile.toml`
+- artifacts: `$HOME/.auto-vpn/artifacts/`
+- detached job logs: `$HOME/.auto-vpn/jobs/`
+
+The desktop app and CLI use the same default runtime root. When a packaged
+desktop app starts and `$HOME/.auto-vpn/profile.toml` does not exist, it can
+migrate the older Electron profile from
+`$HOME/Library/Application Support/vpn-subscription-automation/state/profile.toml`.
+If both files exist, `$HOME/.auto-vpn/profile.toml` remains the source of truth.
 
 Set `VPN_AUTOMATION_RUNTIME_ROOT` to move them together.
 

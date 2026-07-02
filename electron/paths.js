@@ -72,6 +72,14 @@ export function resolveStateProfilePath(projectRoot, options = {}) {
   return path.join(resolveUserRuntimeRoot(options), 'profile.toml');
 }
 
+export function resolveLegacyPackagedProfilePath(options = {}) {
+  const { isPackaged = false, userDataPath = '' } = options;
+  if (!isPackaged || !userDataPath) {
+    return '';
+  }
+  return path.join(userDataPath, 'state', 'profile.toml');
+}
+
 export function resolveRuntimeArtifactsPath(projectRoot, options = {}) {
   return path.join(resolveUserRuntimeRoot(options), 'artifacts');
 }

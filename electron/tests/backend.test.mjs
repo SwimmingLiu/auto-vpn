@@ -15,10 +15,12 @@ import {
   resolvePlaywrightBrowsersPath,
   resolvePythonVendorPath
 } from '../lib/backend.js';
+import { migrateLegacyPackagedProfile } from '../lib/profile-migration.js';
 import {
   findProjectRoot,
   resolveRuntimeArtifactsPath,
   resolveBundledProfilePath,
+  resolveLegacyPackagedProfilePath,
   resolveProjectRoot,
   resolveStateProfilePath
 } from '../paths.js';
@@ -164,6 +166,39 @@ test('resolveStateProfilePath uses the same user runtime root when packaged', ()
     }),
     '/Users/demo/.auto-vpn/profile.toml'
   );
+});
+
+test('resolveLegacyPackagedProfilePath points at the pre-unified Electron userData profile', () => {
+  assert.equal(
+    resolveLegacyPackagedProfilePath({
+      isPackaged: true,
+      userDataPath: '/Users/demo/Library/Application Support/vpn-subscription-automation'
+    }),
+    '/Users/demo/Library/Application Support/vpn-subscription-automation/state/profile.toml'
+  );
+  assert.equal(resolveLegacyPackagedProfilePath({ isPackaged: false, userDataPath: '/Users/demo/App' }), '');
+});
+
+test('migrateLegacyPackagedProfile copies old userData profile only when unified profile is missing', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vpn-profile-migration-'));
+  const runtimeProfilePath = path.join(root, 'home', '.auto-vpn', 'profile.toml');
+  const legacyProfilePath = path.join(root, 'Application Support', 'vpn-subscription-automation', 'state', 'profile.toml');
+  fs.mkdirSync(path.dirname(legacyProfilePath), { recursive: true });
+  fs.writeFileSync(legacyProfilePath, 'old-profile', 'utf-8');
+
+  assert.deepEqual(migrateLegacyPackagedProfile(runtimeProfilePath, legacyProfilePath), {
+    migrated: true,
+    reason: 'copied_legacy_profile'
+  });
+  assert.equal(fs.readFileSync(runtimeProfilePath, 'utf-8'), 'old-profile');
+
+  fs.writeFileSync(runtimeProfilePath, 'current-profile', 'utf-8');
+  fs.writeFileSync(legacyProfilePath, 'stale-profile', 'utf-8');
+  assert.deepEqual(migrateLegacyPackagedProfile(runtimeProfilePath, legacyProfilePath), {
+    migrated: false,
+    reason: 'runtime_profile_exists'
+  });
+  assert.equal(fs.readFileSync(runtimeProfilePath, 'utf-8'), 'current-profile');
 });
 
 test('resolveRuntimeArtifactsPath defaults to the user runtime artifacts directory', () => {
