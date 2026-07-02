@@ -29,7 +29,7 @@ AutoVPN turns VPN node sources into tested subscription endpoints. It can run as
 
 ## Installation
 
-Download the latest installer from [GitHub Releases](https://github.com/SwimmingLiu/auto-vpn/releases). The current release is [AutoVPN v1.4.0](https://github.com/SwimmingLiu/auto-vpn/releases/tag/v1.4.0); replace `<version>` with `1.4.0`.
+Download the latest installer from [GitHub Releases](https://github.com/SwimmingLiu/auto-vpn/releases). The current release is [AutoVPN v1.4.1](https://github.com/SwimmingLiu/auto-vpn/releases/tag/v1.4.1); replace `<version>` with `1.4.1`.
 
 | Platform | Assets |
 | --- | --- |
