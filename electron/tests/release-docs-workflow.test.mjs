@@ -67,43 +67,41 @@ test('README follows the AutoVPN desktop app structure', () => {
   assert.match(readme, /!\[AutoVPN desktop intro\]\(assets\/intro\.png\)/);
 
   for (const section of [
-    'Features',
     'Tech Stack',
     'Installation',
-    'CLI Quickstart',
     'Project Structure',
-    'Development',
-    'Release Packaging',
-    'Trust & Security',
+    'Runtime Configuration',
     'License'
   ]) {
     assert.match(readme, new RegExp(`^## .*${section}`, 'm'));
   }
 
+  for (const removedSection of [
+    'Features',
+    'CLI Quickstart',
+    'Development',
+    'Release Packaging',
+    'Trust & Security'
+  ]) {
+    assert.doesNotMatch(readme, new RegExp(`^## .*${removedSection}`, 'm'));
+  }
+
   for (const requiredText of [
     'Cloudflare Pages',
     '$HOME/.auto-vpn/profile.toml',
-    'npm run package:electron',
-    'electron/renderer/assets/vpn-auto-logo-v2-minimal.svg',
-    'AutoVPN-<version>-arm64.dmg',
-    'AutoVPN-<version>-amd64.deb',
-    'AutoVPN-<version>-aarch64.rpm',
-    'AutoVPN-<version>-arm64.deb',
-    'AutoVPN-<version>-x64-setup.exe',
-    'AutoVPN-<version>-arm64-portable.exe',
-    'vpn_subscription_automation-<version>-py3-none-any.whl',
-    'vpn_subscription_automation-<version>.tar.gz',
-    'swimmingliu-autovpn-<version>.tgz',
-    'pipx install',
-    'python -m venv .venv',
+    'GitHub Releases](https://github.com/SwimmingLiu/auto-vpn/releases/latest)',
+    'badge.svg?event=push',
+    '.dmg` for Apple Silicon or Intel',
+    '.deb` or `.rpm` for x64 or ARM64',
+    'portable `.exe` for x64 or ARM64',
+    'npm install -g @swimmingliu/autovpn',
+    'autovpn --version',
     'autovpn doctor --project-root',
     'Node.js `>=22.5.0`',
-    'npm install -g https://github.com/SwimmingLiu/auto-vpn/releases/download/v<version>/swimmingliu-autovpn-<version>.tgz',
-    'AUTOVPN_PYTHON_CLI',
-    'AUTOVPN_NO_INSTALL=1',
+    'swimmingliu-autovpn-${AUTOVPN_VERSION}.tgz',
     'VPN_AUTOMATION_RUNTIME_ROOT',
-    'autovpn run --project-root /opt/autovpn/vpn-subscription-automation --skip-deploy --skip-verify --detach --json',
-    'autovpn logs --project-root /opt/autovpn/vpn-subscription-automation --tail 200'
+    'Copyright (c) SwimmingLiu. All rights reserved.',
+    'commercial purposes without prior written authorization'
   ]) {
     assert.ok(readme.includes(requiredText), `README should mention ${requiredText}`);
   }
