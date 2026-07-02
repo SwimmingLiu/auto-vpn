@@ -69,6 +69,11 @@ def _bin_path(install_dir: Path, binary: str) -> Path:
     return install_dir / "node_modules" / ".bin" / f"{binary}{suffix}"
 
 
+def _npm_available() -> bool:
+    command_path = build_command_env().get("PATH")
+    return shutil.which("npm", path=command_path) is not None
+
+
 def _verify(executable: Path, runner: Runner, timeout_seconds: int) -> str:
     code, stdout, stderr = runner(
         [str(executable), "--version"],
@@ -102,8 +107,14 @@ def resolve_managed_npm_tool(
         version = _verify(managed_exe, runner, timeout_seconds)
         return ResolvedManagedTool(managed_exe, "managed", version, install_dir)
 
+    if allow_project_fallback and project_root:
+        project_exe = _bin_path(project_root, spec.binary)
+        if project_exe.exists():
+            version = _verify(project_exe, runner, timeout_seconds)
+            return ResolvedManagedTool(project_exe, "project", version, project_root)
+
     if install_missing:
-        if not shutil.which("npm"):
+        if not _npm_available():
             raise ManagedToolError(
                 f"npm is required to install {spec.package} but was not found"
             )
@@ -127,11 +138,5 @@ def resolve_managed_npm_tool(
             )
         version = _verify(managed_exe, runner, timeout_seconds)
         return ResolvedManagedTool(managed_exe, "managed", version, install_dir)
-
-    if allow_project_fallback and project_root:
-        project_exe = _bin_path(project_root, spec.binary)
-        if project_exe.exists():
-            version = _verify(project_exe, runner, timeout_seconds)
-            return ResolvedManagedTool(project_exe, "project", version, project_root)
 
     raise ManagedToolError(f"{spec.package} is not available")
