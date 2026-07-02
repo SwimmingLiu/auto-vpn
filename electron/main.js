@@ -4,8 +4,10 @@ import { fileURLToPath } from 'node:url';
 import { app, BrowserWindow, screen } from 'electron';
 
 import { registerIpcHandlers } from './ipc.js';
+import { migrateLegacyPackagedProfile } from './lib/profile-migration.js';
 import {
   resolveBundledProfilePath,
+  resolveLegacyPackagedProfilePath,
   resolveProjectRoot,
   resolveRuntimeArtifactsPath,
   resolveStateProfilePath
@@ -35,6 +37,13 @@ function createWindow() {
     isPackaged: app.isPackaged,
     userDataPath: app.getPath('userData')
   });
+  migrateLegacyPackagedProfile(
+    runtimeProfilePath,
+    resolveLegacyPackagedProfilePath({
+      isPackaged: app.isPackaged,
+      userDataPath: app.getPath('userData')
+    })
+  );
   const bundledProfilePath = resolveBundledProfilePath(projectRoot);
   const lifecycle = registerIpcHandlers({
     mainWindow: win,

@@ -178,7 +178,7 @@ Follow [Job Manager Implementation](job-manager.md).
 Add persistent job state separate from artifact `run.db`:
 
 ```text
-~/.auto-vpn/jobs/
+$HOME/.auto-vpn/jobs/
   index.json
   <job_id>/
     job.json

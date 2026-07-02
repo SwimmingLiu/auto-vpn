@@ -82,7 +82,7 @@
 - `enable_identifier_randomization`
 - `emit_sidecar_modules`
 
-这组配置当前不在设置页暴露，默认通过 `~/.auto-vpn/profile.toml` 手工维护。可用 `VPN_AUTOMATION_RUNTIME_ROOT` 改到其他用户数据目录。
+这组配置当前不在设置页暴露，默认通过 `$HOME/.auto-vpn/profile.toml` 手工维护。可用 `VPN_AUTOMATION_RUNTIME_ROOT` 改到其他用户数据目录。
 
 ## 3. 旧配置迁移规则
 
