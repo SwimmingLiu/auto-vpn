@@ -99,6 +99,139 @@ test('resolveManagedNpmTool falls back to the project binary when allowed', asyn
   assert.equal(resolved.source, 'project');
 });
 
+test('resolveManagedNpmTool defaults to project fallback before installing', async () => {
+  const toolsRoot = await makeTempRoot('managed-tools-default-fallback');
+  const projectRoot = await makeTempRoot('managed-tools-project');
+  const projectBinary = path.join(projectRoot, 'node_modules', '.bin', 'example');
+  const commands = [];
+  await writeExecutable(projectBinary);
+
+  const resolved = await resolveManagedNpmTool({
+    packageName: 'example-tool',
+    binaryName: 'example',
+    version: '1.0.0',
+    toolsRoot,
+    projectRoot,
+    runCommand: async (command) => {
+      commands.push(command);
+      return { returncode: 0, stdout: 'example 1.0.0\n', stderr: '' };
+    }
+  });
+
+  assert.equal(resolved.command, projectBinary);
+  assert.equal(resolved.source, 'project');
+  assert.deepEqual(commands, [[projectBinary, '--version']]);
+});
+
+test('resolveManagedNpmTool defaults to installing when managed and project binaries are missing', async () => {
+  const toolsRoot = await makeTempRoot('managed-tools-default-install');
+  const projectRoot = await makeTempRoot('managed-tools-project');
+  const installDir = path.join(toolsRoot, 'npm', 'example-tool', '1.0.0');
+  const binaryPath = path.join(installDir, 'node_modules', '.bin', 'example');
+  const commands = [];
+
+  const resolved = await resolveManagedNpmTool({
+    packageName: 'example-tool',
+    binaryName: 'example',
+    version: '1.0.0',
+    toolsRoot,
+    projectRoot,
+    runCommand: async (command, options) => {
+      commands.push({ command, options });
+      if (command[0] === 'npm') {
+        await writeExecutable(binaryPath);
+        return { returncode: 0, stdout: 'installed\n', stderr: '' };
+      }
+      return { returncode: 0, stdout: 'example 1.0.0\n', stderr: '' };
+    }
+  });
+
+  assert.equal(resolved.command, binaryPath);
+  assert.equal(resolved.source, 'managed');
+  assert.deepEqual(commands[0].command, ['npm', 'install', '--no-save', '--no-audit', '--no-fund', 'example-tool@1.0.0']);
+});
+
+test('resolveManagedNpmTool times out default spawned commands', async () => {
+  const toolsRoot = await makeTempRoot('managed-tools-timeout');
+  const projectRoot = await makeTempRoot('managed-tools-project');
+  const projectBinary = path.join(projectRoot, 'node_modules', '.bin', 'example');
+  await mkdir(path.dirname(projectBinary), { recursive: true });
+  await writeFile(projectBinary, '#!/bin/sh\nsleep 5\n', 'utf8');
+  await chmod(projectBinary, 0o755);
+
+  await assert.rejects(
+    resolveManagedNpmTool({
+      packageName: 'example-tool',
+      binaryName: 'example',
+      version: '1.0.0',
+      toolsRoot,
+      projectRoot,
+      timeoutMs: 20
+    }),
+    (error) => {
+      assert.ok(error instanceof ManagedToolError);
+      assert.equal(error.code, 'MANAGED_TOOL_VERSION_FAILED');
+      assert.match(error.message, /timed out/i);
+      return true;
+    }
+  );
+});
+
+test('resolveManagedNpmTool rejects unsafe package, version, and binary path inputs', async () => {
+  const toolsRoot = await makeTempRoot('managed-tools-unsafe');
+  const projectRoot = await makeTempRoot('managed-tools-project');
+  const unsafeOptions = [
+    { packageName: '../pkg', binaryName: 'example', version: '1.0.0' },
+    { packageName: '/pkg', binaryName: 'example', version: '1.0.0' },
+    { packageName: '@scope/pkg/extra', binaryName: 'example', version: '1.0.0' },
+    { packageName: 'example-tool', binaryName: '../example', version: '1.0.0' },
+    { packageName: 'example-tool', binaryName: 'nested/example', version: '1.0.0' },
+    { packageName: 'example-tool', binaryName: 'example', version: '../1.0.0' },
+    { packageName: 'example-tool', binaryName: 'example', version: '1/0/0' }
+  ];
+
+  for (const candidate of unsafeOptions) {
+    await assert.rejects(
+      resolveManagedNpmTool({
+        ...candidate,
+        toolsRoot,
+        projectRoot,
+        runCommand: async () => ({ returncode: 0, stdout: '', stderr: '' })
+      }),
+      (error) => {
+        assert.ok(error instanceof ManagedToolError);
+        assert.equal(error.code, 'MANAGED_TOOL_INVALID_OPTIONS');
+        return true;
+      }
+    );
+  }
+});
+
+test('resolveManagedNpmTool supports Windows .cmd shims', async () => {
+  const toolsRoot = await makeTempRoot('managed-tools-cmd');
+  const projectRoot = await makeTempRoot('managed-tools-project');
+  const binaryPath = path.join(toolsRoot, 'npm', 'example-tool', '1.0.0', 'node_modules', '.bin', 'example.cmd');
+  const commands = [];
+  await writeExecutable(binaryPath);
+
+  const resolved = await resolveManagedNpmTool({
+    packageName: 'example-tool',
+    binaryName: 'example',
+    version: '1.0.0',
+    toolsRoot,
+    projectRoot,
+    platform: 'win32',
+    runCommand: async (command) => {
+      commands.push(command);
+      return { returncode: 0, stdout: 'example 1.0.0\n', stderr: '' };
+    }
+  });
+
+  assert.equal(resolved.command, binaryPath);
+  assert.equal(resolved.source, 'managed');
+  assert.deepEqual(commands, [[binaryPath, '--version']]);
+});
+
 test('resolveManagedNpmTool throws a safe truncated error when install fails', async () => {
   const toolsRoot = await makeTempRoot('managed-tools-failure');
   const projectRoot = await makeTempRoot('managed-tools-project');
