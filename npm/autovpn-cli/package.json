@@ -28,7 +28,7 @@
   "engines": {
     "node": ">=22.5.0"
   },
-  "license": "UNLICENSED",
+  "license": "AGPL-3.0-only",
   "devDependencies": {
     "@types/node": "^24.0.0",
     "typescript": "^5.9.2"
