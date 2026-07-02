@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from vpn_automation.config.models import resolve_repo_anchor
 from vpn_automation.integrations.commands import run_command
 from vpn_automation.integrations.managed_tools import (
     ManagedToolSpec,
@@ -19,7 +20,8 @@ def build_obfuscate_command(
                 package="javascript-obfuscator",
                 binary="javascript-obfuscator",
                 version="5.4.3",
-            )
+            ),
+            project_root=resolve_repo_anchor(Path(__file__)),
         ).executable
 
     return [

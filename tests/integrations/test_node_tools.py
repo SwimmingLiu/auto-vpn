@@ -35,10 +35,17 @@ def test_build_obfuscate_command_resolves_managed_obfuscator(
 ) -> None:
     executable = tmp_path / "tools" / "javascript-obfuscator"
     captured_spec = None
+    captured_project_root = None
 
-    def fake_resolve_managed_npm_tool(spec: ManagedToolSpec) -> ResolvedManagedTool:
-        nonlocal captured_spec
+    def fake_resolve_managed_npm_tool(
+        spec: ManagedToolSpec,
+        *,
+        project_root: Path | None = None,
+    ) -> ResolvedManagedTool:
+        nonlocal captured_spec, captured_project_root
+        assert project_root is not None
         captured_spec = spec
+        captured_project_root = project_root
         return ResolvedManagedTool(
             executable=executable,
             source="managed",
@@ -59,4 +66,5 @@ def test_build_obfuscate_command_resolves_managed_obfuscator(
         binary="javascript-obfuscator",
         version="5.4.3",
     )
+    assert captured_project_root is not None
     assert command[:2] == [str(executable), "/tmp/input.js"]
