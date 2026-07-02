@@ -4,7 +4,11 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { ManagedToolError, resolveManagedNpmTool } from '../../dist/runtime/managed-tools.js';
+import {
+  ManagedToolError,
+  normalizeManagedToolCommandForSpawn,
+  resolveManagedNpmTool
+} from '../../dist/runtime/managed-tools.js';
 
 async function makeTempRoot(name) {
   return await mkdir(path.join(os.tmpdir(), `autovpn-${name}-${Date.now()}-${Math.random().toString(16).slice(2)}`), {
@@ -230,6 +234,23 @@ test('resolveManagedNpmTool supports Windows .cmd shims', async () => {
   assert.equal(resolved.command, binaryPath);
   assert.equal(resolved.source, 'managed');
   assert.deepEqual(commands, [[binaryPath, '--version']]);
+});
+
+test('normalizeManagedToolCommandForSpawn runs Windows cmd and bat shims through cmd.exe', () => {
+  const cmdCommand = normalizeManagedToolCommandForSpawn(['C:\\Tools\\example.cmd', '--version'], 'win32');
+  const batCommand = normalizeManagedToolCommandForSpawn(['C:\\Tools\\example.bat', '--help'], 'win32');
+
+  assert.equal(cmdCommand.executable, 'cmd.exe');
+  assert.deepEqual(cmdCommand.args, ['/d', '/s', '/c', '"C:\\Tools\\example.cmd"', '--version']);
+  assert.equal(batCommand.executable, 'cmd.exe');
+  assert.deepEqual(batCommand.args, ['/d', '/s', '/c', '"C:\\Tools\\example.bat"', '--help']);
+});
+
+test('normalizeManagedToolCommandForSpawn leaves non-Windows commands unchanged', () => {
+  const command = normalizeManagedToolCommandForSpawn(['/tools/example.cmd', '--version'], 'linux');
+
+  assert.equal(command.executable, '/tools/example.cmd');
+  assert.deepEqual(command.args, ['--version']);
 });
 
 test('resolveManagedNpmTool throws a safe truncated error when install fails', async () => {

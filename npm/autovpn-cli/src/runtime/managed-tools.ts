@@ -40,6 +40,11 @@ export interface ResolveManagedNpmToolOptions {
 
 type SpawnLike = (command: string, args: string[], options?: Record<string, unknown>) => ChildProcess;
 
+export interface ManagedToolSpawnCommand {
+  executable: string;
+  args: string[];
+}
+
 export class ManagedToolError extends Error {
   readonly code: string;
 
@@ -129,6 +134,20 @@ export function resolveManagedNpmToolBinaryCandidates(
   return [primary];
 }
 
+export function normalizeManagedToolCommandForSpawn(
+  command: string[],
+  platform: NodeJS.Platform = process.platform
+): ManagedToolSpawnCommand {
+  const [executable, ...args] = command;
+  if (platform === 'win32' && /\.(?:cmd|bat)$/i.test(executable)) {
+    return {
+      executable: 'cmd.exe',
+      args: ['/d', '/s', '/c', quoteWindowsCmdScript(executable), ...args]
+    };
+  }
+  return { executable, args };
+}
+
 function managedToolPaths(toolsRoot: string, packageName: string, version: string, binaryName: string) {
   const installDir = path.join(toolsRoot, 'npm', packageName, version);
   return {
@@ -207,7 +226,7 @@ function runCommandWithSpawn(
   options: { cwd: string; env: Record<string, string>; timeoutMs: number },
   spawnImpl: SpawnLike = defaultSpawn
 ): Promise<ManagedToolCommandResult> {
-  const [executable, ...args] = command;
+  const { executable, args } = normalizeManagedToolCommandForSpawn(command);
   const child = spawnImpl(executable, args, {
     cwd: options.cwd,
     env: { ...process.env, ...options.env },
@@ -255,6 +274,10 @@ function runCommandWithSpawn(
       resolve({ returncode: exitCode ?? 1, stdout, stderr });
     });
   });
+}
+
+function quoteWindowsCmdScript(scriptPath: string): string {
+  return `"${scriptPath.replace(/"/g, '""')}"`;
 }
 
 function killTimedOutChild(child: ChildProcess): void {
