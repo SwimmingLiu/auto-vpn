@@ -198,3 +198,26 @@ def test_resolve_reports_version_timeout_as_managed_tool_error(tmp_path: Path) -
             runner=runner,
             timeout_seconds=3,
         )
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        ManagedToolSpec(package="../pkg", binary="example", version="1.0.0"),
+        ManagedToolSpec(package="/pkg", binary="example", version="1.0.0"),
+        ManagedToolSpec(package="@scope/pkg/extra", binary="example", version="1.0.0"),
+        ManagedToolSpec(package="example-tool", binary="../example", version="1.0.0"),
+        ManagedToolSpec(package="example-tool", binary="nested/example", version="1.0.0"),
+        ManagedToolSpec(package="example-tool", binary="example", version="../1.0.0"),
+        ManagedToolSpec(package="example-tool", binary="example", version="1/0/0"),
+    ],
+)
+def test_resolve_rejects_unsafe_spec_paths(tmp_path: Path, spec: ManagedToolSpec) -> None:
+    with pytest.raises(ManagedToolError):
+        resolve_managed_npm_tool(
+            spec,
+            tools_root=tmp_path / "tools",
+            project_root=tmp_path / "project",
+            install_missing=False,
+            runner=lambda command, cwd=None, env=None, timeout_seconds=0: (0, "", ""),
+        )

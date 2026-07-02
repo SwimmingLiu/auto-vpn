@@ -100,3 +100,26 @@ test('Node doctor does not require npx when node and npm are present', async () 
   assert.equal(checks.node_binaries.status, 'pass');
   assert.deepEqual(checks.node_binaries.details.missing, []);
 });
+
+test('Node doctor finds Windows node.exe and npm.cmd binaries', async () => {
+  const { root, runtimeRoot } = await makeProjectRoot();
+  const binDir = await mkdtemp(path.join(os.tmpdir(), 'autovpn-doctor-win-bin-'));
+  await writeFile(path.join(binDir, 'node.EXE'), '', 'utf8');
+  await writeFile(path.join(binDir, 'npm.CMD'), '', 'utf8');
+
+  const result = await runDoctor(root, ['--deploy'], {
+    PATH: binDir,
+    PATHEXT: '.EXE;.CMD',
+    VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot
+  }, {
+    platform: 'win32',
+    resolveManagedNpmTool: async (options) => (
+      { command: `/managed/bin/${options.binaryName}`, args: [], source: 'managed', packageName: options.packageName, version: options.version }
+    ),
+    safeRun: () => ({ ok: true, message: 'ok' })
+  });
+  const checks = Object.fromEntries(result.payload.checks.map((item) => [item.name, item]));
+
+  assert.equal(checks.node_binaries.status, 'pass');
+  assert.deepEqual(checks.node_binaries.details.missing, []);
+});

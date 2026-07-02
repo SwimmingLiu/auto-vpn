@@ -23,6 +23,7 @@ interface DoctorCheck {
 interface DoctorOptions {
   resolveManagedNpmTool?: (options: ResolveManagedNpmToolOptions) => Promise<ManagedNpmToolResolution>;
   safeRun?: (command: string[], env: NodeJS.ProcessEnv) => { ok: boolean; message: string };
+  platform?: NodeJS.Platform;
 }
 
 const JAVASCRIPT_OBFUSCATOR_VERSION = '5.4.3';
@@ -45,12 +46,19 @@ function pathWritable(targetPath: string): boolean {
   }
 }
 
-function commandPath(name: string, env: NodeJS.ProcessEnv): string {
+function commandPath(name: string, env: NodeJS.ProcessEnv, platform: NodeJS.Platform = process.platform): string {
   const pathValue = String(env.PATH ?? process.env.PATH ?? '');
+  const extensions = platform === 'win32'
+    ? String(env.PATHEXT ?? process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD')
+        .split(';')
+        .filter(Boolean)
+    : [''];
   for (const dir of pathValue.split(path.delimiter).filter(Boolean)) {
-    const candidate = path.join(dir, name);
-    if (fs.existsSync(candidate)) {
-      return candidate;
+    for (const extension of extensions) {
+      const candidate = path.join(dir, `${name}${extension}`);
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
     }
   }
   return '';
@@ -138,7 +146,7 @@ function checkProxyRuntime(env: NodeJS.ProcessEnv): DoctorCheck[] {
 }
 
 async function checkNodeTools(projectRoot: string, env: NodeJS.ProcessEnv, options: DoctorOptions = {}): Promise<DoctorCheck[]> {
-  const missing = ['node', 'npm'].filter((name) => !commandPath(name, env));
+  const missing = ['node', 'npm'].filter((name) => !commandPath(name, env, options.platform));
   const checks: DoctorCheck[] = [
     check(
       'node_binaries',

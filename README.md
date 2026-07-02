@@ -83,9 +83,9 @@ python -m venv .venv
 Runtime flags can be set per command:
 
 ```bash
-VPN_AUTOMATION_RUNTIME_ROOT=/srv/autovpn autovpn run --project-root /opt/autovpn/vpn-subscription-automation --output jsonl
-AUTOVPN_NO_PYTHON=1 autovpn doctor --project-root /opt/autovpn/vpn-subscription-automation --output json
-AUTOVPN_BACKEND=python autovpn run --project-root /opt/autovpn/vpn-subscription-automation --output jsonl
+VPN_AUTOMATION_RUNTIME_ROOT=/srv/autovpn autovpn run --project-root /opt/autovpn --output jsonl
+AUTOVPN_NO_PYTHON=1 autovpn doctor --project-root /opt/autovpn --output json
+AUTOVPN_BACKEND=python autovpn run --project-root /opt/autovpn --output jsonl
 ```
 
 ## Project Structure

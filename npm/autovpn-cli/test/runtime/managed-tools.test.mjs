@@ -46,7 +46,8 @@ test('resolveManagedNpmTool uses an existing managed install after --version ver
     args: [],
     source: 'managed',
     packageName: 'example-tool',
-    version: '1.2.3'
+    version: 'example 1.2.3',
+    requestedVersion: '1.2.3'
   });
   assert.deepEqual(commands.map((entry) => entry.command), [[binaryPath, '--version']]);
 });
@@ -77,6 +78,8 @@ test('resolveManagedNpmTool installs a missing managed tool and verifies it', as
 
   assert.equal(resolved.command, binaryPath);
   assert.equal(resolved.source, 'managed');
+  assert.equal(resolved.version, 'example 2.0.0');
+  assert.equal(resolved.requestedVersion, '2.0.0');
   assert.deepEqual(commands[0].command, ['npm', 'install', '--no-save', '--no-audit', '--no-fund', '@scope/example-tool@2.0.0']);
   assert.equal(commands[0].options.cwd, installDir);
   assert.equal(commands[0].options.env.NPM_CONFIG_YES, 'true');
@@ -96,11 +99,13 @@ test('resolveManagedNpmTool falls back to the project binary when allowed', asyn
     toolsRoot,
     projectRoot,
     allowProjectFallback: true,
-    runCommand: async () => ({ returncode: 0, stdout: 'example 1.0.0\n', stderr: '' })
+    runCommand: async () => ({ returncode: 0, stdout: 'example 0.9.0\n', stderr: '' })
   });
 
   assert.equal(resolved.command, projectBinary);
   assert.equal(resolved.source, 'project');
+  assert.equal(resolved.version, 'example 0.9.0');
+  assert.equal(resolved.requestedVersion, '1.0.0');
 });
 
 test('resolveManagedNpmTool defaults to project fallback before installing', async () => {
@@ -237,13 +242,13 @@ test('resolveManagedNpmTool supports Windows .cmd shims', async () => {
 });
 
 test('normalizeManagedToolCommandForSpawn runs Windows cmd and bat shims through cmd.exe', () => {
-  const cmdCommand = normalizeManagedToolCommandForSpawn(['C:\\Tools\\example.cmd', '--version'], 'win32');
-  const batCommand = normalizeManagedToolCommandForSpawn(['C:\\Tools\\example.bat', '--help'], 'win32');
+  const cmdCommand = normalizeManagedToolCommandForSpawn(['C:\\Tools\\example.cmd', '--out', 'C:\\work dir\\bundle & more'], 'win32');
+  const batCommand = normalizeManagedToolCommandForSpawn(['C:\\Tools\\example.bat', '--name', 'a&b'], 'win32');
 
   assert.equal(cmdCommand.executable, 'cmd.exe');
-  assert.deepEqual(cmdCommand.args, ['/d', '/s', '/c', '"C:\\Tools\\example.cmd"', '--version']);
+  assert.deepEqual(cmdCommand.args, ['/d', '/s', '/c', '"C:\\Tools\\example.cmd" "--out" "C:\\work dir\\bundle ^& more"']);
   assert.equal(batCommand.executable, 'cmd.exe');
-  assert.deepEqual(batCommand.args, ['/d', '/s', '/c', '"C:\\Tools\\example.bat"', '--help']);
+  assert.deepEqual(batCommand.args, ['/d', '/s', '/c', '"C:\\Tools\\example.bat" "--name" "a^&b"']);
 });
 
 test('normalizeManagedToolCommandForSpawn leaves non-Windows commands unchanged', () => {

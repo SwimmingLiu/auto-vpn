@@ -128,7 +128,7 @@ def test_doctor_human_output_marks_warning_and_strict_returns_nonzero(
     assert "SOURCE-URL-SECRET" not in captured.out
 
 
-def test_doctor_reports_missing_mihomo_and_npx(tmp_path: Path, monkeypatch, capsys) -> None:
+def test_doctor_reports_missing_mihomo_without_requiring_npx(tmp_path: Path, monkeypatch, capsys) -> None:
     project_root = tmp_path / "vpn-subscription-automation"
     _write_minimal_project(project_root, api_token="CF-TOKEN-SECRET")
 
@@ -157,8 +157,8 @@ def test_doctor_reports_missing_mihomo_and_npx(tmp_path: Path, monkeypatch, caps
     checks = {check["name"]: check for check in payload["checks"]}
     assert code == 1
     assert checks["mihomo"]["status"] == "fail"
-    assert checks["node_binaries"]["status"] == "fail"
-    assert checks["node_binaries"]["details"]["missing"] == ["npx"]
+    assert checks["node_binaries"]["status"] == "pass"
+    assert checks["node_binaries"]["details"]["missing"] == []
 
 
 def test_doctor_warns_when_playwright_browser_is_missing(tmp_path: Path, monkeypatch, capsys) -> None:

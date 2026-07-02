@@ -69,6 +69,42 @@ def _bin_path(install_dir: Path, binary: str) -> Path:
     return install_dir / "node_modules" / ".bin" / f"{binary}{suffix}"
 
 
+def _validate_part(value: str, field: str) -> str:
+    normalized = str(value or "").strip()
+    if (
+        not normalized
+        or normalized in {".", ".."}
+        or "/" in normalized
+        or "\\" in normalized
+        or Path(normalized).is_absolute()
+    ):
+        raise ManagedToolError(f"{field} contains unsafe path characters")
+    return normalized
+
+
+def _validate_package(value: str) -> str:
+    normalized = str(value or "").strip()
+    if not normalized or "\\" in normalized or Path(normalized).is_absolute():
+        raise ManagedToolError("package contains unsafe path characters")
+    parts = normalized.split("/")
+    if normalized.startswith("@"):
+        if len(parts) != 2:
+            raise ManagedToolError("package contains unsafe path segments")
+    elif len(parts) != 1:
+        raise ManagedToolError("package contains unsafe path segments")
+    for part in parts:
+        _validate_part(part, "package")
+    return normalized
+
+
+def _validate_spec(spec: ManagedToolSpec) -> ManagedToolSpec:
+    return ManagedToolSpec(
+        package=_validate_package(spec.package),
+        binary=_validate_part(spec.binary, "binary"),
+        version=_validate_part(spec.version, "version"),
+    )
+
+
 def _npm_available() -> bool:
     command_path = build_command_env().get("PATH")
     return shutil.which("npm", path=command_path) is not None
@@ -109,6 +145,7 @@ def resolve_managed_npm_tool(
     runner: Runner = _default_runner,
     timeout_seconds: int = 120,
 ) -> ResolvedManagedTool:
+    spec = _validate_spec(spec)
     root = tools_root or default_tools_root()
     install_dir = root / "npm" / spec.package / spec.version
     managed_exe = _bin_path(install_dir, spec.binary)

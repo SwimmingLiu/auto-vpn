@@ -330,7 +330,7 @@ def _check_proxy_runtime() -> list[DoctorCheck]:
 
 def _check_node_tools(project_root: Path) -> list[DoctorCheck]:
     checks: list[DoctorCheck] = []
-    missing = [name for name in ("node", "npm", "npx") if not shutil.which(name)]
+    missing = [name for name in ("node", "npm") if not shutil.which(name)]
     checks.append(
         _check(
             "node_binaries",

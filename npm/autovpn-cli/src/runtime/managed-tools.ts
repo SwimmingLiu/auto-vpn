@@ -12,6 +12,7 @@ export interface ManagedNpmToolResolution {
   source: ManagedNpmToolSource;
   packageName: string;
   version: string;
+  requestedVersion?: string;
 }
 
 export type ManagedToolCommandResult = {
@@ -72,13 +73,14 @@ export async function resolveManagedNpmTool(options: ResolveManagedNpmToolOption
 
   const managedBinary = await firstExecutable(resolveManagedNpmToolBinaryCandidates(managed.binDir, binaryName, platform));
   if (managedBinary) {
-    await verifyToolVersion(managedBinary, managed.installDir, runCommand, 'managed');
+    const verifiedVersion = await verifyToolVersion(managedBinary, managed.installDir, runCommand, 'managed');
     return {
       command: managedBinary,
       args: [],
       source: 'managed',
       packageName,
-      version
+      version: verifiedVersion,
+      requestedVersion: version
     };
   }
 
@@ -86,13 +88,14 @@ export async function resolveManagedNpmTool(options: ResolveManagedNpmToolOption
     const projectBinDir = path.join(projectRoot, 'node_modules', '.bin');
     const projectBinary = await firstExecutable(resolveManagedNpmToolBinaryCandidates(projectBinDir, binaryName, platform));
     if (projectBinary) {
-      await verifyToolVersion(projectBinary, projectRoot, runCommand, 'project');
+      const verifiedVersion = await verifyToolVersion(projectBinary, projectRoot, runCommand, 'project');
       return {
         command: projectBinary,
         args: [],
         source: 'project',
         packageName,
-        version
+        version: verifiedVersion,
+        requestedVersion: version
       };
     }
   }
@@ -111,13 +114,14 @@ export async function resolveManagedNpmTool(options: ResolveManagedNpmToolOption
     );
   }
 
-  await verifyToolVersion(installedBinary, managed.installDir, runCommand, 'managed');
+  const verifiedVersion = await verifyToolVersion(installedBinary, managed.installDir, runCommand, 'managed');
   return {
     command: installedBinary,
     args: [],
     source: 'managed',
     packageName,
-    version
+    version: verifiedVersion,
+    requestedVersion: version
   };
 }
 
@@ -142,7 +146,7 @@ export function normalizeManagedToolCommandForSpawn(
   if (platform === 'win32' && /\.(?:cmd|bat)$/i.test(executable)) {
     return {
       executable: 'cmd.exe',
-      args: ['/d', '/s', '/c', quoteWindowsCmdScript(executable), ...args]
+      args: ['/d', '/s', '/c', [executable, ...args].map(quoteWindowsCmdArgument).join(' ')]
     };
   }
   return { executable, args };
@@ -185,7 +189,7 @@ async function verifyToolVersion(
   cwd: string,
   runCommand: ManagedToolRunCommand,
   source: ManagedNpmToolSource
-): Promise<void> {
+): Promise<string> {
   let result: ManagedToolCommandResult;
   try {
     result = await runCommand([binaryPath, '--version'], { cwd, env: {} });
@@ -201,6 +205,7 @@ async function verifyToolVersion(
       'MANAGED_TOOL_VERSION_FAILED'
     );
   }
+  return firstOutputLine(result.stdout || result.stderr) || 'unknown';
 }
 
 async function isExecutable(filePath: string): Promise<boolean> {
@@ -276,8 +281,13 @@ function runCommandWithSpawn(
   });
 }
 
-function quoteWindowsCmdScript(scriptPath: string): string {
-  return `"${scriptPath.replace(/"/g, '""')}"`;
+function quoteWindowsCmdArgument(value: string): string {
+  const escaped = value.replace(/(["^&|<>()%!])/g, '^$1');
+  return `"${escaped}"`;
+}
+
+function firstOutputLine(value: string): string {
+  return value.trim().split(/\r?\n/)[0]?.trim() ?? '';
 }
 
 function killTimedOutChild(child: ChildProcess): void {
