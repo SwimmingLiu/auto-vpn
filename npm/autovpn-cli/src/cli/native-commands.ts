@@ -98,7 +98,7 @@ export async function runNativeCommand(argv: string[], context: NativeContext): 
   if (command === 'doctor') {
     if (wantsPython(context.env, 'AUTOVPN_DOCTOR_BACKEND')) return context.pythonFallback(argv);
     if (readOptionValue(argv, '--output') !== 'json') return undefined;
-    const result = runDoctor(projectRoot, argv, context.env);
+    const result = await runDoctor(projectRoot, argv, context.env);
     context.io.writeStdout(jsonLine(result.payload));
     return result.code;
   }

@@ -59,6 +59,10 @@ async function makeShareProjectRoot() {
   return projectRoot;
 }
 
+async function resolveTestManagedWrangler() {
+  return { command: '/managed/bin/wrangler', args: [], source: 'managed', packageName: 'wrangler', version: '4.106.0' };
+}
+
 test('Cloudflare URL helpers match Python deploy semantics', () => {
   const deploy = {
     pages_project_url: 'https://sub-nodes.pages.dev/',
@@ -68,8 +72,8 @@ test('Cloudflare URL helpers match Python deploy semantics', () => {
     custom_domain: 'vpn.example.com/'
   };
 
-  assert.deepEqual(buildPagesDeployCommand('/tmp/bundle', 'sub-nodes'), [
-    'npx', 'wrangler', 'pages', 'deploy', '/tmp/bundle', '--project-name', 'sub-nodes', '--branch', 'main'
+  assert.deepEqual(buildPagesDeployCommand('/managed/bin/wrangler', '/tmp/bundle', 'sub-nodes'), [
+    '/managed/bin/wrangler', 'pages', 'deploy', '/tmp/bundle', '--project-name', 'sub-nodes', '--branch', 'main'
   ]);
   assert.equal(derivePagesProjectUrl('sub-nodes'), 'https://sub-nodes.pages.dev');
   assert.equal(buildSecretUrl(deploy), 'https://sub-nodes.pages.dev/?test_key=fake-secret');
@@ -230,6 +234,7 @@ test('deploy backend selection supports explicit Python rollback', async () => {
 
 test('Node deploy backend runs Wrangler and returns Python-compatible base metadata', async () => {
   const calls = [];
+  const resolverCalls = [];
   const result = await deployPagesWithBackend({
     projectRoot: '/repo',
     bundleDir: '/repo/artifacts/pages_bundle',
@@ -243,6 +248,10 @@ test('Node deploy backend runs Wrangler and returns Python-compatible base metad
     }
   }, {
     env: {},
+    resolveManagedNpmTool: async (options) => {
+      resolverCalls.push(options);
+      return { command: '/managed/bin/wrangler', args: [], source: 'managed', packageName: 'wrangler', version: '4.106.0' };
+    },
     runCommand: async (command, options) => {
       calls.push({ command, options });
       return { returncode: 0, stdout: 'deployed', stderr: '' };
@@ -250,7 +259,13 @@ test('Node deploy backend runs Wrangler and returns Python-compatible base metad
   });
 
   assert.equal(result.returncode, 0);
-  assert.deepEqual(result.command, ['npx', 'wrangler', 'pages', 'deploy', '/repo/artifacts/pages_bundle', '--project-name', 'sub-nodes', '--branch', 'main']);
+  assert.deepEqual(resolverCalls, [{
+    packageName: 'wrangler',
+    binaryName: 'wrangler',
+    version: '4.106.0',
+    projectRoot: '/repo'
+  }]);
+  assert.deepEqual(result.command, ['/managed/bin/wrangler', 'pages', 'deploy', '/repo/artifacts/pages_bundle', '--project-name', 'sub-nodes', '--branch', 'main']);
   assert.equal(result.project_name, 'sub-nodes');
   assert.equal(result.pages_project_url, 'https://sub-nodes.pages.dev');
   assert.equal(result.fallback_used, false);
@@ -278,6 +293,7 @@ test('Node deploy backend retries transient failures and uses configured proxy l
     deploy: { project_name: 'sub-nodes', share_project_name: '', cloudflare_api_token: 'token-1' }
   }, {
     env: { VPN_AUTOMATION_DEPLOY_PROXY: 'http://127.0.0.1:7897' },
+    resolveManagedNpmTool: resolveTestManagedWrangler,
     runCommand: async (_command, options) => {
       calls.push(options);
       return results.shift();
@@ -336,6 +352,7 @@ test('Node deploy backend falls back when primary Pages project is blocked', asy
     }
   }, {
     env: {},
+    resolveManagedNpmTool: resolveTestManagedWrangler,
     cloudflareDeployClient: client,
     runCommand: async () => deployResults.shift()
   });
@@ -398,6 +415,7 @@ test('Node deploy backend binds custom domain and upserts DNS after successful d
     }
   }, {
     env: {},
+    resolveManagedNpmTool: resolveTestManagedWrangler,
     cloudflareDeployClient: client,
     runCommand: async () => ({ returncode: 0, stdout: 'ok', stderr: '' })
   });
@@ -472,6 +490,7 @@ test('Node deploy backend rebinds custom domain when primary fallback is used', 
     }
   }, {
     env: {},
+    resolveManagedNpmTool: resolveTestManagedWrangler,
     cloudflareDeployClient: client,
     runCommand: async () => deployResults.shift()
   });
@@ -519,6 +538,7 @@ test('Node deploy backend fails result when custom domain DNS upsert fails', asy
     }
   }, {
     env: {},
+    resolveManagedNpmTool: resolveTestManagedWrangler,
     cloudflareDeployClient: client,
     runCommand: async () => ({ returncode: 0, stdout: 'ok', stderr: '' })
   });
@@ -712,6 +732,7 @@ test('Node deploy backend syncs share project SUB to final Pages URL', async () 
     }
   }, {
     env: {},
+    resolveManagedNpmTool: resolveTestManagedWrangler,
     cloudflareDeployClient: client,
     runCommand: async (command, options) => {
       runCalls.push({ command, options });
@@ -724,9 +745,9 @@ test('Node deploy backend syncs share project SUB to final Pages URL', async () 
   assert.equal(result.share_project_name, 'sub-links-share-03');
   assert.equal(result.share_project_sub_value, 'https://sub-nodes.pages.dev/?serect_key=swimmingliu');
   assert.equal(runCalls.length, 2);
-  assert.equal(runCalls[0].command[6], 'sub-nodes');
-  assert.equal(runCalls[1].command[6], 'sub-links-share-03');
-  assert.ok(runCalls[1].command[4].endsWith('/electron/runtime/share-worker/share_pages_bundle'));
+  assert.equal(runCalls[0].command[5], 'sub-nodes');
+  assert.equal(runCalls[1].command[5], 'sub-links-share-03');
+  assert.ok(runCalls[1].command[3].endsWith('/electron/runtime/share-worker/share_pages_bundle'));
   const update = calls.find((call) => call[0] === 'updatePagesProject');
   assert.equal(update[1], 'sub-links-share-03');
   assert.equal(update[2].deployment_configs.preview.env_vars.SUB.value, 'https://sub-nodes.pages.dev/?serect_key=swimmingliu');
@@ -783,6 +804,7 @@ test('Node deploy backend falls back when share project update is blocked', asyn
     }
   }, {
     env: {},
+    resolveManagedNpmTool: resolveTestManagedWrangler,
     cloudflareDeployClient: client,
     runCommand: async (command, options) => {
       runCalls.push({ command, options });
@@ -802,7 +824,7 @@ test('Node deploy backend falls back when share project update is blocked', asyn
     ['createPagesProject', 'sub-links-share-04'],
     ['copyPagesProjectConfig', 'sub-links-share-03', 'sub-links-share-04']
   ]);
-  assert.equal(runCalls.at(-1).command[6], 'sub-links-share-04');
+  assert.equal(runCalls.at(-1).command[5], 'sub-links-share-04');
 });
 
 test('Node deploy backend falls back when share project redeploy is blocked', async () => {
@@ -877,6 +899,7 @@ test('Node deploy backend falls back when share project redeploy is blocked', as
     }
   }, {
     env: {},
+    resolveManagedNpmTool: resolveTestManagedWrangler,
     cloudflareDeployClient: client,
     runCommand: async (command) => {
       runCalls.push(command);
@@ -890,8 +913,8 @@ test('Node deploy backend falls back when share project redeploy is blocked', as
   assert.equal(result.share_project_cleanup_blocked_project, 'sub-links-share-03');
   assert.equal(result.share_project_fallback_last_used_suffix, 4);
   assert.deepEqual(result.share_project_redeploy_attempts, [{ mode: 'direct', returncode: 0 }]);
-  assert.equal(runCalls[1][6], 'sub-links-share-03');
-  assert.equal(runCalls[2][6], 'sub-links-share-04');
+  assert.equal(runCalls[1][5], 'sub-links-share-03');
+  assert.equal(runCalls[2][5], 'sub-links-share-04');
   assert.deepEqual(calls.filter((call) => ['createPagesProject', 'copyPagesProjectConfig'].includes(call[0])), [
     ['createPagesProject', 'sub-links-share-04'],
     ['copyPagesProjectConfig', 'sub-links-share-03', 'sub-links-share-04']
@@ -944,6 +967,7 @@ test('Node deploy backend recovers latest existing share project when requested 
     }
   }, {
     env: {},
+    resolveManagedNpmTool: resolveTestManagedWrangler,
     cloudflareDeployClient: client,
     runCommand: async (command) => {
       runCalls.push(command);
@@ -956,7 +980,7 @@ test('Node deploy backend recovers latest existing share project when requested 
   assert.equal(result.share_project_requested_name, 'sub-links-share-03');
   assert.equal(result.share_project_name, 'sub-links-share-05');
   assert.equal(runCalls.length, 2);
-  assert.equal(runCalls[1][6], 'sub-links-share-05');
+  assert.equal(runCalls[1][5], 'sub-links-share-05');
 });
 
 test('Node deploy backend keeps remaining complex deploy side effects on Python fallback', async () => {

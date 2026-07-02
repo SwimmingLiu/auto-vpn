@@ -6,6 +6,12 @@ import { parse } from '@iarna/toml';
 
 import { profileSummary } from '../config/profile.js';
 import { resolveArtifactsRoot, resolveProfilePath } from '../runtime/paths.js';
+import {
+  normalizeManagedToolCommandForSpawn,
+  resolveManagedNpmTool,
+  type ResolveManagedNpmToolOptions,
+  type ManagedNpmToolResolution
+} from '../runtime/managed-tools.js';
 
 interface DoctorCheck {
   name: string;
@@ -13,6 +19,14 @@ interface DoctorCheck {
   message: string;
   details: Record<string, unknown>;
 }
+
+interface DoctorOptions {
+  resolveManagedNpmTool?: (options: ResolveManagedNpmToolOptions) => Promise<ManagedNpmToolResolution>;
+  safeRun?: (command: string[], env: NodeJS.ProcessEnv) => { ok: boolean; message: string };
+}
+
+const JAVASCRIPT_OBFUSCATOR_VERSION = '5.4.3';
+const WRANGLER_VERSION = '4.106.0';
 
 function check(name: string, status: DoctorCheck['status'], message: string, details: Record<string, unknown> = {}): DoctorCheck {
   return { name, status, message, details };
@@ -44,7 +58,8 @@ function commandPath(name: string, env: NodeJS.ProcessEnv): string {
 
 function safeRun(command: string[], env: NodeJS.ProcessEnv): { ok: boolean; message: string } {
   try {
-    const result = spawnSync(command[0], command.slice(1), {
+    const { executable, args } = normalizeManagedToolCommandForSpawn(command);
+    const result = spawnSync(executable, args, {
       encoding: 'utf8',
       env: { ...process.env, ...env },
       timeout: 5000
@@ -122,7 +137,7 @@ function checkProxyRuntime(env: NodeJS.ProcessEnv): DoctorCheck[] {
   return checks;
 }
 
-function checkNodeTools(projectRoot: string, env: NodeJS.ProcessEnv): DoctorCheck[] {
+async function checkNodeTools(projectRoot: string, env: NodeJS.ProcessEnv, options: DoctorOptions = {}): Promise<DoctorCheck[]> {
   const missing = ['node', 'npm', 'npx'].filter((name) => !commandPath(name, env));
   const checks: DoctorCheck[] = [
     check(
@@ -141,22 +156,27 @@ function checkNodeTools(projectRoot: string, env: NodeJS.ProcessEnv): DoctorChec
     hasPlaywright ? 'pass' : 'warn',
     hasPlaywright ? 'Playwright package is installed' : 'Playwright package was not found; run npx playwright install --with-deps chromium-headless-shell'
   ));
-  const npx = commandPath('npx', env);
-  if (!npx) {
-    checks.push(check('javascript_obfuscator', 'fail', 'npx is missing'));
-  } else {
-    const result = safeRun([npx, 'javascript-obfuscator', '--version'], env);
+  try {
+    const obfuscator = await (options.resolveManagedNpmTool ?? resolveManagedNpmTool)({
+      packageName: 'javascript-obfuscator',
+      binaryName: 'javascript-obfuscator',
+      version: JAVASCRIPT_OBFUSCATOR_VERSION,
+      projectRoot,
+      installMissing: false
+    });
     checks.push(check(
       'javascript_obfuscator',
-      result.ok ? 'pass' : 'fail',
-      result.ok ? 'javascript-obfuscator is available' : 'javascript-obfuscator is not available',
-      { result: result.message }
+      'pass',
+      'javascript-obfuscator is available',
+      { source: obfuscator.source, version: obfuscator.version, path: obfuscator.command }
     ));
+  } catch (error) {
+    checks.push(check('javascript_obfuscator', 'fail', error instanceof Error ? error.message : String(error)));
   }
   return checks;
 }
 
-function checkCloudflare(summary: Record<string, any>, deploy: boolean, env: NodeJS.ProcessEnv): DoctorCheck[] {
+async function checkCloudflare(summary: Record<string, any>, deploy: boolean, env: NodeJS.ProcessEnv, projectRoot: string, options: DoctorOptions = {}): Promise<DoctorCheck[]> {
   const checks: DoctorCheck[] = [];
   const deploySummary = summary.deploy ?? {};
   const hasCredentials = deploySummary.cloudflare_api_token === 'set'
@@ -184,22 +204,38 @@ function checkCloudflare(summary: Record<string, any>, deploy: boolean, env: Nod
     hasDeployUrl ? 'Deploy URL settings are internally consistent' : 'Deploy URL settings are incomplete',
     { has_project_name: Boolean(String(deploySummary.project_name ?? '').trim()), has_pages_url: URL.canParse(pagesProjectUrl) }
   ));
-  const npx = commandPath('npx', env);
-  if (!npx) {
-    checks.push(check('wrangler', deploy ? 'fail' : 'warn', 'npx is missing'));
-  } else {
-    const result = safeRun([npx, 'wrangler', 'pages', 'deploy', '--help'], env);
+  try {
+    const wrangler = await (options.resolveManagedNpmTool ?? resolveManagedNpmTool)({
+      packageName: 'wrangler',
+      binaryName: 'wrangler',
+      version: WRANGLER_VERSION,
+      projectRoot,
+      installMissing: false
+    });
+    const result = (options.safeRun ?? safeRun)([wrangler.command, 'pages', 'deploy', '--help'], env);
     checks.push(check(
       'wrangler',
       result.ok ? 'pass' : (deploy ? 'fail' : 'warn'),
       result.ok ? 'Wrangler Pages deploy command is available' : 'Wrangler Pages deploy command is not available',
-      { result: result.message, deploy_required: deploy }
+      { source: wrangler.source, version: wrangler.version, path: wrangler.command, result: result.message, deploy_required: deploy }
+    ));
+  } catch (error) {
+    checks.push(check(
+      'wrangler',
+      deploy ? 'fail' : 'warn',
+      error instanceof Error ? error.message : String(error),
+      { deploy_required: deploy }
     ));
   }
   return checks;
 }
 
-export function runDoctor(projectRoot: string, argv: string[], env: NodeJS.ProcessEnv = process.env): { code: number; payload: Record<string, unknown> } {
+export async function runDoctor(
+  projectRoot: string,
+  argv: string[],
+  env: NodeJS.ProcessEnv = process.env,
+  options: DoctorOptions = {}
+): Promise<{ code: number; payload: Record<string, unknown> }> {
   const deploy = argv.includes('--deploy');
   const strict = argv.includes('--strict');
   const profilePath = resolveProfilePath(projectRoot, env);
@@ -208,6 +244,8 @@ export function runDoctor(projectRoot: string, argv: string[], env: NodeJS.Proce
   const summary = profileSummary(projectRoot, env) as Record<string, any>;
   const sourceValues = Object.values((summary.sources ?? {}) as Record<string, any>);
   const configuredSources = sourceValues.filter((source) => source.enabled && source.url === 'set' && source.key === 'set');
+  const nodeToolChecks = await checkNodeTools(projectRoot, env, options);
+  const cloudflareChecks = await checkCloudflare(summary, deploy, env, projectRoot, options);
   const checks: DoctorCheck[] = [
     check('node_version', 'pass', `Node ${process.versions.node}`, { required: '>=20' }),
     check('project_root', 'pass', 'Project root resolved', { path: projectRoot }),
@@ -240,8 +278,8 @@ export function runDoctor(projectRoot: string, argv: string[], env: NodeJS.Proce
       : check('sources', 'warn', 'No enabled source has both URL and key configured', { configured_count: 0, key_state: 'missing' }),
     checkSpeedTestConfig(profile),
     ...checkProxyRuntime(env),
-    ...checkNodeTools(projectRoot, env),
-    ...checkCloudflare(summary, deploy, env)
+    ...nodeToolChecks,
+    ...cloudflareChecks
   ];
   const hasFailures = checks.some((item) => item.status === 'fail');
   const hasWarnings = checks.some((item) => item.status === 'warn');
