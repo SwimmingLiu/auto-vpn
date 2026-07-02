@@ -100,8 +100,8 @@ test('README follows the AutoVPN desktop app structure', () => {
     'Node.js `>=22.5.0`',
     'swimmingliu-autovpn-${AUTOVPN_VERSION}.tgz',
     'VPN_AUTOMATION_RUNTIME_ROOT',
-    'Copyright (c) SwimmingLiu. All rights reserved.',
-    'commercial purposes without prior written authorization'
+    'GNU Affero General Public License v3.0',
+    '[LICENSE](LICENSE)'
   ]) {
     assert.ok(readme.includes(requiredText), `README should mention ${requiredText}`);
   }
@@ -109,6 +109,9 @@ test('README follows the AutoVPN desktop app structure', () => {
   assert.ok(readme.includes('SwimmingLiu/auto-vpn/releases'));
   assert.ok(readme.includes('SwimmingLiu/auto-vpn/actions'));
   assert.doesNotMatch(readme, /SwimmingLiu\/vpn-subscription-automation/);
+  assert.doesNotMatch(readme, /vpn-subscription-automation/);
+  assert.doesNotMatch(readme, /proprietary software/i);
+  assert.doesNotMatch(readme, /commercial purposes/i);
   assert.doesNotMatch(readme, /\/Users\/swimmingliu/);
   assert.doesNotMatch(readme, /\/user\/swimmingliu/i);
 });

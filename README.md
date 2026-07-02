@@ -37,7 +37,7 @@ you need to run AutoVPN on a server, in CI, or from an Agent.
 
 ```bash
 npm install -g @swimmingliu/autovpn
-export PROJECT_ROOT=/path/to/vpn-subscription-automation
+export PROJECT_ROOT=/path/to/autovpn
 autovpn --version
 autovpn doctor --project-root "$PROJECT_ROOT" --output human
 autovpn run --project-root "$PROJECT_ROOT" --skip-deploy --skip-verify \
@@ -65,7 +65,7 @@ npm install -g \
 ## Project Structure
 
 ```text
-vpn-subscription-automation/
+autovpn/
 ├── electron/          # Electron app, runtime, packaging
 ├── npm/autovpn-cli/   # Node-first CLI package
 ├── src/               # Python compatibility backend
@@ -90,17 +90,12 @@ AutoVPN reads and writes runtime files under `$HOME/.auto-vpn/` by default:
 
 The desktop app and CLI use the same default runtime root. When a packaged
 desktop app starts and `$HOME/.auto-vpn/profile.toml` does not exist, it can
-migrate the older Electron profile from
-`$HOME/Library/Application Support/vpn-subscription-automation/state/profile.toml`.
-If both files exist, `$HOME/.auto-vpn/profile.toml` remains the source of truth.
+migrate an older Electron profile into the unified runtime profile. If both
+files exist, `$HOME/.auto-vpn/profile.toml` remains the source of truth.
 
 Set `VPN_AUTOMATION_RUNTIME_ROOT` to move them together.
 
 ## License
 
-Copyright (c) SwimmingLiu. All rights reserved.
-
-AutoVPN is proprietary software. No permission is granted to use, copy, modify,
-publish, distribute, sublicense, sell, offer as a service, or use this project
-for commercial purposes without prior written authorization from the copyright
-holder.
+AutoVPN is licensed under the GNU Affero General Public License v3.0
+(AGPL-3.0-only). See [LICENSE](LICENSE).
