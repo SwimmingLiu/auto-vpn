@@ -63,3 +63,80 @@ test('state response is redacted before leaving API', async () => {
   }
 });
 
+test('run and stop routes delegate to runtime', async () => {
+  const calls = [];
+  const service = await createAutoVpnServer({
+    host: '127.0.0.1',
+    port: 0,
+    projectRoot: '/repo',
+    auth: { enabled: false, token: '' },
+    runtime: {
+      loadState: async () => ({ profile: {}, runState: 'idle' }),
+      startRun: async (options) => {
+        calls.push(['start', options]);
+        return { ok: true, runId: 'run-1' };
+      },
+      stopRun: async () => {
+        calls.push(['stop']);
+        return { ok: true, requested: true };
+      }
+    }
+  });
+
+  try {
+    const start = await fetch(`${service.origin}/api/runs`, {
+      method: 'POST',
+      body: JSON.stringify({ skipDeploy: true, skipVerify: true, resumeLatest: false })
+    });
+    assert.equal(start.status, 202);
+    assert.deepEqual(await start.json(), { ok: true, runId: 'run-1' });
+
+    const stop = await fetch(`${service.origin}/api/runs/current/stop`, { method: 'POST' });
+    assert.equal(stop.status, 200);
+    assert.deepEqual(await stop.json(), { ok: true, requested: true });
+
+    assert.deepEqual(calls, [
+      ['start', { skipDeploy: true, skipVerify: true, resumeLatest: false }],
+      ['stop']
+    ]);
+  } finally {
+    await service.close();
+  }
+});
+
+test('events route streams redacted server-sent events', async () => {
+  let subscriber;
+  const service = await createAutoVpnServer({
+    host: '127.0.0.1',
+    port: 0,
+    projectRoot: '/repo',
+    auth: { enabled: false, token: '' },
+    runtime: {
+      loadState: async () => ({ profile: {}, runState: 'idle' }),
+      subscribe: (handler) => {
+        subscriber = handler;
+        return () => {
+          subscriber = undefined;
+        };
+      }
+    }
+  });
+
+  try {
+    const response = await fetch(`${service.origin}/api/events`);
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('content-type') ?? '', /text\/event-stream/);
+
+    subscriber({ type: 'log', message: 'Bearer secret-token and vmess://abcdef' });
+    const reader = response.body.getReader();
+    const { value } = await reader.read();
+    await reader.cancel();
+    const text = new TextDecoder().decode(value);
+
+    assert.match(text, /^data: /);
+    assert.doesNotMatch(text, /secret-token|vmess:\/\/abcdef/);
+    assert.match(text, /redacted/i);
+  } finally {
+    await service.close();
+  }
+});

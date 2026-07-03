@@ -104,6 +104,20 @@ export async function createAutoVpnServer(options: CreateAutoVpnServerOptions): 
         return;
       }
 
+      if (request.method === 'GET' && url.pathname === '/api/events') {
+        response.writeHead(200, {
+          'Content-Type': 'text/event-stream; charset=utf-8',
+          'Cache-Control': 'no-cache, no-transform',
+          Connection: 'keep-alive'
+        });
+        response.flushHeaders();
+        const unsubscribe = options.runtime.subscribe?.((event) => {
+          response.write(`data: ${JSON.stringify(redactPayload(event))}\n\n`);
+        }) ?? (() => {});
+        request.on('close', unsubscribe);
+        return;
+      }
+
       if (request.method === 'POST' && url.pathname === '/api/runs') {
         const body = await readJsonBody(request);
         writeJson(response, 202, await options.runtime.startRun?.({
@@ -143,4 +157,3 @@ export async function createAutoVpnServer(options: CreateAutoVpnServerOptions): 
     })
   };
 }
-
