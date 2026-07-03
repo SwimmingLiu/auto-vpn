@@ -33,5 +33,6 @@ Commands:
   status
   logs
   stop
+  serve
 `;
 }
