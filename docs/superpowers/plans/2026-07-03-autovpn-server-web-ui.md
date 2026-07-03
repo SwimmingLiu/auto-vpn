@@ -25,7 +25,7 @@
 - Modify `npm/autovpn-cli/src/cli/main.ts`: dispatch `serve`.
 - Modify `npm/autovpn-cli/package.json`: include server tests in npm test.
 - Modify `npm/autovpn-cli/README.md` and root `README.md`: document server mode.
-- Modify `package.json` and `npm/autovpn-cli/package.json`: bump to `1.5.0` during release task.
+- Modify `package.json`, `npm/autovpn-cli/package.json`, and `pyproject.toml`: bump to `1.5.0` during release task.
 
 ## Task 1: Server Option Validation
 
@@ -433,6 +433,8 @@ npm version 1.5.0 --no-git-tag-version
 cd npm/autovpn-cli && npm version 1.5.0 --no-git-tag-version
 ```
 
+Then update `pyproject.toml` so `[project].version` is also `1.5.0`.
+
 - [ ] **Step 3: Verify package metadata**
 
 Run:
@@ -440,16 +442,20 @@ Run:
 ```bash
 node -e "console.log(require('./package.json').version)"
 node -e "console.log(require('./npm/autovpn-cli/package.json').version)"
+python - <<'PY'
+import tomllib
+print(tomllib.loads(open('pyproject.toml','rb').read().decode())['project']['version'])
+PY
 ```
 
-Expected: both print `1.5.0`.
+Expected: all three commands print `1.5.0`.
 
 - [ ] **Step 4: Commit**
 
 Run:
 
 ```bash
-git add README.md npm/autovpn-cli/README.md package.json package-lock.json npm/autovpn-cli/package.json npm/autovpn-cli/package-lock.json
+git add README.md npm/autovpn-cli/README.md package.json package-lock.json npm/autovpn-cli/package.json npm/autovpn-cli/package-lock.json pyproject.toml
 git commit -m "docs: prepare v1.5.0 server mode"
 ```
 
@@ -507,4 +513,3 @@ Use the repository's existing release workflow or npm publish process for `@swim
 - Spec coverage: server CLI, HTTP API, token auth, Web UI adapter, H5/browser test, visual test, full regression, code review, push, and v1.5.0 release are covered.
 - Placeholder scan: no `TBD`, `TODO`, `implement later`, or `Similar to` placeholders are present.
 - Type consistency: `ServeOptions`, `parseServeOptions`, `createAutoVpnServer`, and runtime method names are consistent across tasks.
-
