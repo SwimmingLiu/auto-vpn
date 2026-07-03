@@ -104,6 +104,8 @@ jobs:
               'app-launch.test.mjs',
               'renderer-e2e.test.mjs',
               'renderer-visual.test.mjs',
+              'web-server-e2e.test.mjs',
+              'web-server-visual.test.mjs',
           }
           test_files = [test_file for test_file in test_files if os.path.basename(test_file) not in browser_dependent_tests]
           command = ["node", "--test", "--test-timeout=600000", *test_files]

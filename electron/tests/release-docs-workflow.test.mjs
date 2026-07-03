@@ -183,6 +183,8 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
     "'app-launch.test.mjs'",
     "'renderer-e2e.test.mjs'",
     "'renderer-visual.test.mjs'",
+    "'web-server-e2e.test.mjs'",
+    "'web-server-visual.test.mjs'",
     'test_files = [test_file for test_file in test_files if os.path.basename(test_file) not in browser_dependent_tests]',
     'process.wait(timeout=600)',
     'Electron tests timed out after 600 seconds.',
