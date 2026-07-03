@@ -11,11 +11,15 @@ import { selectBackend } from '../backend/select-backend.js';
 import { loadJob } from '../jobs/read.js';
 import { readOptionValue, resolveProjectRoot } from '../runtime/paths.js';
 import { redactText } from '../runtime/redaction.js';
+import { createAutoVpnServer } from '../server/http.js';
+import { parseServeOptions } from '../server/options.js';
+import { createServerRuntime } from '../server/runtime.js';
 
 type ReadPackageVersion = () => string | Promise<string>;
 type ReadStdin = () => string | Promise<string>;
 type ShellBackend = Pick<AutoVpnBackend, 'executeCli'> & Partial<Pick<AutoVpnBackend, 'kind' | 'run' | 'retryStage' | 'resume'>>;
 type CreateBackend = (options: { env: NodeJS.ProcessEnv; cwd: string; runForwarder: RunForwarder }) => ShellBackend;
+type CreateServer = typeof createAutoVpnServer;
 
 export interface CliShellOptions {
   packageVersion?: string;
@@ -30,6 +34,8 @@ export interface CliShellOptions {
   now?: JobRuntimeOptions['now'];
   jobId?: JobRuntimeOptions['jobId'];
   sleep?: JobRuntimeOptions['sleep'];
+  createServer?: CreateServer;
+  serveExitAfterStart?: boolean;
 }
 
 async function defaultReadPackageVersion(): Promise<string> {
@@ -221,6 +227,33 @@ export async function runCliShell(argv: string[], options: CliShellOptions = {})
     validateCommand(normalizedArgv);
     const createBackend = options.createBackend ?? defaultCreateBackend;
     const backend = createBackend({ env, cwd, runForwarder });
+    if (normalizedArgv[0] === 'serve') {
+      const serveOptions = parseServeOptions(normalizedArgv, { cwd, env });
+      const serverFactory = options.createServer ?? createAutoVpnServer;
+      const runtime = createServerRuntime({
+        projectRoot: serveOptions.projectRoot,
+        backend: backend as Pick<AutoVpnBackend, 'run' | 'kind'>,
+        env
+      });
+      const server = await serverFactory({
+        ...serveOptions,
+        runtime,
+        version: await resolvePackageVersion(options),
+        backendKind: String(backend.kind ?? '')
+      });
+      io.writeStdout(`AutoVPN server listening on ${server.origin}\n`);
+      if (serveOptions.auth.enabled) {
+        io.writeStdout(`Open ${server.origin}/?token=${encodeURIComponent(serveOptions.auth.token)}\n`);
+      } else {
+        io.writeStderr('autovpn: warning: server authentication is disabled\n');
+      }
+      if (options.serveExitAfterStart) {
+        await server.close();
+        return 0;
+      }
+      await new Promise(() => {});
+      return 0;
+    }
     let pythonFallbackBackend: ShellBackend | undefined;
     const runExplicitPythonFallback = (fallbackArgv: string[]): Promise<number> => {
       pythonFallbackBackend ??= createBackend({

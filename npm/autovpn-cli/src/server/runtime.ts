@@ -18,7 +18,7 @@ export interface ServerRuntime {
 
 export interface CreateServerRuntimeOptions {
   projectRoot: string;
-  backend: Pick<AutoVpnBackend, 'run' | 'stopJob' | 'kind'>;
+  backend: Pick<AutoVpnBackend, 'run' | 'kind'>;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -79,4 +79,3 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
     }
   };
 }
-
