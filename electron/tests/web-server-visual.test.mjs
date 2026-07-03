@@ -59,6 +59,7 @@ test('served web ui visual hashes match browser baseline', async () => {
     });
     await page.goto(`${service.origin}/`);
     await page.waitForSelector('#dashboardOverview');
+    await page.waitForFunction(() => document.body.innerText.includes('20260703-120000'));
     await page.screenshot({ animations: 'disabled' });
 
     const digests = {};

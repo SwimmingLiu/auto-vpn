@@ -12,7 +12,7 @@
   "type": "module",
   "scripts": {
     "electron:dev": "electron .",
-    "test:electron": "node --test electron/tests/*.test.mjs",
+    "test:electron": "node --test --test-concurrency=1 electron/tests/*.test.mjs",
     "test:all": "./scripts/run_pytest.sh tests -v && node --test electron/tests/*.test.mjs",
     "package:electron": "node electron/build/package.mjs"
   },
