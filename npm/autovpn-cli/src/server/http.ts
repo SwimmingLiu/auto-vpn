@@ -1,8 +1,11 @@
 import http from 'node:http';
+import fs from 'node:fs/promises';
+import path from 'node:path';
 import { URL } from 'node:url';
 
 import { ServeOptions } from './options.js';
 import { ServerRuntime } from './runtime.js';
+import { renderWebAdapterScript } from './web-adapter.js';
 import { redactText } from '../runtime/redaction.js';
 
 export interface AutoVpnServer {
@@ -53,6 +56,60 @@ function redactPayload(value: unknown, parentKey = ''): unknown {
 function writeJson(response: http.ServerResponse, statusCode: number, payload: unknown): void {
   response.writeHead(statusCode, { 'Content-Type': 'application/json; charset=utf-8' });
   response.end(JSON.stringify(redactPayload(payload)));
+}
+
+function contentType(filePath: string): string {
+  if (filePath.endsWith('.html')) return 'text/html; charset=utf-8';
+  if (filePath.endsWith('.js')) return 'text/javascript; charset=utf-8';
+  if (filePath.endsWith('.css')) return 'text/css; charset=utf-8';
+  if (filePath.endsWith('.svg')) return 'image/svg+xml';
+  if (filePath.endsWith('.png')) return 'image/png';
+  return 'application/octet-stream';
+}
+
+function rendererRoot(): string {
+  return path.resolve(new URL('../web/renderer', import.meta.url).pathname);
+}
+
+async function writeStaticFile(response: http.ServerResponse, statusCode: number, filePath: string, body?: string | Buffer): Promise<void> {
+  response.writeHead(statusCode, { 'Content-Type': contentType(filePath) });
+  response.end(body ?? await fs.readFile(filePath));
+}
+
+async function serveRendererIndex(response: http.ServerResponse): Promise<void> {
+  const indexPath = path.join(rendererRoot(), 'index.html');
+  const html = await fs.readFile(indexPath, 'utf8');
+  const injected = html.replace(
+    '<script type="module" src="./app.js"></script>',
+    '<script src="/web-adapter.js"></script>\n    <script type="module" src="./app.js"></script>'
+  );
+  await writeStaticFile(response, 200, indexPath, injected);
+}
+
+async function serveRendererAsset(url: URL, response: http.ServerResponse): Promise<boolean> {
+  if (url.pathname === '/') {
+    await serveRendererIndex(response);
+    return true;
+  }
+  if (url.pathname === '/web-adapter.js') {
+    await writeStaticFile(response, 200, 'web-adapter.js', renderWebAdapterScript());
+    return true;
+  }
+  const decodedPath = decodeURIComponent(url.pathname.replace(/^\/+/, ''));
+  if (!decodedPath || decodedPath.includes('..') || path.isAbsolute(decodedPath)) {
+    return false;
+  }
+  const filePath = path.join(rendererRoot(), decodedPath);
+  const relative = path.relative(rendererRoot(), filePath);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    return false;
+  }
+  try {
+    await writeStaticFile(response, 200, filePath);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function isAuthorized(request: http.IncomingMessage, url: URL, auth: ServeOptions['auth']): boolean {
@@ -131,6 +188,12 @@ export async function createAutoVpnServer(options: CreateAutoVpnServerOptions): 
       if (request.method === 'POST' && url.pathname === '/api/runs/current/stop') {
         writeJson(response, 200, await options.runtime.stopRun?.() ?? { ok: true, requested: false });
         return;
+      }
+
+      if (request.method === 'GET' && !url.pathname.startsWith('/api/')) {
+        if (await serveRendererAsset(url, response)) {
+          return;
+        }
       }
 
       writeJson(response, 404, { ok: false, error: 'not_found' });

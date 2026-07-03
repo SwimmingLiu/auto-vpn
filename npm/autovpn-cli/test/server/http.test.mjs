@@ -140,3 +140,50 @@ test('events route streams redacted server-sent events', async () => {
     await service.close();
   }
 });
+
+test('root serves renderer html with web adapter before app script', async () => {
+  const service = await createAutoVpnServer({
+    host: '127.0.0.1',
+    port: 0,
+    projectRoot: '/repo',
+    auth: { enabled: false, token: '' },
+    runtime: {
+      loadState: async () => ({ profile: {}, runState: 'idle' })
+    }
+  });
+
+  try {
+    const response = await fetch(`${service.origin}/`);
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('content-type') ?? '', /text\/html/);
+    const html = await response.text();
+    assert.match(html, /web-adapter\.js/);
+    assert.ok(html.indexOf('/web-adapter.js') < html.indexOf('./app.js'));
+  } finally {
+    await service.close();
+  }
+});
+
+test('web adapter installs browser vpnAutomation api', async () => {
+  const service = await createAutoVpnServer({
+    host: '127.0.0.1',
+    port: 0,
+    projectRoot: '/repo',
+    auth: { enabled: false, token: '' },
+    runtime: {
+      loadState: async () => ({ profile: {}, runState: 'idle' })
+    }
+  });
+
+  try {
+    const response = await fetch(`${service.origin}/web-adapter.js`);
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('content-type') ?? '', /javascript/);
+    const script = await response.text();
+    assert.match(script, /window\.vpnAutomation/);
+    assert.match(script, /EventSource/);
+    assert.match(script, /\/api\/runs/);
+  } finally {
+    await service.close();
+  }
+});
