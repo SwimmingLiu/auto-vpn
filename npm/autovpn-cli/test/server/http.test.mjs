@@ -187,3 +187,27 @@ test('web adapter installs browser vpnAutomation api', async () => {
     await service.close();
   }
 });
+
+test('run route rejects oversized json bodies', async () => {
+  const service = await createAutoVpnServer({
+    host: '127.0.0.1',
+    port: 0,
+    projectRoot: '/repo',
+    auth: { enabled: false, token: '' },
+    runtime: {
+      loadState: async () => ({ profile: {}, runState: 'idle' }),
+      startRun: async () => ({ ok: true })
+    }
+  });
+
+  try {
+    const response = await fetch(`${service.origin}/api/runs`, {
+      method: 'POST',
+      body: 'x'.repeat(1024 * 1024 + 1)
+    });
+    assert.equal(response.status, 500);
+    assert.match(await response.text(), /request_body_too_large/);
+  } finally {
+    await service.close();
+  }
+});

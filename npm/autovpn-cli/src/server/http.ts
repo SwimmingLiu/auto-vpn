@@ -1,7 +1,7 @@
 import http from 'node:http';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { URL } from 'node:url';
+import { fileURLToPath, URL } from 'node:url';
 
 import { ServeOptions } from './options.js';
 import { ServerRuntime } from './runtime.js';
@@ -68,7 +68,7 @@ function contentType(filePath: string): string {
 }
 
 function rendererRoot(): string {
-  return path.resolve(new URL('../web/renderer', import.meta.url).pathname);
+  return path.resolve(fileURLToPath(new URL('../web/renderer', import.meta.url)));
 }
 
 async function writeStaticFile(response: http.ServerResponse, statusCode: number, filePath: string, body?: string | Buffer): Promise<void> {
@@ -125,8 +125,14 @@ function isAuthorized(request: http.IncomingMessage, url: URL, auth: ServeOption
 
 async function readJsonBody(request: http.IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
+  let size = 0;
   for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+    size += buffer.length;
+    if (size > 1024 * 1024) {
+      throw new Error('request_body_too_large');
+    }
+    chunks.push(buffer);
   }
   const text = Buffer.concat(chunks).toString('utf8').trim();
   if (!text) {

@@ -78,3 +78,53 @@ test('served web ui loads profile and starts a run through the web adapter', asy
   }
 });
 
+test('served web ui stores token from url and authorizes api and sse requests', async () => {
+  const seen = [];
+  const service = await createAutoVpnServer({
+    host: '127.0.0.1',
+    port: 0,
+    projectRoot: '/repo',
+    auth: { enabled: true, token: 'server-secret' },
+    runtime: {
+      loadState: async () => ({
+        profile: {
+          sources: {},
+          speed_test: { min_download_mb_s: 1, timeout_seconds: 20, concurrency: 3 },
+          availability_targets: {},
+          deploy: { cloudflare_api_token: '<redacted>' },
+          paths: { project_root: '/repo', artifacts_root: '/repo/artifacts' }
+        },
+        runState: 'idle',
+        retryArtifacts: []
+      }),
+      startRun: async () => ({ ok: true, runId: 'token-run' }),
+      subscribe: () => () => {}
+    }
+  });
+
+  let browser;
+  try {
+    browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1280, height: 820 } });
+    page.on('request', (request) => {
+      if (request.url().includes('/api/')) {
+        seen.push({ url: request.url(), auth: request.headers().authorization ?? '' });
+      }
+    });
+    await page.goto(`${service.origin}/?token=server-secret`);
+    await page.waitForSelector('#dashboardOverview');
+    await page.locator('#navRuns').click();
+    await page.waitForSelector('#runsWorkspace');
+    await page.locator('[data-run-action="start"]').click();
+    await page.waitForTimeout(150);
+
+    assert.equal(await page.evaluate(() => window.localStorage.getItem('autovpn.server.token')), 'server-secret');
+    assert.ok(seen.some((item) => item.url.endsWith('/api/state') && item.auth === 'Bearer server-secret'));
+    assert.ok(seen.some((item) => item.url.includes('/api/events?token=server-secret')));
+    assert.ok(!seen.some((item) => item.url.includes('/api/state?token=')));
+    assert.ok(!seen.some((item) => item.url.includes('/api/runs?token=')));
+  } finally {
+    await browser?.close();
+    await service.close();
+  }
+});
