@@ -87,6 +87,9 @@ jobs:
       - name: Run Python tests
         run: ./scripts/run_pytest.sh tests -v
 
+      - name: Build npm CLI web server
+        run: npm run build --prefix npm/autovpn-cli
+
       - name: Run Electron tests
         run: |
           python - <<'PY'

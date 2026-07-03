@@ -176,6 +176,8 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
     'npm ci && break',
     'npm ci failed; retrying in 15 seconds.',
     './scripts/run_pytest.sh tests -v',
+    'Build npm CLI web server',
+    'npm run build --prefix npm/autovpn-cli',
     'test_files = sorted(glob.glob("electron/tests/*.test.mjs"))',
     'browser_dependent_tests = {',
     "'app-launch.test.mjs'",
