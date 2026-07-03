@@ -8,15 +8,16 @@
 ![AutoVPN desktop intro](assets/intro.png)
 
 AutoVPN turns VPN node sources into tested subscription endpoints. It can run
-as an Electron desktop app, a headless Linux/CI command, or an Agent-facing CLI,
-then optionally deploys the result to Cloudflare Pages.
+as an Electron desktop app, a headless Linux/CI command, an Agent-facing CLI,
+or a token-protected server Web UI, then optionally deploys the result to
+Cloudflare Pages.
 
 ## Tech Stack
 
 | Layer | Stack |
 | --- | --- |
 | Desktop | Electron 37 |
-| CLI | Node.js `>=22.5.0`, Python 3.12 fallback |
+| CLI / server | Node.js `>=22.5.0`, Python 3.12 fallback |
 | Backend | Node-first v3 pipeline, Python compatibility backend |
 | Runtime state | `$HOME/.auto-vpn/profile.toml`, SQLite checkpoints |
 | Automation | Mihomo, Playwright, Cloudflare Wrangler |
@@ -54,10 +55,29 @@ autovpn logs --project-root "$PROJECT_ROOT" --tail 200
 autovpn stop --project-root "$PROJECT_ROOT"
 ```
 
+To operate AutoVPN through a browser on a server, start the built-in Web UI:
+
+```bash
+autovpn serve --project-root "$PROJECT_ROOT"
+```
+
+By default the server listens on `127.0.0.1:8765` and prints a one-time token
+URL. For remote access, put it behind SSH port forwarding or a reverse proxy.
+Binding to a non-loopback interface requires an explicit token or an explicit
+no-auth override:
+
+```bash
+autovpn serve --project-root "$PROJECT_ROOT" --host 0.0.0.0 --port 8765 \
+  --token "$AUTOVPN_SERVER_TOKEN"
+```
+
+Use `--no-auth` only on trusted private networks or behind another
+authentication layer.
+
 If npm is unavailable, install the CLI tarball from the latest GitHub Release:
 
 ```bash
-export AUTOVPN_VERSION=1.4.2
+export AUTOVPN_VERSION=1.5.0
 npm install -g \
   "https://github.com/SwimmingLiu/auto-vpn/releases/download/v${AUTOVPN_VERSION}/swimmingliu-autovpn-${AUTOVPN_VERSION}.tgz"
 ```

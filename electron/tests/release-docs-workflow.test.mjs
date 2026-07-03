@@ -255,7 +255,7 @@ test('release package version matches the next release tag', () => {
   const packageJson = JSON.parse(readProjectFile('package.json'));
   const packageLock = JSON.parse(readProjectFile('package-lock.json'));
 
-  assert.equal(packageJson.version, '1.4.2');
+  assert.equal(packageJson.version, '1.5.0');
   assert.equal(packageLock.version, packageJson.version);
   assert.equal(packageLock.packages[''].version, packageJson.version);
 });

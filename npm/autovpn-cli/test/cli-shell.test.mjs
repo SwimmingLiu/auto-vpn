@@ -172,3 +172,41 @@ test('normalizes provided project root and forwards business commands through ex
   assert.equal(io.stderr, '');
   assert.deepEqual(forwarded, [['run', '--project-root', process.cwd(), '--output', 'jsonl']]);
 });
+
+test('serve starts the native web server without invoking backend executeCli', async () => {
+  const io = createIo();
+  const forwarded = [];
+  const created = [];
+
+  const code = await runCliShell(['serve', '--host', '127.0.0.1', '--port', '8765'], {
+    packageVersion: '1.5.0',
+    io,
+    cwd: '/repo',
+    createServer: async (options) => {
+      created.push(options);
+      return {
+        origin: 'http://127.0.0.1:8765',
+        close: async () => {}
+      };
+    },
+    serveExitAfterStart: true,
+    runForwarder: async (argv) => {
+      forwarded.push(argv);
+      return 0;
+    },
+    createBackend: () => ({
+      kind: 'node',
+      executeCli: async (argv) => {
+        forwarded.push(argv);
+        return 9;
+      }
+    })
+  });
+
+  assert.equal(code, 0);
+  assert.match(io.stdout, /AutoVPN server listening on http:\/\/127\.0\.0\.1:8765/);
+  assert.equal(io.stderr, '');
+  assert.equal(created.length, 1);
+  assert.equal(created[0].projectRoot, '/repo');
+  assert.deepEqual(forwarded, []);
+});

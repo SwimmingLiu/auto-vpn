@@ -11,7 +11,8 @@ const TOP_LEVEL_COMMANDS = new Set([
   'jobs',
   'status',
   'logs',
-  'stop'
+  'stop',
+  'serve'
 ]);
 
 const JOBS_SUBCOMMANDS = new Set(['list', 'status', 'logs', 'stop', 'resume', 'retry']);
@@ -88,6 +89,10 @@ export function validateCommand(argv: string[]): void {
 
   if (command === 'doctor') {
     validateChoice('doctor', '--output', readOptionValue(argv, '--output'), ['human', 'json']);
+    return;
+  }
+
+  if (command === 'serve') {
     return;
   }
 

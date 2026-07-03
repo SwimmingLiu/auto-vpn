@@ -24,6 +24,33 @@ autovpn run --project-root . --skip-deploy --skip-verify --output jsonl
 autovpn artifacts latest --project-root .
 ```
 
+## Server Web UI
+
+`autovpn serve` starts a single-user HTTP service that serves the AutoVPN Web UI
+from the same renderer used by the desktop app.
+
+```bash
+autovpn serve --project-root .
+```
+
+Defaults:
+
+- host: `127.0.0.1`
+- port: `8765`
+- auth: token-protected
+
+For server deployment, bind explicitly and provide a token:
+
+```bash
+export AUTOVPN_SERVER_TOKEN="$(openssl rand -base64 24)"
+autovpn serve --project-root /opt/autovpn --host 0.0.0.0 --port 8765 \
+  --token "$AUTOVPN_SERVER_TOKEN"
+```
+
+The server refuses non-loopback binds unless `--token` or `--no-auth` is
+provided. Prefer SSH forwarding, a private reverse proxy, or your own HTTPS
+terminator for internet-facing deployments.
+
 ## Runtime Shape
 
 The CLI is currently Node-first with explicit Python rollback:
@@ -47,6 +74,8 @@ Current Node backend notes:
 - Deploy and verify can be rolled back with `AUTOVPN_STAGE_BACKEND_DEPLOY=python` and `AUTOVPN_STAGE_BACKEND_VERIFY=python`.
 - `AUTOVPN_NO_PYTHON=1` disables implicit Python backend resolution and default Python runtime stage fallback. Use it as a v3 readiness gate. Empty offline runs now complete in Node, and Node has direct HTTP speedtest and availability runtimes. Node also has opt-in Mihomo-backed paths: set `AUTOVPN_SPEEDTEST_RUNTIME=mihomo` for controller delay probing and candidate downloads through the local Mihomo proxy, and set `AUTOVPN_AVAILABILITY_RUNTIME=mihomo` to check provider availability through the same per-node proxy runtime.
 - Project `.env` is loaded before resolving profile and artifact paths. Explicit process environment values still win over `.env`.
+- `autovpn serve` is Node-native and exposes the browser UI plus `/api/health`,
+  `/api/state`, `/api/runs`, `/api/runs/current/stop`, and `/api/events`.
 
 Fallback flags for migrated commands:
 
@@ -96,6 +125,9 @@ For Python-backed commands, the wrapper forwards argv, stdin, stdout, stderr, an
 - `AUTOVPN_DOCTOR_BACKEND`
 - `AUTOVPN_PROFILE_BACKEND`
 - `AUTOVPN_ARTIFACTS_BACKEND`
+- `AUTOVPN_SERVER_HOST`
+- `AUTOVPN_SERVER_PORT`
+- `AUTOVPN_SERVER_TOKEN`
 - `VPN_AUTOMATION_RUNTIME_ROOT`
 - `VPN_AUTOMATION_PROFILE_PATH`
 - `VPN_AUTOMATION_ARTIFACTS_ROOT`

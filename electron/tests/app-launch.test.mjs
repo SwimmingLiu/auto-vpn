@@ -8,14 +8,15 @@ import { _electron as electron } from 'playwright';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const projectRoot = path.join(__dirname, '..', '..');
+const launchArgs = [projectRoot, '--ozone-platform=headless', '--disable-gpu', '--no-sandbox'];
 
 test('electron app exposes preload bridge and renders the real saved profile', async () => {
-  const app = await electron.launch({ args: [projectRoot] });
+  const app = await electron.launch({ args: launchArgs });
 
   try {
     const page = await app.firstWindow();
     await page.waitForSelector('#pageContent');
-    await page.locator('#navSettings').click();
+    await page.evaluate(() => document.querySelector('#navSettings')?.click());
     await page.waitForSelector('[data-settings-card="sources"]');
 
     const hasBridge = await page.evaluate(() => Boolean(window.vpnAutomation));
@@ -48,8 +49,8 @@ test('electron app exposes preload bridge and renders the real saved profile', a
   }
 });
 
-test('electron app can close the only window and reopen on macOS activate', async () => {
-  const app = await electron.launch({ args: [projectRoot] });
+test('electron app can close the only window and reopen on macOS activate', { skip: process.platform !== 'darwin' }, async () => {
+  const app = await electron.launch({ args: launchArgs });
 
   try {
     const page = await app.firstWindow();

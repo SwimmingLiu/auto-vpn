@@ -1,0 +1,185 @@
+import { artifactLatest, artifactList } from '../artifacts/list.js';
+import { previewArtifact } from '../artifacts/preview.js';
+import { profilePayload } from '../config/profile.js';
+import { startDetachedRun as defaultStartDetachedRun, stopManagedJob as defaultStopManagedJob } from '../jobs/commands.js';
+import { followLog as defaultFollowLog } from '../jobs/logs.js';
+
+export interface ServerState {
+  profile: Record<string, unknown>;
+  runState: 'idle' | 'running' | 'stopping' | 'failed' | 'success';
+  artifact?: Record<string, unknown>;
+  retryArtifacts?: unknown[];
+  deployment?: Record<string, unknown>;
+}
+
+export interface ServerRuntime {
+  loadState(): Promise<ServerState>;
+  startRun?(options: { skipDeploy?: boolean; skipVerify?: boolean; resumeLatest?: boolean }): Promise<Record<string, unknown>>;
+  stopRun?(): Promise<Record<string, unknown>>;
+  subscribe?(handler: (event: unknown) => void): () => void;
+}
+
+type StartDetachedRun = typeof defaultStartDetachedRun;
+type StopManagedJob = typeof defaultStopManagedJob;
+type FollowLog = typeof defaultFollowLog;
+
+export interface CreateServerRuntimeOptions {
+  projectRoot: string;
+  env?: NodeJS.ProcessEnv;
+  startDetachedRun?: StartDetachedRun;
+  stopManagedJob?: StopManagedJob;
+  followLog?: FollowLog;
+}
+
+const DEPLOY_SECRET_KEYS = new Set([
+  'cloudflare_api_token',
+  'cloudflare_global_key',
+  'pages_secret_admin',
+  'subscription_url',
+  'verify_subscription_url',
+  'secret_query',
+  'share_project_sub_value'
+]);
+
+function redactIfSet(value: unknown): unknown {
+  return String(value ?? '').trim() ? '<redacted>' : '';
+}
+
+export function sanitizeProfileForServer(profile: Record<string, any>): Record<string, any> {
+  const safe = structuredClone(profile ?? {});
+  for (const source of Object.values((safe.sources ?? {}) as Record<string, any>)) {
+    if (source && typeof source === 'object') {
+      source.url = redactIfSet(source.url);
+      source.key = redactIfSet(source.key);
+    }
+  }
+  for (const [key, value] of Object.entries((safe.deploy ?? {}) as Record<string, unknown>)) {
+    if (DEPLOY_SECRET_KEYS.has(key)) {
+      safe.deploy[key] = redactIfSet(value);
+    }
+  }
+  return safe;
+}
+
+function normalizeLatestArtifact(projectRoot: string, env: NodeJS.ProcessEnv): Record<string, unknown> | undefined {
+  const latest = artifactLatest(projectRoot, env);
+  if (!latest.ok || !latest.artifact_dir) {
+    return undefined;
+  }
+  const preview = previewArtifact(String(latest.artifact_dir));
+  return {
+    ...latest,
+    ...preview,
+    outputFiles: (preview.files ?? []),
+    nodeRows: []
+  };
+}
+
+function parseJsonLine(line: string): unknown | undefined {
+  const trimmed = line.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return { type: 'log', message: trimmed };
+  }
+}
+
+export function createServerRuntime(options: CreateServerRuntimeOptions): ServerRuntime {
+  let runState: ServerState['runState'] = 'idle';
+  let activeJobId = '';
+  let unsubscribeLogs: (() => void) | undefined;
+  const subscribers = new Set<(event: unknown) => void>();
+  const startDetachedRun = options.startDetachedRun ?? defaultStartDetachedRun;
+  const stopManagedJob = options.stopManagedJob ?? defaultStopManagedJob;
+  const followLog = options.followLog ?? defaultFollowLog;
+
+  function publish(event: unknown): void {
+    for (const subscriber of subscribers) {
+      subscriber(event);
+    }
+  }
+
+  function followJob(jobId: string): void {
+    let cancelled = false;
+    unsubscribeLogs?.();
+    unsubscribeLogs = () => {
+      cancelled = true;
+    };
+    queueMicrotask(async () => {
+      try {
+        for await (const chunk of followLog(options.projectRoot, jobId, ['logs', '--format', 'jsonl', '--follow'], { env: options.env })) {
+          if (cancelled) {
+            return;
+          }
+          for (const line of String(chunk).split(/\r?\n/)) {
+            const event = parseJsonLine(line);
+            if (event) {
+              publish(event);
+            }
+          }
+        }
+        if (!cancelled && runState !== 'stopping') {
+          runState = 'success';
+          publish({ type: 'server_state', run_state: runState });
+        }
+      } catch (error) {
+        if (!cancelled) {
+          runState = 'failed';
+          publish({ type: 'error', message: error instanceof Error ? error.message : String(error) });
+        }
+      }
+    });
+  }
+
+  return {
+    async loadState() {
+      const artifact = normalizeLatestArtifact(options.projectRoot, options.env ?? process.env);
+      const retries = artifactList(options.projectRoot, options.env ?? process.env);
+      return {
+        profile: sanitizeProfileForServer(profilePayload(options.projectRoot, options.env)),
+        runState,
+        artifact,
+        retryArtifacts: Array.isArray(retries.items) ? retries.items : [],
+        deployment: (artifact?.deployment ?? {}) as Record<string, unknown>
+      };
+    },
+    async startRun(runOptions = {}) {
+      if (runState === 'running' || runState === 'stopping') {
+        return { ok: false, error: 'run_already_active' };
+      }
+      runState = 'running';
+      const job = await startDetachedRun({
+        projectRoot: options.projectRoot,
+        skipDeploy: Boolean(runOptions.skipDeploy),
+        skipVerify: Boolean(runOptions.skipVerify),
+        resumeLatest: Boolean(runOptions.resumeLatest),
+        outputFormat: 'jsonl'
+      }, {
+        env: options.env,
+        cwd: options.projectRoot
+      });
+      activeJobId = String(job.job_id ?? '');
+      followJob(activeJobId);
+      return { ok: true, runId: activeJobId, job_id: activeJobId, status: job.status ?? 'running' };
+    },
+    async stopRun() {
+      if (runState !== 'running' || !activeJobId) {
+        return { ok: true, requested: false };
+      }
+      runState = 'stopping';
+      publish({ type: 'server_state', run_state: runState });
+      const stopped = await stopManagedJob(options.projectRoot, activeJobId, { env: options.env });
+      unsubscribeLogs?.();
+      runState = 'idle';
+      publish({ type: 'server_state', run_state: 'idle' });
+      return { ok: true, requested: true, job_id: stopped.job_id ?? activeJobId, status: stopped.status ?? 'stopped' };
+    },
+    subscribe(handler) {
+      subscribers.add(handler);
+      return () => subscribers.delete(handler);
+    }
+  };
+}
