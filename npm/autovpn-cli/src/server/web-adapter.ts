@@ -35,7 +35,10 @@ export function renderWebAdapterScript(): string {
       const payload = await state();
       return payload.profile || {};
     },
-    saveProfile: async () => ({ ok: false, error: 'profile_save_unavailable_in_server_mode' }),
+    saveProfile: async (profile) => request('/api/profile', {
+      method: 'POST',
+      body: JSON.stringify(profile || {})
+    }),
     runPipeline: async (options = {}) => request('/api/runs', {
       method: 'POST',
       body: JSON.stringify({
@@ -50,7 +53,10 @@ export function renderWebAdapterScript(): string {
       return { ok: true };
     },
     openPath: async () => ({ ok: false, error: 'open_path_unavailable_in_browser' }),
-    generateQr: async () => ({ ok: false, dataUrl: '' }),
+    generateQr: async (text) => request('/api/qr', {
+      method: 'POST',
+      body: JSON.stringify({ text: String(text || '') })
+    }),
     previewArtifact: async () => {
       const payload = await state();
       return payload.artifact ? { ok: true, ...payload.artifact } : { ok: false };
@@ -63,7 +69,13 @@ export function renderWebAdapterScript(): string {
       const payload = await state();
       return { ok: true, items: payload.retryArtifacts || [] };
     },
-    retryStage: async () => ({ ok: false, error: 'retry_stage_unavailable_in_server_mode' }),
+    retryStage: async (options = {}) => request('/api/runs/retry-stage', {
+      method: 'POST',
+      body: JSON.stringify({
+        artifactDir: String(options.artifactDir || ''),
+        stage: String(options.stage || '')
+      })
+    }),
     copyText: async (text) => {
       await navigator.clipboard.writeText(String(text || ''));
       return { ok: true };

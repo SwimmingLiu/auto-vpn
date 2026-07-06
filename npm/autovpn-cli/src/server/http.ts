@@ -3,6 +3,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, URL } from 'node:url';
 
+import QRCode from 'qrcode';
+
 import { ServeOptions } from './options.js';
 import { ServerRuntime } from './runtime.js';
 import { renderWebAdapterScript } from './web-adapter.js';
@@ -167,6 +169,22 @@ export async function createAutoVpnServer(options: CreateAutoVpnServerOptions): 
         return;
       }
 
+      if (request.method === 'POST' && url.pathname === '/api/profile') {
+        const body = await readJsonBody(request);
+        writeJson(response, 200, await options.runtime.saveProfile?.(body) ?? { ok: false, error: 'profile_save_unavailable' });
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/qr') {
+        const body = await readJsonBody(request);
+        const text = String(body.text ?? '');
+        writeJson(response, 200, {
+          ok: true,
+          dataUrl: await QRCode.toDataURL(text, { margin: 1, width: 220 })
+        });
+        return;
+      }
+
       if (request.method === 'GET' && url.pathname === '/api/events') {
         response.writeHead(200, {
           'Content-Type': 'text/event-stream; charset=utf-8',
@@ -193,6 +211,15 @@ export async function createAutoVpnServer(options: CreateAutoVpnServerOptions): 
 
       if (request.method === 'POST' && url.pathname === '/api/runs/current/stop') {
         writeJson(response, 200, await options.runtime.stopRun?.() ?? { ok: true, requested: false });
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/runs/retry-stage') {
+        const body = await readJsonBody(request);
+        writeJson(response, 202, await options.runtime.startRetry?.({
+          artifactDir: String(body.artifactDir ?? ''),
+          stage: String(body.stage ?? '')
+        }) ?? { ok: false, error: 'retry_stage_unavailable' });
         return;
       }
 
