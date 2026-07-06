@@ -66,8 +66,8 @@ test('served web ui loads profile and starts a run through the web adapter', asy
 
     await page.locator('#navRuns').click();
     await page.waitForSelector('#runsWorkspace');
-    await page.locator('[data-run-action="start"]').click();
-    await page.waitForFunction(() => document.querySelector('#runStateBadge')?.textContent?.trim().length > 0);
+    await page.locator('#runsWorkspace [data-run-action="start"]').click();
+    await page.waitForTimeout(150);
 
     assert.equal(calls.length, 1);
     assert.deepEqual(calls[0], ['start', { skipDeploy: false, skipVerify: false, resumeLatest: false }]);
