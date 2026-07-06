@@ -1,9 +1,12 @@
 from pathlib import Path
 
 import pytest
+from requests import Response
+from requests.exceptions import RequestException
 from requests.exceptions import SSLError
 
 from vpn_automation.config.models import SourceConfig
+from vpn_automation.config.runtime import resolve_upstream_proxy_url
 from vpn_automation.pipeline.extract import (
     build_runtime_source_url,
     build_source_script_path,
@@ -12,6 +15,10 @@ from vpn_automation.pipeline.extract import (
     fetch_source_links,
 )
 from vpn_automation.pipeline.vmess import parse_vmess_link
+
+
+def _fail_curl_fetch(*args, **kwargs):
+    raise RequestException("curl fallback unavailable")
 
 
 def test_build_source_script_path_points_to_existing_run_script() -> None:
@@ -95,6 +102,17 @@ def test_extract_fixture_matches_node_migration_golden() -> None:
     assert extract_links_from_plaintext(payload["source_name"], payload["plaintext"]) == expected["links"]
 
 
+def test_upstream_proxy_requires_explicit_enable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("VPN_AUTOMATION_UPSTREAM_PROXY", "http://127.0.0.1:7897")
+    monkeypatch.delenv("VPN_AUTOMATION_USE_UPSTREAM_PROXY", raising=False)
+
+    assert resolve_upstream_proxy_url() == ""
+
+    monkeypatch.setenv("VPN_AUTOMATION_USE_UPSTREAM_PROXY", "1")
+
+    assert resolve_upstream_proxy_url() == "http://127.0.0.1:7897"
+
+
 def test_fetch_source_links_returns_partial_results_when_requests_start_failing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -123,6 +141,7 @@ def test_fetch_source_links_returns_partial_results_when_requests_start_failing(
     extracted = iter([["vmess://first"]])
 
     monkeypatch.setattr("vpn_automation.pipeline.extract.requests.Session.get", fake_get)
+    monkeypatch.setattr("vpn_automation.pipeline.extract._curl_fetch", _fail_curl_fetch)
     monkeypatch.setattr("vpn_automation.pipeline.extract.decrypt_payload", lambda text, key: "plaintext")
     monkeypatch.setattr(
         "vpn_automation.pipeline.extract.extract_links_from_plaintext",
@@ -232,6 +251,7 @@ def test_fetch_source_links_honors_min_iterations_before_failure_stop(
 
     monkeypatch.setattr("vpn_automation.pipeline.extract.requests.Session.get", fake_get)
     monkeypatch.setattr("vpn_automation.pipeline.extract.resolve_upstream_proxy_url", lambda: "")
+    monkeypatch.setattr("vpn_automation.pipeline.extract._curl_fetch", _fail_curl_fetch)
 
     result = fetch_source_links("leiting", source)
 
@@ -262,6 +282,7 @@ def test_fetch_source_links_retries_with_upstream_proxy_after_direct_failure(
         return FakeResponse()
 
     monkeypatch.setattr("vpn_automation.pipeline.extract.requests.Session.get", fake_get)
+    monkeypatch.setattr("vpn_automation.pipeline.extract._curl_fetch", _fail_curl_fetch)
     monkeypatch.setattr("vpn_automation.pipeline.extract.decrypt_payload", lambda text, key: "plaintext")
     monkeypatch.setattr(
         "vpn_automation.pipeline.extract.extract_links_from_plaintext",
@@ -280,6 +301,49 @@ def test_fetch_source_links_retries_with_upstream_proxy_after_direct_failure(
         "http": "http://127.0.0.1:7897",
         "https": "http://127.0.0.1:7897",
     }
+
+
+def test_fetch_source_links_falls_back_to_curl_for_tls_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = SourceConfig(
+        url="https://example.com/api?t=123",
+        key="abcdabcdabcdabcd",
+        max_iterations=1,
+    )
+    curl_calls: list[dict[str, str]] = []
+
+    def fake_get(self, url: str, timeout: int, verify: bool, proxies=None):
+        raise SSLError("certificate has expired")
+
+    def fake_curl_fetch(url: str, *, proxy_url: str = "") -> Response:
+        curl_calls.append({"url": url, "proxy_url": proxy_url})
+        response = Response()
+        response.status_code = 200
+        response._content = b"cipher"
+        response.url = url
+        return response
+
+    monkeypatch.setattr("vpn_automation.pipeline.extract.requests.Session.get", fake_get)
+    monkeypatch.setattr("vpn_automation.pipeline.extract._curl_fetch", fake_curl_fetch)
+    monkeypatch.setattr("vpn_automation.pipeline.extract.decrypt_payload", lambda text, key: "plaintext")
+    monkeypatch.setattr(
+        "vpn_automation.pipeline.extract.extract_links_from_plaintext",
+        lambda source_name, plaintext: ["vmess://first"],
+    )
+
+    events: list[tuple[str, dict]] = []
+    result = fetch_source_links(
+        "xuanfeng-area",
+        source,
+        event_callback=lambda event_type, payload: events.append((event_type, payload)),
+    )
+
+    assert result.links == ["vmess://first"]
+    assert curl_calls[0]["url"].startswith("https://example.com/api?t=")
+    assert curl_calls[0]["proxy_url"] == ""
+    request_events = [payload for event_type, payload in events if event_type == "extract_request_result"]
+    assert request_events[0]["via"] == "direct_curl_tls_fallback"
 
 
 def test_fetch_source_links_emits_checkpoint_callbacks(

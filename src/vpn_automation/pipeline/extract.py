@@ -1,6 +1,7 @@
 import base64
 import json
 import random
+import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,7 +10,8 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 import requests
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from requests import RequestException
+from requests import RequestException, Response
+from requests.exceptions import SSLError
 
 from vpn_automation.config.models import SourceConfig
 from vpn_automation.config.runtime import resolve_upstream_proxy_url
@@ -110,6 +112,70 @@ def extract_links_from_plaintext(source_name: str, plaintext: str) -> list[str]:
     return [generate_vmess_link(_payload_from_outbound_config(ps_name, json_text))]
 
 
+def _is_tls_failure(exc: BaseException) -> bool:
+    if isinstance(exc, SSLError):
+        return True
+    text = f"{exc.__class__.__name__}: {exc}".lower()
+    return "ssl" in text or "tls" in text or "certificate" in text
+
+
+def _curl_fetch(url: str, *, proxy_url: str = "") -> Response:
+    command = [
+        "curl",
+        "--fail",
+        "--silent",
+        "--show-error",
+        "--location",
+        "--max-time",
+        "20",
+        "--connect-timeout",
+        "10",
+        "--insecure",
+        "--http1.1",
+    ]
+    if proxy_url:
+        command.extend(["--proxy", proxy_url])
+    else:
+        command.extend(["--noproxy", "*"])
+    command.append(url)
+    completed = subprocess.run(
+        command,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=25,
+    )
+    if completed.returncode != 0:
+        raise RequestException((completed.stderr or completed.stdout or "curl TLS fallback failed").strip())
+    response = Response()
+    response.status_code = 200
+    response.url = url
+    response._content = completed.stdout.encode("utf-8")
+    response.encoding = "utf-8"
+    return response
+
+
+def _fetch_source_response(
+    session: requests.Session,
+    url: str,
+    *,
+    proxies: dict[str, str] | None,
+    via: str,
+) -> tuple[Response, str]:
+    try:
+        return session.get(url, timeout=20, verify=False, proxies=proxies), via
+    except RequestException as exc:
+        if not _is_tls_failure(exc):
+            raise
+        proxy_url = ""
+        if proxies:
+            proxy_url = proxies.get("https") or proxies.get("http") or ""
+        try:
+            return _curl_fetch(url, proxy_url=proxy_url), f"{via}_curl_tls_fallback"
+        except RequestException as fallback_exc:
+            raise exc from fallback_exc
+
+
 def fetch_source_links(
     source_name: str,
     source: SourceConfig,
@@ -164,14 +230,19 @@ def fetch_source_links(
         used_proxy = False
         try:
             try:
-                response = session.get(url, timeout=20, verify=False, proxies=None)
+                response, response_via = _fetch_source_response(
+                    session,
+                    url,
+                    proxies=None,
+                    via="direct",
+                )
                 _emit_event(
                     event_callback,
                     "extract_request_result",
                     source_name=source_name,
                     iteration=attempt,
                     success=True,
-                    via="direct",
+                    via=response_via,
                     url=url,
                 )
             except RequestException as direct_exc:
@@ -193,14 +264,19 @@ def fetch_source_links(
                     progress_callback(
                         f"[extract] {source_name} iter={attempt}/{source.max_iterations} retry=upstream_proxy"
                     )
-                response = session.get(url, timeout=20, verify=False, proxies=upstream_proxies)
+                response, response_via = _fetch_source_response(
+                    session,
+                    url,
+                    proxies=upstream_proxies,
+                    via="upstream_proxy",
+                )
                 _emit_event(
                     event_callback,
                     "extract_request_result",
                     source_name=source_name,
                     iteration=attempt,
                     success=True,
-                    via="upstream_proxy",
+                    via=response_via,
                     url=url,
                 )
 

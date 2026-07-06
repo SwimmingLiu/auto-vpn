@@ -5,6 +5,8 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 autovpn_bin="$repo_root/.venv/bin/autovpn"
 deploy=1
 verify=1
+proxy=0
+proxy_url=""
 logs_root="$repo_root/artifacts/start-runs"
 run_id="$(date '+%Y%m%d-%H%M%S')"
 
@@ -19,6 +21,8 @@ Options:
   --local            Generate locally only; skip deploy and verify.
   --deploy           Run full deploy and verify flow. This is the default.
   --verify           Run full deploy and verify flow. This is the default.
+  --proxy [URL]      Use upstream proxy for source extraction. Defaults to
+                     VPN_AUTOMATION_UPSTREAM_PROXY or http://127.0.0.1:7897.
   --logs-dir DIR     Write logs under DIR instead of artifacts/start-runs.
   --run-id ID        Use a fixed run id instead of the current timestamp.
   -h, --help         Show this help.
@@ -41,6 +45,15 @@ while (($# > 0)); do
       deploy=0
       verify=0
       shift
+      ;;
+    --proxy)
+      proxy=1
+      if [[ $# -gt 1 && "$2" != --* ]]; then
+        proxy_url="$2"
+        shift 2
+      else
+        shift
+      fi
       ;;
     --logs-dir)
       logs_root="${2:?missing logs dir}"
@@ -120,6 +133,12 @@ if ((!deploy)); then
   run_cmd+=(--skip-deploy --skip-verify)
 elif ((!verify)); then
   run_cmd+=(--skip-verify)
+fi
+if ((proxy)); then
+  run_cmd+=(--proxy)
+  if [[ -n "$proxy_url" ]]; then
+    run_cmd+=("$proxy_url")
+  fi
 fi
 run_cmd+=(--output jsonl)
 

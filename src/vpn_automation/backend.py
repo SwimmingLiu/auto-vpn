@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import sys
 from contextlib import contextmanager
 from pathlib import Path
@@ -248,6 +249,31 @@ def _run_with_streams(
             return 1
 
 
+@contextmanager
+def _proxy_env(use_proxy: bool, proxy_url: str | None = None) -> Iterator[None]:
+    keys = ("VPN_AUTOMATION_USE_UPSTREAM_PROXY", "VPN_AUTOMATION_UPSTREAM_PROXY")
+    previous = {key: os.environ.get(key) for key in keys}
+    try:
+        if use_proxy:
+            os.environ["VPN_AUTOMATION_USE_UPSTREAM_PROXY"] = "1"
+            if proxy_url:
+                os.environ["VPN_AUTOMATION_UPSTREAM_PROXY"] = proxy_url
+        else:
+            for key in keys:
+                os.environ.pop(key, None)
+        yield
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+def _optional_proxy_url(value: str) -> str | None:
+    return None if not value or value == "auto" else value
+
+
 def run_pipeline(
     project_root: Path,
     runtime_candidate: Path | None = None,
@@ -258,6 +284,8 @@ def run_pipeline(
     output_format: str = "jsonl",
     event_log_path: Path | None = None,
     human_log_path: Path | None = None,
+    use_proxy: bool = False,
+    proxy_url: str | None = None,
 ) -> int:
     store = ProfileStore(resolve_profile_path(project_root))
     profile = store.load_or_create(project_root)
@@ -281,12 +309,13 @@ def run_pipeline(
         )
 
     _ = runtime_candidate
-    code = _run_with_streams(
-        output_format=output_format,
-        event_log_path=event_log_path,
-        human_log_path=human_log_path,
-        runner=runner,
-    )
+    with _proxy_env(use_proxy, proxy_url):
+        code = _run_with_streams(
+            output_format=output_format,
+            event_log_path=event_log_path,
+            human_log_path=human_log_path,
+            runner=runner,
+        )
     if code == 0 and hasattr(store, "save"):
         store.save(profile)
     return code
@@ -301,6 +330,8 @@ def run_pipeline_resume_latest(
     output_format: str = "jsonl",
     event_log_path: Path | None = None,
     human_log_path: Path | None = None,
+    use_proxy: bool = False,
+    proxy_url: str | None = None,
 ) -> int:
     resume_db = find_resume_run_db(runtime_candidate)
     if not resume_db:
@@ -314,6 +345,8 @@ def run_pipeline_resume_latest(
         output_format=output_format,
         event_log_path=event_log_path,
         human_log_path=human_log_path,
+        use_proxy=use_proxy,
+        proxy_url=proxy_url,
     )
 
 
@@ -361,6 +394,8 @@ def resume_pipeline(
     output_format: str = "jsonl",
     event_log_path: Path | None = None,
     human_log_path: Path | None = None,
+    use_proxy: bool = False,
+    proxy_url: str | None = None,
 ) -> int:
     resolved_event_log, resolved_human_log = load_session_paths(
         session_dir,
@@ -383,12 +418,13 @@ def resume_pipeline(
             event_callback=emit,
         )
 
-    return _run_with_streams(
-        output_format=output_format,
-        event_log_path=resolved_event_log,
-        human_log_path=resolved_human_log,
-        runner=runner,
-    )
+    with _proxy_env(use_proxy, proxy_url):
+        return _run_with_streams(
+            output_format=output_format,
+            event_log_path=resolved_event_log,
+            human_log_path=resolved_human_log,
+            runner=runner,
+        )
 
 
 def retry_stage(
@@ -450,6 +486,7 @@ def main(argv: list[str] | None = None) -> int:
     run_parser.add_argument("--output", choices=("jsonl", "human"), default="jsonl")
     run_parser.add_argument("--event-log", default="")
     run_parser.add_argument("--human-log", default="")
+    run_parser.add_argument("--proxy", nargs="?", const="auto", default="")
 
     resume_parser = subparsers.add_parser("resume-speedtest")
     resume_parser.add_argument("--project-root", default="")
@@ -464,6 +501,7 @@ def main(argv: list[str] | None = None) -> int:
     continue_parser.add_argument("--output", choices=("jsonl", "human"), default="jsonl")
     continue_parser.add_argument("--event-log", default="")
     continue_parser.add_argument("--human-log", default="")
+    continue_parser.add_argument("--proxy", nargs="?", const="auto", default="")
 
     retry_parser = subparsers.add_parser("retry-stage")
     retry_parser.add_argument("--project-root", default="")
@@ -499,6 +537,8 @@ def main(argv: list[str] | None = None) -> int:
                 output_format=str(args.output),
                 event_log_path=Path(args.event_log).resolve() if args.event_log else None,
                 human_log_path=Path(args.human_log).resolve() if args.human_log else None,
+                use_proxy=bool(args.proxy),
+                proxy_url=_optional_proxy_url(str(args.proxy)),
             )
         return run_pipeline(
             project_root,
@@ -508,6 +548,8 @@ def main(argv: list[str] | None = None) -> int:
             output_format=str(args.output),
             event_log_path=Path(args.event_log).resolve() if args.event_log else None,
             human_log_path=Path(args.human_log).resolve() if args.human_log else None,
+            use_proxy=bool(args.proxy),
+            proxy_url=_optional_proxy_url(str(args.proxy)),
         )
     if args.command == "resume-speedtest":
         return resume_speedtest(
@@ -524,6 +566,8 @@ def main(argv: list[str] | None = None) -> int:
             output_format=str(args.output),
             event_log_path=Path(args.event_log).resolve() if args.event_log else None,
             human_log_path=Path(args.human_log).resolve() if args.human_log else None,
+            use_proxy=bool(args.proxy),
+            proxy_url=_optional_proxy_url(str(args.proxy)),
         )
     if args.command == "retry-stage":
         return retry_stage(

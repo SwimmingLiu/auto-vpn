@@ -19,12 +19,17 @@ def _package_version() -> str:
 
 
 def _project_root(value: str) -> Path:
-    candidate = Path(value or __file__)
-    return resolve_repo_anchor(candidate)
+    if value:
+        return Path(value).resolve()
+    return resolve_repo_anchor(Path(__file__))
 
 
 def _optional_path(value: str) -> Path | None:
     return Path(value).resolve() if value else None
+
+
+def _optional_proxy_url(value: str) -> str | None:
+    return None if not value or value == "auto" else value
 
 
 def _print_json(payload: str) -> int:
@@ -95,6 +100,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--human-log", default="")
     run_parser.add_argument("--detach", action="store_true")
     run_parser.add_argument("--json", action="store_true")
+    run_parser.add_argument("--proxy", nargs="?", const="auto", default="")
 
     doctor_parser = subparsers.add_parser("doctor")
     doctor_parser.add_argument("--project-root", default="")
@@ -129,6 +135,7 @@ def build_parser() -> argparse.ArgumentParser:
     resume_pipeline.add_argument("--output", choices=("jsonl", "human"), default="jsonl")
     resume_pipeline.add_argument("--event-log", default="")
     resume_pipeline.add_argument("--human-log", default="")
+    resume_pipeline.add_argument("--proxy", nargs="?", const="auto", default="")
     resume_speedtest = resume_subparsers.add_parser("speedtest")
     resume_speedtest.add_argument("--project-root", default="")
     resume_speedtest.add_argument("--session", required=True)
@@ -208,7 +215,7 @@ def dispatch(args: argparse.Namespace) -> int:
 
     if args.command == "run":
         candidate = Path(str(args.project_root) or __file__)
-        project_root = resolve_repo_anchor(candidate)
+        project_root = Path(str(args.project_root)).resolve() if args.project_root else resolve_repo_anchor(candidate)
         if args.detach:
             job = jobs.start_detached_run(
                 project_root,
@@ -216,6 +223,8 @@ def dispatch(args: argparse.Namespace) -> int:
                 skip_deploy=bool(args.skip_deploy),
                 skip_verify=bool(args.skip_verify),
                 output_format=str(args.output),
+                use_proxy=bool(args.proxy),
+                proxy_url=_optional_proxy_url(str(args.proxy)),
             )
             payload = {"ok": True, **jobs.public_job_payload(job)}
             if args.json:
@@ -229,6 +238,8 @@ def dispatch(args: argparse.Namespace) -> int:
             "output_format": str(args.output),
             "event_log_path": _optional_path(str(args.event_log)),
             "human_log_path": _optional_path(str(args.human_log)),
+            "use_proxy": bool(args.proxy),
+            "proxy_url": _optional_proxy_url(str(args.proxy)),
         }
         if args.resume_latest:
             return backend.run_pipeline_resume_latest(project_root, candidate.resolve(), **options)
@@ -267,6 +278,8 @@ def dispatch(args: argparse.Namespace) -> int:
             "human_log_path": _optional_path(str(args.human_log)),
         }
         if args.resume_command == "pipeline":
+            options["use_proxy"] = bool(args.proxy)
+            options["proxy_url"] = _optional_proxy_url(str(args.proxy))
             return backend.resume_pipeline(project_root, **options)
         if args.resume_command == "speedtest":
             return backend.resume_speedtest(project_root, **options)

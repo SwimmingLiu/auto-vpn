@@ -53,6 +53,9 @@ def resolve_template_file(candidate: Path) -> Path:
 
 
 def resolve_upstream_proxy_url() -> str:
+    enabled = os.environ.get("VPN_AUTOMATION_USE_UPSTREAM_PROXY", "").strip().lower()
+    if enabled not in {"1", "true", "yes", "on"}:
+        return ""
     value = os.environ.get("VPN_AUTOMATION_UPSTREAM_PROXY", "http://127.0.0.1:7897").strip()
     if value.lower() in {"", "off", "none", "false", "0"}:
         return ""
