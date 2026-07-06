@@ -80,6 +80,17 @@ function hasFlag(argv: string[], flag: string): boolean {
   return argv.includes(flag);
 }
 
+function hasProxyFlag(argv: string[]): boolean {
+  return argv.some((value) => value === '--proxy' || value.startsWith('--proxy='));
+}
+
+function isPipelineProxyCommand(argv: string[]): boolean {
+  if (!hasProxyFlag(argv)) {
+    return false;
+  }
+  return argv[0] === 'run' || (argv[0] === 'resume' && argv[1] === 'pipeline');
+}
+
 function eventOutputFormat(argv: string[]): 'jsonl' | 'human' {
   return readOptionValue(argv, '--output') === 'human' ? 'human' : 'jsonl';
 }
@@ -262,6 +273,9 @@ export async function runCliShell(argv: string[], options: CliShellOptions = {})
       });
       return pythonFallbackBackend.executeCli(fallbackArgv);
     };
+    if (isPipelineProxyCommand(normalizedArgv)) {
+      return runExplicitPythonFallback(normalizedArgv);
+    }
     const nativeResult = await runNativeCommand(normalizedArgv, {
       cwd,
       env,

@@ -167,7 +167,36 @@ def test_run_maps_options_to_backend_run(tmp_path: Path, monkeypatch) -> None:
         "output_format": "human",
         "event_log_path": event_log.resolve(),
         "human_log_path": human_log.resolve(),
+        "use_proxy": False,
+        "proxy_url": None,
     }
+
+
+def test_run_proxy_maps_to_backend_run(tmp_path: Path, monkeypatch) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    called = {}
+
+    def fake_run(root: Path, runtime_candidate: Path, **kwargs) -> int:
+        called["root"] = root
+        called["runtime_candidate"] = runtime_candidate
+        called["kwargs"] = kwargs
+        return 0
+
+    monkeypatch.setattr(cli.backend, "run_pipeline", fake_run)
+
+    code = cli.main(
+        [
+            "run",
+            "--project-root",
+            str(project_root),
+            "--proxy",
+            "http://127.0.0.1:7897",
+        ]
+    )
+
+    assert code == 0
+    assert called["kwargs"]["use_proxy"] is True
+    assert called["kwargs"]["proxy_url"] == "http://127.0.0.1:7897"
 
 
 def test_run_resume_latest_maps_to_backend_resume_latest(tmp_path: Path, monkeypatch) -> None:

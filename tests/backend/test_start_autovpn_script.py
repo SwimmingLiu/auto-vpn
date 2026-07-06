@@ -122,3 +122,37 @@ def test_start_script_local_option_skips_deploy_and_verify(tmp_path: Path) -> No
         f"jobs list --project-root {repo_root} --json",
         f"run --project-root {repo_root} --skip-deploy --skip-verify --output jsonl",
     ]
+
+
+def test_start_script_forwards_proxy_only_when_requested(tmp_path: Path) -> None:
+    repo_root, script_path, logs_dir = _make_fake_repo(
+        tmp_path,
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$*\" >> \"$AUTOVPN_FAKE_COMMAND_LOG\"\n"
+        "printf '{\"ok\":true}\\n'\n",
+    )
+    command_log = tmp_path / "commands.log"
+
+    result = subprocess.run(
+        [
+            str(script_path),
+            "--local",
+            "--proxy",
+            "http://127.0.0.1:7897",
+            "--logs-dir",
+            str(logs_dir),
+            "--run-id",
+            "run-004",
+        ],
+        env={**os.environ, "AUTOVPN_FAKE_COMMAND_LOG": str(command_log)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    commands = command_log.read_text(encoding="utf-8").splitlines()
+    assert commands[-1] == (
+        f"run --project-root {repo_root} --skip-deploy --skip-verify "
+        "--proxy http://127.0.0.1:7897 --output jsonl"
+    )

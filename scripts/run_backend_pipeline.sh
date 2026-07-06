@@ -4,6 +4,8 @@ set -euo pipefail
 dry_run=0
 skip_deploy=1
 skip_verify=1
+proxy=0
+proxy_url=""
 repo_root=""
 session_id=""
 
@@ -20,6 +22,15 @@ while (($# > 0)); do
     --with-verify)
       skip_verify=0
       shift
+      ;;
+    --proxy)
+      proxy=1
+      if [[ $# -gt 1 && "$2" != --* ]]; then
+        proxy_url="$2"
+        shift 2
+      else
+        shift
+      fi
       ;;
     --session-id)
       session_id="${2:?missing session id}"
@@ -113,6 +124,12 @@ if ((skip_deploy)); then
 fi
 if ((skip_verify)); then
   cmd+=(--skip-verify)
+fi
+if ((proxy)); then
+  cmd+=(--proxy)
+  if [[ -n "$proxy_url" ]]; then
+    cmd+=("$proxy_url")
+  fi
 fi
 
 printf 'Session dir: %s\n' "$session_dir"

@@ -332,6 +332,8 @@ def build_backend_run_command(
     skip_deploy: bool,
     skip_verify: bool,
     output_format: str,
+    use_proxy: bool = False,
+    proxy_url: str | None = None,
 ) -> list[str]:
     command = [
         sys.executable,
@@ -353,6 +355,10 @@ def build_backend_run_command(
         command.append("--skip-deploy")
     if skip_verify:
         command.append("--skip-verify")
+    if use_proxy:
+        command.append("--proxy")
+        if proxy_url:
+            command.append(proxy_url)
     return command
 
 
@@ -364,6 +370,8 @@ def start_detached_run(
     skip_verify: bool = False,
     output_format: str = "jsonl",
     source_job_id: str = "",
+    use_proxy: bool = False,
+    proxy_url: str | None = None,
 ) -> dict:
     root = jobs_root(project_root)
     job_id = new_job_id()
@@ -378,6 +386,8 @@ def start_detached_run(
         skip_deploy=skip_deploy,
         skip_verify=skip_verify,
         output_format=output_format,
+        use_proxy=use_proxy,
+        proxy_url=proxy_url,
     )
     return _start_detached_backend_job(
         project_root,
@@ -390,6 +400,8 @@ def start_detached_run(
             "skip_deploy": skip_deploy,
             "skip_verify": skip_verify,
             "output_format": output_format,
+            "use_proxy": use_proxy,
+            "proxy_url": proxy_url or "",
         },
     )
 
@@ -461,6 +473,8 @@ def start_detached_resume(
     source_job_id: str,
     session_dir: Path,
     output_format: str = "jsonl",
+    use_proxy: bool = False,
+    proxy_url: str | None = None,
 ) -> dict:
     job_id = new_job_id()
     job_dir = jobs_root(project_root) / job_id
@@ -480,6 +494,10 @@ def start_detached_resume(
         "--human-log",
         str(job_dir / "human.log"),
     ]
+    if use_proxy:
+        command.append("--proxy")
+        if proxy_url:
+            command.append(proxy_url)
     job = _start_detached_backend_job(
         project_root,
         job_id=job_id,
@@ -489,6 +507,8 @@ def start_detached_resume(
             "source_job_id": source_job_id,
             "session_dir": str(session_dir),
             "output_format": output_format,
+            "use_proxy": use_proxy,
+            "proxy_url": proxy_url or "",
         },
     )
     job["resume_from"] = str(session_dir)
