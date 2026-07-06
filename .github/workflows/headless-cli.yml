@@ -91,3 +91,62 @@ jobs:
           autovpn doctor --project-root "$PWD" --output json > doctor.json || doctor_status=$?
           python -m json.tool doctor.json >/dev/null
           echo "doctor_status=${doctor_status:-0}"
+
+  electron-package:
+    name: Linux Electron package
+    needs: headless
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Linux packaging dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm fakeroot
+
+      - name: Install dependencies
+        run: |
+          npm ci
+
+      - name: Package Electron app
+        env:
+          AUTOVPN_PACKAGE_PLATFORM: linux
+          AUTOVPN_PACKAGE_ARCH: x64
+        run: |
+          set -o pipefail
+          npm run package:electron 2>&1 | tee packaging.log
+        shell: bash
+
+      - name: Verify Electron package output
+        run: |
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+
+          if grep -q "default Electron icon is used" packaging.log; then
+            echo "Packaging used the default Electron icon."
+            exit 1
+          fi
+
+          test -f "dist-electron/AutoVPN-${PKG_VERSION}-amd64.deb"
+          test -f "dist-electron/AutoVPN-${PKG_VERSION}-x86_64.rpm"
+          test -f electron/build/assets/app-icon-1024.png
+          grep -q "sidebarVersion: 'v.${PKG_VERSION}'" dist-electron/linux-unpacked/resources/app/electron/renderer/i18n.js
+          dpkg-deb -c "dist-electron/AutoVPN-${PKG_VERSION}-amd64.deb" | grep -q "vpn-subscription-automation.png"
+        shell: bash
+
+      - name: Upload Electron package artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: autovpn-electron-linux-x64
+          path: |
+            dist-electron/*.deb
+            dist-electron/*.rpm
+            packaging.log

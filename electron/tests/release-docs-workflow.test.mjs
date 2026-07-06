@@ -246,6 +246,30 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
   assert.doesNotMatch(packageInstallAndBuild, /npx playwright install chromium-headless-shell/);
 });
 
+test('headless CI packages the Linux Electron app and verifies version and icon output', () => {
+  const workflow = readProjectFile('.github', 'workflows', 'headless-cli.yml');
+
+  for (const requiredText of [
+    'electron-package:',
+    'name: Linux Electron package',
+    'needs: headless',
+    'sudo apt-get install -y rpm fakeroot',
+    'AUTOVPN_PACKAGE_PLATFORM: linux',
+    'AUTOVPN_PACKAGE_ARCH: x64',
+    'npm run package:electron 2>&1 | tee packaging.log',
+    'default Electron icon is used',
+    'dist-electron/AutoVPN-${PKG_VERSION}-amd64.deb',
+    'dist-electron/AutoVPN-${PKG_VERSION}-x86_64.rpm',
+    'sidebarVersion: \'v.${PKG_VERSION}\'',
+    'dpkg-deb -c "dist-electron/AutoVPN-${PKG_VERSION}-amd64.deb"',
+    'vpn-subscription-automation.png',
+    'actions/upload-artifact@v4',
+    'autovpn-electron-linux-x64'
+  ]) {
+    assert.ok(workflow.includes(requiredText), `headless workflow should contain ${requiredText}`);
+  }
+});
+
 test('release workflow runs its shared test gate on Ubuntu', () => {
   const workflow = readProjectFile('.github', 'workflows', 'release-electron.yml');
   const testJob = extractWorkflowSegment(workflow, '  test:', '  package-electron:');
