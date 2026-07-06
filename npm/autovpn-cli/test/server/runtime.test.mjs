@@ -64,6 +64,59 @@ test('server runtime starts and stops managed detached jobs', async () => {
   ]);
 });
 
+test('server runtime starts retry jobs and preserves redacted secrets when saving profile', async () => {
+  const calls = [];
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-runtime-retry-'));
+  const runtimeRoot = path.join(projectRoot, 'state');
+  fs.mkdirSync(runtimeRoot, { recursive: true });
+  fs.writeFileSync(path.join(runtimeRoot, 'profile.toml'), [
+    '[sources.demo]',
+    'url = "https://provider.example/private"',
+    'key = "source-secret"',
+    'enabled = true',
+    '[deploy]',
+    'cloudflare_api_token = "cloudflare-secret"',
+    'pages_project_url = "https://sub-nodes.pages.dev"',
+    ''
+  ].join('\n'), 'utf8');
+
+  const runtime = createServerRuntime({
+    projectRoot,
+    env: { VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot },
+    startDetachedRetry: async (command) => {
+      calls.push(['retry', command]);
+      return {
+        job_id: 'retry-1',
+        status: 'running',
+        event_log: path.join(runtimeRoot, 'jobs', 'retry-1', 'events.jsonl')
+      };
+    },
+    stopManagedJob: async () => ({ job_id: 'unused' }),
+    followLog: async function* () {}
+  });
+
+  const saved = await runtime.saveProfile?.({
+    sources: { demo: { url: '<redacted>', key: '<redacted>', enabled: false } },
+    deploy: { cloudflare_api_token: '<redacted>', pages_project_url: 'https://new.example.dev' }
+  });
+  assert.equal(saved?.ok, true);
+  const persisted = fs.readFileSync(path.join(runtimeRoot, 'profile.toml'), 'utf8');
+  assert.match(persisted, /https:\/\/provider\.example\/private/);
+  assert.match(persisted, /source-secret/);
+  assert.match(persisted, /cloudflare-secret/);
+  assert.match(persisted, /https:\/\/new\.example\.dev/);
+
+  assert.deepEqual(await runtime.startRetry?.({ artifactDir: '/artifacts/run-1', stage: 'render' }), {
+    ok: true,
+    runId: 'retry-1',
+    job_id: 'retry-1',
+    status: 'running'
+  });
+  assert.deepEqual(calls, [
+    ['retry', { projectRoot, artifactDir: '/artifacts/run-1', stage: 'render', outputFormat: 'jsonl' }]
+  ]);
+});
+
 test('server runtime state includes latest artifact preview and retry artifacts', async () => {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-artifacts-'));
   const runtimeRoot = path.join(projectRoot, 'state');
@@ -93,4 +146,3 @@ test('server runtime state includes latest artifact preview and retry artifacts'
   assert.equal(state.retryArtifacts?.length, 1);
   assert.doesNotMatch(JSON.stringify(state), /provider\.example\/private|secret\.example\/sub|secret/);
 });
-

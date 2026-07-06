@@ -1,7 +1,11 @@
 import { artifactLatest, artifactList } from '../artifacts/list.js';
 import { previewArtifact } from '../artifacts/preview.js';
-import { profilePayload } from '../config/profile.js';
-import { startDetachedRun as defaultStartDetachedRun, stopManagedJob as defaultStopManagedJob } from '../jobs/commands.js';
+import { profilePayload, saveProfilePayload } from '../config/profile.js';
+import {
+  startDetachedRetry as defaultStartDetachedRetry,
+  startDetachedRun as defaultStartDetachedRun,
+  stopManagedJob as defaultStopManagedJob
+} from '../jobs/commands.js';
 import { followLog as defaultFollowLog } from '../jobs/logs.js';
 
 export interface ServerState {
@@ -14,12 +18,15 @@ export interface ServerState {
 
 export interface ServerRuntime {
   loadState(): Promise<ServerState>;
+  saveProfile?(profile: Record<string, unknown>): Promise<Record<string, unknown>>;
   startRun?(options: { skipDeploy?: boolean; skipVerify?: boolean; resumeLatest?: boolean }): Promise<Record<string, unknown>>;
+  startRetry?(options: { artifactDir?: string; stage?: string }): Promise<Record<string, unknown>>;
   stopRun?(): Promise<Record<string, unknown>>;
   subscribe?(handler: (event: unknown) => void): () => void;
 }
 
 type StartDetachedRun = typeof defaultStartDetachedRun;
+type StartDetachedRetry = typeof defaultStartDetachedRetry;
 type StopManagedJob = typeof defaultStopManagedJob;
 type FollowLog = typeof defaultFollowLog;
 
@@ -27,6 +34,7 @@ export interface CreateServerRuntimeOptions {
   projectRoot: string;
   env?: NodeJS.ProcessEnv;
   startDetachedRun?: StartDetachedRun;
+  startDetachedRetry?: StartDetachedRetry;
   stopManagedJob?: StopManagedJob;
   followLog?: FollowLog;
 }
@@ -61,6 +69,29 @@ export function sanitizeProfileForServer(profile: Record<string, any>): Record<s
   return safe;
 }
 
+function preserveRedactedSecrets(incoming: Record<string, any>, current: Record<string, any>): Record<string, any> {
+  const merged = structuredClone(incoming ?? {});
+  const currentSources = (current.sources ?? {}) as Record<string, any>;
+  for (const [name, source] of Object.entries((merged.sources ?? {}) as Record<string, any>)) {
+    const currentSource = currentSources[name] ?? {};
+    if (source && typeof source === 'object') {
+      for (const key of ['url', 'key']) {
+        if (source[key] === '<redacted>') {
+          source[key] = currentSource[key] ?? '';
+        }
+      }
+    }
+  }
+  const deploy = (merged.deploy ?? {}) as Record<string, any>;
+  const currentDeploy = (current.deploy ?? {}) as Record<string, any>;
+  for (const key of DEPLOY_SECRET_KEYS) {
+    if (deploy[key] === '<redacted>') {
+      deploy[key] = currentDeploy[key] ?? '';
+    }
+  }
+  return merged;
+}
+
 function normalizeLatestArtifact(projectRoot: string, env: NodeJS.ProcessEnv): Record<string, unknown> | undefined {
   const latest = artifactLatest(projectRoot, env);
   if (!latest.ok || !latest.artifact_dir) {
@@ -93,6 +124,7 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
   let unsubscribeLogs: (() => void) | undefined;
   const subscribers = new Set<(event: unknown) => void>();
   const startDetachedRun = options.startDetachedRun ?? defaultStartDetachedRun;
+  const startDetachedRetry = options.startDetachedRetry ?? defaultStartDetachedRetry;
   const stopManagedJob = options.stopManagedJob ?? defaultStopManagedJob;
   const followLog = options.followLog ?? defaultFollowLog;
 
@@ -146,6 +178,14 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
         deployment: (artifact?.deployment ?? {}) as Record<string, unknown>
       };
     },
+    async saveProfile(profile) {
+      const current = profilePayload(options.projectRoot, options.env);
+      const merged = preserveRedactedSecrets(profile, current);
+      return {
+        ok: true,
+        profile: sanitizeProfileForServer(saveProfilePayload(options.projectRoot, merged, options.env) as Record<string, any>)
+      };
+    },
     async startRun(runOptions = {}) {
       if (runState === 'running' || runState === 'stopping') {
         return { ok: false, error: 'run_already_active' };
@@ -156,6 +196,29 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
         skipDeploy: Boolean(runOptions.skipDeploy),
         skipVerify: Boolean(runOptions.skipVerify),
         resumeLatest: Boolean(runOptions.resumeLatest),
+        outputFormat: 'jsonl'
+      }, {
+        env: options.env,
+        cwd: options.projectRoot
+      });
+      activeJobId = String(job.job_id ?? '');
+      followJob(activeJobId);
+      return { ok: true, runId: activeJobId, job_id: activeJobId, status: job.status ?? 'running' };
+    },
+    async startRetry(retryOptions = {}) {
+      if (runState === 'running' || runState === 'stopping') {
+        return { ok: false, error: 'run_already_active' };
+      }
+      const artifactDir = String(retryOptions.artifactDir ?? '').trim();
+      const stage = String(retryOptions.stage ?? '').trim();
+      if (!artifactDir || !stage) {
+        return { ok: false, error: 'artifact_dir_and_stage_required' };
+      }
+      runState = 'running';
+      const job = await startDetachedRetry({
+        projectRoot: options.projectRoot,
+        artifactDir,
+        stage,
         outputFormat: 'jsonl'
       }, {
         env: options.env,

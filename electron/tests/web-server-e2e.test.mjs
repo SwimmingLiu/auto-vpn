@@ -128,3 +128,61 @@ test('served web ui stores token from url and authorizes api and sse requests', 
     await service.close();
   }
 });
+
+test('served web adapter saves profile, generates QR, and starts retry stage', async () => {
+  const calls = [];
+  const service = await createAutoVpnServer({
+    host: '127.0.0.1',
+    port: 0,
+    projectRoot: '/repo',
+    auth: { enabled: false, token: '' },
+    runtime: {
+      loadState: async () => ({
+        profile: {
+          sources: {},
+          speed_test: { min_download_mb_s: 1, timeout_seconds: 20, concurrency: 3 },
+          availability_targets: {},
+          deploy: { subscription_url: 'https://vpn.example/sub' },
+          paths: { project_root: '/repo', artifacts_root: '/repo/artifacts' }
+        },
+        runState: 'idle',
+        retryArtifacts: []
+      }),
+      saveProfile: async (profile) => {
+        calls.push(['profile', profile]);
+        return { ok: true };
+      },
+      startRetry: async (options) => {
+        calls.push(['retry', options]);
+        return { ok: true, runId: 'retry-1' };
+      },
+      subscribe: () => () => {}
+    }
+  });
+
+  let browser;
+  try {
+    browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1280, height: 820 } });
+    await page.goto(`${service.origin}/`);
+    await page.waitForSelector('#dashboardOverview');
+
+    const result = await page.evaluate(async () => {
+      const profile = await window.vpnAutomation.saveProfile({ deploy: { pages_project_url: 'https://example.dev' } });
+      const qr = await window.vpnAutomation.generateQr('https://vpn.example/sub');
+      const retry = await window.vpnAutomation.retryStage({ artifactDir: '/repo/artifacts/run-1', stage: 'render' });
+      return { profile, qr, retry };
+    });
+
+    assert.equal(result.profile.ok, true);
+    assert.match(result.qr.dataUrl, /^data:image\/png;base64,/);
+    assert.deepEqual(result.retry, { ok: true, runId: 'retry-1' });
+    assert.deepEqual(calls, [
+      ['profile', { deploy: { pages_project_url: 'https://example.dev' } }],
+      ['retry', { artifactDir: '/repo/artifacts/run-1', stage: 'render' }]
+    ]);
+  } finally {
+    await browser?.close();
+    await service.close();
+  }
+});

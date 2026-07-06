@@ -104,6 +104,57 @@ test('run and stop routes delegate to runtime', async () => {
   }
 });
 
+test('profile, retry, and qr routes delegate to runtime helpers', async () => {
+  const calls = [];
+  const service = await createAutoVpnServer({
+    host: '127.0.0.1',
+    port: 0,
+    projectRoot: '/repo',
+    auth: { enabled: false, token: '' },
+    runtime: {
+      loadState: async () => ({ profile: {}, runState: 'idle' }),
+      saveProfile: async (profile) => {
+        calls.push(['profile', profile]);
+        return { ok: true };
+      },
+      startRetry: async (options) => {
+        calls.push(['retry', options]);
+        return { ok: true, runId: 'retry-1' };
+      }
+    }
+  });
+
+  try {
+    const profile = await fetch(`${service.origin}/api/profile`, {
+      method: 'POST',
+      body: JSON.stringify({ deploy: { pages_project_url: 'https://example.dev' } })
+    });
+    assert.equal(profile.status, 200);
+    assert.deepEqual(await profile.json(), { ok: true });
+
+    const retry = await fetch(`${service.origin}/api/runs/retry-stage`, {
+      method: 'POST',
+      body: JSON.stringify({ artifactDir: '/artifacts/run-1', stage: 'render' })
+    });
+    assert.equal(retry.status, 202);
+    assert.deepEqual(await retry.json(), { ok: true, runId: 'retry-1' });
+
+    const qr = await fetch(`${service.origin}/api/qr`, {
+      method: 'POST',
+      body: JSON.stringify({ text: 'https://vpn.example/sub' })
+    });
+    assert.equal(qr.status, 200);
+    assert.match((await qr.json()).dataUrl, /^data:image\/png;base64,/);
+
+    assert.deepEqual(calls, [
+      ['profile', { deploy: { pages_project_url: 'https://example.dev' } }],
+      ['retry', { artifactDir: '/artifacts/run-1', stage: 'render' }]
+    ]);
+  } finally {
+    await service.close();
+  }
+});
+
 test('events route streams redacted server-sent events', async () => {
   let subscriber;
   const service = await createAutoVpnServer({
@@ -183,6 +234,9 @@ test('web adapter installs browser vpnAutomation api', async () => {
     assert.match(script, /window\.vpnAutomation/);
     assert.match(script, /EventSource/);
     assert.match(script, /\/api\/runs/);
+    assert.match(script, /\/api\/profile/);
+    assert.match(script, /\/api\/runs\/retry-stage/);
+    assert.match(script, /\/api\/qr/);
   } finally {
     await service.close();
   }

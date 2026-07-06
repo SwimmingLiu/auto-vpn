@@ -33,6 +33,11 @@ If a task changes files in this repository, including coding, refactoring, confi
 
 After the PR is merged, package the application into a runnable binary/app or installable package.
 
+For every version update, keep all user-visible Electron version text and metadata in sync with the released version.
+
+- Update the Electron sidebar/about/version description and related renderer tests whenever package, npm, Python, or release tag versions change.
+- Do not ship stale Electron version text such as `v.1.3.0` when the current release is `v1.5.1`.
+
 For packaged app branding, follow these requirements every time:
 
 - Never ship the default Electron icon or any placeholder/non-project icon asset.

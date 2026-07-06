@@ -1,16 +1,24 @@
 import argparse
 import subprocess
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 from vpn_automation.config.models import resolve_repo_anchor
 from vpn_automation.integrations.packaging import package_application
 
 
+def resolve_app_version() -> str:
+    try:
+        return version("vpn-subscription-automation")
+    except PackageNotFoundError:
+        return "0.0.0"
+
+
 def build_app_metadata() -> dict[str, str]:
     return {
         "name": "vpn-subscription-automation",
         "display_name": "AutoVPN",
-        "version": "0.2.0",
+        "version": resolve_app_version(),
     }
 
 
