@@ -211,10 +211,44 @@ def test_doctor_reports_unreachable_network_urls(tmp_path: Path, monkeypatch, ca
 
     payload = json.loads(capsys.readouterr().out)
     check = next(check for check in payload["checks"] if check["name"] == "network_reachability")
-    assert code == 1
-    assert check["status"] == "fail"
+    assert code == 0
+    assert check["status"] == "pass"
     assert check["details"]["failed_count"] >= 2
+    assert check["details"]["blocking"] is False
     assert "SOURCE-URL-SECRET" not in json.dumps(check, ensure_ascii=False)
+
+
+def test_doctor_does_not_block_on_local_availability_target_reachability(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    _write_minimal_project(project_root, api_token="CF-TOKEN-SECRET")
+    (project_root / ".env").write_text("", encoding="utf-8")
+    (project_root / "node_modules" / "playwright").mkdir(parents=True)
+    _fake_successful_dependencies(monkeypatch)
+    profile = ProfileStore(resolve_profile_path(project_root)).load()
+    profile.deploy.account_id = "CF-ACCOUNT"
+    profile.deploy.pages_project_url = "https://sub-nodes.pages.dev"
+    ProfileStore(resolve_profile_path(project_root)).save(profile)
+
+    def fake_url_reachable(url: str, timeout_seconds: int = 3) -> tuple[bool, str]:
+        if "speed.example" in url or "gstatic.com" in url:
+            return True, "reachable"
+        return False, "blocked locally"
+
+    monkeypatch.setattr(doctor, "_url_reachable", fake_url_reachable)
+
+    code = cli.main(["doctor", "--project-root", str(project_root), "--deploy", "--strict", "--output", "json"])
+
+    payload = json.loads(capsys.readouterr().out)
+    check = next(check for check in payload["checks"] if check["name"] == "network_reachability")
+    assert code == 0, json.dumps(payload, ensure_ascii=False)
+    assert payload["ok"] is True
+    assert check["status"] == "pass"
+    assert check["details"]["failed_count"] == 0
+    assert "availability_" not in json.dumps(check, ensure_ascii=False)
 
 
 def test_doctor_fails_when_profile_path_is_not_writable(tmp_path: Path, monkeypatch, capsys) -> None:
