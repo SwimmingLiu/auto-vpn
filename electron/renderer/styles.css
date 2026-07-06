@@ -94,12 +94,20 @@ textarea:focus {
   min-height: 0;
 }
 
+body[data-runtime="web"] .app-frame {
+  grid-template-rows: minmax(0, 1fr);
+}
+
 .window-titlebar {
   -webkit-app-region: drag;
   user-select: none;
   background: rgba(255, 255, 255, 0.78);
   border-bottom: 1px solid rgba(207, 215, 239, 0.72);
   backdrop-filter: blur(16px);
+}
+
+body[data-runtime="web"] .window-titlebar {
+  display: none;
 }
 
 .app-content-shell {

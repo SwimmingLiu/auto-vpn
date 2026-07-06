@@ -81,10 +81,12 @@ async function writeStaticFile(response: http.ServerResponse, statusCode: number
 async function serveRendererIndex(response: http.ServerResponse): Promise<void> {
   const indexPath = path.join(rendererRoot(), 'index.html');
   const html = await fs.readFile(indexPath, 'utf8');
-  const injected = html.replace(
-    '<script type="module" src="./app.js"></script>',
-    '<script src="/web-adapter.js"></script>\n    <script type="module" src="./app.js"></script>'
-  );
+  const injected = html
+    .replace('<body data-page="dashboard">', '<body data-page="dashboard" data-runtime="web">')
+    .replace(
+      '<script type="module" src="./app.js"></script>',
+      '<script src="/web-adapter.js"></script>\n    <script type="module" src="./app.js"></script>'
+    );
   await writeStaticFile(response, 200, indexPath, injected);
 }
 
