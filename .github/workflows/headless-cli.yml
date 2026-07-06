@@ -139,7 +139,8 @@ jobs:
           test -f "dist-electron/AutoVPN-${PKG_VERSION}-x86_64.rpm"
           test -f electron/build/assets/app-icon-1024.png
           grep -q "sidebarVersion: 'v.${PKG_VERSION}'" dist-electron/linux-unpacked/resources/app/electron/renderer/i18n.js
-          dpkg-deb -c "dist-electron/AutoVPN-${PKG_VERSION}-amd64.deb" | grep -q "vpn-subscription-automation.png"
+          dpkg-deb -c "dist-electron/AutoVPN-${PKG_VERSION}-amd64.deb" > deb-contents.txt
+          grep -q "vpn-subscription-automation.png" deb-contents.txt
         shell: bash
 
       - name: Upload Electron package artifacts

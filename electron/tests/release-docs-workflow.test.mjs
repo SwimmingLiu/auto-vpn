@@ -261,7 +261,7 @@ test('headless CI packages the Linux Electron app and verifies version and icon 
     'dist-electron/AutoVPN-${PKG_VERSION}-amd64.deb',
     'dist-electron/AutoVPN-${PKG_VERSION}-x86_64.rpm',
     'sidebarVersion: \'v.${PKG_VERSION}\'',
-    'dpkg-deb -c "dist-electron/AutoVPN-${PKG_VERSION}-amd64.deb"',
+    'dpkg-deb -c "dist-electron/AutoVPN-${PKG_VERSION}-amd64.deb" > deb-contents.txt',
     'vpn-subscription-automation.png',
     'actions/upload-artifact@v4',
     'autovpn-electron-linux-x64'
