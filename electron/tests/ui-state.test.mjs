@@ -87,7 +87,7 @@ test('resolveLanguage ignores saved and system language and always returns zh-CN
 test('getMessages exposes Chinese-only copy', () => {
   assert.equal(getMessages().appTitle, 'AutoVPN');
   assert.equal(getMessages().sidebarTitle, 'AutoVPN');
-  assert.equal(getMessages().sidebarVersion, 'v.1.5.5');
+  assert.equal(getMessages().sidebarVersion, 'v.1.6.0');
   assert.equal(getMessages().runButton, '立即运行');
   assert.equal(getMessages('en-US').pageTitles.results, '结果');
   assert.equal(
@@ -186,8 +186,8 @@ test('buildRegionStats counts decoded vmess rows by region prefix', () => {
 
 test('source iteration draft applies one max_iterations and area range to all sources', () => {
   const sources = {
-    leiting: { url: 'https://a.example', key: 'a', enabled: true, max_iterations: 12, area_min: 10, area_max: 90 },
-    heidong: { url: 'https://b.example', key: 'b', enabled: true, max_iterations: 40, area_min: 0, area_max: 100 }
+    leiting: { url: 'https://a.example', key: 'a', enabled: true, max_iterations: 12, min_iterations: 12, area_min: 10, area_max: 90 },
+    heidong: { url: 'https://b.example', key: 'b', enabled: true, max_iterations: 40, min_iterations: 40, area_min: 0, area_max: 100 }
   };
   const draft = buildSourceIterationDraft(sources);
 
@@ -205,6 +205,10 @@ test('source iteration draft applies one max_iterations and area range to all so
   assert.deepEqual(
     Object.values(applySourceIterationDraft(sources, draft)).map((source) => [source.area_min, source.area_max]),
     [[20, 60], [20, 60]]
+  );
+  assert.deepEqual(
+    Object.values(applySourceIterationDraft(sources, draft)).map((source) => source.min_iterations),
+    [12, 25]
   );
 });
 

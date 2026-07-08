@@ -108,6 +108,241 @@ test('Node extract backend fetches encrypted runtime source without Python fallb
   assert.deepEqual(calls, ['https://fixture.example/source', 'https://fixture.example/source']);
 });
 
+test('Node extract backend emits source progress events while extracting', async () => {
+  const input = JSON.parse(await readFile(path.join(fixtureDir, 'input.json'), 'utf8'));
+  const events = [];
+
+  await fetchSourceLinksWithBackend({
+    source_name: input.source_name,
+    source: {
+      url: 'https://fixture.example/source',
+      key: input.key,
+      max_iterations: 1,
+      min_iterations: 1,
+      plateau_limit: 1,
+      failure_limit: 1,
+      max_runtime_seconds: 0
+    }
+  }, {
+    env: { AUTOVPN_NO_PYTHON: '1' },
+    eventCallback: (type, payload) => events.push({ type, ...payload }),
+    fetch: async () => ({
+      ok: true,
+      status: 200,
+      text: async () => input.cipher_text
+    })
+  });
+
+  assert.deepEqual(events.map((event) => event.type), [
+    'extract_source_started',
+    'extract_request_result',
+    'extract_decrypt_result',
+    'extract_iteration',
+    'extract_source_completed'
+  ]);
+  assert.equal(events[1].via, 'direct');
+  assert.equal(events[1].url, undefined);
+  assert.doesNotMatch(JSON.stringify(events), /fixture\.example\/source/);
+  assert.equal(events[3].total_links, 1);
+});
+
+test('Node extract backend uses curl TLS fallback without enabling proxy by default', async () => {
+  const input = JSON.parse(await readFile(path.join(fixtureDir, 'input.json'), 'utf8'));
+  const curlCalls = [];
+
+  const result = await fetchSourceLinksWithBackend({
+    source_name: input.source_name,
+    source: {
+      url: 'https://fixture.example/source',
+      key: input.key,
+      max_iterations: 1,
+      min_iterations: 1,
+      plateau_limit: 1,
+      failure_limit: 1,
+      max_runtime_seconds: 0
+    }
+  }, {
+    env: { AUTOVPN_NO_PYTHON: '1' },
+    fetch: async () => {
+      throw new Error('certificate has expired');
+    },
+    curlFetch: async (url, proxyUrl) => {
+      curlCalls.push({ url, proxyUrl });
+      return input.cipher_text;
+    }
+  });
+
+  assert.equal(result.successful_iterations, 1);
+  assert.deepEqual(curlCalls, [{ url: 'https://fixture.example/source', proxyUrl: '' }]);
+});
+
+test('Node extract backend detects TLS failures wrapped inside fetch causes', async () => {
+  const input = JSON.parse(await readFile(path.join(fixtureDir, 'input.json'), 'utf8'));
+  const curlCalls = [];
+
+  const result = await fetchSourceLinksWithBackend({
+    source_name: input.source_name,
+    source: {
+      url: 'https://fixture.example/source',
+      key: input.key,
+      max_iterations: 1,
+      min_iterations: 1,
+      plateau_limit: 1,
+      failure_limit: 1,
+      max_runtime_seconds: 0
+    }
+  }, {
+    env: { AUTOVPN_NO_PYTHON: '1' },
+    fetch: async () => {
+      const error = new TypeError('fetch failed');
+      error.cause = new Error('certificate has expired');
+      error.cause.code = 'CERT_HAS_EXPIRED';
+      throw error;
+    },
+    curlFetch: async (_url, proxyUrl) => {
+      curlCalls.push(proxyUrl);
+      return input.cipher_text;
+    }
+  });
+
+  assert.equal(result.successful_iterations, 1);
+  assert.deepEqual(curlCalls, ['']);
+});
+
+test('Node extract backend stops consecutive failures without waiting for oversized min iterations', async () => {
+  const events = [];
+
+  const result = await fetchSourceLinksWithBackend({
+    source_name: 'leiting',
+    source: {
+      url: 'https://fixture.example/source',
+      key: 'abcdabcdabcdabcd',
+      max_iterations: 100,
+      min_iterations: 10000,
+      plateau_limit: 8,
+      failure_limit: 3,
+      max_runtime_seconds: 0
+    }
+  }, {
+    env: { AUTOVPN_NO_PYTHON: '1' },
+    eventCallback: (type, payload) => events.push({ type, ...payload }),
+    fetch: async () => {
+      throw new Error('network unreachable');
+    }
+  });
+
+  assert.equal(result.failed_iterations, 3);
+  assert.equal(events.filter((event) => event.type === 'extract_request_result').length, 3);
+});
+
+test('Node extract backend treats min iterations above max as no plateau floor', async () => {
+  const input = JSON.parse(await readFile(path.join(fixtureDir, 'input.json'), 'utf8'));
+  const events = [];
+
+  const result = await fetchSourceLinksWithBackend({
+    source_name: 'leiting',
+    source: {
+      url: 'https://fixture.example/source',
+      key: input.key,
+      max_iterations: 100,
+      min_iterations: 10000,
+      plateau_limit: 2,
+      failure_limit: 1,
+      max_runtime_seconds: 0
+    }
+  }, {
+    env: { AUTOVPN_NO_PYTHON: '1' },
+    eventCallback: (type, payload) => events.push({ type, ...payload }),
+    fetch: async () => ({
+      ok: true,
+      status: 200,
+      text: async () => input.cipher_text
+    })
+  });
+
+  assert.equal(result.successful_iterations, 3);
+  assert.equal(result.links.length, 1);
+  assert.equal(events.find((event) => event.type === 'extract_source_started')?.min_iterations, 0);
+});
+
+test('curl TLS fallback does not expose source URLs in process argv', async () => {
+  const input = JSON.parse(await readFile(path.join(fixtureDir, 'input.json'), 'utf8'));
+  const spawns = [];
+  let stdinPayload = '';
+
+  const result = await fetchSourceLinksWithBackend({
+    source_name: input.source_name,
+    source: {
+      url: 'https://fixture.example/source?token=secret',
+      key: input.key,
+      max_iterations: 1,
+      min_iterations: 1,
+      plateau_limit: 1,
+      failure_limit: 1,
+      max_runtime_seconds: 0
+    }
+  }, {
+    env: { AUTOVPN_NO_PYTHON: '1' },
+    fetch: async () => {
+      throw new Error('certificate has expired');
+    },
+    spawn: (command, args, options) => {
+      spawns.push({ command, args, options });
+      const child = new EventEmitter();
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.stdin = {
+        write(chunk) {
+          stdinPayload += String(chunk);
+        },
+        end() {
+          child.stdout.emit('data', input.cipher_text);
+          child.emit('close', 0, null);
+        }
+      };
+      return child;
+    }
+  });
+
+  assert.equal(result.successful_iterations, 1);
+  assert.equal(spawns[0].command, 'curl');
+  assert.doesNotMatch(spawns[0].args.join(' '), /fixture\.example|secret/);
+  assert.match(stdinPayload, /fixture\.example\/source\?token=secret/);
+});
+
+test('Node extract backend only uses upstream proxy when explicitly enabled', async () => {
+  const input = JSON.parse(await readFile(path.join(fixtureDir, 'input.json'), 'utf8'));
+  const curlCalls = [];
+
+  await fetchSourceLinksWithBackend({
+    source_name: input.source_name,
+    source: {
+      url: 'https://fixture.example/source',
+      key: input.key,
+      max_iterations: 1,
+      min_iterations: 1,
+      plateau_limit: 1,
+      failure_limit: 1,
+      max_runtime_seconds: 0
+    }
+  }, {
+    env: {
+      AUTOVPN_NO_PYTHON: '1',
+      VPN_AUTOMATION_USE_UPSTREAM_PROXY: '1',
+      VPN_AUTOMATION_UPSTREAM_PROXY: 'http://127.0.0.1:7897'
+    },
+    fetch: async () => {
+      throw new Error('certificate has expired');
+    },
+    curlFetch: async (url, proxyUrl) => {
+      curlCalls.push({ url, proxyUrl });
+      return input.cipher_text;
+    }
+  });
+
+  assert.deepEqual(curlCalls, [{ url: 'https://fixture.example/source', proxyUrl: 'http://127.0.0.1:7897' }]);
+});
+
 test('Python extract rollback adapter invokes backend venv Python when no callback is injected', async () => {
   const spawns = [];
   const input = { source_name: 'leiting', source: { url: 'https://example.com/api', key: 'abcdabcdabcdabcd', max_iterations: 0 } };

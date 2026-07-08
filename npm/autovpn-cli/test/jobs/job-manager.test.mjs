@@ -162,6 +162,28 @@ test('default run --detach spawns the Node CLI worker', async () => {
   ]);
 });
 
+test('detached run only forwards proxy flag when explicitly requested', async () => {
+  const projectRoot = await createProject();
+  const spawns = [];
+
+  await startDetachedRun({
+    projectRoot,
+    skipDeploy: true,
+    skipVerify: true,
+    outputFormat: 'jsonl',
+    useProxy: true,
+    proxyUrl: 'http://127.0.0.1:7897'
+  }, {
+    env: runtimeEnv({ AUTOVPN_NO_PYTHON: '1' }),
+    spawn: fakeSpawn(spawns, 6790),
+    now: () => '2026-06-28T00:01:00+00:00',
+    jobId: () => 'proxy-node-worker'
+  });
+
+  assert.ok(spawns[0].args.includes('--proxy'));
+  assert.equal(spawns[0].args.at(-1), 'http://127.0.0.1:7897');
+});
+
 test('Node job manager stop marks job stopped and targets process group', async () => {
   const projectRoot = await createProject();
   const store = createJobStore(projectRoot, { now: () => '2026-06-28T00:00:00+00:00', jobId: () => '20260628-000000-node03' });
@@ -187,6 +209,65 @@ test('Node job manager stop marks job stopped and targets process group', async 
   assert.equal(stopped.signal, 'SIGTERM');
   assert.deepEqual(signals[0], [process.platform === 'win32' ? 2468 : -2468, 'SIGTERM']);
   assert.deepEqual(signals.at(-1), [process.platform === 'win32' ? 2468 : -2468, 'SIGKILL']);
+});
+
+test('Node job manager stop tolerates processes that exit before signal delivery', async () => {
+  const projectRoot = await createProject();
+  const store = createJobStore(projectRoot, { now: () => '2026-06-28T00:00:00+00:00', jobId: () => 'vanished-job' });
+  const job = store.createRunningJob({
+    kind: 'run',
+    command: ['/venv/bin/autovpn', 'run'],
+    pid: 2468,
+    options: { output_format: 'jsonl' }
+  });
+
+  const stopped = await stopManagedJob(projectRoot, job.job_id, {
+    timeoutMs: 0,
+    now: () => '2026-06-28T00:00:01+00:00',
+    isAlive: () => true,
+    processMatchesJob: () => true,
+    signalProcess: () => {
+      const error = new Error('kill ESRCH');
+      error.code = 'ESRCH';
+      throw error;
+    }
+  });
+
+  assert.equal(stopped.status, 'stopped');
+  assert.equal(stopped.signal, 'SIGTERM');
+});
+
+test('Node job manager stop marks the active artifact stopped', async () => {
+  const projectRoot = await createProject();
+  const artifactDir = path.join(projectRoot, 'artifacts', 'stopping-run');
+  await mkdir(artifactDir, { recursive: true });
+  await writeFile(path.join(artifactDir, 'pipeline_report.json'), JSON.stringify({
+    run_status: 'running',
+    stage_status: { extract: 'running', speedtest: 'pending' },
+    error: ''
+  }), 'utf8');
+  const store = createJobStore(projectRoot, { now: () => '2026-06-28T00:00:00+00:00', jobId: () => 'stop-artifact-job' });
+  const job = store.createRunningJob({
+    kind: 'run',
+    command: ['/venv/bin/autovpn', 'run'],
+    pid: 2468,
+    options: { output_format: 'jsonl' }
+  });
+  job.artifact_dir = artifactDir;
+  store.writeJob(job);
+
+  await stopManagedJob(projectRoot, job.job_id, {
+    timeoutMs: 0,
+    now: () => '2026-06-28T00:00:01+00:00',
+    isAlive: () => true,
+    processMatchesJob: () => true,
+    signalProcess: () => {}
+  });
+
+  const report = JSON.parse(await readFile(path.join(artifactDir, 'pipeline_report.json'), 'utf8'));
+  assert.equal(report.run_status, 'stopped');
+  assert.equal(report.stage_status.extract, 'failed');
+  assert.match(report.error, /Stopped by user/);
 });
 
 test('Node job manager stop refuses mismatched process metadata', async () => {
@@ -630,6 +711,38 @@ test('crash recovery reconciles dead running jobs from pipeline report', async (
   assert.equal(code, 0);
   assert.equal(payload.status, 'success');
   assert.equal(payload.exit_code, 0);
+});
+
+test('crash recovery does not treat a half-written running stage report as success', async () => {
+  const projectRoot = await createProject();
+  const artifactDir = path.join(projectRoot, 'artifacts', 'half-written-run');
+  await mkdir(artifactDir, { recursive: true });
+  await writeFile(path.join(artifactDir, 'pipeline_report.json'), JSON.stringify({
+    run_status: 'success',
+    stage_status: { doctor: 'success', extract: 'running' },
+    error: ''
+  }), 'utf8');
+  const store = createJobStore(projectRoot, { now: () => '2026-06-28T00:00:00+00:00', jobId: () => 'half-written-job' });
+  const job = store.createRunningJob({
+    kind: 'run',
+    command: ['/venv/bin/autovpn', 'run'],
+    pid: 0,
+    options: { output_format: 'jsonl' }
+  });
+  await writeFile(job.event_log, JSON.stringify({ type: 'run_started', artifact_dir: artifactDir }) + '\n', 'utf8');
+  const io = createIo();
+
+  const code = await runCliShell(['jobs', 'status', 'half-written-job', '--project-root', projectRoot, '--json'], {
+    cwd: projectRoot,
+    packageVersion: '1.3.0',
+    io
+  });
+
+  const payload = JSON.parse(io.stdout);
+  assert.equal(code, 0);
+  assert.equal(payload.status, 'failed');
+  assert.equal(payload.exit_code, 1);
+  assert.match(payload.last_error, /process exited without terminal status/);
 });
 
 test('crash recovery reconciles dead running jobs from run database', async () => {

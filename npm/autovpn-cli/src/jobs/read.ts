@@ -60,6 +60,10 @@ function reconcileFromPipelineReport(job: Record<string, any>): Record<string, a
     if (!['success', 'failed', 'stopped'].includes(runStatus)) {
       return undefined;
     }
+    const stageStatus = (report.stage_status ?? {}) as Record<string, unknown>;
+    if (Object.values(stageStatus).some((status) => String(status) === 'running')) {
+      return undefined;
+    }
     return {
       status: runStatus,
       finished_at: job.finished_at || nowIso(),

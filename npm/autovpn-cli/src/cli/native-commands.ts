@@ -190,6 +190,8 @@ export async function runNativeCommand(argv: string[], context: NativeContext): 
           resumeLatest: true,
           skipDeploy: Boolean(sourceOptions.skip_deploy),
           skipVerify: Boolean(sourceOptions.skip_verify),
+          useProxy: Boolean(sourceOptions.use_proxy),
+          proxyUrl: String(sourceOptions.proxy_url ?? ''),
           outputFormat: outputFormat(argv)
         }, jobOptions(context));
         context.io.writeStdout(jsonLine(publicStartedPayload(job)));

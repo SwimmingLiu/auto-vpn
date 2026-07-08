@@ -33,6 +33,10 @@ type FollowLog = typeof defaultFollowLog;
 export interface CreateServerRuntimeOptions {
   projectRoot: string;
   env?: NodeJS.ProcessEnv;
+  proxy?: {
+    enabled?: boolean;
+    url?: string;
+  };
   startDetachedRun?: StartDetachedRun;
   startDetachedRetry?: StartDetachedRetry;
   stopManagedJob?: StopManagedJob;
@@ -42,28 +46,22 @@ export interface CreateServerRuntimeOptions {
 const DEPLOY_SECRET_KEYS = new Set([
   'cloudflare_api_token',
   'cloudflare_global_key',
-  'pages_secret_admin',
-  'subscription_url',
-  'verify_subscription_url',
-  'secret_query',
-  'share_project_sub_value'
+  'pages_secret_admin'
 ]);
 
-function redactIfSet(value: unknown): unknown {
-  return String(value ?? '').trim() ? '<redacted>' : '';
+function redactedLabel(key: string): string {
+  return key === 'pages_secret_admin' ? '<Pages Secret ADMIN>' : '<Cloudflare Token>';
+}
+
+function redactIfSet(key: string, value: unknown): unknown {
+  return String(value ?? '').trim() ? redactedLabel(key) : '';
 }
 
 export function sanitizeProfileForServer(profile: Record<string, any>): Record<string, any> {
   const safe = structuredClone(profile ?? {});
-  for (const source of Object.values((safe.sources ?? {}) as Record<string, any>)) {
-    if (source && typeof source === 'object') {
-      source.url = redactIfSet(source.url);
-      source.key = redactIfSet(source.key);
-    }
-  }
   for (const [key, value] of Object.entries((safe.deploy ?? {}) as Record<string, unknown>)) {
     if (DEPLOY_SECRET_KEYS.has(key)) {
-      safe.deploy[key] = redactIfSet(value);
+      safe.deploy[key] = redactIfSet(key, value);
     }
   }
   return safe;
@@ -85,7 +83,7 @@ function preserveRedactedSecrets(incoming: Record<string, any>, current: Record<
   const deploy = (merged.deploy ?? {}) as Record<string, any>;
   const currentDeploy = (current.deploy ?? {}) as Record<string, any>;
   for (const key of DEPLOY_SECRET_KEYS) {
-    if (deploy[key] === '<redacted>') {
+    if (deploy[key] === '<redacted>' || deploy[key] === redactedLabel(key)) {
       deploy[key] = currentDeploy[key] ?? '';
     }
   }
@@ -116,6 +114,37 @@ function parseJsonLine(line: string): unknown | undefined {
   } catch {
     return { type: 'log', message: trimmed };
   }
+}
+
+function eventRunState(event: Record<string, any>): ServerState['runState'] | undefined {
+  if (event.type === 'run_failed') {
+    return 'failed';
+  }
+  if (event.type === 'summary') {
+    const status = String(event.run_status ?? '');
+    if (status === 'failed') {
+      return 'failed';
+    }
+    if (status === 'success') {
+      return 'success';
+    }
+    if (status === 'stopped') {
+      return 'idle';
+    }
+  }
+  return undefined;
+}
+
+function runEnv(options: CreateServerRuntimeOptions): NodeJS.ProcessEnv | undefined {
+  if (!options.proxy?.enabled) {
+    return options.env;
+  }
+  const proxyUrl = String(options.proxy.url ?? '').trim() || 'http://127.0.0.1:7897';
+  return {
+    ...(options.env ?? process.env),
+    VPN_AUTOMATION_USE_UPSTREAM_PROXY: '1',
+    VPN_AUTOMATION_UPSTREAM_PROXY: proxyUrl
+  };
 }
 
 export function createServerRuntime(options: CreateServerRuntimeOptions): ServerRuntime {
@@ -149,11 +178,15 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
           for (const line of String(chunk).split(/\r?\n/)) {
             const event = parseJsonLine(line);
             if (event) {
+              const nextRunState = eventRunState(event as Record<string, any>);
+              if (nextRunState) {
+                runState = nextRunState;
+              }
               publish(event);
             }
           }
         }
-        if (!cancelled && runState !== 'stopping') {
+        if (!cancelled && runState === 'running') {
           runState = 'success';
           publish({ type: 'server_state', run_state: runState });
         }
@@ -191,16 +224,24 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
         return { ok: false, error: 'run_already_active' };
       }
       runState = 'running';
-      const job = await startDetachedRun({
-        projectRoot: options.projectRoot,
-        skipDeploy: Boolean(runOptions.skipDeploy),
-        skipVerify: Boolean(runOptions.skipVerify),
-        resumeLatest: Boolean(runOptions.resumeLatest),
-        outputFormat: 'jsonl'
-      }, {
-        env: options.env,
-        cwd: options.projectRoot
-      });
+      let job: Awaited<ReturnType<StartDetachedRun>>;
+      try {
+        job = await startDetachedRun({
+          projectRoot: options.projectRoot,
+          skipDeploy: Boolean(runOptions.skipDeploy),
+          skipVerify: Boolean(runOptions.skipVerify),
+          resumeLatest: Boolean(runOptions.resumeLatest),
+          outputFormat: 'jsonl'
+        }, {
+          env: runEnv(options),
+          cwd: options.projectRoot
+        });
+      } catch (error) {
+        runState = 'failed';
+        activeJobId = '';
+        publish({ type: 'server_state', run_state: runState });
+        throw error;
+      }
       activeJobId = String(job.job_id ?? '');
       followJob(activeJobId);
       return { ok: true, runId: activeJobId, job_id: activeJobId, status: job.status ?? 'running' };
@@ -221,7 +262,7 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
         stage,
         outputFormat: 'jsonl'
       }, {
-        env: options.env,
+        env: runEnv(options),
         cwd: options.projectRoot
       });
       activeJobId = String(job.job_id ?? '');
@@ -230,15 +271,24 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
     },
     async stopRun() {
       if (runState !== 'running' || !activeJobId) {
-        return { ok: true, requested: false };
+        return { ok: true, requested: false, run_state: runState };
       }
       runState = 'stopping';
       publish({ type: 'server_state', run_state: runState });
-      const stopped = await stopManagedJob(options.projectRoot, activeJobId, { env: options.env });
-      unsubscribeLogs?.();
-      runState = 'idle';
-      publish({ type: 'server_state', run_state: 'idle' });
-      return { ok: true, requested: true, job_id: stopped.job_id ?? activeJobId, status: stopped.status ?? 'stopped' };
+      const jobId = activeJobId;
+      try {
+        const stopped = await stopManagedJob(options.projectRoot, jobId, { env: options.env });
+        unsubscribeLogs?.();
+        runState = 'idle';
+        activeJobId = '';
+        publish({ type: 'server_state', run_state: 'idle' });
+        return { ok: true, requested: true, job_id: stopped.job_id ?? jobId, status: stopped.status ?? 'stopped', stopped: true };
+      } catch (error) {
+        unsubscribeLogs?.();
+        runState = 'failed';
+        publish({ type: 'server_state', run_state: 'failed' });
+        return { ok: false, requested: true, run_state: 'failed', error: error instanceof Error ? error.message : String(error) };
+      }
     },
     subscribe(handler) {
       subscribers.add(handler);

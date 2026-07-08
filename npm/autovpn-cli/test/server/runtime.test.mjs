@@ -6,7 +6,7 @@ import test from 'node:test';
 
 import { createServerRuntime, sanitizeProfileForServer } from '../../dist/server/runtime.js';
 
-test('server profile redacts source urls and keys', () => {
+test('server profile only redacts Cloudflare token and Pages Secret ADMIN with field labels', () => {
   const profile = sanitizeProfileForServer({
     sources: {
       demo: { url: 'https://provider.example/private/abc123', key: 'source-key', enabled: true }
@@ -19,10 +19,13 @@ test('server profile redacts source urls and keys', () => {
   });
 
   const text = JSON.stringify(profile);
-  assert.doesNotMatch(text, /private\/abc123|source-key|cloudflare-secret|vpn\.example\/sub/);
-  assert.equal(profile.sources.demo.url, '<redacted>');
-  assert.equal(profile.sources.demo.key, '<redacted>');
+  assert.match(text, /private\/abc123|source-key|vpn\.example\/sub/);
+  assert.doesNotMatch(text, /cloudflare-secret/);
+  assert.equal(profile.sources.demo.url, 'https://provider.example/private/abc123');
+  assert.equal(profile.sources.demo.key, 'source-key');
   assert.equal(profile.deploy.pages_project_url, 'https://sub-nodes.pages.dev');
+  assert.equal(profile.deploy.subscription_url, 'https://vpn.example/sub');
+  assert.equal(profile.deploy.cloudflare_api_token, '<Cloudflare Token>');
 });
 
 test('server runtime starts and stops managed detached jobs', async () => {
@@ -56,7 +59,8 @@ test('server runtime starts and stops managed detached jobs', async () => {
     ok: true,
     requested: true,
     job_id: 'job-1',
-    status: 'stopped'
+    status: 'stopped',
+    stopped: true
   });
   assert.deepEqual(calls, [
     ['start', { projectRoot, skipDeploy: true, skipVerify: true, resumeLatest: false, outputFormat: 'jsonl' }],
@@ -64,8 +68,118 @@ test('server runtime starts and stops managed detached jobs', async () => {
   ]);
 });
 
-test('server runtime starts retry jobs and preserves redacted secrets when saving profile', async () => {
+test('server runtime forwards opt-in proxy settings through worker env without forcing CLI Python proxy mode', async () => {
   const calls = [];
+  const execOptions = [];
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-runtime-proxy-'));
+  const runtime = createServerRuntime({
+    projectRoot,
+    env: { VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, 'state') },
+    proxy: { enabled: true, url: 'http://127.0.0.1:7897' },
+    startDetachedRun: async (command, options) => {
+      calls.push(command);
+      execOptions.push(options);
+      return {
+        job_id: 'job-proxy',
+        status: 'running',
+        event_log: path.join(projectRoot, 'state', 'jobs', 'job-proxy', 'events.jsonl')
+      };
+    },
+    followLog: async function* () {}
+  });
+
+  await runtime.startRun?.({ skipDeploy: true, skipVerify: true });
+
+  assert.equal(calls[0].useProxy, undefined);
+  assert.equal(calls[0].proxyUrl, undefined);
+  assert.equal(execOptions[0].env.VPN_AUTOMATION_USE_UPSTREAM_PROXY, '1');
+  assert.equal(execOptions[0].env.VPN_AUTOMATION_UPSTREAM_PROXY, 'http://127.0.0.1:7897');
+});
+
+test('server runtime rolls back run state when detached run creation fails', async () => {
+  const states = [];
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-runtime-start-fails-'));
+  const runtime = createServerRuntime({
+    projectRoot,
+    env: { VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, 'state') },
+    startDetachedRun: async () => {
+      throw new Error('spawn failed');
+    },
+    followLog: async function* () {}
+  });
+  runtime.subscribe?.((event) => {
+    if (event && typeof event === 'object' && event.type === 'server_state') {
+      states.push(event.run_state);
+    }
+  });
+
+  await assert.rejects(() => runtime.startRun?.({ skipDeploy: true, skipVerify: true }), /spawn failed/);
+
+  const state = await runtime.loadState();
+  assert.equal(state.runState, 'failed');
+  assert.deepEqual(states, ['failed']);
+  assert.deepEqual(await runtime.stopRun?.(), {
+    ok: true,
+    requested: false,
+    run_state: 'failed'
+  });
+});
+
+test('server runtime stop reports terminal state when logs already marked run failed', async () => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-runtime-stop-failed-'));
+  const runtime = createServerRuntime({
+    projectRoot,
+    env: { VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, 'state') },
+    startDetachedRun: async () => ({
+      job_id: 'job-failed-before-stop',
+      status: 'running',
+      event_log: path.join(projectRoot, 'state', 'jobs', 'job-failed-before-stop', 'events.jsonl')
+    }),
+    stopManagedJob: async () => {
+      throw new Error('stop should not be called for a terminal run');
+    },
+    followLog: async function* () {
+      yield JSON.stringify({ type: 'run_failed', error: 'Error: fetch failed' }) + '\n';
+    }
+  });
+
+  await runtime.startRun?.({ skipDeploy: true, skipVerify: true });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(await runtime.stopRun?.(), {
+    ok: true,
+    requested: false,
+    run_state: 'failed'
+  });
+});
+
+test('server runtime marks run failed when followed logs emit run_failed', async () => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-runtime-failed-'));
+  const runtime = createServerRuntime({
+    projectRoot,
+    env: { VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, 'state') },
+    startDetachedRun: async () => ({
+      job_id: 'job-failed',
+      status: 'running',
+      event_log: path.join(projectRoot, 'state', 'jobs', 'job-failed', 'events.jsonl')
+    }),
+    followLog: async function* () {
+      yield JSON.stringify({ type: 'stage', stage: 'extract', status: 'failed' }) + '\n';
+      yield JSON.stringify({ type: 'summary', run_status: 'failed', error: 'Error: fetch failed' }) + '\n';
+      yield JSON.stringify({ type: 'run_failed', error: 'Error: fetch failed' }) + '\n';
+    }
+  });
+
+  await runtime.startRun?.({ skipDeploy: true, skipVerify: true });
+  await new Promise((resolve) => setImmediate(resolve));
+  const state = await runtime.loadState();
+
+  assert.equal(state.runState, 'failed');
+});
+
+test('server runtime starts retry jobs with serve proxy env and preserves redacted secrets when saving profile', async () => {
+  const calls = [];
+  const execOptions = [];
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-runtime-retry-'));
   const runtimeRoot = path.join(projectRoot, 'state');
   fs.mkdirSync(runtimeRoot, { recursive: true });
@@ -83,8 +197,10 @@ test('server runtime starts retry jobs and preserves redacted secrets when savin
   const runtime = createServerRuntime({
     projectRoot,
     env: { VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot },
-    startDetachedRetry: async (command) => {
+    proxy: { enabled: true, url: 'http://127.0.0.1:7897' },
+    startDetachedRetry: async (command, options) => {
       calls.push(['retry', command]);
+      execOptions.push(options);
       return {
         job_id: 'retry-1',
         status: 'running',
@@ -115,6 +231,8 @@ test('server runtime starts retry jobs and preserves redacted secrets when savin
   assert.deepEqual(calls, [
     ['retry', { projectRoot, artifactDir: '/artifacts/run-1', stage: 'render', outputFormat: 'jsonl' }]
   ]);
+  assert.equal(execOptions[0].env.VPN_AUTOMATION_USE_UPSTREAM_PROXY, '1');
+  assert.equal(execOptions[0].env.VPN_AUTOMATION_UPSTREAM_PROXY, 'http://127.0.0.1:7897');
 });
 
 test('server runtime state includes latest artifact preview and retry artifacts', async () => {
@@ -140,9 +258,12 @@ test('server runtime state includes latest artifact preview and retry artifacts'
   });
 
   const state = await runtime.loadState();
-  assert.equal(state.artifact?.artifact_dir, artifactDir);
+  assert.equal(fs.realpathSync(String(state.artifact?.artifact_dir)), fs.realpathSync(artifactDir));
   assert.equal(state.artifact?.run_status, 'success');
   assert.equal(state.deployment?.pages_project_url, 'https://sub-nodes.pages.dev');
   assert.equal(state.retryArtifacts?.length, 1);
-  assert.doesNotMatch(JSON.stringify(state), /provider\.example\/private|secret\.example\/sub|secret/);
+  const stateText = JSON.stringify(state);
+  assert.match(stateText, /provider\.example\/private/);
+  assert.match(stateText, /"key":"secret"/);
+  assert.equal(state.deployment?.subscription_url, 'set');
 });

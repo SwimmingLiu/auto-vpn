@@ -78,6 +78,116 @@ test('served web ui loads profile and starts a run through the web adapter', asy
   }
 });
 
+test('served web ui leaves stopping state when stop finds the server run already failed', async () => {
+  let subscriber;
+  const service = await createAutoVpnServer({
+    host: '127.0.0.1',
+    port: 0,
+    projectRoot: '/repo',
+    auth: { enabled: false, token: '' },
+    runtime: {
+      loadState: async () => ({
+        profile: {
+          sources: { leiting: { url: '<redacted>', key: '<redacted>', enabled: true } },
+          speed_test: { min_download_mb_s: 1, timeout_seconds: 20, concurrency: 3 },
+          availability_targets: {},
+          deploy: { cloudflare_api_token: '<redacted>' },
+          paths: { project_root: '/repo', artifacts_root: '/repo/artifacts' }
+        },
+        runState: 'idle',
+        retryArtifacts: []
+      }),
+      startRun: async () => {
+        queueMicrotask(() => subscriber?.({ type: 'stage', stage: 'extract', status: 'running' }));
+        return { ok: true, runId: 'run-already-failed' };
+      },
+      stopRun: async () => ({ ok: true, requested: false, run_state: 'failed', error: 'Error: fetch failed' }),
+      subscribe: (handler) => {
+        subscriber = handler;
+        return () => {
+          subscriber = undefined;
+        };
+      }
+    }
+  });
+
+  let browser;
+  try {
+    browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1280, height: 820 } });
+    await page.goto(`${service.origin}/`);
+    await page.waitForSelector('#dashboardOverview');
+    await page.locator('#navRuns').click();
+    await page.waitForSelector('#runsWorkspace');
+
+    await page.locator('#runsWorkspace [data-run-action="start"]').click();
+    await page.waitForFunction(() => !document.querySelector('#runsWorkspace [data-run-action="stop"]')?.disabled);
+    await page.locator('#runsWorkspace [data-run-action="stop"]').click();
+
+    await page.waitForFunction(() => !document.querySelector('#runsWorkspace [data-run-action="start"]')?.disabled);
+    assert.equal(await page.locator('#runsWorkspace [data-run-action="stop"]').isDisabled(), true);
+    assert.doesNotMatch(await page.locator('#runsWorkspace').innerText(), /停止中/);
+  } finally {
+    await browser?.close();
+    await service.close();
+  }
+});
+
+test('served web ui treats run_failed and failed summaries as terminal states', async () => {
+  let subscriber;
+  const service = await createAutoVpnServer({
+    host: '127.0.0.1',
+    port: 0,
+    projectRoot: '/repo',
+    auth: { enabled: false, token: '' },
+    runtime: {
+      loadState: async () => ({
+        profile: {
+          sources: { leiting: { url: '<redacted>', key: '<redacted>', enabled: true } },
+          speed_test: { min_download_mb_s: 1, timeout_seconds: 20, concurrency: 3 },
+          availability_targets: {},
+          deploy: { cloudflare_api_token: '<redacted>' },
+          paths: { project_root: '/repo', artifacts_root: '/repo/artifacts' }
+        },
+        runState: 'idle',
+        retryArtifacts: []
+      }),
+      startRun: async () => {
+        queueMicrotask(() => {
+          subscriber?.({ type: 'stage', stage: 'extract', status: 'running' });
+          subscriber?.({ type: 'summary', run_status: 'failed', error: 'Error: fetch failed', artifact_dir: '/repo/artifacts/failed', stage_status: { extract: 'failed' }, counts: {} });
+          subscriber?.({ type: 'run_failed', error: 'Error: fetch failed' });
+        });
+        return { ok: true, runId: 'run-failed' };
+      },
+      subscribe: (handler) => {
+        subscriber = handler;
+        return () => {
+          subscriber = undefined;
+        };
+      }
+    }
+  });
+
+  let browser;
+  try {
+    browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1280, height: 820 } });
+    await page.goto(`${service.origin}/`);
+    await page.waitForSelector('#dashboardOverview');
+    await page.locator('#navRuns').click();
+    await page.waitForSelector('#runsWorkspace');
+    await page.locator('#runsWorkspace [data-run-action="start"]').click();
+
+    await page.waitForFunction(() => !document.querySelector('#runsWorkspace [data-run-action="start"]')?.disabled);
+    assert.equal(await page.locator('#runsWorkspace [data-run-action="stop"]').isDisabled(), true);
+    assert.match(await page.locator('#runsWorkspace').innerText(), /失败|failed|fetch failed/i);
+  } finally {
+    await browser?.close();
+    await service.close();
+  }
+});
+
 test('served web ui stores token from url and authorizes api and sse requests', async () => {
   const seen = [];
   const service = await createAutoVpnServer({
@@ -123,6 +233,105 @@ test('served web ui stores token from url and authorizes api and sse requests', 
     assert.ok(seen.some((item) => item.url.includes('/api/events?token=server-secret')));
     assert.ok(!seen.some((item) => item.url.includes('/api/state?token=')));
     assert.ok(!seen.some((item) => item.url.includes('/api/runs?token=')));
+  } finally {
+    await browser?.close();
+    await service.close();
+  }
+});
+
+test('served web ui logs in from a password page with inline failure and ban messages', async () => {
+  const seen = [];
+  const service = await createAutoVpnServer({
+    host: '127.0.0.1',
+    port: 0,
+    projectRoot: '/repo',
+    auth: { enabled: true, token: 'issued-token', password: 'web-password', maxAttempts: 5 },
+    runtime: {
+      loadState: async () => ({
+        profile: {
+          sources: {},
+          speed_test: { min_download_mb_s: 1, timeout_seconds: 20, concurrency: 3 },
+          availability_targets: {},
+          deploy: { cloudflare_api_token: '<Cloudflare Token>' },
+          paths: { project_root: '/repo', artifacts_root: '/repo/artifacts' }
+        },
+        runState: 'idle',
+        retryArtifacts: []
+      }),
+      subscribe: () => () => {}
+    }
+  });
+
+  let browser;
+  try {
+    browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1280, height: 820 } });
+    let sawDialog = false;
+    page.on('dialog', async (dialog) => {
+      sawDialog = true;
+      await dialog.dismiss();
+    });
+    page.on('request', (request) => {
+      if (request.url().includes('/api/')) {
+        seen.push({ url: request.url(), auth: request.headers().authorization ?? '' });
+      }
+    });
+
+    await page.goto(`${service.origin}/`);
+    await page.waitForSelector('[data-server-login]');
+    await page.locator('[data-server-password]').fill('wrong-password');
+    await page.locator('[data-server-login-submit]').click();
+    await page.waitForFunction(() => document.querySelector('[data-server-login-error]')?.textContent?.trim());
+    assert.match(await page.locator('[data-server-login-error]').innerText(), /4|剩余|remaining/i);
+
+    await page.locator('[data-server-password]').fill('web-password');
+    await page.locator('[data-server-login-submit]').click();
+    await page.waitForFunction(() => window.localStorage.getItem('autovpn.server.token') === 'issued-token');
+    await page.waitForSelector('#dashboardOverview');
+
+    assert.equal(sawDialog, false);
+    assert.equal(await page.evaluate(() => window.localStorage.getItem('autovpn.server.token')), 'issued-token');
+    assert.ok(seen.some((item) => item.url.endsWith('/api/auth/login')));
+    assert.ok(seen.some((item) => item.url.endsWith('/api/state') && item.auth === 'Bearer issued-token'));
+  } finally {
+    await browser?.close();
+    await service.close();
+  }
+});
+
+test('served web ui shows an IP ban message on the password page', async () => {
+  const service = await createAutoVpnServer({
+    host: '127.0.0.1',
+    port: 0,
+    projectRoot: '/repo',
+    auth: { enabled: true, token: 'issued-token', password: 'web-password', maxAttempts: 1 },
+    runtime: {
+      loadState: async () => ({
+        profile: {
+          sources: {},
+          speed_test: { min_download_mb_s: 1, timeout_seconds: 20, concurrency: 3 },
+          availability_targets: {},
+          deploy: {},
+          paths: { project_root: '/repo', artifacts_root: '/repo/artifacts' }
+        },
+        runState: 'idle',
+        retryArtifacts: []
+      }),
+      subscribe: () => () => {}
+    }
+  });
+
+  let browser;
+  try {
+    browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1280, height: 820 } });
+    await page.goto(`${service.origin}/`);
+    await page.waitForSelector('[data-server-login]');
+    await page.locator('[data-server-password]').fill('wrong-password');
+    await page.locator('[data-server-login-submit]').click();
+    await page.waitForFunction(() => document.querySelector('[data-server-login-error]')?.textContent?.trim());
+    assert.match(await page.locator('[data-server-login-error]').innerText(), /封禁|banned/i);
+    assert.equal(await page.locator('[data-server-login-submit]').isDisabled(), true);
   } finally {
     await browser?.close();
     await service.close();

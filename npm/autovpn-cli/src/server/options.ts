@@ -8,9 +8,15 @@ export interface ServeOptions {
   host: string;
   port: number;
   projectRoot: string;
+  proxy: {
+    enabled: boolean;
+    url: string;
+  };
   auth: {
     enabled: boolean;
     token: string;
+    password: string;
+    maxAttempts: number;
   };
 }
 
@@ -18,6 +24,7 @@ export interface ParseServeOptionsContext {
   cwd: string;
   env: NodeJS.ProcessEnv;
   randomToken?: () => string;
+  randomPassword?: () => string;
 }
 
 function hasFlag(argv: string[], flag: string): boolean {
@@ -32,6 +39,26 @@ function defaultRandomToken(): string {
   return crypto.randomBytes(18).toString('base64url');
 }
 
+function defaultRandomPassword(): string {
+  return crypto.randomBytes(9).toString('base64url');
+}
+
+const DEFAULT_PROXY_URL = 'http://127.0.0.1:7897';
+
+function optionalFlagValue(argv: string[], flag: string): string {
+  for (let index = 0; index < argv.length; index += 1) {
+    const value = argv[index];
+    if (value.startsWith(`${flag}=`)) {
+      return value.slice(flag.length + 1);
+    }
+    if (value === flag) {
+      const next = argv[index + 1] ?? '';
+      return next && !next.startsWith('--') ? next : '';
+    }
+  }
+  return '';
+}
+
 export function parseServeOptions(argv: string[], context: ParseServeOptionsContext): ServeOptions {
   const host = readOptionValue(argv, '--host') ?? context.env.AUTOVPN_SERVER_HOST ?? '127.0.0.1';
   const portText = readOptionValue(argv, '--port') ?? context.env.AUTOVPN_SERVER_PORT ?? '8765';
@@ -41,18 +68,34 @@ export function parseServeOptions(argv: string[], context: ParseServeOptionsCont
   }
 
   const token = readOptionValue(argv, '--token') ?? context.env.AUTOVPN_SERVER_TOKEN ?? '';
+  const password = readOptionValue(argv, '--password')
+    ?? context.env.AUTOVPN_SERVER_PASSWORD
+    ?? (context.randomPassword ?? defaultRandomPassword)();
+  const maxAttemptsText = readOptionValue(argv, '--max-auth-attempts') ?? context.env.AUTOVPN_SERVER_MAX_AUTH_ATTEMPTS ?? '5';
+  const maxAttempts = Number(maxAttemptsText);
+  if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 100) {
+    throw new CliUsageError('serve --max-auth-attempts must be an integer from 1 to 100');
+  }
   const noAuth = hasFlag(argv, '--no-auth');
-  if (!isLoopbackHost(host) && !token && !noAuth) {
-    throw new CliUsageError('serve requires --token or --no-auth when binding to non-loopback host');
+  if (!isLoopbackHost(host) && !token && !password && !noAuth) {
+    throw new CliUsageError('serve requires --token, --password, or --no-auth when binding to non-loopback host');
   }
 
   return {
     host,
     port,
     projectRoot: path.resolve(resolveProjectRoot(argv, context.cwd)),
+    proxy: {
+      enabled: hasFlag(argv, '--proxy') || argv.some((value) => value.startsWith('--proxy=')),
+      url: optionalFlagValue(argv, '--proxy') || DEFAULT_PROXY_URL
+    },
     auth: noAuth
-      ? { enabled: false, token: '' }
-      : { enabled: true, token: token || (context.randomToken ?? defaultRandomToken)() }
+      ? { enabled: false, token: '', password: '', maxAttempts }
+      : {
+        enabled: true,
+        token: token || (context.randomToken ?? defaultRandomToken)(),
+        password,
+        maxAttempts
+      }
   };
 }
-

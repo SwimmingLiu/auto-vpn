@@ -1,4 +1,5 @@
 import http from 'node:http';
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, URL } from 'node:url';
@@ -21,43 +22,39 @@ export interface CreateAutoVpnServerOptions extends ServeOptions {
   backendKind?: string;
 }
 
-const SENSITIVE_KEYS = new Set([
-  'key',
-  'token',
-  'api_token',
-  'cloudflare_api_token',
-  'cloudflare_global_key',
-  'subscription_url',
-  'verify_subscription_url',
-  'secret_query',
-  'pages_secret_admin',
-  'share_project_sub_value'
+const LABELED_SECRET_KEYS = new Map([
+  ['cloudflare_api_token', '<Cloudflare Token>'],
+  ['cloudflare_global_key', '<Cloudflare Token>'],
+  ['pages_secret_admin', '<Pages Secret ADMIN>']
 ]);
 
-function redactPayload(value: unknown, parentKey = ''): unknown {
+type RedactionMode = 'full' | 'config';
+
+function redactPayload(value: unknown, parentKey = '', mode: RedactionMode = 'full'): unknown {
   if (typeof value === 'string') {
-    if (SENSITIVE_KEYS.has(parentKey.toLowerCase())) {
-      return value ? '<redacted>' : '';
+    const label = LABELED_SECRET_KEYS.get(parentKey.toLowerCase());
+    if (label) {
+      return value ? label : '';
     }
-    return redactText(value);
+    return mode === 'config' ? value : redactText(value);
   }
   if (value === null || ['number', 'boolean'].includes(typeof value)) {
     return value;
   }
   if (Array.isArray(value)) {
-    return value.map((item) => redactPayload(item, parentKey));
+    return value.map((item) => redactPayload(item, parentKey, mode));
   }
   if (typeof value === 'object') {
     return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, redactPayload(item, key)])
+      Object.entries(value as Record<string, unknown>).map(([key, item]) => [key, redactPayload(item, key, mode)])
     );
   }
   return null;
 }
 
-function writeJson(response: http.ServerResponse, statusCode: number, payload: unknown): void {
+function writeJson(response: http.ServerResponse, statusCode: number, payload: unknown, mode: RedactionMode = 'full'): void {
   response.writeHead(statusCode, { 'Content-Type': 'application/json; charset=utf-8' });
-  response.end(JSON.stringify(redactPayload(payload)));
+  response.end(JSON.stringify(redactPayload(payload, '', mode)));
 }
 
 function contentType(filePath: string): string {
@@ -74,8 +71,9 @@ function rendererRoot(): string {
 }
 
 async function writeStaticFile(response: http.ServerResponse, statusCode: number, filePath: string, body?: string | Buffer): Promise<void> {
+  const payload = body ?? await fs.readFile(filePath);
   response.writeHead(statusCode, { 'Content-Type': contentType(filePath) });
-  response.end(body ?? await fs.readFile(filePath));
+  response.end(payload);
 }
 
 async function serveRendererIndex(response: http.ServerResponse): Promise<void> {
@@ -95,10 +93,6 @@ async function serveRendererAsset(url: URL, response: http.ServerResponse): Prom
     await serveRendererIndex(response);
     return true;
   }
-  if (url.pathname === '/web-adapter.js') {
-    await writeStaticFile(response, 200, 'web-adapter.js', renderWebAdapterScript());
-    return true;
-  }
   const decodedPath = decodeURIComponent(url.pathname.replace(/^\/+/, ''));
   if (!decodedPath || decodedPath.includes('..') || path.isAbsolute(decodedPath)) {
     return false;
@@ -116,15 +110,25 @@ async function serveRendererAsset(url: URL, response: http.ServerResponse): Prom
   }
 }
 
+function timingSafeEqualText(left: string, right: string): boolean {
+  const leftBuffer = Buffer.from(left);
+  const rightBuffer = Buffer.from(right);
+  return leftBuffer.length === rightBuffer.length && crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
 function isAuthorized(request: http.IncomingMessage, url: URL, auth: ServeOptions['auth']): boolean {
   if (!auth.enabled) {
     return true;
   }
   const authorization = request.headers.authorization ?? '';
-  if (authorization === `Bearer ${auth.token}`) {
+  if (authorization.startsWith('Bearer ') && timingSafeEqualText(authorization.slice(7), auth.token)) {
     return true;
   }
-  return url.searchParams.get('token') === auth.token;
+  return timingSafeEqualText(url.searchParams.get('token') ?? '', auth.token);
+}
+
+function clientIp(request: http.IncomingMessage): string {
+  return request.socket.remoteAddress || 'unknown';
 }
 
 async function readJsonBody(request: http.IncomingMessage): Promise<Record<string, unknown>> {
@@ -147,15 +151,52 @@ async function readJsonBody(request: http.IncomingMessage): Promise<Record<strin
 }
 
 export async function createAutoVpnServer(options: CreateAutoVpnServerOptions): Promise<AutoVpnServer> {
+  const authFailures = new Map<string, { failures: number; banned: boolean }>();
   const server = http.createServer(async (request, response) => {
     const url = new URL(request.url ?? '/', `http://${request.headers.host ?? `${options.host}:${options.port}`}`);
+    const ip = clientIp(request);
+    const authState = authFailures.get(ip);
 
-    if (url.pathname.startsWith('/api/') && !isAuthorized(request, url, options.auth)) {
-      writeJson(response, 401, { ok: false, error: 'unauthorized' });
+    if (authState?.banned) {
+      writeJson(response, 403, { ok: false, error: 'ip_banned' });
       return;
     }
 
     try {
+      if (request.method === 'POST' && url.pathname === '/api/auth/login') {
+        const password = String((await readJsonBody(request)).password ?? '');
+        if (!options.auth.enabled || !options.auth.password || timingSafeEqualText(password, options.auth.password)) {
+          authFailures.delete(ip);
+          writeJson(response, 200, { ok: true, token: options.auth.token });
+          return;
+        }
+        const nextFailures = (authState?.failures ?? 0) + 1;
+        if (nextFailures >= options.auth.maxAttempts) {
+          authFailures.set(ip, { failures: nextFailures, banned: true });
+          writeJson(response, 403, { ok: false, error: 'ip_banned' });
+          return;
+        }
+        authFailures.set(ip, { failures: nextFailures, banned: false });
+        writeJson(response, 401, {
+          ok: false,
+          error: 'invalid_password',
+          attemptsRemaining: options.auth.maxAttempts - nextFailures
+        });
+        return;
+      }
+
+      if (request.method === 'GET' && url.pathname === '/web-adapter.js') {
+        await writeStaticFile(response, 200, 'web-adapter.js', renderWebAdapterScript({
+          passwordEnabled: Boolean(options.auth.enabled && options.auth.password)
+        }));
+        return;
+      }
+
+      if (url.pathname.startsWith('/api/') && !isAuthorized(request, url, options.auth)) {
+        writeJson(response, 401, { ok: false, error: 'unauthorized' });
+        return;
+      }
+
       if (request.method === 'GET' && url.pathname === '/api/health') {
         writeJson(response, 200, {
           status: 'ok',
@@ -167,13 +208,13 @@ export async function createAutoVpnServer(options: CreateAutoVpnServerOptions): 
       }
 
       if (request.method === 'GET' && url.pathname === '/api/state') {
-        writeJson(response, 200, await options.runtime.loadState());
+        writeJson(response, 200, await options.runtime.loadState(), 'config');
         return;
       }
 
       if (request.method === 'POST' && url.pathname === '/api/profile') {
         const body = await readJsonBody(request);
-        writeJson(response, 200, await options.runtime.saveProfile?.(body) ?? { ok: false, error: 'profile_save_unavailable' });
+        writeJson(response, 200, await options.runtime.saveProfile?.(body) ?? { ok: false, error: 'profile_save_unavailable' }, 'config');
         return;
       }
 

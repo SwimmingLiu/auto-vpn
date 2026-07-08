@@ -28,12 +28,12 @@ test('health requires bearer token when auth is enabled', async () => {
   }
 });
 
-test('state response is redacted before leaving API', async () => {
+test('state response only redacts Cloudflare token and Pages Secret ADMIN with field labels', async () => {
   const service = await createAutoVpnServer({
     host: '127.0.0.1',
     port: 0,
     projectRoot: '/repo',
-    auth: { enabled: false, token: '' },
+    auth: { enabled: false, token: '', password: '', maxAttempts: 5 },
     runtime: {
       loadState: async () => ({
         profile: {
@@ -44,7 +44,9 @@ test('state response is redacted before leaving API', async () => {
             }
           },
           deploy: {
-            cloudflare_api_token: 'cloudflare-secret'
+            cloudflare_api_token: 'cloudflare-secret',
+            pages_secret_admin: 'admin-secret',
+            subscription_url: 'https://vpn.example/sub?token=editable-token'
           }
         },
         runState: 'idle'
@@ -56,8 +58,113 @@ test('state response is redacted before leaving API', async () => {
     const response = await fetch(`${service.origin}/api/state`);
     assert.equal(response.status, 200);
     const text = await response.text();
-    assert.doesNotMatch(text, /secret-token|source-key|cloudflare-secret/);
-    assert.match(text, /redacted/i);
+    assert.match(text, /secret-token|source-key|editable-token/);
+    assert.doesNotMatch(text, /cloudflare-secret|admin-secret/);
+    assert.match(text, /<Cloudflare Token>/);
+    assert.match(text, /<Pages Secret ADMIN>/);
+  } finally {
+    await service.close();
+  }
+});
+
+test('password auth issues a token and bans an IP after too many failures', async () => {
+  const service = await createAutoVpnServer({
+    host: '127.0.0.1',
+    port: 0,
+    projectRoot: '/repo',
+    auth: { enabled: true, token: 'server-token', password: 'server-password', maxAttempts: 2 },
+    runtime: {
+      loadState: async () => ({ profile: { sources: {} }, runState: 'idle' })
+    }
+  });
+
+  try {
+    const denied = await fetch(`${service.origin}/api/state`);
+    assert.equal(denied.status, 401);
+
+    const wrong = await fetch(`${service.origin}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: 'wrong' })
+    });
+    assert.equal(wrong.status, 401);
+    assert.deepEqual(await wrong.json(), { ok: false, error: 'invalid_password', attemptsRemaining: 1 });
+
+    const banned = await fetch(`${service.origin}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: 'wrong-again' })
+    });
+    assert.equal(banned.status, 403);
+    assert.deepEqual(await banned.json(), { ok: false, error: 'ip_banned' });
+
+    const stillBanned = await fetch(`${service.origin}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: 'server-password' })
+    });
+    assert.equal(stillBanned.status, 403);
+  } finally {
+    await service.close();
+  }
+});
+
+test('password auth accepts the password before an IP is banned', async () => {
+  const service = await createAutoVpnServer({
+    host: '127.0.0.1',
+    port: 0,
+    projectRoot: '/repo',
+    auth: { enabled: true, token: 'server-token', password: 'server-password', maxAttempts: 5 },
+    runtime: {
+      loadState: async () => ({ profile: { sources: {} }, runState: 'idle' })
+    }
+  });
+
+  try {
+    const login = await fetch(`${service.origin}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: 'server-password' })
+    });
+    assert.equal(login.status, 200);
+    assert.deepEqual(await login.json(), { ok: true, token: 'server-token' });
+
+    const allowed = await fetch(`${service.origin}/api/state`, {
+      headers: { Authorization: 'Bearer server-token' }
+    });
+    assert.equal(allowed.status, 200);
+  } finally {
+    await service.close();
+  }
+});
+
+test('password auth does not trust spoofed forwarded-for headers', async () => {
+  const service = await createAutoVpnServer({
+    host: '127.0.0.1',
+    port: 0,
+    projectRoot: '/repo',
+    auth: { enabled: true, token: 'server-token', password: 'server-password', maxAttempts: 2 },
+    runtime: {
+      loadState: async () => ({ profile: { sources: {} }, runState: 'idle' })
+    }
+  });
+
+  try {
+    const firstWrong = await fetch(`${service.origin}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': '198.51.100.10' },
+      body: JSON.stringify({ password: 'wrong' })
+    });
+    assert.equal(firstWrong.status, 401);
+    assert.deepEqual(await firstWrong.json(), { ok: false, error: 'invalid_password', attemptsRemaining: 1 });
+
+    const secondWrong = await fetch(`${service.origin}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': '203.0.113.20' },
+      body: JSON.stringify({ password: 'wrong-again' })
+    });
+    assert.equal(secondWrong.status, 403);
+    assert.deepEqual(await secondWrong.json(), { ok: false, error: 'ip_banned' });
   } finally {
     await service.close();
   }
@@ -210,6 +317,30 @@ test('root serves renderer html with web adapter before app script', async () =>
     const html = await response.text();
     assert.match(html, /web-adapter\.js/);
     assert.ok(html.indexOf('/web-adapter.js') < html.indexOf('./app.js'));
+  } finally {
+    await service.close();
+  }
+});
+
+test('missing static assets return 404 without crashing the server', async () => {
+  const service = await createAutoVpnServer({
+    host: '127.0.0.1',
+    port: 0,
+    projectRoot: '/repo',
+    auth: { enabled: false, token: '' },
+    runtime: {
+      loadState: async () => ({ profile: {}, runState: 'idle' })
+    }
+  });
+
+  try {
+    const missing = await fetch(`${service.origin}/favicon.ico`);
+    assert.equal(missing.status, 404);
+    assert.deepEqual(await missing.json(), { ok: false, error: 'not_found' });
+
+    const health = await fetch(`${service.origin}/api/health`);
+    assert.equal(health.status, 200);
+    assert.equal((await health.json()).status, 'ok');
   } finally {
     await service.close();
   }

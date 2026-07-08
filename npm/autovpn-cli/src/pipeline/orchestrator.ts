@@ -64,7 +64,7 @@ export interface PipelineSummary {
   source_counts: Record<string, Record<string, number>>;
   deployment: Record<string, unknown>;
   retry_context: Record<string, unknown>;
-  run_status: 'success' | 'failed';
+  run_status: 'running' | 'success' | 'failed' | 'stopped';
   error: string;
 }
 
@@ -279,7 +279,7 @@ async function seedRetryArtifact(sourceArtifactDir: string, retryArtifactDir: st
     source_counts: { ...((sourceReport.source_counts ?? {}) as Record<string, Record<string, number>>) },
     deployment: { ...((sourceReport.deployment ?? {}) as Record<string, unknown>) },
     retry_context: retryContext,
-    run_status: 'success',
+    run_status: 'running',
     error: ''
   };
 
@@ -318,7 +318,9 @@ function pipelineSummaryFromReport(artifactDir: string, report: Record<string, u
     source_counts: { ...((report.source_counts ?? {}) as Record<string, Record<string, number>>) },
     deployment: { ...((report.deployment ?? {}) as Record<string, unknown>) },
     retry_context: { ...((report.retry_context ?? {}) as Record<string, unknown>) },
-    run_status: String(report.run_status ?? 'success') === 'failed' ? 'failed' : 'success',
+    run_status: ['running', 'success', 'failed', 'stopped'].includes(String(report.run_status ?? ''))
+      ? String(report.run_status) as PipelineSummary['run_status']
+      : 'running',
     error: String(report.error ?? '')
   };
 }
@@ -450,7 +452,7 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
     source_counts: {},
     deployment: {},
     retry_context: {},
-    run_status: 'success',
+    run_status: 'running',
     error: ''
   };
 
@@ -482,19 +484,26 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
     const profile = await readProfile(projectRoot, env);
 
     await setStage('extract', 'running');
-    const extractResults: ExtractedSourceResult[] = [];
-    for (const [sourceName, source] of enabledSources(profile)) {
+    const sourcesToRun = enabledSources(profile);
+    const extractResults: ExtractedSourceResult[] = await Promise.all(sourcesToRun.map(async ([sourceName, source]) => {
       const result = context.stages?.extract
         ? await context.stages.extract({ source_name: sourceName, source })
-        : await fetchSourceLinksWithBackend({ source_name: sourceName, source }, { cwd: projectRoot, env: runtimeStageEnv });
-      extractResults.push(result);
+        : await fetchSourceLinksWithBackend({ source_name: sourceName, source }, {
+          cwd: projectRoot,
+          env: runtimeStageEnv,
+          eventCallback: (type, payload) => emit(type, payload)
+        });
       summary.source_counts[result.source_name] = {
         raw_links: result.links.length,
         successful_iterations: result.successful_iterations,
         failed_iterations: result.failed_iterations
       };
-    }
+      return result;
+    }));
     const rawLinks = extractResults.flatMap((result) => result.links);
+    if (sourcesToRun.length > 0 && rawLinks.length === 0 && extractResults.some((result) => result.requested_iterations > 0 || result.failed_iterations > 0)) {
+      throw new Error('No links extracted from configured sources');
+    }
     summary.counts.raw_links = rawLinks.length;
     await writeLines(artifactDir, 'vpn_node_raw.txt', rawLinks);
     await setStage('extract', 'success');
@@ -610,6 +619,7 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
     throw error;
   }
 
+  summary.run_status = 'success';
   await writeReport();
   emit('summary', summary as unknown as Record<string, unknown>);
   return summary;
