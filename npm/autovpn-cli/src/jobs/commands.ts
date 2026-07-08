@@ -32,6 +32,8 @@ export interface DetachedRunCommand {
   resumeLatest?: boolean;
   skipDeploy?: boolean;
   skipVerify?: boolean;
+  useProxy?: boolean;
+  proxyUrl?: string;
   outputFormat?: 'jsonl' | 'human';
   sourceJobId?: string;
 }
@@ -94,6 +96,32 @@ function spawnDetached(command: string, args: string[], job: JobRecord, options:
   }
 }
 
+function markArtifactStopped(job: JobRecord): void {
+  const artifactDir = String(job.artifact_dir ?? '');
+  if (!artifactDir) {
+    return;
+  }
+  const reportPath = path.join(artifactDir, 'pipeline_report.json');
+  if (!fs.existsSync(reportPath)) {
+    return;
+  }
+  try {
+    const report = JSON.parse(fs.readFileSync(reportPath, 'utf8')) as Record<string, any>;
+    const stageStatus = { ...((report.stage_status ?? {}) as Record<string, unknown>) };
+    for (const [stage, status] of Object.entries(stageStatus)) {
+      if (status === 'running') {
+        stageStatus[stage] = 'failed';
+      }
+    }
+    report.stage_status = stageStatus;
+    report.run_status = 'stopped';
+    report.error = report.error || 'Stopped by user';
+    fs.writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
+  } catch {
+    // Best-effort cleanup so stopping a job never fails because its report is corrupt.
+  }
+}
+
 export async function startDetachedRun(command: DetachedRunCommand, options: JobCommandOptions = {}): Promise<JobRecord> {
   const outputFormat = command.outputFormat ?? 'jsonl';
   const jobStore = createJobStore(command.projectRoot, options);
@@ -108,6 +136,8 @@ export async function startDetachedRun(command: DetachedRunCommand, options: Job
       resume_latest: Boolean(command.resumeLatest),
       skip_deploy: Boolean(command.skipDeploy),
       skip_verify: Boolean(command.skipVerify),
+      use_proxy: Boolean(command.useProxy),
+      proxy_url: command.proxyUrl ?? '',
       output_format: outputFormat
     }
   });
@@ -115,6 +145,12 @@ export async function startDetachedRun(command: DetachedRunCommand, options: Job
   pushFlag(runArgs, command.resumeLatest, '--resume-latest');
   pushFlag(runArgs, command.skipDeploy, '--skip-deploy');
   pushFlag(runArgs, command.skipVerify, '--skip-verify');
+  if (command.useProxy) {
+    runArgs.push('--proxy');
+    if (command.proxyUrl) {
+      runArgs.push(command.proxyUrl);
+    }
+  }
   job.command = [resolved.command, ...resolved.args, ...runArgs];
   const child = spawnDetached(resolved.command, [...resolved.args, ...runArgs], job, options);
   job.pid = Number(child.pid ?? 0);
@@ -200,6 +236,7 @@ export async function stopManagedJob(projectRoot: string, jobId: string, options
     throw new Error(`refusing to stop pid ${pid}: command does not match AutoVPN job`);
   }
   await terminateProcessGroup(pid, options);
+  markArtifactStopped(job);
   job.status = 'stopped';
   job.finished_at = options.now?.() ?? new Date().toISOString().replace(/\.\d{3}Z$/, '+00:00');
   job.exit_code = 1;

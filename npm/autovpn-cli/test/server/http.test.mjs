@@ -28,7 +28,7 @@ test('health requires bearer token when auth is enabled', async () => {
   }
 });
 
-test('state response is redacted before leaving API', async () => {
+test('state response redacts source and deployment secrets', async () => {
   const service = await createAutoVpnServer({
     host: '127.0.0.1',
     port: 0,
@@ -44,7 +44,8 @@ test('state response is redacted before leaving API', async () => {
             }
           },
           deploy: {
-            cloudflare_api_token: 'cloudflare-secret'
+            cloudflare_api_token: 'cloudflare-secret',
+            subscription_url: 'https://vpn.example/sub?token=editable-token'
           }
         },
         runState: 'idle'
@@ -56,7 +57,7 @@ test('state response is redacted before leaving API', async () => {
     const response = await fetch(`${service.origin}/api/state`);
     assert.equal(response.status, 200);
     const text = await response.text();
-    assert.doesNotMatch(text, /secret-token|source-key|cloudflare-secret/);
+    assert.doesNotMatch(text, /secret-token|source-key|editable-token|cloudflare-secret/);
     assert.match(text, /redacted/i);
   } finally {
     await service.close();
@@ -210,6 +211,30 @@ test('root serves renderer html with web adapter before app script', async () =>
     const html = await response.text();
     assert.match(html, /web-adapter\.js/);
     assert.ok(html.indexOf('/web-adapter.js') < html.indexOf('./app.js'));
+  } finally {
+    await service.close();
+  }
+});
+
+test('missing static assets return 404 without crashing the server', async () => {
+  const service = await createAutoVpnServer({
+    host: '127.0.0.1',
+    port: 0,
+    projectRoot: '/repo',
+    auth: { enabled: false, token: '' },
+    runtime: {
+      loadState: async () => ({ profile: {}, runState: 'idle' })
+    }
+  });
+
+  try {
+    const missing = await fetch(`${service.origin}/favicon.ico`);
+    assert.equal(missing.status, 404);
+    assert.deepEqual(await missing.json(), { ok: false, error: 'not_found' });
+
+    const health = await fetch(`${service.origin}/api/health`);
+    assert.equal(health.status, 200);
+    assert.equal((await health.json()).status, 'ok');
   } finally {
     await service.close();
   }

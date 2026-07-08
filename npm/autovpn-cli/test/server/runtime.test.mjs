@@ -6,7 +6,7 @@ import test from 'node:test';
 
 import { createServerRuntime, sanitizeProfileForServer } from '../../dist/server/runtime.js';
 
-test('server profile redacts source urls and keys', () => {
+test('server profile redacts source and deployment secrets while keeping non-secret config editable', () => {
   const profile = sanitizeProfileForServer({
     sources: {
       demo: { url: 'https://provider.example/private/abc123', key: 'source-key', enabled: true }
@@ -19,10 +19,12 @@ test('server profile redacts source urls and keys', () => {
   });
 
   const text = JSON.stringify(profile);
-  assert.doesNotMatch(text, /private\/abc123|source-key|cloudflare-secret|vpn\.example\/sub/);
+  assert.doesNotMatch(text, /private\/abc123|source-key|vpn\.example\/sub|cloudflare-secret/);
   assert.equal(profile.sources.demo.url, '<redacted>');
   assert.equal(profile.sources.demo.key, '<redacted>');
   assert.equal(profile.deploy.pages_project_url, 'https://sub-nodes.pages.dev');
+  assert.equal(profile.deploy.subscription_url, '<redacted>');
+  assert.equal(profile.deploy.cloudflare_api_token, '<redacted>');
 });
 
 test('server runtime starts and stops managed detached jobs', async () => {
@@ -56,12 +58,93 @@ test('server runtime starts and stops managed detached jobs', async () => {
     ok: true,
     requested: true,
     job_id: 'job-1',
-    status: 'stopped'
+    status: 'stopped',
+    stopped: true
   });
   assert.deepEqual(calls, [
     ['start', { projectRoot, skipDeploy: true, skipVerify: true, resumeLatest: false, outputFormat: 'jsonl' }],
     ['stop', 'job-1']
   ]);
+});
+
+test('server runtime forwards opt-in proxy settings through worker env without forcing CLI Python proxy mode', async () => {
+  const calls = [];
+  const execOptions = [];
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-runtime-proxy-'));
+  const runtime = createServerRuntime({
+    projectRoot,
+    env: { VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, 'state') },
+    proxy: { enabled: true, url: 'http://127.0.0.1:7897' },
+    startDetachedRun: async (command, options) => {
+      calls.push(command);
+      execOptions.push(options);
+      return {
+        job_id: 'job-proxy',
+        status: 'running',
+        event_log: path.join(projectRoot, 'state', 'jobs', 'job-proxy', 'events.jsonl')
+      };
+    },
+    followLog: async function* () {}
+  });
+
+  await runtime.startRun?.({ skipDeploy: true, skipVerify: true });
+
+  assert.equal(calls[0].useProxy, undefined);
+  assert.equal(calls[0].proxyUrl, undefined);
+  assert.equal(execOptions[0].env.VPN_AUTOMATION_USE_UPSTREAM_PROXY, '1');
+  assert.equal(execOptions[0].env.VPN_AUTOMATION_UPSTREAM_PROXY, 'http://127.0.0.1:7897');
+});
+
+test('server runtime stop reports terminal state when logs already marked run failed', async () => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-runtime-stop-failed-'));
+  const runtime = createServerRuntime({
+    projectRoot,
+    env: { VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, 'state') },
+    startDetachedRun: async () => ({
+      job_id: 'job-failed-before-stop',
+      status: 'running',
+      event_log: path.join(projectRoot, 'state', 'jobs', 'job-failed-before-stop', 'events.jsonl')
+    }),
+    stopManagedJob: async () => {
+      throw new Error('stop should not be called for a terminal run');
+    },
+    followLog: async function* () {
+      yield JSON.stringify({ type: 'run_failed', error: 'Error: fetch failed' }) + '\n';
+    }
+  });
+
+  await runtime.startRun?.({ skipDeploy: true, skipVerify: true });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(await runtime.stopRun?.(), {
+    ok: true,
+    requested: false,
+    run_state: 'failed'
+  });
+});
+
+test('server runtime marks run failed when followed logs emit run_failed', async () => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-runtime-failed-'));
+  const runtime = createServerRuntime({
+    projectRoot,
+    env: { VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, 'state') },
+    startDetachedRun: async () => ({
+      job_id: 'job-failed',
+      status: 'running',
+      event_log: path.join(projectRoot, 'state', 'jobs', 'job-failed', 'events.jsonl')
+    }),
+    followLog: async function* () {
+      yield JSON.stringify({ type: 'stage', stage: 'extract', status: 'failed' }) + '\n';
+      yield JSON.stringify({ type: 'summary', run_status: 'failed', error: 'Error: fetch failed' }) + '\n';
+      yield JSON.stringify({ type: 'run_failed', error: 'Error: fetch failed' }) + '\n';
+    }
+  });
+
+  await runtime.startRun?.({ skipDeploy: true, skipVerify: true });
+  await new Promise((resolve) => setImmediate(resolve));
+  const state = await runtime.loadState();
+
+  assert.equal(state.runState, 'failed');
 });
 
 test('server runtime starts retry jobs and preserves redacted secrets when saving profile', async () => {
@@ -140,7 +223,7 @@ test('server runtime state includes latest artifact preview and retry artifacts'
   });
 
   const state = await runtime.loadState();
-  assert.equal(state.artifact?.artifact_dir, artifactDir);
+  assert.equal(fs.realpathSync(String(state.artifact?.artifact_dir)), fs.realpathSync(artifactDir));
   assert.equal(state.artifact?.run_status, 'success');
   assert.equal(state.deployment?.pages_project_url, 'https://sub-nodes.pages.dev');
   assert.equal(state.retryArtifacts?.length, 1);

@@ -11,6 +11,8 @@ type FetchLike = (url: string, init?: Record<string, unknown>) => Promise<{
   status?: number;
   text(): Promise<string>;
 }>;
+type CurlFetchLike = (url: string, proxyUrl: string) => Promise<string>;
+type ExtractEventCallback = (type: string, payload: Record<string, unknown>) => void;
 
 interface ResolvedPythonCli {
   command: string;
@@ -50,6 +52,8 @@ export interface ExtractBackendOptions {
   env?: NodeJS.ProcessEnv;
   spawn?: SpawnLike;
   fetch?: FetchLike;
+  curlFetch?: CurlFetchLike;
+  eventCallback?: ExtractEventCallback;
   resolvePythonCli?: () => ResolvedPythonCli | Promise<ResolvedPythonCli>;
   fetchSourceLinks?: (input: ExtractInput) => ExtractedSourceResult | Promise<ExtractedSourceResult>;
   pythonExtract?: (input: ExtractInput) => ExtractedSourceResult | Promise<ExtractedSourceResult>;
@@ -212,6 +216,128 @@ async function fetchWithTimeout(fetchImpl: FetchLike, url: string, timeoutMs: nu
   }
 }
 
+function isEnabled(value: unknown): boolean {
+  return ['1', 'true', 'yes', 'on'].includes(String(value ?? '').trim().toLowerCase());
+}
+
+function resolveUpstreamProxyUrl(env: NodeJS.ProcessEnv): string {
+  if (!isEnabled(env.VPN_AUTOMATION_USE_UPSTREAM_PROXY)) {
+    return '';
+  }
+  const value = String(env.VPN_AUTOMATION_UPSTREAM_PROXY ?? 'http://127.0.0.1:7897').trim();
+  return ['', 'off', 'none', 'false', '0'].includes(value.toLowerCase()) ? '' : value;
+}
+
+function isTlsFailure(error: unknown): boolean {
+  const text = error instanceof Error
+    ? `${error.name}: ${error.message}`.toLowerCase()
+    : String(error).toLowerCase();
+  if (text.includes('ssl') || text.includes('tls') || text.includes('certificate')) {
+    return true;
+  }
+  const cause = error instanceof Error ? (error as Error & { cause?: unknown }).cause : undefined;
+  if (cause) {
+    return isTlsFailure(cause);
+  }
+  return false;
+}
+
+function defaultCurlFetch(url: string, proxyUrl: string, spawn: SpawnLike = defaultSpawn): Promise<string> {
+  const args = [
+    '--fail',
+    '--silent',
+    '--show-error',
+    '--location',
+    '--max-time',
+    '20',
+    '--connect-timeout',
+    '10',
+    '--insecure',
+    '--http1.1',
+    '--config',
+    '-'
+  ];
+  if (proxyUrl) {
+    args.push('--proxy', proxyUrl);
+  } else {
+    args.push('--noproxy', '*');
+  }
+
+  const child = spawn('curl', args, { stdio: ['pipe', 'pipe', 'pipe'] });
+  let stdout = '';
+  let stderr = '';
+  child.stdout?.on('data', (chunk) => {
+    stdout += String(chunk);
+  });
+  child.stderr?.on('data', (chunk) => {
+    stderr += String(chunk);
+  });
+  const completion = new Promise<string>((resolve, reject) => {
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve(stdout);
+        return;
+      }
+      reject(new Error((stderr || stdout || 'curl TLS fallback failed').trim()));
+    });
+  });
+  child.stdin?.write(`url = ${JSON.stringify(url)}\n`);
+  child.stdin?.end();
+  return completion;
+}
+
+function emitExtractEvent(options: ExtractBackendOptions, type: string, payload: Record<string, unknown>): void {
+  options.eventCallback?.(type, payload);
+}
+
+async function fetchSourceText(
+  input: ExtractInput,
+  url: string,
+  attempt: number,
+  fetchImpl: FetchLike,
+  options: ExtractBackendOptions,
+  upstreamProxy: string
+): Promise<{ text: string; via: string }> {
+  try {
+    const response = await fetchWithTimeout(fetchImpl, url, 20_000);
+    if (response.ok === false || Number(response.status ?? 200) >= 400) {
+      throw new Error(`HTTP ${Number(response.status ?? 0)}`);
+    }
+    const text = await response.text();
+    emitExtractEvent(options, 'extract_request_result', {
+      source_name: input.source_name,
+      iteration: attempt,
+      success: true,
+      via: 'direct'
+    });
+    return { text, via: 'direct' };
+  } catch (error) {
+    const shouldRetry = Boolean(upstreamProxy) || isTlsFailure(error);
+    emitExtractEvent(options, 'extract_request_result', {
+      source_name: input.source_name,
+      iteration: attempt,
+      success: false,
+      via: 'direct',
+      error: error instanceof Error ? `${error.constructor.name}: ${error.message}` : String(error),
+      will_retry: shouldRetry
+    });
+    if (!shouldRetry) {
+      throw error;
+    }
+    const curlFetch = options.curlFetch ?? ((targetUrl, proxyUrl) => defaultCurlFetch(targetUrl, proxyUrl, options.spawn));
+    const text = await curlFetch(url, upstreamProxy);
+    const via = upstreamProxy ? 'upstream_proxy_curl_tls_fallback' : 'direct_curl_tls_fallback';
+    emitExtractEvent(options, 'extract_request_result', {
+      source_name: input.source_name,
+      iteration: attempt,
+      success: true,
+      via
+    });
+    return { text, via };
+  }
+}
+
 async function fetchSourceLinksInNode(input: ExtractInput, options: ExtractBackendOptions): Promise<ExtractedSourceResult> {
   const source = input.source;
   const maxIterations = Math.max(0, Math.trunc(numberOrDefault(source.max_iterations, 0)));
@@ -241,6 +367,14 @@ async function fetchSourceLinksInNode(input: ExtractInput, options: ExtractBacke
   let successes = 0;
   let failures = 0;
   const startedAt = Date.now();
+  const upstreamProxy = resolveUpstreamProxyUrl(options.env ?? process.env);
+
+  emitExtractEvent(options, 'extract_source_started', {
+    source_name: input.source_name,
+    requested_iterations: maxIterations,
+    min_iterations: minIterations,
+    resume_from_iteration: startIteration
+  });
 
   for (let iteration = startIteration - 1; iteration < maxIterations; iteration += 1) {
     const attempt = iteration + 1;
@@ -250,11 +384,24 @@ async function fetchSourceLinksInNode(input: ExtractInput, options: ExtractBacke
 
     try {
       const url = buildRuntimeSourceUrl(source, iteration);
-      const response = await fetchWithTimeout(fetchImpl, url, 20_000);
-      if (response.ok === false || Number(response.status ?? 200) >= 400) {
-        throw new Error(`HTTP ${Number(response.status ?? 0)}`);
+      const response = await fetchSourceText(input, url, attempt, fetchImpl, options, upstreamProxy);
+      let plaintext = '';
+      try {
+        plaintext = decryptPayload(response.text.trim(), source.key);
+        emitExtractEvent(options, 'extract_decrypt_result', {
+          source_name: input.source_name,
+          iteration: attempt,
+          success: true
+        });
+      } catch (decryptError) {
+        emitExtractEvent(options, 'extract_decrypt_result', {
+          source_name: input.source_name,
+          iteration: attempt,
+          success: false,
+          error: decryptError instanceof Error ? `${decryptError.constructor.name}: ${decryptError.message}` : String(decryptError)
+        });
+        throw decryptError;
       }
-      const plaintext = decryptPayload((await response.text()).trim(), source.key);
       const extracted = extractLinksFromPlaintext(input.source_name, plaintext);
       successes += 1;
       failures = 0;
@@ -267,13 +414,21 @@ async function fetchSourceLinksInNode(input: ExtractInput, options: ExtractBacke
         links.push(link);
         newItems += 1;
       }
+      emitExtractEvent(options, 'extract_iteration', {
+        source_name: input.source_name,
+        iteration: attempt,
+        requested_iterations: maxIterations,
+        new_items: newItems,
+        extracted_links: extracted.length,
+        total_links: links.length
+      });
       plateau = newItems === 0 ? plateau + 1 : 0;
       if (plateau >= plateauLimit && attempt >= minIterations) {
         break;
       }
     } catch (error) {
       failures += 1;
-      if (failures >= failureLimit && attempt >= minIterations) {
+      if (failures >= failureLimit) {
         break;
       }
       if (attempt >= maxIterations) {
@@ -281,6 +436,14 @@ async function fetchSourceLinksInNode(input: ExtractInput, options: ExtractBacke
       }
     }
   }
+
+  emitExtractEvent(options, 'extract_source_completed', {
+    source_name: input.source_name,
+    requested_iterations: maxIterations,
+    successful_iterations: successes,
+    failed_iterations: failures,
+    raw_links: links.length
+  });
 
   return {
     source_name: input.source_name,

@@ -243,7 +243,8 @@ export async function runCliShell(argv: string[], options: CliShellOptions = {})
       const serverFactory = options.createServer ?? createAutoVpnServer;
       const runtime = createServerRuntime({
         projectRoot: serveOptions.projectRoot,
-        env
+        env,
+        proxy: serveOptions.proxy
       });
       const server = await serverFactory({
         ...serveOptions,

@@ -8,6 +8,10 @@ export interface ServeOptions {
   host: string;
   port: number;
   projectRoot: string;
+  proxy: {
+    enabled: boolean;
+    url: string;
+  };
   auth: {
     enabled: boolean;
     token: string;
@@ -32,6 +36,20 @@ function defaultRandomToken(): string {
   return crypto.randomBytes(18).toString('base64url');
 }
 
+function optionalFlagValue(argv: string[], flag: string): string {
+  for (let index = 0; index < argv.length; index += 1) {
+    const value = argv[index];
+    if (value.startsWith(`${flag}=`)) {
+      return value.slice(flag.length + 1);
+    }
+    if (value === flag) {
+      const next = argv[index + 1] ?? '';
+      return next && !next.startsWith('--') ? next : '';
+    }
+  }
+  return '';
+}
+
 export function parseServeOptions(argv: string[], context: ParseServeOptionsContext): ServeOptions {
   const host = readOptionValue(argv, '--host') ?? context.env.AUTOVPN_SERVER_HOST ?? '127.0.0.1';
   const portText = readOptionValue(argv, '--port') ?? context.env.AUTOVPN_SERVER_PORT ?? '8765';
@@ -50,9 +68,12 @@ export function parseServeOptions(argv: string[], context: ParseServeOptionsCont
     host,
     port,
     projectRoot: path.resolve(resolveProjectRoot(argv, context.cwd)),
+    proxy: {
+      enabled: hasFlag(argv, '--proxy') || argv.some((value) => value.startsWith('--proxy=')),
+      url: optionalFlagValue(argv, '--proxy')
+    },
     auth: noAuth
       ? { enabled: false, token: '' }
       : { enabled: true, token: token || (context.randomToken ?? defaultRandomToken)() }
   };
 }
-

@@ -47,6 +47,10 @@ function defaultSignalProcess(target: number, signal: NodeJS.Signals, options: S
   process.kill(target, signal);
 }
 
+function isNoSuchProcess(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException)?.code === 'ESRCH';
+}
+
 function defaultSleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -65,20 +69,33 @@ export async function terminateProcessGroup(pid: number, options: StopProcessOpt
   const target = signalTarget(pid, platform);
 
   if (!isAlive(pid)) return;
-  if (signalProcess) {
-    signalProcess(target, 'SIGTERM');
-  } else {
-    defaultSignalProcess(target, 'SIGTERM', options);
+  try {
+    if (signalProcess) {
+      signalProcess(target, 'SIGTERM');
+    } else {
+      defaultSignalProcess(target, 'SIGTERM', options);
+    }
+  } catch (error) {
+    if (isNoSuchProcess(error)) {
+      return;
+    }
+    throw error;
   }
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline && isAlive(pid)) {
     await sleep(100);
   }
   if (isAlive(pid)) {
-    if (signalProcess) {
-      signalProcess(target, 'SIGKILL');
-    } else {
-      defaultSignalProcess(target, 'SIGKILL', options);
+    try {
+      if (signalProcess) {
+        signalProcess(target, 'SIGKILL');
+      } else {
+        defaultSignalProcess(target, 'SIGKILL', options);
+      }
+    } catch (error) {
+      if (!isNoSuchProcess(error)) {
+        throw error;
+      }
     }
   }
 }

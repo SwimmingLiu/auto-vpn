@@ -1037,12 +1037,29 @@ async function stopPipeline() {
   renderAll();
   appendLog(messages.pipelineStopping);
 
-  const result = await window.vpnAutomation.stopPipeline();
-  if (!result?.ok) {
-    state.runState = 'running';
-    touchUpdate();
-    renderAll();
-    appendLog(messages.stopUnavailable);
+  try {
+    const result = await window.vpnAutomation.stopPipeline();
+    if (!result?.ok) {
+      finishRun({ ok: false, error: result?.error || messages.stopUnavailable });
+      return;
+    }
+    if (result.requested === false) {
+      if (result.run_state === 'failed') {
+        finishRun({ ok: false, error: result.error || messages.stopUnavailable });
+      } else {
+        state.runState = 'idle';
+        state.runStartedAt = null;
+        touchUpdate();
+        renderAll();
+        appendLog(messages.stopUnavailable);
+      }
+      return;
+    }
+    if (result.stopped || result.status === 'stopped') {
+      finishRun({ stopped: true });
+    }
+  } catch (error) {
+    finishRun({ ok: false, error: error.message });
   }
 }
 
@@ -1081,6 +1098,31 @@ function finishRun(result = {}) {
 }
 
 function handlePipelineEvent(event) {
+  if (event.type === 'server_state') {
+    const nextRunState = String(event.run_state ?? '');
+    if (['idle', 'running', 'stopping', 'failed', 'success'].includes(nextRunState)) {
+      state.runState = nextRunState === 'success' ? 'idle' : nextRunState;
+      if (['idle', 'failed', 'success'].includes(nextRunState)) {
+        state.runStartedAt = null;
+      }
+      if (nextRunState === 'failed') {
+        state.runResult = 'failed';
+      } else if (nextRunState === 'success') {
+        state.runResult = 'success';
+      }
+      touchUpdate();
+      renderAll();
+    }
+    return;
+  }
+
+  if (event.type === 'run_failed') {
+    if (state.runState !== 'idle' || state.runResult !== 'failed') {
+      finishRun({ ok: false, error: event.error });
+    }
+    return;
+  }
+
   if (event.type === 'log') {
     appendLog(event.message);
     return;
@@ -1117,9 +1159,25 @@ function handlePipelineEvent(event) {
     }
     state.artifactDir = event.artifact_dir ?? '';
     state.selectedRetryArtifactDir = state.artifactDir || state.selectedRetryArtifactDir;
+    appendLog(`[summary] artifacts: ${event.artifact_dir}`);
+    const runStatus = String(event.run_status ?? '');
+    if (runStatus === 'failed') {
+      finishRun({ ok: false, error: event.error });
+      hydrateArtifactPreview();
+      return;
+    }
+    if (runStatus === 'success') {
+      finishRun({ ok: true, code: 0 });
+      hydrateArtifactPreview();
+      return;
+    }
+    if (runStatus === 'stopped') {
+      finishRun({ stopped: true });
+      hydrateArtifactPreview();
+      return;
+    }
     touchUpdate();
     renderAll();
-    appendLog(`[summary] artifacts: ${event.artifact_dir}`);
     hydrateArtifactPreview();
     void hydrateRetryArtifacts();
     return;

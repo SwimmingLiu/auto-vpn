@@ -51,3 +51,26 @@ test('serve accepts explicit no-auth and marks auth disabled', () => {
   assert.equal(options.auth.token, '');
 });
 
+test('serve proxy is opt-in and supports an explicit proxy url', () => {
+  const disabled = parseServeOptions(['serve'], {
+    cwd: '/repo',
+    env: {},
+    randomToken: () => 'generated-token'
+  });
+  const auto = parseServeOptions(['serve', '--proxy'], {
+    cwd: '/repo',
+    env: {},
+    randomToken: () => 'generated-token'
+  });
+  const explicit = parseServeOptions(['serve', '--proxy', 'http://127.0.0.1:7897'], {
+    cwd: '/repo',
+    env: {},
+    randomToken: () => 'generated-token'
+  });
+
+  assert.equal(disabled.proxy.enabled, false);
+  assert.equal(auto.proxy.enabled, true);
+  assert.equal(auto.proxy.url, '');
+  assert.equal(explicit.proxy.enabled, true);
+  assert.equal(explicit.proxy.url, 'http://127.0.0.1:7897');
+});

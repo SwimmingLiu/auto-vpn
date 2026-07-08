@@ -74,8 +74,9 @@ function rendererRoot(): string {
 }
 
 async function writeStaticFile(response: http.ServerResponse, statusCode: number, filePath: string, body?: string | Buffer): Promise<void> {
+  const payload = body ?? await fs.readFile(filePath);
   response.writeHead(statusCode, { 'Content-Type': contentType(filePath) });
-  response.end(body ?? await fs.readFile(filePath));
+  response.end(payload);
 }
 
 async function serveRendererIndex(response: http.ServerResponse): Promise<void> {

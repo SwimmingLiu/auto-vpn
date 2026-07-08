@@ -176,6 +176,44 @@ test('runNodePipeline emits effective skip_verify when deploy is skipped', async
   assert.equal(events[0].skip_verify, true);
 });
 
+test('runNodePipeline writes in-progress reports as running until terminal summary', async () => {
+  const projectRoot = await makeProject();
+  let checkedReport = false;
+  const firstLink = vmessLink('first', 'one.example');
+
+  const result = await runNodePipeline({
+    projectRoot,
+    skipDeploy: true,
+    skipVerify: true,
+    output: 'jsonl'
+  }, {
+    env: {
+      VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'),
+      VPN_AUTOMATION_PROFILE_PATH: path.join(projectRoot, 'state', 'profile.toml')
+    },
+    now: () => new Date('2026-06-29T01:02:03Z'),
+    stages: {
+      extract: async () => {
+        const artifactsRoot = path.join(projectRoot, '.runtime', 'artifacts');
+        const [artifactName] = await import('node:fs/promises').then(({ readdir }) => readdir(artifactsRoot));
+        const report = JSON.parse(await readFile(path.join(artifactsRoot, artifactName, 'pipeline_report.json'), 'utf8'));
+        assert.equal(report.run_status, 'running');
+        assert.equal(report.stage_status.extract, 'running');
+        checkedReport = true;
+        return { source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink] };
+      },
+      speedtest: async (links) => links.map((link) => ({ link, reachable: true, average_download_mb_s: 3, latency_ms: 20, error: '' })),
+      availability: async (results) => results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} })),
+      countryLookup: () => 'US',
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
+    }
+  });
+
+  assert.equal(checkedReport, true);
+  assert.equal(result.run_status, 'success');
+  assert.equal(JSON.parse(await readFile(path.join(result.artifact_dir, 'pipeline_report.json'), 'utf8')).run_status, 'success');
+});
+
 test('runNodePipeline loads project .env before resolving profile and artifacts paths', async () => {
   const projectRoot = await makeProject();
   const artifactsRoot = path.join(projectRoot, 'env-artifacts');
@@ -257,6 +295,64 @@ test('AUTOVPN_NO_PYTHON disables default runtime Python stage fallback', async (
 
   assert.equal(result.run_status, 'success');
   assert.equal(result.counts.raw_links, 0);
+});
+
+test('runNodePipeline fails extract when configured sources produce no links', async () => {
+  const projectRoot = await makeProject();
+  const profilePath = path.join(projectRoot, 'state', 'profile.toml');
+  await writeFile(profilePath, [
+    '[sources]',
+    '[sources.empty]',
+    'url = "https://fixture.example/source"',
+    'key = "abcdabcdabcdabcd"',
+    'enabled = true',
+    'max_iterations = 1',
+    'min_iterations = 0',
+    'plateau_limit = 1',
+    'failure_limit = 1',
+    'max_runtime_seconds = 0',
+    '',
+    '[speed_test]',
+    'min_download_mb_s = 1',
+    'timeout_seconds = 20',
+    'concurrency = 1',
+    '',
+    '[deploy]',
+    'project_name = "fixture-project"',
+    'subscription_url = "https://sub.example.invalid/?serect_key=fixture"',
+    'pages_project_url = "https://fixture-project.pages.dev"',
+    'secret_query = "serect_key=fixture"',
+    '',
+    '[worker_build]',
+    'entry_filename = "_worker.js"',
+    'bundle_subdir = "pages_bundle"',
+    'manifest_filename = "manifest.json"',
+    'emit_sidecar_modules = false',
+    ''
+  ].join('\n'), 'utf8');
+  const events = [];
+
+  await assert.rejects(() => runNodePipeline({
+    projectRoot,
+    skipDeploy: true,
+    skipVerify: true,
+    output: 'jsonl'
+  }, {
+    env: {
+      VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'),
+      VPN_AUTOMATION_PROFILE_PATH: profilePath
+    },
+    now: () => new Date('2026-06-29T01:02:03Z'),
+    emit: (event) => events.push(event),
+    stages: {
+      extract: async () => ({ source_name: 'empty', requested_iterations: 1, successful_iterations: 0, failed_iterations: 1, links: [] })
+    }
+  }), /No links extracted/);
+
+  assert.equal(events.at(-2).type, 'summary');
+  assert.equal(events.at(-2).run_status, 'failed');
+  assert.equal(events.at(-2).stage_status.extract, 'failed');
+  assert.equal(events.at(-1).type, 'run_failed');
 });
 
 test('AUTOVPN_NO_PYTHON offline run succeeds when no sources have URL and key configured', async () => {
