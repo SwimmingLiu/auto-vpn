@@ -205,9 +205,12 @@ test('serve starts the native web server without invoking backend executeCli', a
 
   assert.equal(code, 0);
   assert.match(io.stdout, /AutoVPN server listening on http:\/\/127\.0\.0\.1:8765/);
+  assert.match(io.stdout, /Password: /);
+  assert.doesNotMatch(io.stdout, /\?token=/);
   assert.equal(io.stderr, '');
   assert.equal(created.length, 1);
   assert.equal(created[0].projectRoot, '/repo');
+  assert.ok(created[0].auth.password);
   assert.deepEqual(forwarded, []);
 });
 
@@ -234,7 +237,8 @@ test('serve with password prints the plain URL instead of a token URL', async ()
   });
 
   assert.equal(code, 0);
-  assert.match(io.stdout, /Open http:\/\/127\.0\.0\.1:8765\/ and enter the configured password/);
+  assert.match(io.stdout, /Open http:\/\/127\.0\.0\.1:8765\//);
+  assert.match(io.stdout, /Password: local-password/);
   assert.doesNotMatch(io.stdout, /\?token=/);
   assert.equal(created[0].auth.password, 'local-password');
 });

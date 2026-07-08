@@ -239,7 +239,7 @@ test('served web ui stores token from url and authorizes api and sse requests', 
   }
 });
 
-test('served web ui logs in with a configured server password', async () => {
+test('served web ui logs in from a password page with inline failure and ban messages', async () => {
   const seen = [];
   const service = await createAutoVpnServer({
     host: '127.0.0.1',
@@ -266,9 +266,10 @@ test('served web ui logs in with a configured server password', async () => {
   try {
     browser = await chromium.launch();
     const page = await browser.newPage({ viewport: { width: 1280, height: 820 } });
+    let sawDialog = false;
     page.on('dialog', async (dialog) => {
-      assert.equal(dialog.type(), 'prompt');
-      await dialog.accept('web-password');
+      sawDialog = true;
+      await dialog.dismiss();
     });
     page.on('request', (request) => {
       if (request.url().includes('/api/')) {
@@ -277,11 +278,60 @@ test('served web ui logs in with a configured server password', async () => {
     });
 
     await page.goto(`${service.origin}/`);
+    await page.waitForSelector('[data-server-login]');
+    await page.locator('[data-server-password]').fill('wrong-password');
+    await page.locator('[data-server-login-submit]').click();
+    await page.waitForFunction(() => document.querySelector('[data-server-login-error]')?.textContent?.trim());
+    assert.match(await page.locator('[data-server-login-error]').innerText(), /4|剩余|remaining/i);
+
+    await page.locator('[data-server-password]').fill('web-password');
+    await page.locator('[data-server-login-submit]').click();
+    await page.waitForFunction(() => window.localStorage.getItem('autovpn.server.token') === 'issued-token');
     await page.waitForSelector('#dashboardOverview');
 
+    assert.equal(sawDialog, false);
     assert.equal(await page.evaluate(() => window.localStorage.getItem('autovpn.server.token')), 'issued-token');
     assert.ok(seen.some((item) => item.url.endsWith('/api/auth/login')));
     assert.ok(seen.some((item) => item.url.endsWith('/api/state') && item.auth === 'Bearer issued-token'));
+  } finally {
+    await browser?.close();
+    await service.close();
+  }
+});
+
+test('served web ui shows an IP ban message on the password page', async () => {
+  const service = await createAutoVpnServer({
+    host: '127.0.0.1',
+    port: 0,
+    projectRoot: '/repo',
+    auth: { enabled: true, token: 'issued-token', password: 'web-password', maxAttempts: 1 },
+    runtime: {
+      loadState: async () => ({
+        profile: {
+          sources: {},
+          speed_test: { min_download_mb_s: 1, timeout_seconds: 20, concurrency: 3 },
+          availability_targets: {},
+          deploy: {},
+          paths: { project_root: '/repo', artifacts_root: '/repo/artifacts' }
+        },
+        runState: 'idle',
+        retryArtifacts: []
+      }),
+      subscribe: () => () => {}
+    }
+  });
+
+  let browser;
+  try {
+    browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1280, height: 820 } });
+    await page.goto(`${service.origin}/`);
+    await page.waitForSelector('[data-server-login]');
+    await page.locator('[data-server-password]').fill('wrong-password');
+    await page.locator('[data-server-login-submit]').click();
+    await page.waitForFunction(() => document.querySelector('[data-server-login-error]')?.textContent?.trim());
+    assert.match(await page.locator('[data-server-login-error]').innerText(), /封禁|banned/i);
+    assert.equal(await page.locator('[data-server-login-submit]').isDisabled(), true);
   } finally {
     await browser?.close();
     await service.close();

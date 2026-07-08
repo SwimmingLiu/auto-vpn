@@ -7,7 +7,8 @@ test('serve defaults to loopback with token auth enabled', () => {
   const options = parseServeOptions(['serve'], {
     cwd: '/repo',
     env: {},
-    randomToken: () => 'generated-token'
+    randomToken: () => 'generated-token',
+    randomPassword: () => 'generated-password'
   });
 
   assert.equal(options.host, '127.0.0.1');
@@ -15,38 +16,43 @@ test('serve defaults to loopback with token auth enabled', () => {
   assert.equal(options.projectRoot, '/repo');
   assert.equal(options.auth.enabled, true);
   assert.equal(options.auth.token, 'generated-token');
-  assert.equal(options.auth.password, '');
+  assert.equal(options.auth.password, 'generated-password');
   assert.equal(options.auth.maxAttempts, 5);
 });
 
-test('serve rejects non-loopback hosts without explicit auth decision', () => {
-  assert.throws(
-    () => parseServeOptions(['serve', '--host', '0.0.0.0'], {
-      cwd: '/repo',
-      env: {},
-      randomToken: () => 'generated-token'
-    }),
-    /serve requires --token, --password, or --no-auth when binding to non-loopback host/
-  );
+test('serve non-loopback hosts use generated password auth by default', () => {
+  const options = parseServeOptions(['serve', '--host', '0.0.0.0'], {
+    cwd: '/repo',
+    env: {},
+    randomToken: () => 'generated-token',
+    randomPassword: () => 'generated-password'
+  });
+
+  assert.equal(options.host, '0.0.0.0');
+  assert.equal(options.auth.enabled, true);
+  assert.equal(options.auth.password, 'generated-password');
 });
 
 test('serve accepts non-loopback host with token', () => {
   const options = parseServeOptions(['serve', '--host', '0.0.0.0', '--token', 'secret'], {
     cwd: '/repo',
     env: {},
-    randomToken: () => 'unused'
+    randomToken: () => 'unused',
+    randomPassword: () => 'generated-password'
   });
 
   assert.equal(options.host, '0.0.0.0');
   assert.equal(options.auth.enabled, true);
   assert.equal(options.auth.token, 'secret');
+  assert.equal(options.auth.password, 'generated-password');
 });
 
 test('serve accepts non-loopback host with password', () => {
   const options = parseServeOptions(['serve', '--host', '0.0.0.0', '--password', 'secret-password'], {
     cwd: '/repo',
     env: {},
-    randomToken: () => 'generated-token'
+    randomToken: () => 'generated-token',
+    randomPassword: () => 'generated-password'
   });
 
   assert.equal(options.host, '0.0.0.0');
@@ -95,7 +101,8 @@ test('serve password auth is configurable with a custom max failure count', () =
   const options = parseServeOptions(['serve', '--password', 'local-secret', '--max-auth-attempts', '3'], {
     cwd: '/repo',
     env: {},
-    randomToken: () => 'generated-token'
+    randomToken: () => 'generated-token',
+    randomPassword: () => 'generated-password'
   });
 
   assert.equal(options.auth.enabled, true);

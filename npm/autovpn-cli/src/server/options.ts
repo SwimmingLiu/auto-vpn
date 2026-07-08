@@ -24,6 +24,7 @@ export interface ParseServeOptionsContext {
   cwd: string;
   env: NodeJS.ProcessEnv;
   randomToken?: () => string;
+  randomPassword?: () => string;
 }
 
 function hasFlag(argv: string[], flag: string): boolean {
@@ -36,6 +37,10 @@ function isLoopbackHost(host: string): boolean {
 
 function defaultRandomToken(): string {
   return crypto.randomBytes(18).toString('base64url');
+}
+
+function defaultRandomPassword(): string {
+  return crypto.randomBytes(9).toString('base64url');
 }
 
 function optionalFlagValue(argv: string[], flag: string): string {
@@ -61,7 +66,9 @@ export function parseServeOptions(argv: string[], context: ParseServeOptionsCont
   }
 
   const token = readOptionValue(argv, '--token') ?? context.env.AUTOVPN_SERVER_TOKEN ?? '';
-  const password = readOptionValue(argv, '--password') ?? context.env.AUTOVPN_SERVER_PASSWORD ?? '';
+  const password = readOptionValue(argv, '--password')
+    ?? context.env.AUTOVPN_SERVER_PASSWORD
+    ?? (context.randomPassword ?? defaultRandomPassword)();
   const maxAttemptsText = readOptionValue(argv, '--max-auth-attempts') ?? context.env.AUTOVPN_SERVER_MAX_AUTH_ATTEMPTS ?? '5';
   const maxAttempts = Number(maxAttemptsText);
   if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 100) {

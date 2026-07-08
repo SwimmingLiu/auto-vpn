@@ -255,7 +255,8 @@ export async function runCliShell(argv: string[], options: CliShellOptions = {})
       io.writeStdout(`AutoVPN server listening on ${server.origin}\n`);
       if (serveOptions.auth.enabled) {
         if (serveOptions.auth.password) {
-          io.writeStdout(`Open ${server.origin}/ and enter the configured password\n`);
+          io.writeStdout(`Open ${server.origin}/\n`);
+          io.writeStdout(`Password: ${serveOptions.auth.password}\n`);
         } else {
           io.writeStdout(`Open ${server.origin}/?token=${encodeURIComponent(serveOptions.auth.token)}\n`);
         }
