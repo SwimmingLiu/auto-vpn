@@ -138,6 +138,38 @@ test('password auth accepts the password before an IP is banned', async () => {
   }
 });
 
+test('password auth does not trust spoofed forwarded-for headers', async () => {
+  const service = await createAutoVpnServer({
+    host: '127.0.0.1',
+    port: 0,
+    projectRoot: '/repo',
+    auth: { enabled: true, token: 'server-token', password: 'server-password', maxAttempts: 2 },
+    runtime: {
+      loadState: async () => ({ profile: { sources: {} }, runState: 'idle' })
+    }
+  });
+
+  try {
+    const firstWrong = await fetch(`${service.origin}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': '198.51.100.10' },
+      body: JSON.stringify({ password: 'wrong' })
+    });
+    assert.equal(firstWrong.status, 401);
+    assert.deepEqual(await firstWrong.json(), { ok: false, error: 'invalid_password', attemptsRemaining: 1 });
+
+    const secondWrong = await fetch(`${service.origin}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': '203.0.113.20' },
+      body: JSON.stringify({ password: 'wrong-again' })
+    });
+    assert.equal(secondWrong.status, 403);
+    assert.deepEqual(await secondWrong.json(), { ok: false, error: 'ip_banned' });
+  } finally {
+    await service.close();
+  }
+});
+
 test('run and stop routes delegate to runtime', async () => {
   const calls = [];
   const service = await createAutoVpnServer({

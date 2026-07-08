@@ -43,6 +43,8 @@ function defaultRandomPassword(): string {
   return crypto.randomBytes(9).toString('base64url');
 }
 
+const DEFAULT_PROXY_URL = 'http://127.0.0.1:7897';
+
 function optionalFlagValue(argv: string[], flag: string): string {
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
@@ -85,7 +87,7 @@ export function parseServeOptions(argv: string[], context: ParseServeOptionsCont
     projectRoot: path.resolve(resolveProjectRoot(argv, context.cwd)),
     proxy: {
       enabled: hasFlag(argv, '--proxy') || argv.some((value) => value.startsWith('--proxy=')),
-      url: optionalFlagValue(argv, '--proxy')
+      url: optionalFlagValue(argv, '--proxy') || DEFAULT_PROXY_URL
     },
     auth: noAuth
       ? { enabled: false, token: '', password: '', maxAttempts }

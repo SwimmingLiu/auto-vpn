@@ -96,6 +96,35 @@ test('server runtime forwards opt-in proxy settings through worker env without f
   assert.equal(execOptions[0].env.VPN_AUTOMATION_UPSTREAM_PROXY, 'http://127.0.0.1:7897');
 });
 
+test('server runtime rolls back run state when detached run creation fails', async () => {
+  const states = [];
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-runtime-start-fails-'));
+  const runtime = createServerRuntime({
+    projectRoot,
+    env: { VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, 'state') },
+    startDetachedRun: async () => {
+      throw new Error('spawn failed');
+    },
+    followLog: async function* () {}
+  });
+  runtime.subscribe?.((event) => {
+    if (event && typeof event === 'object' && event.type === 'server_state') {
+      states.push(event.run_state);
+    }
+  });
+
+  await assert.rejects(() => runtime.startRun?.({ skipDeploy: true, skipVerify: true }), /spawn failed/);
+
+  const state = await runtime.loadState();
+  assert.equal(state.runState, 'failed');
+  assert.deepEqual(states, ['failed']);
+  assert.deepEqual(await runtime.stopRun?.(), {
+    ok: true,
+    requested: false,
+    run_state: 'failed'
+  });
+});
+
 test('server runtime stop reports terminal state when logs already marked run failed', async () => {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-runtime-stop-failed-'));
   const runtime = createServerRuntime({
@@ -148,8 +177,9 @@ test('server runtime marks run failed when followed logs emit run_failed', async
   assert.equal(state.runState, 'failed');
 });
 
-test('server runtime starts retry jobs and preserves redacted secrets when saving profile', async () => {
+test('server runtime starts retry jobs with serve proxy env and preserves redacted secrets when saving profile', async () => {
   const calls = [];
+  const execOptions = [];
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-runtime-retry-'));
   const runtimeRoot = path.join(projectRoot, 'state');
   fs.mkdirSync(runtimeRoot, { recursive: true });
@@ -167,8 +197,10 @@ test('server runtime starts retry jobs and preserves redacted secrets when savin
   const runtime = createServerRuntime({
     projectRoot,
     env: { VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot },
-    startDetachedRetry: async (command) => {
+    proxy: { enabled: true, url: 'http://127.0.0.1:7897' },
+    startDetachedRetry: async (command, options) => {
       calls.push(['retry', command]);
+      execOptions.push(options);
       return {
         job_id: 'retry-1',
         status: 'running',
@@ -199,6 +231,8 @@ test('server runtime starts retry jobs and preserves redacted secrets when savin
   assert.deepEqual(calls, [
     ['retry', { projectRoot, artifactDir: '/artifacts/run-1', stage: 'render', outputFormat: 'jsonl' }]
   ]);
+  assert.equal(execOptions[0].env.VPN_AUTOMATION_USE_UPSTREAM_PROXY, '1');
+  assert.equal(execOptions[0].env.VPN_AUTOMATION_UPSTREAM_PROXY, 'http://127.0.0.1:7897');
 });
 
 test('server runtime state includes latest artifact preview and retry artifacts', async () => {

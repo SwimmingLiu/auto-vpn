@@ -139,10 +139,11 @@ function runEnv(options: CreateServerRuntimeOptions): NodeJS.ProcessEnv | undefi
   if (!options.proxy?.enabled) {
     return options.env;
   }
+  const proxyUrl = String(options.proxy.url ?? '').trim() || 'http://127.0.0.1:7897';
   return {
     ...(options.env ?? process.env),
     VPN_AUTOMATION_USE_UPSTREAM_PROXY: '1',
-    VPN_AUTOMATION_UPSTREAM_PROXY: String(options.proxy.url ?? 'http://127.0.0.1:7897')
+    VPN_AUTOMATION_UPSTREAM_PROXY: proxyUrl
   };
 }
 
@@ -223,16 +224,24 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
         return { ok: false, error: 'run_already_active' };
       }
       runState = 'running';
-      const job = await startDetachedRun({
-        projectRoot: options.projectRoot,
-        skipDeploy: Boolean(runOptions.skipDeploy),
-        skipVerify: Boolean(runOptions.skipVerify),
-        resumeLatest: Boolean(runOptions.resumeLatest),
-        outputFormat: 'jsonl'
-      }, {
-        env: runEnv(options),
-        cwd: options.projectRoot
-      });
+      let job: Awaited<ReturnType<StartDetachedRun>>;
+      try {
+        job = await startDetachedRun({
+          projectRoot: options.projectRoot,
+          skipDeploy: Boolean(runOptions.skipDeploy),
+          skipVerify: Boolean(runOptions.skipVerify),
+          resumeLatest: Boolean(runOptions.resumeLatest),
+          outputFormat: 'jsonl'
+        }, {
+          env: runEnv(options),
+          cwd: options.projectRoot
+        });
+      } catch (error) {
+        runState = 'failed';
+        activeJobId = '';
+        publish({ type: 'server_state', run_state: runState });
+        throw error;
+      }
       activeJobId = String(job.job_id ?? '');
       followJob(activeJobId);
       return { ok: true, runId: activeJobId, job_id: activeJobId, status: job.status ?? 'running' };
@@ -253,7 +262,7 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
         stage,
         outputFormat: 'jsonl'
       }, {
-        env: options.env,
+        env: runEnv(options),
         cwd: options.projectRoot
       });
       activeJobId = String(job.job_id ?? '');

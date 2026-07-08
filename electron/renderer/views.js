@@ -1005,7 +1005,7 @@ export function applySourceIterationDraft(sources = {}, draft = {}) {
       {
         ...source,
         max_iterations: maxIterations,
-        min_iterations: 0,
+        min_iterations: Math.min(coercePositiveInteger(source.min_iterations, 0), maxIterations),
         area_min: Math.min(areaMin, areaMax),
         area_max: Math.max(areaMin, areaMax)
       }

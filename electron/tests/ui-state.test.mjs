@@ -208,7 +208,7 @@ test('source iteration draft applies one max_iterations and area range to all so
   );
   assert.deepEqual(
     Object.values(applySourceIterationDraft(sources, draft)).map((source) => source.min_iterations),
-    [0, 0]
+    [12, 25]
   );
 });
 

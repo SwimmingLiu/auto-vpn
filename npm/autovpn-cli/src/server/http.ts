@@ -128,8 +128,7 @@ function isAuthorized(request: http.IncomingMessage, url: URL, auth: ServeOption
 }
 
 function clientIp(request: http.IncomingMessage): string {
-  const forwarded = String(request.headers['x-forwarded-for'] ?? '').split(',')[0].trim();
-  return forwarded || request.socket.remoteAddress || 'unknown';
+  return request.socket.remoteAddress || 'unknown';
 }
 
 async function readJsonBody(request: http.IncomingMessage): Promise<Record<string, unknown>> {
