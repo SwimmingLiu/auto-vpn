@@ -28,12 +28,12 @@ test('health requires bearer token when auth is enabled', async () => {
   }
 });
 
-test('state response redacts source and deployment secrets', async () => {
+test('state response only redacts Cloudflare token and Pages Secret ADMIN with field labels', async () => {
   const service = await createAutoVpnServer({
     host: '127.0.0.1',
     port: 0,
     projectRoot: '/repo',
-    auth: { enabled: false, token: '' },
+    auth: { enabled: false, token: '', password: '', maxAttempts: 5 },
     runtime: {
       loadState: async () => ({
         profile: {
@@ -45,6 +45,7 @@ test('state response redacts source and deployment secrets', async () => {
           },
           deploy: {
             cloudflare_api_token: 'cloudflare-secret',
+            pages_secret_admin: 'admin-secret',
             subscription_url: 'https://vpn.example/sub?token=editable-token'
           }
         },
@@ -57,8 +58,81 @@ test('state response redacts source and deployment secrets', async () => {
     const response = await fetch(`${service.origin}/api/state`);
     assert.equal(response.status, 200);
     const text = await response.text();
-    assert.doesNotMatch(text, /secret-token|source-key|editable-token|cloudflare-secret/);
-    assert.match(text, /redacted/i);
+    assert.match(text, /secret-token|source-key|editable-token/);
+    assert.doesNotMatch(text, /cloudflare-secret|admin-secret/);
+    assert.match(text, /<Cloudflare Token>/);
+    assert.match(text, /<Pages Secret ADMIN>/);
+  } finally {
+    await service.close();
+  }
+});
+
+test('password auth issues a token and bans an IP after too many failures', async () => {
+  const service = await createAutoVpnServer({
+    host: '127.0.0.1',
+    port: 0,
+    projectRoot: '/repo',
+    auth: { enabled: true, token: 'server-token', password: 'server-password', maxAttempts: 2 },
+    runtime: {
+      loadState: async () => ({ profile: { sources: {} }, runState: 'idle' })
+    }
+  });
+
+  try {
+    const denied = await fetch(`${service.origin}/api/state`);
+    assert.equal(denied.status, 401);
+
+    const wrong = await fetch(`${service.origin}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: 'wrong' })
+    });
+    assert.equal(wrong.status, 401);
+    assert.deepEqual(await wrong.json(), { ok: false, error: 'invalid_password', attemptsRemaining: 1 });
+
+    const banned = await fetch(`${service.origin}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: 'wrong-again' })
+    });
+    assert.equal(banned.status, 403);
+    assert.deepEqual(await banned.json(), { ok: false, error: 'ip_banned' });
+
+    const stillBanned = await fetch(`${service.origin}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: 'server-password' })
+    });
+    assert.equal(stillBanned.status, 403);
+  } finally {
+    await service.close();
+  }
+});
+
+test('password auth accepts the password before an IP is banned', async () => {
+  const service = await createAutoVpnServer({
+    host: '127.0.0.1',
+    port: 0,
+    projectRoot: '/repo',
+    auth: { enabled: true, token: 'server-token', password: 'server-password', maxAttempts: 5 },
+    runtime: {
+      loadState: async () => ({ profile: { sources: {} }, runState: 'idle' })
+    }
+  });
+
+  try {
+    const login = await fetch(`${service.origin}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: 'server-password' })
+    });
+    assert.equal(login.status, 200);
+    assert.deepEqual(await login.json(), { ok: true, token: 'server-token' });
+
+    const allowed = await fetch(`${service.origin}/api/state`, {
+      headers: { Authorization: 'Bearer server-token' }
+    });
+    assert.equal(allowed.status, 200);
   } finally {
     await service.close();
   }

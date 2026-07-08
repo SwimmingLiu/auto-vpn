@@ -1,8 +1,13 @@
-export function renderWebAdapterScript(): string {
+export interface WebAdapterOptions {
+  passwordEnabled?: boolean;
+}
+
+export function renderWebAdapterScript(options: WebAdapterOptions = {}): string {
   return `
 (() => {
+  const passwordEnabled = ${JSON.stringify(Boolean(options.passwordEnabled))};
   const params = new URLSearchParams(window.location.search);
-  const token = params.get('token') || window.localStorage.getItem('autovpn.server.token') || '';
+  let token = params.get('token') || window.localStorage.getItem('autovpn.server.token') || '';
   if (token) {
     window.localStorage.setItem('autovpn.server.token', token);
   }
@@ -14,12 +19,40 @@ export function renderWebAdapterScript(): string {
     return url.pathname + url.search;
   }
 
-  async function request(path, options = {}) {
-    const headers = { ...(options.headers || {}) };
-    if (token) headers.Authorization = 'Bearer ' + token;
-    if (options.body && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
-    const response = await fetch(path, { ...options, headers });
+  async function loginWithPassword() {
+    const password = window.prompt('AutoVPN password');
+    if (password === null) {
+      throw new Error('password_required');
+    }
+    const response = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password })
+    });
     const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.token) {
+      throw new Error(payload.error || 'login_failed');
+    }
+    token = String(payload.token);
+    window.localStorage.setItem('autovpn.server.token', token);
+    return token;
+  }
+
+  async function request(path, requestOptions = {}) {
+    if (passwordEnabled && !token) {
+      await loginWithPassword();
+    }
+    const headers = { ...(requestOptions.headers || {}) };
+    if (token) headers.Authorization = 'Bearer ' + token;
+    if (requestOptions.body && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
+    const response = await fetch(path, { ...requestOptions, headers });
+    const payload = await response.json().catch(() => ({}));
+    if (response.status === 401 && passwordEnabled) {
+      window.localStorage.removeItem('autovpn.server.token');
+      token = '';
+      await loginWithPassword();
+      return request(path, requestOptions);
+    }
     if (!response.ok) {
       throw new Error(payload.error || 'request_failed');
     }

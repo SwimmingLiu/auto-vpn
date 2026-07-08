@@ -6,7 +6,7 @@ import test from 'node:test';
 
 import { createServerRuntime, sanitizeProfileForServer } from '../../dist/server/runtime.js';
 
-test('server profile redacts source and deployment secrets while keeping non-secret config editable', () => {
+test('server profile only redacts Cloudflare token and Pages Secret ADMIN with field labels', () => {
   const profile = sanitizeProfileForServer({
     sources: {
       demo: { url: 'https://provider.example/private/abc123', key: 'source-key', enabled: true }
@@ -19,12 +19,13 @@ test('server profile redacts source and deployment secrets while keeping non-sec
   });
 
   const text = JSON.stringify(profile);
-  assert.doesNotMatch(text, /private\/abc123|source-key|vpn\.example\/sub|cloudflare-secret/);
-  assert.equal(profile.sources.demo.url, '<redacted>');
-  assert.equal(profile.sources.demo.key, '<redacted>');
+  assert.match(text, /private\/abc123|source-key|vpn\.example\/sub/);
+  assert.doesNotMatch(text, /cloudflare-secret/);
+  assert.equal(profile.sources.demo.url, 'https://provider.example/private/abc123');
+  assert.equal(profile.sources.demo.key, 'source-key');
   assert.equal(profile.deploy.pages_project_url, 'https://sub-nodes.pages.dev');
-  assert.equal(profile.deploy.subscription_url, '<redacted>');
-  assert.equal(profile.deploy.cloudflare_api_token, '<redacted>');
+  assert.equal(profile.deploy.subscription_url, 'https://vpn.example/sub');
+  assert.equal(profile.deploy.cloudflare_api_token, '<Cloudflare Token>');
 });
 
 test('server runtime starts and stops managed detached jobs', async () => {
@@ -227,5 +228,8 @@ test('server runtime state includes latest artifact preview and retry artifacts'
   assert.equal(state.artifact?.run_status, 'success');
   assert.equal(state.deployment?.pages_project_url, 'https://sub-nodes.pages.dev');
   assert.equal(state.retryArtifacts?.length, 1);
-  assert.doesNotMatch(JSON.stringify(state), /provider\.example\/private|secret\.example\/sub|secret/);
+  const stateText = JSON.stringify(state);
+  assert.match(stateText, /provider\.example\/private/);
+  assert.match(stateText, /"key":"secret"/);
+  assert.equal(state.deployment?.subscription_url, 'set');
 });

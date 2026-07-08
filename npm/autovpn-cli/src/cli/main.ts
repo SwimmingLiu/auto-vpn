@@ -254,7 +254,11 @@ export async function runCliShell(argv: string[], options: CliShellOptions = {})
       });
       io.writeStdout(`AutoVPN server listening on ${server.origin}\n`);
       if (serveOptions.auth.enabled) {
-        io.writeStdout(`Open ${server.origin}/?token=${encodeURIComponent(serveOptions.auth.token)}\n`);
+        if (serveOptions.auth.password) {
+          io.writeStdout(`Open ${server.origin}/ and enter the configured password\n`);
+        } else {
+          io.writeStdout(`Open ${server.origin}/?token=${encodeURIComponent(serveOptions.auth.token)}\n`);
+        }
       } else {
         io.writeStderr('autovpn: warning: server authentication is disabled\n');
       }

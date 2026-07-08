@@ -15,6 +15,8 @@ test('serve defaults to loopback with token auth enabled', () => {
   assert.equal(options.projectRoot, '/repo');
   assert.equal(options.auth.enabled, true);
   assert.equal(options.auth.token, 'generated-token');
+  assert.equal(options.auth.password, '');
+  assert.equal(options.auth.maxAttempts, 5);
 });
 
 test('serve rejects non-loopback hosts without explicit auth decision', () => {
@@ -24,7 +26,7 @@ test('serve rejects non-loopback hosts without explicit auth decision', () => {
       env: {},
       randomToken: () => 'generated-token'
     }),
-    /serve requires --token or --no-auth when binding to non-loopback host/
+    /serve requires --token, --password, or --no-auth when binding to non-loopback host/
   );
 });
 
@@ -39,6 +41,20 @@ test('serve accepts non-loopback host with token', () => {
   assert.equal(options.auth.enabled, true);
   assert.equal(options.auth.token, 'secret');
 });
+
+test('serve accepts non-loopback host with password', () => {
+  const options = parseServeOptions(['serve', '--host', '0.0.0.0', '--password', 'secret-password'], {
+    cwd: '/repo',
+    env: {},
+    randomToken: () => 'generated-token'
+  });
+
+  assert.equal(options.host, '0.0.0.0');
+  assert.equal(options.auth.enabled, true);
+  assert.equal(options.auth.password, 'secret-password');
+  assert.equal(options.auth.token, 'generated-token');
+});
+
 
 test('serve accepts explicit no-auth and marks auth disabled', () => {
   const options = parseServeOptions(['serve', '--host', '0.0.0.0', '--no-auth'], {
@@ -73,4 +89,42 @@ test('serve proxy is opt-in and supports an explicit proxy url', () => {
   assert.equal(auto.proxy.url, '');
   assert.equal(explicit.proxy.enabled, true);
   assert.equal(explicit.proxy.url, 'http://127.0.0.1:7897');
+});
+
+test('serve password auth is configurable with a custom max failure count', () => {
+  const options = parseServeOptions(['serve', '--password', 'local-secret', '--max-auth-attempts', '3'], {
+    cwd: '/repo',
+    env: {},
+    randomToken: () => 'generated-token'
+  });
+
+  assert.equal(options.auth.enabled, true);
+  assert.equal(options.auth.token, 'generated-token');
+  assert.equal(options.auth.password, 'local-secret');
+  assert.equal(options.auth.maxAttempts, 3);
+});
+
+test('serve password auth can be configured from env', () => {
+  const options = parseServeOptions(['serve'], {
+    cwd: '/repo',
+    env: {
+      AUTOVPN_SERVER_PASSWORD: 'env-secret',
+      AUTOVPN_SERVER_MAX_AUTH_ATTEMPTS: '4'
+    },
+    randomToken: () => 'generated-token'
+  });
+
+  assert.equal(options.auth.password, 'env-secret');
+  assert.equal(options.auth.maxAttempts, 4);
+});
+
+test('serve rejects invalid max auth attempts', () => {
+  assert.throws(
+    () => parseServeOptions(['serve', '--password', 'secret', '--max-auth-attempts', '0'], {
+      cwd: '/repo',
+      env: {},
+      randomToken: () => 'generated-token'
+    }),
+    /serve --max-auth-attempts must be an integer from 1 to 100/
+  );
 });

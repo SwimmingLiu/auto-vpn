@@ -15,6 +15,8 @@ export interface ServeOptions {
   auth: {
     enabled: boolean;
     token: string;
+    password: string;
+    maxAttempts: number;
   };
 }
 
@@ -59,9 +61,15 @@ export function parseServeOptions(argv: string[], context: ParseServeOptionsCont
   }
 
   const token = readOptionValue(argv, '--token') ?? context.env.AUTOVPN_SERVER_TOKEN ?? '';
+  const password = readOptionValue(argv, '--password') ?? context.env.AUTOVPN_SERVER_PASSWORD ?? '';
+  const maxAttemptsText = readOptionValue(argv, '--max-auth-attempts') ?? context.env.AUTOVPN_SERVER_MAX_AUTH_ATTEMPTS ?? '5';
+  const maxAttempts = Number(maxAttemptsText);
+  if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 100) {
+    throw new CliUsageError('serve --max-auth-attempts must be an integer from 1 to 100');
+  }
   const noAuth = hasFlag(argv, '--no-auth');
-  if (!isLoopbackHost(host) && !token && !noAuth) {
-    throw new CliUsageError('serve requires --token or --no-auth when binding to non-loopback host');
+  if (!isLoopbackHost(host) && !token && !password && !noAuth) {
+    throw new CliUsageError('serve requires --token, --password, or --no-auth when binding to non-loopback host');
   }
 
   return {
@@ -73,7 +81,12 @@ export function parseServeOptions(argv: string[], context: ParseServeOptionsCont
       url: optionalFlagValue(argv, '--proxy')
     },
     auth: noAuth
-      ? { enabled: false, token: '' }
-      : { enabled: true, token: token || (context.randomToken ?? defaultRandomToken)() }
+      ? { enabled: false, token: '', password: '', maxAttempts }
+      : {
+        enabled: true,
+        token: token || (context.randomToken ?? defaultRandomToken)(),
+        password,
+        maxAttempts
+      }
   };
 }

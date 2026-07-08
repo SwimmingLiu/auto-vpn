@@ -46,32 +46,22 @@ export interface CreateServerRuntimeOptions {
 const DEPLOY_SECRET_KEYS = new Set([
   'cloudflare_api_token',
   'cloudflare_global_key',
-  'subscription_url',
-  'verify_subscription_url',
-  'secret_query',
-  'pages_secret_admin',
-  'share_project_sub_value'
+  'pages_secret_admin'
 ]);
 
-function redactIfSet(value: unknown): unknown {
-  return String(value ?? '').trim() ? '<redacted>' : '';
+function redactedLabel(key: string): string {
+  return key === 'pages_secret_admin' ? '<Pages Secret ADMIN>' : '<Cloudflare Token>';
+}
+
+function redactIfSet(key: string, value: unknown): unknown {
+  return String(value ?? '').trim() ? redactedLabel(key) : '';
 }
 
 export function sanitizeProfileForServer(profile: Record<string, any>): Record<string, any> {
   const safe = structuredClone(profile ?? {});
-  for (const source of Object.values((safe.sources ?? {}) as Record<string, any>)) {
-    if (source && typeof source === 'object') {
-      if (String(source.url ?? '').trim()) {
-        source.url = '<redacted>';
-      }
-      if (String(source.key ?? '').trim()) {
-        source.key = '<redacted>';
-      }
-    }
-  }
   for (const [key, value] of Object.entries((safe.deploy ?? {}) as Record<string, unknown>)) {
     if (DEPLOY_SECRET_KEYS.has(key)) {
-      safe.deploy[key] = redactIfSet(value);
+      safe.deploy[key] = redactIfSet(key, value);
     }
   }
   return safe;
@@ -93,7 +83,7 @@ function preserveRedactedSecrets(incoming: Record<string, any>, current: Record<
   const deploy = (merged.deploy ?? {}) as Record<string, any>;
   const currentDeploy = (current.deploy ?? {}) as Record<string, any>;
   for (const key of DEPLOY_SECRET_KEYS) {
-    if (deploy[key] === '<redacted>') {
+    if (deploy[key] === '<redacted>' || deploy[key] === redactedLabel(key)) {
       deploy[key] = currentDeploy[key] ?? '';
     }
   }

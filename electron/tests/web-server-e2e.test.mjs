@@ -239,6 +239,55 @@ test('served web ui stores token from url and authorizes api and sse requests', 
   }
 });
 
+test('served web ui logs in with a configured server password', async () => {
+  const seen = [];
+  const service = await createAutoVpnServer({
+    host: '127.0.0.1',
+    port: 0,
+    projectRoot: '/repo',
+    auth: { enabled: true, token: 'issued-token', password: 'web-password', maxAttempts: 5 },
+    runtime: {
+      loadState: async () => ({
+        profile: {
+          sources: {},
+          speed_test: { min_download_mb_s: 1, timeout_seconds: 20, concurrency: 3 },
+          availability_targets: {},
+          deploy: { cloudflare_api_token: '<Cloudflare Token>' },
+          paths: { project_root: '/repo', artifacts_root: '/repo/artifacts' }
+        },
+        runState: 'idle',
+        retryArtifacts: []
+      }),
+      subscribe: () => () => {}
+    }
+  });
+
+  let browser;
+  try {
+    browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1280, height: 820 } });
+    page.on('dialog', async (dialog) => {
+      assert.equal(dialog.type(), 'prompt');
+      await dialog.accept('web-password');
+    });
+    page.on('request', (request) => {
+      if (request.url().includes('/api/')) {
+        seen.push({ url: request.url(), auth: request.headers().authorization ?? '' });
+      }
+    });
+
+    await page.goto(`${service.origin}/`);
+    await page.waitForSelector('#dashboardOverview');
+
+    assert.equal(await page.evaluate(() => window.localStorage.getItem('autovpn.server.token')), 'issued-token');
+    assert.ok(seen.some((item) => item.url.endsWith('/api/auth/login')));
+    assert.ok(seen.some((item) => item.url.endsWith('/api/state') && item.auth === 'Bearer issued-token'));
+  } finally {
+    await browser?.close();
+    await service.close();
+  }
+});
+
 test('served web ui uses a browser shell instead of the Electron titlebar', async () => {
   const service = await createAutoVpnServer({
     host: '127.0.0.1',
