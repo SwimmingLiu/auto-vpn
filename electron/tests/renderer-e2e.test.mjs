@@ -662,12 +662,14 @@ test('renderer matches the six-page canvas redesign and supports page navigation
       window.__emitPipelineEvent({ type: 'extract_request_result', source_name: 'leiting', iteration: 1, success: false, via: 'direct', will_retry: true });
       window.__emitPipelineEvent({ type: 'extract_request_result', source_name: 'leiting', iteration: 1, success: true, via: 'direct_curl_tls_fallback' });
       window.__emitPipelineEvent({ type: 'extract_decrypt_result', source_name: 'leiting', iteration: 1, success: true });
+      window.__emitPipelineEvent({ type: 'extract_iteration', source_name: 'leiting', iteration: 1, new_items: 1, extracted_links: 2, total_links: 4 });
       window.__emitPipelineEvent({ type: 'extract_source_completed', source_name: 'leiting', successful_iterations: 3, failed_iterations: 0, raw_links: 1 });
     });
     const extractLogText = await page.locator('#logCenterTable').innerText();
     assert.match(extractLogText, /leiting.*开始提取/);
     assert.match(extractLogText, /leiting #1 direct 失败/);
     assert.match(extractLogText, /leiting #1 direct_curl_tls_fallback 成功/);
+    assert.match(extractLogText, /leiting #1 新增 1 个，本次解析 2 个，累计 4 个/);
     assert.match(extractLogText, /leiting.*完成/);
 
     await page.locator('#navRuns').click();

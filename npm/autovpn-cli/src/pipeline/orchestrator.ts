@@ -484,9 +484,8 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
     const profile = await readProfile(projectRoot, env);
 
     await setStage('extract', 'running');
-    const extractResults: ExtractedSourceResult[] = [];
     const sourcesToRun = enabledSources(profile);
-    for (const [sourceName, source] of sourcesToRun) {
+    const extractResults: ExtractedSourceResult[] = await Promise.all(sourcesToRun.map(async ([sourceName, source]) => {
       const result = context.stages?.extract
         ? await context.stages.extract({ source_name: sourceName, source })
         : await fetchSourceLinksWithBackend({ source_name: sourceName, source }, {
@@ -494,13 +493,13 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
           env: runtimeStageEnv,
           eventCallback: (type, payload) => emit(type, payload)
         });
-      extractResults.push(result);
       summary.source_counts[result.source_name] = {
         raw_links: result.links.length,
         successful_iterations: result.successful_iterations,
         failed_iterations: result.failed_iterations
       };
-    }
+      return result;
+    }));
     const rawLinks = extractResults.flatMap((result) => result.links);
     if (sourcesToRun.length > 0 && rawLinks.length === 0 && extractResults.some((result) => result.requested_iterations > 0 || result.failed_iterations > 0)) {
       throw new Error('No links extracted from configured sources');

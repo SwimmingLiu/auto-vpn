@@ -1224,8 +1224,11 @@ function handlePipelineEvent(event) {
 
   if (event.type === 'extract_iteration') {
     updateExtractMetrics(event);
-    touchUpdate();
-    renderRuntimeOnly({ chrome: false });
+    appendLog(`[extract] ${event.source_name} #${event.iteration ?? 0} 新增 ${event.new_items ?? 0} 个，本次解析 ${event.extracted_links ?? 0} 个，累计 ${event.total_links ?? 0} 个`, {
+      kind: 'stage',
+      stage: 'extract',
+      level: 'info'
+    });
     return;
   }
 

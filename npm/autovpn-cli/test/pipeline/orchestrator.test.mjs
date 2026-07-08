@@ -355,6 +355,107 @@ test('runNodePipeline fails extract when configured sources produce no links', a
   assert.equal(events.at(-1).type, 'run_failed');
 });
 
+test('runNodePipeline extracts enabled sources concurrently while preserving profile order', async () => {
+  const projectRoot = await makeProject();
+  const profilePath = path.join(projectRoot, 'state', 'profile.toml');
+  await writeFile(profilePath, [
+    '[sources]',
+    '[sources.leiting]',
+    'url = "https://fixture.example/leiting"',
+    'key = "abcdabcdabcdabcd"',
+    'enabled = true',
+    'max_iterations = 1',
+    'min_iterations = 0',
+    'plateau_limit = 1',
+    'failure_limit = 1',
+    'max_runtime_seconds = 0',
+    '',
+    '[sources.heidong]',
+    'url = "https://fixture.example/heidong"',
+    'key = "abcdabcdabcdabcd"',
+    'enabled = true',
+    'max_iterations = 1',
+    'min_iterations = 0',
+    'plateau_limit = 1',
+    'failure_limit = 1',
+    'max_runtime_seconds = 0',
+    '',
+    '[speed_test]',
+    'min_download_mb_s = 1',
+    'timeout_seconds = 20',
+    'concurrency = 1',
+    '',
+    '[deploy]',
+    'project_name = "fixture-project"',
+    'subscription_url = "https://sub.example.invalid/?serect_key=fixture"',
+    'pages_project_url = "https://fixture-project.pages.dev"',
+    'secret_query = "serect_key=fixture"',
+    '',
+    '[worker_build]',
+    'entry_filename = "_worker.js"',
+    'bundle_subdir = "pages_bundle"',
+    'manifest_filename = "manifest.json"',
+    'emit_sidecar_modules = false',
+    ''
+  ].join('\n'), 'utf8');
+
+  const firstLink = vmessLink('first', 'one.example');
+  const secondLink = vmessLink('second', 'two.example');
+  let activeExtracts = 0;
+  let overlapSeen = false;
+  const release = {};
+  const started = {};
+  const startedPromises = ['leiting', 'heidong'].map((sourceName) => new Promise((resolve) => {
+    started[sourceName] = resolve;
+  }));
+
+  const runPromise = runNodePipeline({
+    projectRoot,
+    skipDeploy: true,
+    skipVerify: true,
+    output: 'jsonl'
+  }, {
+    env: {
+      VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'),
+      VPN_AUTOMATION_PROFILE_PATH: profilePath
+    },
+    now: () => new Date('2026-06-29T01:02:03Z'),
+    stages: {
+      extract: async ({ source_name: sourceName }) => {
+        activeExtracts += 1;
+        overlapSeen = overlapSeen || activeExtracts >= 2;
+        started[sourceName]?.();
+        await new Promise((resolve) => {
+          release[sourceName] = resolve;
+        });
+        activeExtracts -= 1;
+        return {
+          source_name: sourceName,
+          requested_iterations: 1,
+          successful_iterations: 1,
+          failed_iterations: 0,
+          links: sourceName === 'leiting' ? [firstLink] : [secondLink]
+        };
+      },
+      speedtest: async (links) => links.map((link) => ({ link, reachable: true, average_download_mb_s: 3, latency_ms: 20, error: '' })),
+      availability: async (results) => results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} })),
+      countryLookup: () => 'US',
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
+    }
+  });
+
+  await Promise.all(startedPromises);
+  release.heidong();
+  release.leiting();
+  const result = await runPromise;
+
+  assert.equal(overlapSeen, true);
+  assert.deepEqual(
+    (await readFile(path.join(result.artifact_dir, 'vpn_node_raw.txt'), 'utf8')).trim().split(/\n/),
+    [firstLink, secondLink]
+  );
+});
+
 test('AUTOVPN_NO_PYTHON offline run succeeds when no sources have URL and key configured', async () => {
   const projectRoot = await makeProject();
   const profilePath = path.join(projectRoot, 'state', 'profile.toml');
