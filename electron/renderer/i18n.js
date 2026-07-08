@@ -5,7 +5,7 @@ const ZH_MESSAGES = {
   locale: 'zh-CN',
   appTitle: 'AutoVPN',
   sidebarTitle: 'AutoVPN',
-  sidebarVersion: 'v.1.5.5',
+  sidebarVersion: 'v.1.6.0',
   brandSubtitle: '概览、运行、结果、订阅、日志、设置统一管理',
   languageLabel: '',
   saveButton: '保存配置',
