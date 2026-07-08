@@ -655,6 +655,24 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     await page.locator('#navRuns').click();
     await page.waitForSelector('#runsWorkspace');
 
+    await page.locator('#navLogs').click();
+    await page.waitForSelector('#logCenterTable');
+    await page.evaluate(() => {
+      window.__emitPipelineEvent({ type: 'extract_source_started', source_name: 'leiting', requested_iterations: 1000, min_iterations: 0 });
+      window.__emitPipelineEvent({ type: 'extract_request_result', source_name: 'leiting', iteration: 1, success: false, via: 'direct', will_retry: true });
+      window.__emitPipelineEvent({ type: 'extract_request_result', source_name: 'leiting', iteration: 1, success: true, via: 'direct_curl_tls_fallback' });
+      window.__emitPipelineEvent({ type: 'extract_decrypt_result', source_name: 'leiting', iteration: 1, success: true });
+      window.__emitPipelineEvent({ type: 'extract_source_completed', source_name: 'leiting', successful_iterations: 3, failed_iterations: 0, raw_links: 1 });
+    });
+    const extractLogText = await page.locator('#logCenterTable').innerText();
+    assert.match(extractLogText, /leiting.*开始提取/);
+    assert.match(extractLogText, /leiting #1 direct 失败/);
+    assert.match(extractLogText, /leiting #1 direct_curl_tls_fallback 成功/);
+    assert.match(extractLogText, /leiting.*完成/);
+
+    await page.locator('#navRuns').click();
+    await page.waitForSelector('#runsWorkspace');
+
     const runButtonBox = await page.locator('#runsWorkspace [data-run-action="start"]').boundingBox();
     await page.mouse.move(runButtonBox.x + runButtonBox.width / 2, runButtonBox.y + runButtonBox.height / 2);
     await page.mouse.down();

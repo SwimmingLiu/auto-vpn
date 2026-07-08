@@ -235,6 +235,36 @@ test('Node extract backend stops consecutive failures without waiting for oversi
   assert.equal(events.filter((event) => event.type === 'extract_request_result').length, 3);
 });
 
+test('Node extract backend treats min iterations above max as no plateau floor', async () => {
+  const input = JSON.parse(await readFile(path.join(fixtureDir, 'input.json'), 'utf8'));
+  const events = [];
+
+  const result = await fetchSourceLinksWithBackend({
+    source_name: 'leiting',
+    source: {
+      url: 'https://fixture.example/source',
+      key: input.key,
+      max_iterations: 100,
+      min_iterations: 10000,
+      plateau_limit: 2,
+      failure_limit: 1,
+      max_runtime_seconds: 0
+    }
+  }, {
+    env: { AUTOVPN_NO_PYTHON: '1' },
+    eventCallback: (type, payload) => events.push({ type, ...payload }),
+    fetch: async () => ({
+      ok: true,
+      status: 200,
+      text: async () => input.cipher_text
+    })
+  });
+
+  assert.equal(result.successful_iterations, 3);
+  assert.equal(result.links.length, 1);
+  assert.equal(events.find((event) => event.type === 'extract_source_started')?.min_iterations, 0);
+});
+
 test('curl TLS fallback does not expose source URLs in process argv', async () => {
   const input = JSON.parse(await readFile(path.join(fixtureDir, 'input.json'), 'utf8'));
   const spawns = [];

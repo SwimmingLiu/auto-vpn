@@ -341,7 +341,8 @@ async function fetchSourceText(
 async function fetchSourceLinksInNode(input: ExtractInput, options: ExtractBackendOptions): Promise<ExtractedSourceResult> {
   const source = input.source;
   const maxIterations = Math.max(0, Math.trunc(numberOrDefault(source.max_iterations, 0)));
-  const minIterations = Math.max(0, Math.trunc(numberOrDefault(source.min_iterations, 0)));
+  const configuredMinIterations = Math.max(0, Math.trunc(numberOrDefault(source.min_iterations, 0)));
+  const minIterations = configuredMinIterations > maxIterations ? 0 : configuredMinIterations;
   const plateauLimit = Math.max(1, Math.trunc(numberOrDefault(source.plateau_limit, 1)));
   const failureLimit = Math.max(1, Math.trunc(numberOrDefault(source.failure_limit, 1)));
   const maxRuntimeSeconds = Math.max(0, numberOrDefault(source.max_runtime_seconds, 0));

@@ -1183,6 +1183,45 @@ function handlePipelineEvent(event) {
     return;
   }
 
+  if (event.type === 'extract_source_started') {
+    appendLog(`[extract] ${event.source_name} 开始提取，最多 ${event.requested_iterations ?? 0} 次，最少 ${event.min_iterations ?? 0} 次`, {
+      kind: 'stage',
+      stage: 'extract',
+      level: 'info'
+    });
+    return;
+  }
+
+  if (event.type === 'extract_request_result') {
+    const status = event.success ? '成功' : '失败';
+    const retry = event.will_retry ? '，将重试' : '';
+    appendLog(`[extract] ${event.source_name} #${event.iteration} ${event.via} ${status}${retry}`, {
+      kind: 'stage',
+      stage: 'extract',
+      level: event.success ? 'info' : 'warning'
+    });
+    return;
+  }
+
+  if (event.type === 'extract_decrypt_result' && !event.success) {
+    appendLog(`[extract] ${event.source_name} #${event.iteration} 解密失败`, {
+      kind: 'stage',
+      stage: 'extract',
+      level: 'error'
+    });
+    return;
+  }
+
+  if (event.type === 'extract_source_completed') {
+    updateExtractMetrics({ source_name: event.source_name, total_links: event.raw_links });
+    appendLog(`[extract] ${event.source_name} 完成，成功 ${event.successful_iterations ?? 0} 次，失败 ${event.failed_iterations ?? 0} 次，原始节点 ${event.raw_links ?? 0} 个`, {
+      kind: 'stage',
+      stage: 'extract',
+      level: 'info'
+    });
+    return;
+  }
+
   if (event.type === 'extract_iteration') {
     updateExtractMetrics(event);
     touchUpdate();
