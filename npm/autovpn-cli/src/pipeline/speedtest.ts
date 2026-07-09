@@ -592,7 +592,7 @@ async function speedtestInNode(input: SpeedTestInput, options: SpeedTestBackendO
   const config = normalizeSpeedTestConfig(input.config);
   const runtimePath = input.runtime_path ?? '';
   const requestedRuntime = String((options.env ?? process.env).AUTOVPN_SPEEDTEST_RUNTIME ?? '').trim().toLowerCase();
-  const useMihomoRuntime = requestedRuntime === 'mihomo';
+  const useMihomoRuntime = requestedRuntime !== 'direct';
   const probeLinks = options.probeLinks ?? ((links: string[]) => (
     useMihomoRuntime
       ? probeLinksMihomo(links, config, runtimePath, options)
@@ -723,7 +723,7 @@ export async function probeSpeedtestLinksInNode(input: SpeedTestInput, options: 
   const config = normalizeSpeedTestConfig(input.config);
   const runtimePath = input.runtime_path ?? '';
   const requestedRuntime = String((options.env ?? process.env).AUTOVPN_SPEEDTEST_RUNTIME ?? '').trim().toLowerCase();
-  const useMihomoRuntime = requestedRuntime === 'mihomo';
+  const useMihomoRuntime = requestedRuntime !== 'direct';
   const probeLinks = options.probeLinks ?? ((links: string[]) => (
     useMihomoRuntime
       ? probeLinksMihomo(links, config, runtimePath, options)
@@ -736,7 +736,7 @@ export async function testSpeedtestLinkInNode(input: { link: string; config: Spe
   const config = normalizeSpeedTestConfig(input.config);
   const runtimePath = input.runtime_path ?? '';
   const requestedRuntime = String((options.env ?? process.env).AUTOVPN_SPEEDTEST_RUNTIME ?? '').trim().toLowerCase();
-  const useMihomoRuntime = requestedRuntime === 'mihomo';
+  const useMihomoRuntime = requestedRuntime !== 'direct';
   const testLink = options.testLink ?? ((link: string) => (
     useMihomoRuntime
       ? testLinkMihomo(link, config, runtimePath, options)

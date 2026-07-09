@@ -109,6 +109,38 @@ test('Node extract backend fetches encrypted runtime source without Python fallb
   assert.deepEqual(calls, ['https://fixture.example/source', 'https://fixture.example/source']);
 });
 
+test('Node extract backend uses configurable plateau limit per source', async () => {
+  const input = JSON.parse(await readFile(path.join(fixtureDir, 'input.json'), 'utf8'));
+  let calls = 0;
+
+  const result = await fetchSourceLinksWithBackend({
+    source_name: 'mifeng',
+    source: {
+      url: 'https://fixture.example/source',
+      key: input.key,
+      max_iterations: 5,
+      min_iterations: 0,
+      plateau_limit: 3,
+      failure_limit: 1,
+      max_runtime_seconds: 0
+    }
+  }, {
+    env: { AUTOVPN_NO_PYTHON: '1' },
+    fetch: async () => {
+      calls += 1;
+      return {
+        ok: true,
+        status: 200,
+        text: async () => input.cipher_text
+      };
+    }
+  });
+
+  assert.equal(calls, 4);
+  assert.equal(result.successful_iterations, 4);
+  assert.equal(result.links.length, 1);
+});
+
 test('Node extract backend emits source progress events while extracting', async () => {
   const input = JSON.parse(await readFile(path.join(fixtureDir, 'input.json'), 'utf8'));
   const events = [];
@@ -240,7 +272,7 @@ test('Node extract backend stops consecutive failures without waiting for oversi
   assert.equal(events.filter((event) => event.type === 'extract_request_result').length, 3);
 });
 
-test('Node extract backend treats min iterations above max as no plateau floor', async () => {
+test('Node extract backend defaults plateau limit to 20 when omitted', async () => {
   const input = JSON.parse(await readFile(path.join(fixtureDir, 'input.json'), 'utf8'));
   const events = [];
 
@@ -251,7 +283,6 @@ test('Node extract backend treats min iterations above max as no plateau floor',
       key: input.key,
       max_iterations: 100,
       min_iterations: 10000,
-      plateau_limit: 2,
       failure_limit: 1,
       max_runtime_seconds: 0
     }
@@ -265,7 +296,7 @@ test('Node extract backend treats min iterations above max as no plateau floor',
     })
   });
 
-  assert.equal(result.successful_iterations, 3);
+  assert.equal(result.successful_iterations, 21);
   assert.equal(result.links.length, 1);
   assert.equal(events.find((event) => event.type === 'extract_source_started')?.min_iterations, 0);
 });

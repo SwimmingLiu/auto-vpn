@@ -352,7 +352,6 @@ def fetch_source_links(
             if raw_link_callback:
                 raw_link_callback(source_name, link)
 
-        plateau = plateau + 1 if new_items == 0 else 0
         if progress_state_callback:
             progress_state_callback(
                 source_name=source_name,
@@ -391,9 +390,9 @@ def fetch_source_links(
             extracted_links=len(extracted),
             total_links=len(links),
         )
+        plateau = plateau + 1 if new_items == 0 else 0
         if plateau >= source.plateau_limit and attempt >= source.min_iterations:
             break
-
     result = ExtractedSourceResult(
         source_name=source_name,
         requested_iterations=source.max_iterations,

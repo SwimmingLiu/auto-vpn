@@ -46,6 +46,8 @@ export interface ManagedToolSpawnCommand {
   args: string[];
 }
 
+const DEFAULT_MANAGED_NPM_REGISTRY = 'https://registry.npmmirror.com';
+
 export class ManagedToolError extends Error {
   readonly code: string;
 
@@ -169,9 +171,12 @@ async function installManagedTool(
   await mkdir(installDir, { recursive: true });
   let result: ManagedToolCommandResult;
   try {
-    result = await runCommand(['npm', 'install', '--no-save', '--no-audit', '--no-fund', `${packageName}@${version}`], {
+    result = await runCommand(['npm', '--prefix', installDir, 'install', '--no-save', '--no-audit', '--no-fund', `${packageName}@${version}`], {
       cwd: installDir,
-      env: { NPM_CONFIG_YES: 'true' }
+      env: {
+        NPM_CONFIG_YES: 'true',
+        NPM_CONFIG_REGISTRY: resolveManagedNpmRegistry()
+      }
     });
   } catch (error) {
     throw new ManagedToolError(
@@ -182,6 +187,10 @@ async function installManagedTool(
   if (result.returncode !== 0) {
     throw new ManagedToolError(`npm install failed for ${packageName}@${version}: ${safeCommandMessage(result)}`, 'MANAGED_TOOL_INSTALL_FAILED');
   }
+}
+
+function resolveManagedNpmRegistry(env: NodeJS.ProcessEnv = process.env): string {
+  return String(env.NPM_CONFIG_REGISTRY || env.npm_config_registry || DEFAULT_MANAGED_NPM_REGISTRY);
 }
 
 async function verifyToolVersion(

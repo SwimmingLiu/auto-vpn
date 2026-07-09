@@ -193,15 +193,15 @@ def test_fetch_source_links_stops_when_runtime_budget_is_exceeded(
     assert result.links == ["vmess://1", "vmess://2", "vmess://3"]
 
 
-def test_fetch_source_links_honors_min_iterations_before_plateau_stop(
+def test_fetch_source_links_uses_configurable_plateau_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = SourceConfig(
         url="https://example.com/api?t=123",
         key="abcdabcdabcdabcd",
         max_iterations=10,
-        min_iterations=5,
-        plateau_limit=2,
+        min_iterations=0,
+        plateau_limit=3,
         max_runtime_seconds=0,
     )
 
@@ -226,7 +226,7 @@ def test_fetch_source_links_honors_min_iterations_before_plateau_stop(
 
     result = fetch_source_links("leiting", source)
 
-    assert calls["count"] == 5
+    assert calls["count"] == 4
     assert result.links == ["vmess://first"]
 
 

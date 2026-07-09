@@ -125,7 +125,7 @@ test('Node speedtest backend can run direct fetch runtime without Python fallbac
       max_download_candidates: 1
     }
   }, {
-    env: { AUTOVPN_NO_PYTHON: '1' },
+    env: { AUTOVPN_NO_PYTHON: '1', AUTOVPN_SPEEDTEST_RUNTIME: 'direct' },
     now: () => timeline.shift(),
     fetch: async (url) => {
       calls.push(String(url));
@@ -142,6 +142,63 @@ test('Node speedtest backend can run direct fetch runtime without Python fallbac
     reachable: true,
     average_download_mb_s: 0.01,
     latency_ms: 30,
+    error: ''
+  }]);
+});
+
+test('Node speedtest backend defaults to Mihomo runtime so speed tests use each candidate link', async () => {
+  const opened = [];
+  const downloads = [];
+  const results = await speedtestLinksWithBackend({
+    links: ['vmess://default-mihomo'],
+    config: {
+      min_download_mb_s: 0.001,
+      timeout_seconds: 20,
+      concurrency: 1,
+      urls: ['http://speed.example/bytes'],
+      probe_url: 'https://probe.example/204',
+      max_download_bytes: 1024,
+      max_download_candidates: 1
+    },
+    runtime_path: '/opt/mihomo'
+  }, {
+    env: {},
+    now: (() => {
+      const timeline = [1000, 2000];
+      return () => timeline.shift();
+    })(),
+    openMihomoRuntime: async (link, options) => {
+      opened.push({ link, options });
+      return {
+        controllerUrl: 'http://controller/default',
+        proxyName: 'runtime-node',
+        proxies: {
+          http: 'http://127.0.0.1:18080',
+          https: 'http://127.0.0.1:18080'
+        },
+        close: async () => {}
+      };
+    },
+    probeMihomoProxyDelay: async () => 25,
+    downloadUrlViaHttpProxy: async (url, proxyUrl, maxBytes, timeoutSeconds) => {
+      downloads.push({ url, proxyUrl, maxBytes, timeoutSeconds });
+      return 1024;
+    }
+  });
+
+  assert.deepEqual(opened.map((item) => item.link), ['vmess://default-mihomo', 'vmess://default-mihomo']);
+  assert.deepEqual(opened.map((item) => item.options.runtimePath), ['/opt/mihomo', '/opt/mihomo']);
+  assert.deepEqual(downloads, [{
+    url: 'http://speed.example/bytes',
+    proxyUrl: 'http://127.0.0.1:18080',
+    maxBytes: 1024,
+    timeoutSeconds: 20
+  }]);
+  assert.deepEqual(results, [{
+    link: 'vmess://default-mihomo',
+    reachable: true,
+    average_download_mb_s: 0.001,
+    latency_ms: 25,
     error: ''
   }]);
 });
@@ -167,7 +224,7 @@ test('Node speedtest backend times out stalled response bodies', async () => {
         max_download_candidates: 1
       }
     }, {
-      env: { AUTOVPN_NO_PYTHON: '1' },
+      env: { AUTOVPN_NO_PYTHON: '1', AUTOVPN_SPEEDTEST_RUNTIME: 'direct' },
       fetch: async (url) => {
         if (String(url) === 'https://probe.example/204') {
           return { ok: true, status: 204, arrayBuffer: async () => new ArrayBuffer(0) };

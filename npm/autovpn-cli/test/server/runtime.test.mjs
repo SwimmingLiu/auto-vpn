@@ -150,6 +150,42 @@ test('server runtime restores an active latest job after serve restarts', async 
   assert.deepEqual(calls, [['follow', 'active-job'], ['stop', 'active-job']]);
 });
 
+test('server runtime reconciles failed job status when log following ends without a terminal event', async () => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-runtime-follow-failed-'));
+  const runtimeRoot = path.join(projectRoot, 'state');
+  const job = writeJobFixture(runtimeRoot, 'crashed-job', {
+    project_root: projectRoot,
+    pid: 0
+  });
+  const states = [];
+  const runtime = createServerRuntime({
+    projectRoot,
+    env: { VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot },
+    startDetachedRun: async () => job,
+    followLog: async function* () {
+      yield JSON.stringify({ type: 'stage', stage: 'speedtest', status: 'running' }) + '\n';
+      writeJson(job.job_file, {
+        ...job,
+        status: 'failed',
+        finished_at: '2026-07-09T00:01:00+00:00',
+        exit_code: 1,
+        last_error: 'process exited without terminal status'
+      });
+    }
+  });
+  runtime.subscribe?.((event) => {
+    if (event?.type === 'server_state') {
+      states.push(event.run_state);
+    }
+  });
+
+  await runtime.startRun?.({ skipDeploy: true, skipVerify: true });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.equal((await runtime.loadState()).runState, 'failed');
+  assert.deepEqual(states, ['failed']);
+});
+
 test('server runtime returns recent latest job events for page refresh hydration', async () => {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-runtime-refresh-events-'));
   const runtimeRoot = path.join(projectRoot, 'state');
@@ -455,6 +491,52 @@ test('server runtime starts retry jobs with serve proxy env and preserves redact
   ]);
   assert.equal(execOptions[0].env.VPN_AUTOMATION_USE_UPSTREAM_PROXY, '1');
   assert.equal(execOptions[0].env.VPN_AUTOMATION_UPSTREAM_PROXY, 'http://127.0.0.1:7897');
+});
+
+test('server runtime persists source iteration settings for subsequent runs', async () => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-runtime-profile-save-'));
+  const runtimeRoot = path.join(projectRoot, 'state');
+  fs.mkdirSync(runtimeRoot, { recursive: true });
+  fs.writeFileSync(path.join(runtimeRoot, 'profile.toml'), [
+    '[sources.demo]',
+    'url = "https://provider.example/private"',
+    'key = "source-secret"',
+    'enabled = true',
+    'max_iterations = 10',
+    'min_iterations = 0',
+    '',
+    '[deploy]',
+    'pages_project_url = "https://sub-nodes.pages.dev"',
+    ''
+  ].join('\n'), 'utf8');
+
+  const observed = [];
+  const runtime = createServerRuntime({
+    projectRoot,
+    env: { VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot },
+    startDetachedRun: async () => {
+      observed.push(fs.readFileSync(path.join(runtimeRoot, 'profile.toml'), 'utf8'));
+      return {
+        job_id: 'run-after-save',
+        status: 'running',
+        event_log: path.join(runtimeRoot, 'jobs', 'run-after-save', 'events.jsonl')
+      };
+    },
+    stopManagedJob: async () => ({ job_id: 'unused' }),
+    followLog: async function* () {}
+  });
+
+  await runtime.saveProfile?.({
+    sources: { demo: { url: 'https://provider.example/private', key: 'source-secret', enabled: true, max_iterations: 25, min_iterations: 0 } },
+    deploy: { pages_project_url: 'https://sub-nodes.pages.dev' }
+  });
+
+  const persisted = fs.readFileSync(path.join(runtimeRoot, 'profile.toml'), 'utf8');
+  assert.match(persisted, /max_iterations = 25/);
+  const state = await runtime.loadState?.();
+  assert.equal(state?.profile?.sources?.demo?.max_iterations, 25);
+  await runtime.startRun?.({ skipDeploy: true, skipVerify: true });
+  assert.match(observed.at(-1), /max_iterations = 25/);
 });
 
 test('server runtime state includes latest artifact preview and retry artifacts', async () => {

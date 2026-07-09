@@ -498,6 +498,10 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     await page.waitForSelector('#settingsDrawer[data-open="true"]');
     assert.match(await page.locator('#settingsDrawerTitle').innerText(), /数据源配置/);
     assert.equal(await page.locator('[data-source-max-iterations]').inputValue(), '40');
+    const sourceSettingTops = await page.locator('.source-drawer-settings .field').evaluateAll((nodes) =>
+      nodes.map((node) => Math.round(node.getBoundingClientRect().top))
+    );
+    assert.equal(new Set(sourceSettingTops).size, 1);
 
     const curlInput = "curl 'https://www.xnfvjf.info:20000/api/evmess?&proto=v6&platform=ios&ver=5.8.55347&unicode=CDC37303-6CEC-4AB2-AAD9-AE88DEF1CF10&deviceid=CDC37303-6CEC-4AB2-AAD9-AE88DEF1CF10&code=ZRGOIXI&recomm_code=&device_token=&f=2026-04-23&install=2026-04-23&xf_fans=0&token=ZGSNZ19nnZqSl2VobGppZZOWaGZonHGRYWeVk5lu&t=1777190098.382194&width=375.0&height=812.0&area=999' -H 'Host: www.xnfvjf.info:20000'";
     await page.locator('[data-drawer-source="leiting"][data-drawer-key="url"]').fill(curlInput);
@@ -508,9 +512,11 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     );
 
     await page.locator('[data-source-max-iterations]').fill('25');
+    await page.locator('[data-source-plateau-limit]').fill('20');
     await page.locator('[data-source-area-min]').fill('20');
     await page.locator('[data-source-area-max]').fill('60');
     assert.equal(await page.locator('[data-source-max-iterations]').inputValue(), '25');
+    assert.equal(await page.locator('[data-source-plateau-limit]').inputValue(), '20');
     assert.equal(await page.locator('[data-source-area-min]').inputValue(), '20');
     assert.equal(await page.locator('[data-source-area-max]').inputValue(), '60');
     await page.locator('[data-drawer-save="save"]').click();
@@ -518,6 +524,10 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     assert.equal(
       await page.evaluate(() => window.__savedProfiles.at(-1).sources.leiting.max_iterations),
       25
+    );
+    assert.equal(
+      await page.evaluate(() => window.__savedProfiles.at(-1).sources.leiting.plateau_limit),
+      20
     );
     assert.equal(
       await page.evaluate(() => window.__savedProfiles.at(-1).sources.leiting.url),
@@ -570,6 +580,7 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     );
     await page.locator('[data-drawer-path="deploy.pages_project_url"]').fill('https://mirror.example.dev');
     await page.locator('[data-drawer-path="deploy.project_name"]').fill('custom-pages-2');
+    await page.locator('[data-drawer-path="deploy.min_final_links"]').fill('12');
     await page.locator('[data-drawer-path="deploy.cloudflare_api_token"]').fill('cf-token-123');
     await page.locator('[data-drawer-path="deploy.pages_secret_admin"]').fill('custom-admin');
     assert.equal(
@@ -593,6 +604,7 @@ test('renderer matches the six-page canvas redesign and supports page navigation
         pages_project_url: 'https://mirror.example.dev',
         subscription_url: 'https://vpn.example.top/179ba8dd-3854-4747-b853-fc1868ef3937',
         cloudflare_api_token: 'cf-token-123',
+        min_final_links: 12,
         pages_secret_admin: 'custom-admin',
         share_project_name: 'sub-links-share-05'
       }

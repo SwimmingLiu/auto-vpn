@@ -80,10 +80,117 @@ test('resolveManagedNpmTool installs a missing managed tool and verifies it', as
   assert.equal(resolved.source, 'managed');
   assert.equal(resolved.version, 'example 2.0.0');
   assert.equal(resolved.requestedVersion, '2.0.0');
-  assert.deepEqual(commands[0].command, ['npm', 'install', '--no-save', '--no-audit', '--no-fund', '@scope/example-tool@2.0.0']);
+  assert.deepEqual(commands[0].command, ['npm', '--prefix', installDir, 'install', '--no-save', '--no-audit', '--no-fund', '@scope/example-tool@2.0.0']);
   assert.equal(commands[0].options.cwd, installDir);
   assert.equal(commands[0].options.env.NPM_CONFIG_YES, 'true');
   assert.deepEqual(commands[1].command, [binaryPath, '--version']);
+});
+
+test('resolveManagedNpmTool pins npm install prefix to the managed install directory', async () => {
+  const toolsRoot = await makeTempRoot('managed-tools-install-prefix');
+  const projectRoot = await makeTempRoot('managed-tools-project');
+  const installDir = path.join(toolsRoot, 'npm', 'example-tool', '1.0.0');
+  const binaryPath = path.join(installDir, 'node_modules', '.bin', 'example');
+  const commands = [];
+
+  const resolved = await resolveManagedNpmTool({
+    packageName: 'example-tool',
+    binaryName: 'example',
+    version: '1.0.0',
+    toolsRoot,
+    projectRoot,
+    runCommand: async (command, options) => {
+      commands.push({ command, options });
+      if (command[0] === 'npm') {
+        await writeExecutable(binaryPath);
+        return { returncode: 0, stdout: 'installed\n', stderr: '' };
+      }
+      return { returncode: 0, stdout: 'example 1.0.0\n', stderr: '' };
+    }
+  });
+
+  assert.equal(resolved.command, binaryPath);
+  assert.ok(commands[0].command.includes('--prefix'));
+  assert.equal(commands[0].command[commands[0].command.indexOf('--prefix') + 1], installDir);
+});
+
+test('resolveManagedNpmTool defaults managed installs to the China npm mirror', async () => {
+  const toolsRoot = await makeTempRoot('managed-tools-default-registry');
+  const projectRoot = await makeTempRoot('managed-tools-project');
+  const installDir = path.join(toolsRoot, 'npm', 'example-tool', '1.0.0');
+  const binaryPath = path.join(installDir, 'node_modules', '.bin', 'example');
+  const commands = [];
+  const originalRegistry = process.env.NPM_CONFIG_REGISTRY;
+  const originalLowercaseRegistry = process.env.npm_config_registry;
+  delete process.env.NPM_CONFIG_REGISTRY;
+  delete process.env.npm_config_registry;
+
+  try {
+    await resolveManagedNpmTool({
+      packageName: 'example-tool',
+      binaryName: 'example',
+      version: '1.0.0',
+      toolsRoot,
+      projectRoot,
+      runCommand: async (command, options) => {
+        commands.push({ command, options });
+        if (command[0] === 'npm') {
+          await writeExecutable(binaryPath);
+          return { returncode: 0, stdout: 'installed\n', stderr: '' };
+        }
+        return { returncode: 0, stdout: 'example 1.0.0\n', stderr: '' };
+      }
+    });
+  } finally {
+    if (originalRegistry === undefined) {
+      delete process.env.NPM_CONFIG_REGISTRY;
+    } else {
+      process.env.NPM_CONFIG_REGISTRY = originalRegistry;
+    }
+    if (originalLowercaseRegistry === undefined) {
+      delete process.env.npm_config_registry;
+    } else {
+      process.env.npm_config_registry = originalLowercaseRegistry;
+    }
+  }
+
+  assert.equal(commands[0].options.env.NPM_CONFIG_REGISTRY, 'https://registry.npmmirror.com');
+});
+
+test('resolveManagedNpmTool preserves an explicit npm registry override', async () => {
+  const toolsRoot = await makeTempRoot('managed-tools-custom-registry');
+  const projectRoot = await makeTempRoot('managed-tools-project');
+  const installDir = path.join(toolsRoot, 'npm', 'example-tool', '1.0.0');
+  const binaryPath = path.join(installDir, 'node_modules', '.bin', 'example');
+  const commands = [];
+  const originalRegistry = process.env.NPM_CONFIG_REGISTRY;
+  process.env.NPM_CONFIG_REGISTRY = 'https://registry.example.test';
+
+  try {
+    await resolveManagedNpmTool({
+      packageName: 'example-tool',
+      binaryName: 'example',
+      version: '1.0.0',
+      toolsRoot,
+      projectRoot,
+      runCommand: async (command, options) => {
+        commands.push({ command, options });
+        if (command[0] === 'npm') {
+          await writeExecutable(binaryPath);
+          return { returncode: 0, stdout: 'installed\n', stderr: '' };
+        }
+        return { returncode: 0, stdout: 'example 1.0.0\n', stderr: '' };
+      }
+    });
+  } finally {
+    if (originalRegistry === undefined) {
+      delete process.env.NPM_CONFIG_REGISTRY;
+    } else {
+      process.env.NPM_CONFIG_REGISTRY = originalRegistry;
+    }
+  }
+
+  assert.equal(commands[0].options.env.NPM_CONFIG_REGISTRY, 'https://registry.example.test');
 });
 
 test('resolveManagedNpmTool falls back to the project binary when allowed', async () => {
@@ -157,7 +264,7 @@ test('resolveManagedNpmTool defaults to installing when managed and project bina
 
   assert.equal(resolved.command, binaryPath);
   assert.equal(resolved.source, 'managed');
-  assert.deepEqual(commands[0].command, ['npm', 'install', '--no-save', '--no-audit', '--no-fund', 'example-tool@1.0.0']);
+  assert.deepEqual(commands[0].command, ['npm', '--prefix', installDir, 'install', '--no-save', '--no-audit', '--no-fund', 'example-tool@1.0.0']);
 });
 
 test('resolveManagedNpmTool times out default spawned commands', async () => {

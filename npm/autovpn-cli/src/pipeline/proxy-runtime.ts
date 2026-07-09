@@ -1,5 +1,5 @@
 import { spawn as defaultSpawn, ChildProcess } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -61,6 +61,8 @@ export const PROXY_ENV_KEYS = [
   'NO_PROXY',
   'no_proxy'
 ] as const;
+
+const MIHOMO_DELAY_TIMEOUT_MAX_MS = 30_000;
 
 function padBase64(encoded: string): string {
   return encoded + '='.repeat((4 - (encoded.length % 4)) % 4);
@@ -169,7 +171,8 @@ export async function probeMihomoProxyDelay(
 ): Promise<number> {
   const fetchImpl = requireFetch(options.fetch);
   const url = new URL(`${controllerUrl}/proxies/${encodeURIComponent(proxyName)}/delay`);
-  url.searchParams.set('timeout', String(Math.trunc(timeoutSeconds * 1000)));
+  const timeoutMs = Math.min(MIHOMO_DELAY_TIMEOUT_MAX_MS, Math.max(1, Math.trunc(timeoutSeconds * 1000)));
+  url.searchParams.set('timeout', String(timeoutMs));
   url.searchParams.set('url', probeUrl);
   const response = await fetchImpl(url.toString(), { method: 'GET' });
   requireOkResponse(response, 'mihomo proxy delay probe');
@@ -252,6 +255,27 @@ async function closeChildProcess(process: ChildProcess): Promise<void> {
   });
 }
 
+async function resolveMihomoCommand(runtimePath?: string): Promise<string> {
+  const candidate = String(runtimePath ?? '').trim();
+  if (!candidate) {
+    return 'mihomo';
+  }
+  try {
+    const info = await stat(candidate);
+    if (info.isFile()) {
+      return candidate;
+    }
+    if (info.isDirectory() && path.basename(candidate) === 'runtime') {
+      return 'mihomo';
+    }
+  } catch {
+    if (path.basename(candidate) === 'runtime') {
+      return 'mihomo';
+    }
+  }
+  return candidate;
+}
+
 export async function openMihomoRuntime(link: string, options: OpenMihomoRuntimeOptions = {}): Promise<MihomoRuntime> {
   const startupWaitSeconds = Number(options.startupWaitSeconds ?? 1);
   const mixedPort = Number.isInteger(options.mixedPort) && Number(options.mixedPort) > 0
@@ -269,10 +293,19 @@ export async function openMihomoRuntime(link: string, options: OpenMihomoRuntime
   const configPath = path.join(tempDir, 'config.json');
   await writeFile(configPath, JSON.stringify(config), 'utf8');
 
-  const child = (options.spawn ?? defaultSpawn)(options.runtimePath || 'mihomo', ['-f', configPath], {
+  const command = await resolveMihomoCommand(options.runtimePath);
+  const child = (options.spawn ?? defaultSpawn)(command, ['-f', configPath], {
     stdio: ['ignore', 'pipe', 'pipe'],
     env: stripProxyEnv(options.env ?? process.env)
   });
+  let rejectStartupError: ((error: Error) => void) | undefined;
+  const startupError = new Promise<never>((_resolve, reject) => {
+    rejectStartupError = reject;
+  });
+  const onStartupError = (error: Error): void => {
+    rejectStartupError?.(error);
+  };
+  child.once('error', onStartupError);
 
   let closed = false;
   const close = async (): Promise<void> => {
@@ -286,14 +319,18 @@ export async function openMihomoRuntime(link: string, options: OpenMihomoRuntime
 
   try {
     const waitForPort = options.waitForPort ?? defaultWaitForPort;
-    await waitForPort(mixedPort, startupWaitSeconds + 4);
-    await waitForPort(controllerPort, startupWaitSeconds + 4);
-    await (options.selectProxy ?? ((url, name, timeoutSeconds) => selectMihomoProxy(url, name, timeoutSeconds)))(
+    await Promise.race([waitForPort(mixedPort, startupWaitSeconds + 4), startupError]);
+    await Promise.race([waitForPort(controllerPort, startupWaitSeconds + 4), startupError]);
+    await Promise.race([(options.selectProxy ?? ((url, name, timeoutSeconds) => selectMihomoProxy(url, name, timeoutSeconds)))(
       controllerUrl,
       proxyName,
       startupWaitSeconds + 4
-    );
+    ), startupError]);
+    child.off('error', onStartupError);
+    child.on('error', () => {});
   } catch (error) {
+    child.off('error', onStartupError);
+    child.on('error', () => {});
     await close();
     throw error;
   }

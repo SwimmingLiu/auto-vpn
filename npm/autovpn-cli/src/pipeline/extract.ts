@@ -54,6 +54,7 @@ export interface ExtractBackendOptions {
   fetch?: FetchLike;
   curlFetch?: CurlFetchLike;
   eventCallback?: ExtractEventCallback;
+  linksCallback?: (links: string[]) => void | Promise<void>;
   resolvePythonCli?: () => ResolvedPythonCli | Promise<ResolvedPythonCli>;
   fetchSourceLinks?: (input: ExtractInput) => ExtractedSourceResult | Promise<ExtractedSourceResult>;
   pythonExtract?: (input: ExtractInput) => ExtractedSourceResult | Promise<ExtractedSourceResult>;
@@ -362,7 +363,7 @@ async function fetchSourceLinksInNode(input: ExtractInput, options: ExtractBacke
   const maxIterations = Math.max(0, Math.trunc(numberOrDefault(source.max_iterations, 0)));
   const configuredMinIterations = Math.max(0, Math.trunc(numberOrDefault(source.min_iterations, 0)));
   const minIterations = configuredMinIterations > maxIterations ? 0 : configuredMinIterations;
-  const plateauLimit = Math.max(1, Math.trunc(numberOrDefault(source.plateau_limit, 1)));
+  const plateauLimit = Math.max(1, Math.trunc(numberOrDefault(source.plateau_limit, 20)));
   const failureLimit = Math.max(1, Math.trunc(numberOrDefault(source.failure_limit, 1)));
   const maxRuntimeSeconds = Math.max(0, numberOrDefault(source.max_runtime_seconds, 0));
   const startIteration = Math.max(1, Math.trunc(numberOrDefault(source.resume_from_iteration, 1)));
@@ -426,6 +427,7 @@ async function fetchSourceLinksInNode(input: ExtractInput, options: ExtractBacke
       successes += 1;
       failures = 0;
       let newItems = 0;
+      const newLinks: string[] = [];
       const newItemFingerprints: string[] = [];
       for (const link of extracted) {
         if (seen.has(link)) {
@@ -433,6 +435,7 @@ async function fetchSourceLinksInNode(input: ExtractInput, options: ExtractBacke
         }
         seen.add(link);
         links.push(link);
+        newLinks.push(link);
         newItems += 1;
         newItemFingerprints.push(linkFingerprint(link));
       }
@@ -446,6 +449,9 @@ async function fetchSourceLinksInNode(input: ExtractInput, options: ExtractBacke
         deduped_links: links.length,
         new_item_fingerprints: newItemFingerprints
       });
+      if (newItems > 0) {
+        await options.linksCallback?.(newLinks);
+      }
       plateau = newItems === 0 ? plateau + 1 : 0;
       if (plateau >= plateauLimit && attempt >= minIterations) {
         break;

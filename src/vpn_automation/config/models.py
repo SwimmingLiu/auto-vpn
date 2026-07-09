@@ -21,7 +21,7 @@ class SourceConfig:
     enabled: bool = True
     max_iterations: int = 5_000
     min_iterations: int = 0
-    plateau_limit: int = 8
+    plateau_limit: int = 20
     use_random_area: bool = True
     area_min: int = 0
     area_max: int = 100

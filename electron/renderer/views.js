@@ -710,6 +710,7 @@ function buildSettingsDrawerBody(section, draft) {
     return `
       <div class="source-drawer-settings">
         ${renderDrawerField('最大迭代次数', 'number', draft?.maxIterations ?? 40, 'sources.maxIterations', true, 'data-source-max-iterations min="1"')}
+        ${renderDrawerField('早停次数', 'number', draft?.plateauLimit ?? 20, 'sources.plateauLimit', true, 'data-source-plateau-limit min="1"')}
         ${renderDrawerField('区域起始', 'number', draft?.areaMin ?? 0, 'sources.areaMin', true, 'data-source-area-min')}
         ${renderDrawerField('区域结束', 'number', draft?.areaMax ?? 100, 'sources.areaMax', true, 'data-source-area-max')}
       </div>
@@ -796,6 +797,7 @@ function buildSettingsDrawerBody(section, draft) {
         ${renderDrawerField('Pages 地址', 'text', draft.pages_project_url, 'deploy.pages_project_url')}
         ${renderDrawerField('订阅地址', 'text', draft.subscription_url, 'deploy.subscription_url')}
         ${renderDrawerField('verify 订阅地址', 'text', draft.verify_subscription_url, 'deploy.verify_subscription_url')}
+        ${renderDrawerField('最少节点数', 'number', draft.min_final_links ?? 10, 'deploy.min_final_links', false, 'min="0" step="1"')}
         ${renderDrawerField('Cloudflare Token', 'password', draft.cloudflare_api_token, 'deploy.cloudflare_api_token')}
         ${renderDrawerField('Pages Secret ADMIN', 'password', draft.pages_secret_admin, 'deploy.pages_secret_admin')}
       </div>
@@ -947,6 +949,7 @@ export function buildSourceIterationDraft(sources = {}) {
   return {
     sources: structuredClone(sources),
     maxIterations: coercePositiveInteger(firstSource.max_iterations, 40),
+    plateauLimit: coercePositiveInteger(firstSource.plateau_limit, 20),
     areaMin: coerceAreaValue(firstSource.area_min, 0),
     areaMax: coerceAreaValue(firstSource.area_max, 100)
   };
@@ -1005,6 +1008,7 @@ export function applyAvailabilityTargetDraft(draft = {}) {
 
 export function applySourceIterationDraft(sources = {}, draft = {}) {
   const maxIterations = coercePositiveInteger(draft.maxIterations, 40);
+  const plateauLimit = coercePositiveInteger(draft.plateauLimit, 20);
   const areaMin = coerceAreaValue(draft.areaMin, 0);
   const areaMax = coerceAreaValue(draft.areaMax, 100);
   return Object.fromEntries(
@@ -1014,6 +1018,7 @@ export function applySourceIterationDraft(sources = {}, draft = {}) {
         ...source,
         max_iterations: maxIterations,
         min_iterations: Math.min(coercePositiveInteger(source.min_iterations, 0), maxIterations),
+        plateau_limit: plateauLimit,
         area_min: Math.min(areaMin, areaMax),
         area_max: Math.max(areaMin, areaMax)
       }

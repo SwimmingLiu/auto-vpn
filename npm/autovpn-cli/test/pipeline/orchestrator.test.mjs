@@ -38,15 +38,25 @@ async function makeProject() {
   await mkdir(path.join(projectRoot, 'templates'), { recursive: true });
   await mkdir(path.join(projectRoot, 'state'), { recursive: true });
   await writeFile(path.join(projectRoot, 'pyproject.toml'), '[project]\nname = "fixture"\n', 'utf8');
-  await writeFile(path.join(projectRoot, 'state', 'profile.toml'), await readFile(path.join(fixtureDir, 'profile.toml'), 'utf8'), 'utf8');
+  await writeFile(
+    path.join(projectRoot, 'state', 'profile.toml'),
+    (await readFile(path.join(fixtureDir, 'profile.toml'), 'utf8')).replace('[worker_build]', 'min_final_links = 0\n\n[worker_build]'),
+    'utf8'
+  );
   await writeFile(path.join(projectRoot, 'templates', 'vmess_node.js'), await readFile(path.join(fixtureDir, 'template.js'), 'utf8'), 'utf8');
   return projectRoot;
+}
+
+async function setDeployMinFinalLinks(projectRoot, value) {
+  const profilePath = path.join(projectRoot, 'state', 'profile.toml');
+  await writeFile(profilePath, (await readFile(profilePath, 'utf8')).replace(/min_final_links = .+/, `min_final_links = ${value}`), 'utf8');
 }
 
 test('runNodePipeline emits compatible events and writes non-deploy artifacts', async () => {
   const projectRoot = await makeProject();
   const events = [];
   const firstLink = vmessLink('first', 'one.example');
+  const duplicateFirstLink = vmessLink('duplicate-first', 'one.example');
   const secondLink = vmessLink('second', 'two.example');
   const result = await runNodePipeline({
     projectRoot,
@@ -87,17 +97,116 @@ test('runNodePipeline emits compatible events and writes non-deploy artifacts', 
   assert.equal(JSON.parse(await readFile(path.join(artifactDir, 'pipeline_report.json'), 'utf8')).run_status, 'success');
 });
 
+test('runNodePipeline blocks deploy when final node count is below the configured minimum', async () => {
+  const projectRoot = await makeProject();
+  await setDeployMinFinalLinks(projectRoot, 10);
+  const firstLink = vmessLink('first', 'one.example');
+  const secondLink = vmessLink('second', 'two.example');
+
+  await assert.rejects(() => runNodePipeline({
+    projectRoot,
+    skipDeploy: false,
+    skipVerify: true,
+    output: 'jsonl'
+  }, {
+    env: {
+      VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'),
+      VPN_AUTOMATION_PROFILE_PATH: path.join(projectRoot, 'state', 'profile.toml')
+    },
+    now: () => new Date('2026-06-29T01:02:03Z'),
+    stages: {
+      extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink, secondLink] }),
+      speedtest: async (links) => links.map((link) => ({ link, reachable: true, average_download_mb_s: 3, latency_ms: 20, error: '' })),
+      availability: async (results) => results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} })),
+      countryLookup: () => 'US',
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { main_module: '_worker.js', modules: [] } }),
+      deploy: async () => {
+        throw new Error('deploy must not run below minimum final links');
+      }
+    }
+  }), /final node count 2 is below deploy minimum 10/);
+});
+
+test('runNodePipeline streams extracted links into speedtest before all sources finish', async () => {
+  const projectRoot = await makeProject();
+  const profilePath = path.join(projectRoot, 'state', 'profile.toml');
+  await writeFile(profilePath, [
+    await readFile(profilePath, 'utf8'),
+    '',
+    '[sources.slow_fixture]',
+    'url = "https://fixture.example/slow"',
+    'key = "abcdabcdabcdabcd"',
+    'enabled = true',
+    'max_iterations = 1',
+    'min_iterations = 0',
+    'plateau_limit = 1',
+    'failure_limit = 1',
+    ''
+  ].join('\n'), 'utf8');
+
+  const firstLink = vmessLink('first', 'one.example');
+  const duplicateFirstLink = vmessLink('duplicate-first', 'one.example');
+  const secondLink = vmessLink('second', 'two.example');
+  let slowSourceFinished = false;
+  const calls = [];
+
+  const result = await runNodePipeline({
+    projectRoot,
+    skipDeploy: true,
+    skipVerify: true,
+    output: 'jsonl'
+  }, {
+    env: {
+      VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'),
+      VPN_AUTOMATION_PROFILE_PATH: profilePath
+    },
+    now: () => new Date('2026-06-29T01:02:03Z'),
+    stages: {
+      extract: async ({ source_name }, stream) => {
+        if (source_name === 'fixture') {
+          await stream?.onLinks?.([firstLink, duplicateFirstLink]);
+          return { source_name, requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink, duplicateFirstLink] };
+        }
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        slowSourceFinished = true;
+        await stream?.onLinks?.([secondLink]);
+        return { source_name, requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [secondLink] };
+      },
+      speedtest: async () => {
+        throw new Error('batch speedtest must not run when streaming is available');
+      },
+      speedtestLink: async (link) => {
+        calls.push({ stage: 'speedtest', name: vmessName(link), slowSourceFinished });
+        return { link, reachable: true, average_download_mb_s: 3, latency_ms: 20, error: '' };
+      },
+      availability: async (results) => results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} })),
+      countryLookup: () => 'US',
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { main_module: '_worker.js', modules: [] } })
+    }
+  });
+
+  assert.equal(result.run_status, 'success');
+  assert.deepEqual(calls.map((call) => call.name), ['first', 'second']);
+  assert.equal(calls[0].slowSourceFinished, false);
+});
+
 test('runNodePipeline forwards native speedtest progress events to the job log', async () => {
   const projectRoot = await makeProject();
   const events = [];
   const firstLink = vmessLink('first', 'one.example');
+  const profilePath = path.join(projectRoot, 'state', 'profile.toml');
+  await writeFile(
+    profilePath,
+    (await readFile(profilePath, 'utf8')).replace('min_download_mb_s = 1', 'min_download_mb_s = 0.001'),
+    'utf8'
+  );
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url) => {
     if (String(url) === 'https://www.gstatic.com/generate_204') {
       return { ok: true, status: 204, arrayBuffer: async () => new ArrayBuffer(0) };
     }
     if (String(url) === 'https://speed.example/10mb') {
-      return { ok: true, status: 200, arrayBuffer: async () => new Uint8Array(1000).buffer };
+      return { ok: true, status: 200, arrayBuffer: async () => new Uint8Array(5_000_000).buffer };
     }
     throw new Error(`unexpected fetch URL ${url}`);
   };
@@ -111,7 +220,8 @@ test('runNodePipeline forwards native speedtest progress events to the job log',
     }, {
       env: {
         VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'),
-        VPN_AUTOMATION_PROFILE_PATH: path.join(projectRoot, 'state', 'profile.toml')
+        VPN_AUTOMATION_PROFILE_PATH: profilePath,
+        AUTOVPN_SPEEDTEST_RUNTIME: 'direct'
       },
       now: () => new Date('2026-06-29T01:02:03Z'),
       emit: (event) => events.push(event),
@@ -129,6 +239,79 @@ test('runNodePipeline forwards native speedtest progress events to the job log',
   assert.ok(events.some((event) => event.type === 'speedtest_runtime' && event.runtime_core === 'direct'));
   assert.ok(events.some((event) => event.type === 'log' && event.message.includes('runtime_core=direct')));
   assert.ok(events.some((event) => event.type === 'speedtest_result' && event.link === firstLink));
+});
+
+test('runNodePipeline fails fast when no links pass speedtest', async () => {
+  const projectRoot = await makeProject();
+  const events = [];
+  const firstLink = vmessLink('first', 'one.example');
+
+  await assert.rejects(() => runNodePipeline({
+    projectRoot,
+    skipDeploy: true,
+    skipVerify: true,
+    output: 'jsonl'
+  }, {
+    env: {
+      VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'),
+      VPN_AUTOMATION_PROFILE_PATH: path.join(projectRoot, 'state', 'profile.toml')
+    },
+    now: () => new Date('2026-06-29T01:02:03Z'),
+    emit: (event) => events.push(event),
+    stages: {
+      extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink] }),
+      speedtest: async () => [
+        { link: firstLink, reachable: false, average_download_mb_s: 0, latency_ms: 0, error: 'timeout' }
+      ],
+      availability: async () => {
+        throw new Error('availability must not run');
+      },
+      deploy: async () => {
+        throw new Error('deploy must not run');
+      }
+    }
+  }), /No links passed speed test/);
+
+  assert.equal(events.at(-2).type, 'summary');
+  assert.equal(events.at(-2).run_status, 'failed');
+  assert.equal(events.at(-1).type, 'run_failed');
+  const report = JSON.parse(await readFile(path.join(events.at(-2).artifact_dir, 'pipeline_report.json'), 'utf8'));
+  assert.equal(report.run_status, 'failed');
+  assert.equal(report.stage_status.speedtest, 'failed');
+  assert.match(report.error, /No links passed speed test/);
+});
+
+test('runNodePipeline reports when speedtest links are below the minimum speed threshold', async () => {
+  const projectRoot = await makeProject();
+  const firstLink = vmessLink('slow', 'slow.example');
+  const events = [];
+
+  await assert.rejects(() => runNodePipeline({
+    projectRoot,
+    skipDeploy: true,
+    skipVerify: true,
+    output: 'jsonl'
+  }, {
+    env: {
+      VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'),
+      VPN_AUTOMATION_PROFILE_PATH: path.join(projectRoot, 'state', 'profile.toml')
+    },
+    now: () => new Date('2026-06-29T01:02:03Z'),
+    emit: (event) => events.push(event),
+    stages: {
+      extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink] }),
+      speedtest: async () => [{ link: firstLink, reachable: true, average_download_mb_s: 0.227, latency_ms: 20, error: '' }],
+      availability: async () => {
+        throw new Error('availability must not run');
+      },
+      countryLookup: () => 'US',
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
+    }
+  }), /No links met minimum speed threshold/);
+
+  const artifactDir = events.find((event) => event.type === 'summary')?.artifact_dir;
+  const report = JSON.parse(await readFile(path.join(artifactDir, 'pipeline_report.json'), 'utf8'));
+  assert.match(report.error, /minimum speed threshold 1MB\/s/);
 });
 
 test('runNodePipeline can execute deploy and verify through explicit stage adapters', async () => {
@@ -1218,14 +1401,15 @@ test('resumeNodePipeline reads speedtest resume state from session log when outp
   assert.match(await readFile(overrideEventLog, 'utf8'), /speedtest_resume_state/);
 });
 
-test('resumeNodePipeline requires Mihomo runtime for native speedtest resume without injected stages', async () => {
+test('resumeNodePipeline rejects explicit direct runtime for native speedtest resume without injected stages', async () => {
   const projectRoot = await makeProject();
   const firstLink = vmessLink('first', 'one.example');
   const runtimeRoot = path.join(projectRoot, '.runtime');
   const profilePath = path.join(projectRoot, 'state', 'profile.toml');
   const env = {
     VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot,
-    VPN_AUTOMATION_PROFILE_PATH: profilePath
+    VPN_AUTOMATION_PROFILE_PATH: profilePath,
+    AUTOVPN_SPEEDTEST_RUNTIME: 'direct'
   };
   const source = await runNodePipeline({
     projectRoot,
@@ -1259,17 +1443,18 @@ test('resumeNodePipeline requires Mihomo runtime for native speedtest resume wit
     output: 'jsonl'
   }, {
     env
-  }), /Node resume speedtest requires AUTOVPN_SPEEDTEST_RUNTIME=mihomo/);
+  }), /Node resume speedtest cannot use AUTOVPN_SPEEDTEST_RUNTIME=direct/);
 });
 
-test('resumeNodePipeline rejects partial speedtest stage injection without Mihomo runtime', async () => {
+test('resumeNodePipeline rejects partial speedtest stage injection with explicit direct runtime', async () => {
   const projectRoot = await makeProject();
   const firstLink = vmessLink('first', 'one.example');
   const runtimeRoot = path.join(projectRoot, '.runtime');
   const profilePath = path.join(projectRoot, 'state', 'profile.toml');
   const env = {
     VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot,
-    VPN_AUTOMATION_PROFILE_PATH: profilePath
+    VPN_AUTOMATION_PROFILE_PATH: profilePath,
+    AUTOVPN_SPEEDTEST_RUNTIME: 'direct'
   };
   const source = await runNodePipeline({
     projectRoot,
@@ -1306,7 +1491,7 @@ test('resumeNodePipeline rejects partial speedtest stage injection without Mihom
     stages: {
       speedtestProbe: async (links) => links.map((link) => ({ link, reachable: true, latency_ms: 20, error: '' }))
     }
-  }), /Node resume speedtest requires AUTOVPN_SPEEDTEST_RUNTIME=mihomo/);
+  }), /Node resume speedtest cannot use AUTOVPN_SPEEDTEST_RUNTIME=direct/);
 });
 
 test('resumeNodePipeline emits concurrent speedtest results as each link completes', async () => {
@@ -1440,7 +1625,7 @@ test('resumeNodePipeline marks speedtest failed when resumed results do not pass
       speedtestProbe: async (links) => links.map((link) => ({ link, reachable: true, latency_ms: 20, error: '' })),
       speedtestLink: async (link) => ({ link, reachable: true, average_download_mb_s: 0.5, latency_ms: 20, error: '' })
     }
-  }), /No links passed speed test/);
+  }), /No links met minimum speed threshold/);
 
   assert.equal(events.at(-2).type, 'summary');
   assert.equal(events.at(-2).run_status, 'failed');
@@ -1448,5 +1633,5 @@ test('resumeNodePipeline marks speedtest failed when resumed results do not pass
   const report = JSON.parse(await readFile(path.join(source.artifact_dir, 'pipeline_report.json'), 'utf8'));
   assert.equal(report.run_status, 'failed');
   assert.equal(report.stage_status.speedtest, 'failed');
-  assert.match(report.error, /No links passed speed test/);
+  assert.match(report.error, /minimum speed threshold 1MB\/s/);
 });

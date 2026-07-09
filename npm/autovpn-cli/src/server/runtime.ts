@@ -225,6 +225,14 @@ function terminalRunStateFromArtifact(artifact: Record<string, unknown> | undefi
   return status as ServerState['runState'];
 }
 
+function runStateFromJobStatus(job: Record<string, any> | undefined): ServerState['runState'] | undefined {
+  const status = String(job?.status ?? '');
+  if (status === 'failed') return 'failed';
+  if (status === 'success') return 'success';
+  if (status === 'stopped') return 'idle';
+  return undefined;
+}
+
 function jobsRoot(projectRoot: string, env: NodeJS.ProcessEnv): string {
   return path.join(path.dirname(resolveProfilePath(projectRoot, env)), 'jobs');
 }
@@ -361,8 +369,11 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
           }
         }
         if (!cancelled && runState === 'running') {
-          runState = 'success';
-          publish({ type: 'server_state', run_state: runState });
+          const reconciledState = runStateFromJobStatus(latestJob(options.projectRoot, options.env ?? process.env));
+          if (reconciledState) {
+            runState = reconciledState;
+            publish({ type: 'server_state', run_state: runState });
+          }
         }
       } catch (error) {
         if (!cancelled) {

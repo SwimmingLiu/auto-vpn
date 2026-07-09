@@ -87,7 +87,7 @@ test('resolveLanguage ignores saved and system language and always returns zh-CN
 test('getMessages exposes Chinese-only copy', () => {
   assert.equal(getMessages().appTitle, 'AutoVPN');
   assert.equal(getMessages().sidebarTitle, 'AutoVPN');
-  assert.equal(getMessages().sidebarVersion, 'v.1.6.1');
+  assert.equal(getMessages().sidebarVersion, 'v.1.6.2');
   assert.equal(getMessages().runButton, '立即运行');
   assert.equal(getMessages('en-US').pageTitles.results, '结果');
   assert.equal(
@@ -184,17 +184,19 @@ test('buildRegionStats counts decoded vmess rows by region prefix', () => {
   ]);
 });
 
-test('source iteration draft applies one max_iterations and area range to all sources', () => {
+test('source iteration draft applies one max_iterations, plateau limit, and area range to all sources', () => {
   const sources = {
-    leiting: { url: 'https://a.example', key: 'a', enabled: true, max_iterations: 12, min_iterations: 12, area_min: 10, area_max: 90 },
-    heidong: { url: 'https://b.example', key: 'b', enabled: true, max_iterations: 40, min_iterations: 40, area_min: 0, area_max: 100 }
+    leiting: { url: 'https://a.example', key: 'a', enabled: true, max_iterations: 12, min_iterations: 12, plateau_limit: 11, area_min: 10, area_max: 90 },
+    heidong: { url: 'https://b.example', key: 'b', enabled: true, max_iterations: 40, min_iterations: 40, plateau_limit: 8, area_min: 0, area_max: 100 }
   };
   const draft = buildSourceIterationDraft(sources);
 
   assert.equal(draft.maxIterations, 12);
+  assert.equal(draft.plateauLimit, 11);
   assert.equal(draft.areaMin, 10);
   assert.equal(draft.areaMax, 90);
   draft.maxIterations = 25;
+  draft.plateauLimit = 20;
   draft.areaMin = 20;
   draft.areaMax = 60;
 
@@ -209,6 +211,10 @@ test('source iteration draft applies one max_iterations and area range to all so
   assert.deepEqual(
     Object.values(applySourceIterationDraft(sources, draft)).map((source) => source.min_iterations),
     [12, 25]
+  );
+  assert.deepEqual(
+    Object.values(applySourceIterationDraft(sources, draft)).map((source) => source.plateau_limit),
+    [20, 20]
   );
 });
 
@@ -283,7 +289,8 @@ test('settings page renders deploy card and drawer fields', () => {
         subscription_url: 'https://vpn.example/sub',
         verify_subscription_url: 'https://verify.example/sub',
         cloudflare_api_token: '',
-        pages_secret_admin: 'swimmingliu'
+        pages_secret_admin: 'swimmingliu',
+        min_final_links: 10
       }
     },
     settingsDrawer: {
@@ -294,7 +301,8 @@ test('settings page renders deploy card and drawer fields', () => {
         subscription_url: 'https://vpn.example/sub',
         verify_subscription_url: 'https://verify.example/sub',
         cloudflare_api_token: '',
-        pages_secret_admin: 'swimmingliu'
+        pages_secret_admin: 'swimmingliu',
+        min_final_links: 10
       }
     }
   };
@@ -309,6 +317,8 @@ test('settings page renders deploy card and drawer fields', () => {
   assert.match(markup, /deploy\.verify_subscription_url/);
   assert.match(markup, /deploy\.cloudflare_api_token/);
   assert.match(markup, /deploy\.pages_secret_admin/);
+  assert.match(markup, /deploy\.min_final_links/);
+  assert.match(markup, /最少节点数/);
   assert.match(markup, /verify 订阅地址/);
   assert.match(markup, /Cloudflare Token/);
   assert.match(markup, /Pages Secret ADMIN/);

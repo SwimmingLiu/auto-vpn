@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { access, readFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 
 import {
@@ -152,6 +154,69 @@ test('Node proxy runtime opens Mihomo with a temp config and cleans it on close'
   await assert.rejects(() => access(runtime.configPath));
 });
 
+test('Node proxy runtime falls back to PATH mihomo for orchestrator runtime directories', async () => {
+  const link = vmessLink({
+    add: 'edge.example.com',
+    port: '443',
+    id: '11111111-2222-3333-4444-555555555555'
+  });
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), 'autovpn-runtime-dir-'));
+  const runtimeDir = path.join(runtimeRoot, 'runtime');
+  await mkdir(runtimeDir, { recursive: true });
+  const spawns = [];
+
+  const runtime = await openMihomoRuntime(link, {
+    runtimePath: runtimeDir,
+    mixedPort: 10003,
+    controllerPort: 10004,
+    spawn: (command, args) => {
+      const child = new EventEmitter();
+      child.exitCode = null;
+      child.kill = (signal) => {
+        child.exitCode = 0;
+        child.emit('close', 0, signal);
+        return true;
+      };
+      spawns.push({ command, args });
+      return child;
+    },
+    waitForPort: async () => {},
+    selectProxy: async () => {}
+  });
+
+  assert.equal(spawns[0].command, 'mihomo');
+  await runtime.close();
+});
+
+test('Node proxy runtime rejects spawn errors instead of leaving them unhandled', async () => {
+  const link = vmessLink({
+    add: 'edge.example.com',
+    port: '443',
+    id: '11111111-2222-3333-4444-555555555555'
+  });
+
+  await assert.rejects(() => openMihomoRuntime(link, {
+    runtimePath: '/definitely/missing/mihomo',
+    mixedPort: 10005,
+    controllerPort: 10006,
+    spawn: () => {
+      const child = new EventEmitter();
+      child.exitCode = null;
+      child.kill = () => {
+        child.exitCode = 0;
+        child.emit('close', 0, 'SIGTERM');
+        return true;
+      };
+      process.nextTick(() => child.emit('error', new Error('spawn ENOENT')));
+      return child;
+    },
+    waitForPort: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    },
+    selectProxy: async () => {}
+  }), /spawn ENOENT/);
+});
+
 test('Node proxy runtime allocates local ports when callers do not provide them', async () => {
   const link = vmessLink({
     add: 'edge.example.com',
@@ -203,4 +268,15 @@ test('Node proxy runtime selects proxies and probes Mihomo delay through control
   await selectMihomoProxy('http://127.0.0.1:9090', 'runtime-node', 3, { fetch });
   assert.equal(await probeMihomoProxyDelay('http://127.0.0.1:9090', 'runtime-node', 'https://probe.example/204', 3, { fetch }), 123);
   assert.equal(calls.length, 2);
+});
+
+test('Node proxy runtime clamps Mihomo delay timeout to controller API limits', async () => {
+  const calls = [];
+  const fetch = async (url) => {
+    calls.push(String(url));
+    return { ok: true, status: 200, json: async () => ({ delay: 123 }) };
+  };
+
+  assert.equal(await probeMihomoProxyDelay('http://127.0.0.1:9090', 'runtime-node', 'http://probe.example/204', 60, { fetch }), 123);
+  assert.equal(calls[0], 'http://127.0.0.1:9090/proxies/runtime-node/delay?timeout=30000&url=http%3A%2F%2Fprobe.example%2F204');
 });

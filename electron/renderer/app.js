@@ -315,7 +315,7 @@ function runTone() {
   return 'neutral';
 }
 
-function handleDocumentClick(event) {
+async function handleDocumentClick(event) {
   const navButton = event.target.closest('[data-page-target]');
   if (navButton) {
     state.activePage = navButton.dataset.pageTarget;
@@ -438,7 +438,7 @@ function handleDocumentClick(event) {
   }
 
   if (event.target.closest('[data-drawer-save="save"]')) {
-    saveSettingsDrawer();
+    await saveSettingsDrawer();
   }
 }
 
@@ -564,6 +564,7 @@ function buildDeployDraft(deploy = {}) {
 function sanitizeDeployDraft(draft = {}) {
   const sanitizedDraft = structuredClone(draft);
   delete sanitizedDraft.__autoLinkedPagesProjectUrl;
+  sanitizedDraft.min_final_links = Math.max(0, Math.trunc(Number(sanitizedDraft.min_final_links ?? 10) || 0));
   return sanitizedDraft;
 }
 
