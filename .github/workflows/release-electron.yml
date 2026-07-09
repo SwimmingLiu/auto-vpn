@@ -163,9 +163,36 @@ jobs:
         run: |
           npm test --prefix npm/autovpn-cli -- --test-name-pattern parity
 
+  prepare-release:
+    name: Prepare GitHub Release
+    needs: test
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout release ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG_NAME }}
+          fetch-depth: 0
+
+      - name: Ensure GitHub release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${RELEASE_TAG_NAME}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "Release ${RELEASE_TAG_NAME} already exists; keeping it."
+            exit 0
+          fi
+          AUTOVPN_CI_RETRIES=4 bash scripts/ci/retry-command.sh "create release ${RELEASE_TAG_NAME}" -- \
+            gh release create "${RELEASE_TAG_NAME}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "AutoVPN ${RELEASE_TAG_NAME}" \
+              --notes "Release assets are uploading."
+        shell: bash
+
   package-electron:
     name: Package AutoVPN for ${{ matrix.label }}
-    needs: test
+    needs: prepare-release
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -364,7 +391,7 @@ jobs:
 
   package-cli:
     name: Package AutoVPN CLI
-    needs: test
+    needs: prepare-release
     runs-on: ubuntu-24.04
 
     steps:
