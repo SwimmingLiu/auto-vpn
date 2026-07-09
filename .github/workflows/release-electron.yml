@@ -320,8 +320,16 @@ jobs:
             echo "No Electron release assets found."
             exit 1
           fi
-          AUTOVPN_CI_RETRIES=4 bash scripts/ci/retry-command.sh "upload Electron release assets" -- \
-            gh release upload "${RELEASE_TAG_NAME}" "${release_files[@]}" --repo "${GITHUB_REPOSITORY}" --clobber
+          existing_assets="$(gh release view "${RELEASE_TAG_NAME}" --repo "${GITHUB_REPOSITORY}" --json assets --jq '.assets[].name')"
+          for release_file in "${release_files[@]}"; do
+            asset_name="$(basename "${release_file}")"
+            if grep -Fxq "${asset_name}" <<<"${existing_assets}"; then
+              echo "${asset_name} already exists on ${RELEASE_TAG_NAME}; skipping upload."
+              continue
+            fi
+            AUTOVPN_CI_RETRIES=4 bash scripts/ci/retry-command.sh "upload ${asset_name}" -- \
+              gh release upload "${RELEASE_TAG_NAME}" "${release_file}" --repo "${GITHUB_REPOSITORY}"
+          done
         shell: bash
 
   package-cli:
@@ -428,8 +436,16 @@ jobs:
             echo "No CLI release assets found."
             exit 1
           fi
-          AUTOVPN_CI_RETRIES=4 bash scripts/ci/retry-command.sh "upload CLI release assets" -- \
-            gh release upload "${RELEASE_TAG_NAME}" "${release_files[@]}" --repo "${GITHUB_REPOSITORY}" --clobber
+          existing_assets="$(gh release view "${RELEASE_TAG_NAME}" --repo "${GITHUB_REPOSITORY}" --json assets --jq '.assets[].name')"
+          for release_file in "${release_files[@]}"; do
+            asset_name="$(basename "${release_file}")"
+            if grep -Fxq "${asset_name}" <<<"${existing_assets}"; then
+              echo "${asset_name} already exists on ${RELEASE_TAG_NAME}; skipping upload."
+              continue
+            fi
+            AUTOVPN_CI_RETRIES=4 bash scripts/ci/retry-command.sh "upload ${asset_name}" -- \
+              gh release upload "${RELEASE_TAG_NAME}" "${release_file}" --repo "${GITHUB_REPOSITORY}"
+          done
         shell: bash
 
   publish-release-notes:
