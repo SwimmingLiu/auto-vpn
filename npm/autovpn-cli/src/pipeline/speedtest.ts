@@ -184,25 +184,50 @@ async function fetchWithTimeout(fetchImpl: FetchLike, url: string, timeoutMs: nu
   }
 }
 
-async function readResponseBytes(response: Awaited<ReturnType<FetchLike>>, maxBytes: number): Promise<number> {
+async function withBodyTimeout<T>(operation: () => Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation(),
+      new Promise<T>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`response body timed out after ${timeoutMs}ms`)), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
+async function readResponseBytes(response: Awaited<ReturnType<FetchLike>>, maxBytes: number, timeoutMs: number): Promise<number> {
   if (response.body?.getReader) {
     const reader = response.body.getReader();
-    let total = 0;
+    let timedOut = false;
     try {
-      while (total < maxBytes) {
-        const { done, value } = await reader.read();
-        if (done) {
-          break;
+      return await withBodyTimeout(async () => {
+        let total = 0;
+        while (total < maxBytes) {
+          const { done, value } = await reader.read();
+          if (done) {
+            break;
+          }
+          total += Math.min(value.byteLength, maxBytes - total);
         }
-        total += Math.min(value.byteLength, maxBytes - total);
-      }
+        return total;
+      }, timeoutMs);
+    } catch (error) {
+      timedOut = error instanceof Error && error.message.includes('response body timed out');
+      throw error;
     } finally {
+      if (timedOut) {
+        await reader.cancel().catch(() => {});
+      }
       reader.releaseLock();
     }
-    return total;
   }
   if (response.arrayBuffer) {
-    return Math.min((await response.arrayBuffer()).byteLength, maxBytes);
+    return await withBodyTimeout(async () => Math.min((await response.arrayBuffer!()).byteLength, maxBytes), timeoutMs);
   }
   return 0;
 }
@@ -477,7 +502,7 @@ async function testLinkDirect(
     try {
       const response = await fetchWithTimeout(fetchImpl, url, timeoutMs);
       requireOkResponse(response, new Set([200]));
-      const total = await readResponseBytes(response, Math.max(1, Number(config.max_download_bytes)));
+      const total = await readResponseBytes(response, Math.max(1, Number(config.max_download_bytes)), timeoutMs);
       const elapsedSeconds = Math.max((now() - started) / 1000, 0.001);
       speedValues.push(total / elapsedSeconds / 1024 / 1024);
     } catch (error) {

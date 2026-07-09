@@ -87,6 +87,50 @@ test('runNodePipeline emits compatible events and writes non-deploy artifacts', 
   assert.equal(JSON.parse(await readFile(path.join(artifactDir, 'pipeline_report.json'), 'utf8')).run_status, 'success');
 });
 
+test('runNodePipeline forwards native speedtest progress events to the job log', async () => {
+  const projectRoot = await makeProject();
+  const events = [];
+  const firstLink = vmessLink('first', 'one.example');
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (String(url) === 'https://www.gstatic.com/generate_204') {
+      return { ok: true, status: 204, arrayBuffer: async () => new ArrayBuffer(0) };
+    }
+    if (String(url) === 'https://speed.example/10mb') {
+      return { ok: true, status: 200, arrayBuffer: async () => new Uint8Array(1000).buffer };
+    }
+    throw new Error(`unexpected fetch URL ${url}`);
+  };
+
+  try {
+    await runNodePipeline({
+      projectRoot,
+      skipDeploy: true,
+      skipVerify: true,
+      output: 'jsonl'
+    }, {
+      env: {
+        VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'),
+        VPN_AUTOMATION_PROFILE_PATH: path.join(projectRoot, 'state', 'profile.toml')
+      },
+      now: () => new Date('2026-06-29T01:02:03Z'),
+      emit: (event) => events.push(event),
+      stages: {
+        extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink] }),
+        availability: async (results) => results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} })),
+        countryLookup: () => 'US',
+        obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
+      }
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.ok(events.some((event) => event.type === 'speedtest_runtime' && event.runtime_core === 'direct'));
+  assert.ok(events.some((event) => event.type === 'log' && event.message.includes('runtime_core=direct')));
+  assert.ok(events.some((event) => event.type === 'speedtest_result' && event.link === firstLink));
+});
+
 test('runNodePipeline can execute deploy and verify through explicit stage adapters', async () => {
   const projectRoot = await makeProject();
   const events = [];
