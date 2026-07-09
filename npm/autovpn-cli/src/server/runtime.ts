@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import path from 'node:path';
+
 import { artifactLatest, artifactList } from '../artifacts/list.js';
 import { previewArtifact } from '../artifacts/preview.js';
 import { profilePayload, saveProfilePayload } from '../config/profile.js';
@@ -7,6 +10,8 @@ import {
   stopManagedJob as defaultStopManagedJob
 } from '../jobs/commands.js';
 import { followLog as defaultFollowLog } from '../jobs/logs.js';
+import { latestJobId, loadJob } from '../jobs/read.js';
+import { resolveArtifactsRoot, resolveProfilePath } from '../runtime/paths.js';
 
 export interface ServerState {
   profile: Record<string, unknown>;
@@ -41,6 +46,7 @@ export interface CreateServerRuntimeOptions {
   startDetachedRetry?: StartDetachedRetry;
   stopManagedJob?: StopManagedJob;
   followLog?: FollowLog;
+  now?: () => Date;
 }
 
 const DEPLOY_SECRET_KEYS = new Set([
@@ -147,10 +153,165 @@ function runEnv(options: CreateServerRuntimeOptions): NodeJS.ProcessEnv | undefi
   };
 }
 
+function parsePositiveNumber(value: unknown, fallback: number): number {
+  const parsed = Number.parseFloat(String(value ?? ''));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function terminalStateTtlMs(env: NodeJS.ProcessEnv): number {
+  return parsePositiveNumber(env.AUTOVPN_SERVER_TERMINAL_STATE_TTL_SECONDS, 600) * 1000;
+}
+
+function historyRetentionMs(env: NodeJS.ProcessEnv): number {
+  const raw = String(env.AUTOVPN_SERVER_HISTORY_RETENTION_DAYS ?? '').trim();
+  if (raw) {
+    const parsed = Number.parseFloat(raw);
+    if (Number.isFinite(parsed) && parsed <= 0) return 0;
+    if (Number.isFinite(parsed) && parsed > 0) return parsed * 24 * 60 * 60 * 1000;
+  }
+  return 7 * 24 * 60 * 60 * 1000;
+}
+
+function parseTimeMs(value: unknown): number {
+  const time = Date.parse(String(value ?? '').replace(/\+00:00$/, 'Z'));
+  return Number.isFinite(time) ? time : 0;
+}
+
+function jobTerminalAt(job: Record<string, any>): number {
+  return parseTimeMs(job.finished_at) || parseTimeMs(job.created_at) || parseTimeMs(job.updated_at);
+}
+
+function latestJob(projectRoot: string, env: NodeJS.ProcessEnv): Record<string, any> | undefined {
+  try {
+    return loadJob(projectRoot, latestJobId(projectRoot, env), env);
+  } catch {
+    return undefined;
+  }
+}
+
+function terminalRunStateFromLatestJob(job: Record<string, any> | undefined, nowMs: number, ttlMs: number): ServerState['runState'] | undefined {
+  const status = String(job?.status ?? '');
+  if (status === 'running' || status === 'stopping') return status;
+  if (!['success', 'failed', 'stopped'].includes(status)) return undefined;
+  const finishedAt = jobTerminalAt(job ?? {});
+  if (!finishedAt || nowMs - finishedAt > ttlMs) return undefined;
+  return status === 'stopped' ? 'idle' : status as ServerState['runState'];
+}
+
+function terminalRunStateFromArtifact(artifact: Record<string, unknown> | undefined, nowMs: number, ttlMs: number): ServerState['runState'] | undefined {
+  const status = String(artifact?.run_status ?? '');
+  if (!['success', 'failed'].includes(status)) return undefined;
+  const artifactDir = String(artifact?.artifact_dir ?? '');
+  let updatedAt = 0;
+  try {
+    updatedAt = artifactDir ? fs.statSync(artifactDir).mtimeMs : 0;
+  } catch {
+    updatedAt = 0;
+  }
+  if (!updatedAt || nowMs - updatedAt > ttlMs) return undefined;
+  return status as ServerState['runState'];
+}
+
+function jobsRoot(projectRoot: string, env: NodeJS.ProcessEnv): string {
+  return path.join(path.dirname(resolveProfilePath(projectRoot, env)), 'jobs');
+}
+
+function safeRmDir(dirPath: string): void {
+  try {
+    fs.rmSync(dirPath, { recursive: true, force: true });
+  } catch {
+    // Cleanup is best-effort; serve startup and state loading must continue.
+  }
+}
+
+function pruneArtifacts(projectRoot: string, env: NodeJS.ProcessEnv, cutoffMs: number, activeArtifactDirs: Set<string>): void {
+  const root = resolveArtifactsRoot(projectRoot, env);
+  if (!fs.existsSync(root)) return;
+  for (const name of fs.readdirSync(root)) {
+    const artifactDir = path.join(root, name);
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(artifactDir);
+    } catch {
+      continue;
+    }
+    if (!stat.isDirectory() || activeArtifactDirs.has(path.resolve(artifactDir))) continue;
+    if (stat.mtimeMs < cutoffMs) {
+      safeRmDir(artifactDir);
+    }
+  }
+}
+
+function pruneJobs(projectRoot: string, env: NodeJS.ProcessEnv, cutoffMs: number): Set<string> {
+  const root = jobsRoot(projectRoot, env);
+  const activeArtifactDirs = new Set<string>();
+  const indexPath = path.join(root, 'index.json');
+  if (!fs.existsSync(indexPath)) return activeArtifactDirs;
+  let index: Record<string, any>;
+  try {
+    index = JSON.parse(fs.readFileSync(indexPath, 'utf8')) as Record<string, any>;
+  } catch {
+    return activeArtifactDirs;
+  }
+  const kept: Array<Record<string, unknown>> = [];
+  for (const item of (index.jobs ?? []) as Array<Record<string, unknown>>) {
+    const jobId = String(item.job_id ?? '');
+    let job: Record<string, any> | undefined;
+    try {
+      job = loadJob(projectRoot, jobId, env);
+    } catch {
+      continue;
+    }
+    const status = String(job.status ?? '');
+    const artifactDir = String(job.artifact_dir ?? '');
+    if (artifactDir && ['running', 'stopping'].includes(status)) {
+      activeArtifactDirs.add(path.resolve(artifactDir));
+    }
+    const keep = ['running', 'stopping'].includes(status) || (jobTerminalAt(job) || parseTimeMs(job.created_at)) >= cutoffMs;
+    if (keep) {
+      kept.push({
+        job_id: job.job_id,
+        status: job.status,
+        kind: job.kind,
+        created_at: job.created_at,
+        job_file: job.job_file
+      });
+    } else {
+      safeRmDir(path.dirname(String(job.job_file ?? '')));
+    }
+  }
+  const latestId = kept.some((item) => item.job_id === index.latest_job_id)
+    ? String(index.latest_job_id ?? '')
+    : String(kept.at(-1)?.job_id ?? '');
+  try {
+    fs.mkdirSync(path.dirname(indexPath), { recursive: true });
+    fs.writeFileSync(indexPath, `${JSON.stringify({ schema_version: 1, latest_job_id: latestId, jobs: kept }, null, 2)}\n`, 'utf8');
+  } catch {
+    // Best-effort cleanup.
+  }
+  return activeArtifactDirs;
+}
+
+function createHistoryPruner(options: CreateServerRuntimeOptions): () => void {
+  let lastPrunedAt = 0;
+  return () => {
+    const env = options.env ?? process.env;
+    const retention = historyRetentionMs(env);
+    if (retention <= 0) return;
+    const nowMs = (options.now ?? (() => new Date()))().getTime();
+    if (lastPrunedAt && nowMs - lastPrunedAt < 24 * 60 * 60 * 1000) return;
+    lastPrunedAt = nowMs;
+    const cutoffMs = nowMs - retention;
+    const activeArtifactDirs = pruneJobs(options.projectRoot, env, cutoffMs);
+    pruneArtifacts(options.projectRoot, env, cutoffMs, activeArtifactDirs);
+  };
+}
+
 export function createServerRuntime(options: CreateServerRuntimeOptions): ServerRuntime {
   let runState: ServerState['runState'] = 'idle';
   let activeJobId = '';
   let unsubscribeLogs: (() => void) | undefined;
+  const pruneHistory = createHistoryPruner(options);
   const subscribers = new Set<(event: unknown) => void>();
   const startDetachedRun = options.startDetachedRun ?? defaultStartDetachedRun;
   const startDetachedRetry = options.startDetachedRetry ?? defaultStartDetachedRetry;
@@ -199,9 +360,35 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
     });
   }
 
+  function restoreRunState(artifact: Record<string, unknown> | undefined): void {
+    if (runState !== 'idle') {
+      return;
+    }
+    const env = options.env ?? process.env;
+    const job = latestJob(options.projectRoot, env);
+    if (job && ['running', 'stopping'].includes(String(job.status ?? ''))) {
+      runState = String(job.status) as ServerState['runState'];
+      activeJobId = String(job.job_id ?? '');
+      if (activeJobId && !unsubscribeLogs) {
+        followJob(activeJobId);
+      }
+      return;
+    }
+    const nowMs = (options.now ?? (() => new Date()))().getTime();
+    const ttlMs = terminalStateTtlMs(env);
+    runState = terminalRunStateFromLatestJob(job, nowMs, ttlMs)
+      ?? terminalRunStateFromArtifact(artifact, nowMs, ttlMs)
+      ?? 'idle';
+    if (runState !== 'running' && runState !== 'stopping') {
+      activeJobId = '';
+    }
+  }
+
   return {
     async loadState() {
+      pruneHistory();
       const artifact = normalizeLatestArtifact(options.projectRoot, options.env ?? process.env);
+      restoreRunState(artifact);
       const retries = artifactList(options.projectRoot, options.env ?? process.env);
       return {
         profile: sanitizeProfileForServer(profilePayload(options.projectRoot, options.env)),

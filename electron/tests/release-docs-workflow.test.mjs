@@ -94,7 +94,7 @@ test('README follows the AutoVPN desktop app structure', () => {
     '.dmg` for Apple Silicon or Intel',
     '.deb` or `.rpm` for x64 or ARM64',
     'portable `.exe` for x64 or ARM64',
-    'export AUTOVPN_VERSION=1.6.0',
+    'export AUTOVPN_VERSION=1.6.1',
     'npm install -g @swimmingliu/autovpn',
     'autovpn --version',
     'autovpn doctor --project-root',
@@ -254,6 +254,9 @@ test('headless CI packages the Linux Electron app and verifies version and icon 
     'electron-package:',
     'name: Linux Electron package',
     'needs: headless',
+    'for attempt in 1 2 3',
+    'npm ci failed; retrying in 15 seconds.',
+    'npm ci --prefix npm/autovpn-cli failed; retrying in 15 seconds.',
     'sudo apt-get install -y rpm fakeroot',
     'AUTOVPN_PACKAGE_PLATFORM: linux',
     'AUTOVPN_PACKAGE_ARCH: x64',
@@ -284,7 +287,7 @@ test('release package version matches the next release tag', () => {
   const packageJson = JSON.parse(readProjectFile('package.json'));
   const packageLock = JSON.parse(readProjectFile('package-lock.json'));
 
-  assert.equal(packageJson.version, '1.6.0');
+  assert.equal(packageJson.version, '1.6.1');
   assert.equal(packageLock.version, packageJson.version);
   assert.equal(packageLock.packages[''].version, packageJson.version);
 });

@@ -173,10 +173,17 @@ export function buildViewModel(state, messages, language) {
     currentStatusLabel: resolveCurrentStatusLabel(state, messages),
     currentTaskLabel: resolveCurrentTaskLabel(state, messages),
     runStateLabel: messages.runStateLabels[state.runState] ?? messages.runStateLabels.idle,
-    runStateTone: state.runState === 'running' ? 'success' : state.runState === 'stopping' ? 'warning' : 'neutral',
+    runStateTone: runStateTone(state.runState),
     settingsDrawer: state.settingsDrawer ?? null,
     modalTransform: state.modalTransform ?? ''
   };
+}
+
+function runStateTone(runState) {
+  if (runState === 'running' || runState === 'success') return 'success';
+  if (runState === 'stopping') return 'warning';
+  if (runState === 'failed') return 'danger';
+  return 'neutral';
 }
 
 export function buildSidebarNav(messages, activePage) {

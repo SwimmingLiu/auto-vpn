@@ -5,7 +5,7 @@ const ZH_MESSAGES = {
   locale: 'zh-CN',
   appTitle: 'AutoVPN',
   sidebarTitle: 'AutoVPN',
-  sidebarVersion: 'v.1.6.0',
+  sidebarVersion: 'v.1.6.1',
   brandSubtitle: '概览、运行、结果、订阅、日志、设置统一管理',
   languageLabel: '',
   saveButton: '保存配置',
@@ -58,7 +58,9 @@ const ZH_MESSAGES = {
   runStateLabels: {
     idle: '待运行',
     running: '运行中',
-    stopping: '停止中'
+    stopping: '停止中',
+    success: '已完成',
+    failed: '失败'
   },
   runResultLabels: {
     idle: '未开始',
