@@ -138,6 +138,60 @@ test('served web ui restores the latest running state after page refresh', async
   }
 });
 
+test('served web ui restores deduped node count from running artifact source counts after page refresh', async () => {
+  const service = await createAutoVpnServer({
+    host: '127.0.0.1',
+    port: 0,
+    projectRoot: '/repo',
+    auth: { enabled: false, token: '' },
+    runtime: {
+      loadState: async () => ({
+        profile: {
+          sources: {
+            leiting: { url: '<redacted>', key: '<redacted>', enabled: true },
+            heidong: { url: '<redacted>', key: '<redacted>', enabled: true }
+          },
+          speed_test: { min_download_mb_s: 1, timeout_seconds: 20, concurrency: 3 },
+          availability_targets: {},
+          deploy: { cloudflare_api_token: '<redacted>' },
+          paths: { project_root: '/repo', artifacts_root: '/repo/artifacts' }
+        },
+        runState: 'running',
+        artifact: {
+          artifact_dir: '/repo/artifacts/20260709-012000',
+          run_status: '',
+          stage_status: { doctor: 'success', extract: 'success', dedupe: 'success', speedtest: 'running' },
+          counts: { raw_links: 12, speedtest_links: 1, availability_links: 0 },
+          source_counts: {
+            leiting: { raw_links: 7, deduped_links: 5 },
+            heidong: { raw_links: 5, deduped_links: 4 }
+          },
+          outputFiles: [],
+          nodeRows: []
+        },
+        retryArtifacts: []
+      }),
+      subscribe: () => () => {}
+    }
+  });
+
+  let browser;
+  try {
+    browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1280, height: 820 } });
+    await page.goto(`${service.origin}/`);
+    await page.waitForSelector('#dashboardMetricsPanel');
+
+    assert.equal(
+      await page.locator('[data-metric-key="deduped_links"] strong').innerText(),
+      '9'
+    );
+  } finally {
+    await browser?.close();
+    await service.close();
+  }
+});
+
 test('served web ui restores a retained terminal state after page refresh', async () => {
   const service = await createAutoVpnServer({
     host: '127.0.0.1',

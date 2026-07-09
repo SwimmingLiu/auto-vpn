@@ -10,6 +10,7 @@ from vpn_automation.backend_resume import (
     continue_pipeline_session,
     list_artifacts_with_retry_stages,
     resume_speedtest_session,
+    restore_artifact_counts,
     retry_pipeline_from_stage,
 )
 from vpn_automation.config.models import AppProfile, resolve_repo_anchor
@@ -80,7 +81,7 @@ def artifact_latest_json(project_root: Path) -> str:
             {
                 "run_status": report.get("run_status", ""),
                 "stage_status": report.get("stage_status", {}),
-                "counts": report.get("counts", {}),
+                "counts": restore_artifact_counts(latest_dir, report.get("counts", {})),
                 "source_counts": report.get("source_counts", {}),
                 "deployment": safe_deployment(report.get("deployment", {}) or {}),
                 "error": redact_text(str(report.get("error", ""))),

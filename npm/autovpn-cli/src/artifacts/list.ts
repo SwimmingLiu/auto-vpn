@@ -11,6 +11,46 @@ function loadJson(filePath: string): Record<string, any> {
   return JSON.parse(fs.readFileSync(filePath, 'utf8')) as Record<string, any>;
 }
 
+function countNonEmptyLines(filePath: string): number | undefined {
+  if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+    return undefined;
+  }
+  return fs.readFileSync(filePath, 'utf8')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .length;
+}
+
+function positiveNumber(value: unknown): number {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : 0;
+}
+
+function restoreArtifactCounts(artifactDir: string, counts: Record<string, unknown> = {}): Record<string, unknown> {
+  const restored: Record<string, unknown> = { ...counts };
+  const fileCounts: Array<[string, string]> = [
+    ['raw_links', 'vpn_node_raw.txt'],
+    ['deduped_links', 'vpn_node_deduped.txt'],
+    ['speedtest_links', 'vpn_node_speedtest.txt'],
+    ['availability_links', 'vpn_node_availability.txt'],
+    ['final_links', 'vpn_node_emoji.txt'],
+    ['postprocess_links', 'vpn_node_emoji.txt']
+  ];
+
+  for (const [countKey, fileName] of fileCounts) {
+    if (positiveNumber(restored[countKey]) > 0) {
+      continue;
+    }
+    const fileCount = countNonEmptyLines(path.join(artifactDir, fileName));
+    if (fileCount && fileCount > 0) {
+      restored[countKey] = fileCount;
+    }
+  }
+
+  return restored;
+}
+
 function latestArtifactDir(artifactsRoot: string): string {
   if (!fs.existsSync(artifactsRoot)) {
     return '';
@@ -41,7 +81,7 @@ export function artifactLatest(projectRoot: string, env: NodeJS.ProcessEnv = pro
     ...payload,
     run_status: report.run_status ?? '',
     stage_status: report.stage_status ?? {},
-    counts: report.counts ?? {},
+    counts: restoreArtifactCounts(latest, (report.counts ?? {}) as Record<string, unknown>),
     source_counts: report.source_counts ?? {},
     deployment: safeDeployment((report.deployment ?? {}) as Record<string, unknown>),
     error: redactText(String(report.error ?? ''))
@@ -89,7 +129,7 @@ export function artifactList(projectRoot: string, env: NodeJS.ProcessEnv = proce
         artifact_name: path.basename(artifactDir),
         run_status: report.run_status ?? '',
         stage_status: stageStatus,
-        counts: report.counts ?? {},
+        counts: restoreArtifactCounts(artifactDir, (report.counts ?? {}) as Record<string, unknown>),
         source_counts: report.source_counts ?? {},
         retry_context: report.retry_context ?? {},
         retryable_stages: retryableStages(artifactDir, stageStatus),

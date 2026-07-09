@@ -145,6 +145,34 @@ def test_artifact_latest_json_returns_latest_reported_artifact(tmp_path: Path) -
     assert payload["source_counts"]["leiting"]["raw_links"] == 3
 
 
+def test_artifact_latest_json_restores_missing_counts_from_artifact_files(tmp_path: Path) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    latest_dir = resolve_artifacts_root(project_root) / "20260709-012000"
+    latest_dir.mkdir(parents=True)
+    (latest_dir / "pipeline_report.json").write_text(
+        json.dumps(
+            {
+                "artifact_dir": str(latest_dir),
+                "run_status": "",
+                "stage_status": {"dedupe": "success", "speedtest": "running"},
+                "counts": {"raw_links": 0, "speedtest_links": 1},
+                "source_counts": {},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (latest_dir / "vpn_node_raw.txt").write_text("raw-1\nraw-2\nraw-3\n", encoding="utf-8")
+    (latest_dir / "vpn_node_deduped.txt").write_text("deduped-1\n\ndeduped-2\n", encoding="utf-8")
+    (latest_dir / "vpn_node_speedtest.txt").write_text("speed-1\nspeed-2\n", encoding="utf-8")
+
+    payload = json.loads(artifact_latest_json(project_root))
+
+    assert payload["counts"]["raw_links"] == 3
+    assert payload["counts"]["deduped_links"] == 2
+    assert payload["counts"]["speedtest_links"] == 1
+
+
 def test_artifact_latest_json_redacts_secret_bearing_deployment_fields(tmp_path: Path) -> None:
     project_root = tmp_path / "vpn-subscription-automation"
     latest_dir = resolve_artifacts_root(project_root) / "20260423-020202"
@@ -270,6 +298,32 @@ def test_artifact_list_json_reports_retryable_stages_and_retry_context(tmp_path:
         "verify",
     ]
     assert payload["items"][0]["retry_context"]["start_stage"] == "deploy"
+
+
+def test_artifact_list_json_restores_missing_counts_from_artifact_files(tmp_path: Path) -> None:
+    project_root = tmp_path / "vpn-subscription-automation"
+    artifact_dir = resolve_artifacts_root(project_root) / "20260709-013000"
+    artifact_dir.mkdir(parents=True)
+    (artifact_dir / "pipeline_report.json").write_text(
+        json.dumps(
+            {
+                "artifact_dir": str(artifact_dir),
+                "run_status": "",
+                "stage_status": {"availability": "running"},
+                "counts": {},
+                "source_counts": {},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (artifact_dir / "vpn_node_deduped.txt").write_text("deduped-1\ndeduped-2\ndeduped-3\n", encoding="utf-8")
+    (artifact_dir / "vpn_node_availability.txt").write_text("available-1\n", encoding="utf-8")
+
+    payload = json.loads(artifact_list_json(project_root))
+
+    assert payload["items"][0]["counts"]["deduped_links"] == 3
+    assert payload["items"][0]["counts"]["availability_links"] == 1
 
 
 def test_artifact_list_json_filters_non_run_directories(tmp_path: Path) -> None:
