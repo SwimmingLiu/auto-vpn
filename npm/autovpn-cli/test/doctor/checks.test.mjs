@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -99,6 +99,27 @@ test('Node doctor does not require npx when node and npm are present', async () 
 
   assert.equal(checks.node_binaries.status, 'pass');
   assert.deepEqual(checks.node_binaries.details.missing, []);
+});
+
+test('Node doctor finds Mihomo installed under the user clashctl directory', async () => {
+  const { root, runtimeRoot } = await makeProjectRoot();
+  const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autovpn-doctor-home-'));
+  const mihomoPath = path.join(homeDir, 'clashctl', 'bin', 'mihomo');
+  await mkdir(path.dirname(mihomoPath), { recursive: true });
+  await writeFile(mihomoPath, '#!/bin/sh\n', 'utf8');
+  await chmod(mihomoPath, 0o755);
+
+  const result = await runDoctor(root, [], {
+    HOME: homeDir,
+    PATH: '/usr/bin',
+    VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot
+  }, {
+    safeRun: (command) => ({ ok: command[0] === mihomoPath, message: 'mihomo ok' })
+  });
+  const checks = Object.fromEntries(result.payload.checks.map((item) => [item.name, item]));
+
+  assert.equal(checks.mihomo.status, 'pass');
+  assert.equal(checks.mihomo.details.path, mihomoPath);
 });
 
 test('Node doctor finds Windows node.exe and npm.cmd binaries', async () => {

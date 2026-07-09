@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { access, mkdir, mkdtemp, readFile } from 'node:fs/promises';
+import { access, chmod, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -154,7 +154,7 @@ test('Node proxy runtime opens Mihomo with a temp config and cleans it on close'
   await assert.rejects(() => access(runtime.configPath));
 });
 
-test('Node proxy runtime falls back to PATH mihomo for orchestrator runtime directories', async () => {
+test('Node proxy runtime resolves Mihomo for orchestrator runtime directories', async () => {
   const link = vmessLink({
     add: 'edge.example.com',
     port: '443',
@@ -184,7 +184,43 @@ test('Node proxy runtime falls back to PATH mihomo for orchestrator runtime dire
     selectProxy: async () => {}
   });
 
-  assert.equal(spawns[0].command, 'mihomo');
+  assert.equal(path.basename(spawns[0].command), 'mihomo');
+  await runtime.close();
+});
+
+test('Node proxy runtime discovers Mihomo installed under the user clashctl directory', async () => {
+  const link = vmessLink({
+    add: 'edge.example.com',
+    port: '443',
+    id: '11111111-2222-3333-4444-555555555555'
+  });
+  const homeDir = await mkdtemp(path.join(os.tmpdir(), 'autovpn-home-'));
+  const mihomoPath = path.join(homeDir, 'clashctl', 'bin', 'mihomo');
+  await mkdir(path.dirname(mihomoPath), { recursive: true });
+  await writeFile(mihomoPath, '#!/bin/sh\n', 'utf8');
+  await chmod(mihomoPath, 0o755);
+  const spawns = [];
+
+  const runtime = await openMihomoRuntime(link, {
+    env: { HOME: homeDir, PATH: '/usr/bin' },
+    mixedPort: 10005,
+    controllerPort: 10006,
+    spawn: (command, args) => {
+      const child = new EventEmitter();
+      child.exitCode = null;
+      child.kill = (signal) => {
+        child.exitCode = 0;
+        child.emit('close', 0, signal);
+        return true;
+      };
+      spawns.push({ command, args });
+      return child;
+    },
+    waitForPort: async () => {},
+    selectProxy: async () => {}
+  });
+
+  assert.equal(spawns[0].command, mihomoPath);
   await runtime.close();
 });
 
@@ -197,8 +233,8 @@ test('Node proxy runtime rejects spawn errors instead of leaving them unhandled'
 
   await assert.rejects(() => openMihomoRuntime(link, {
     runtimePath: '/definitely/missing/mihomo',
-    mixedPort: 10005,
-    controllerPort: 10006,
+    mixedPort: 10007,
+    controllerPort: 10008,
     spawn: () => {
       const child = new EventEmitter();
       child.exitCode = null;
