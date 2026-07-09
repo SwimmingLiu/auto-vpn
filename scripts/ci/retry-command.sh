@@ -37,6 +37,10 @@ for attempt in $(seq 1 "${attempts}"); do
 
   if [[ "${1:-}" == "npm" ]]; then
     npm cache verify || true
+    if [[ -z "${ELECTRON_MIRROR:-}" ]]; then
+      export ELECTRON_MIRROR="https://npmmirror.com/mirrors/electron/"
+      echo "${label}: enabling Electron mirror fallback for the next npm attempt."
+    fi
   fi
 
   sleep_seconds=$(( base_sleep * (2 ** (attempt - 1)) ))

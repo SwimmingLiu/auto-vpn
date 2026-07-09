@@ -146,6 +146,30 @@ function emitEvent(callback: SpeedTestBackendOptions['eventCallback'], eventType
   }
 }
 
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>,
+  onComplete?: (result: R, index: number, completed: number) => void
+): Promise<R[]> {
+  const limit = Math.max(1, Math.trunc(Number(concurrency) || 1));
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  let completed = 0;
+  async function runWorker(): Promise<void> {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      const result = await worker(items[index], index);
+      results[index] = result;
+      completed += 1;
+      onComplete?.(result, index, completed);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => runWorker()));
+  return results;
+}
+
 function defaultNow(): number {
   return performance.now();
 }
@@ -396,19 +420,17 @@ async function probeLinksDirect(
   }
   const now = options.now ?? defaultNow;
   const timeoutMs = Math.max(1, Number(config.timeout_seconds)) * 1000;
-  const results: ProbeResult[] = [];
-  for (const link of links) {
+  return mapWithConcurrency(links, config.concurrency, async (link) => {
     const started = now();
     try {
       const response = await fetchWithTimeout(fetchImpl, config.probe_url, timeoutMs);
       const elapsed = Math.max(now() - started, 1);
       requireOkResponse(response, new Set([200, 204]));
-      results.push({ link, reachable: true, latency_ms: Math.max(Math.round(elapsed), 1), error: '' });
+      return { link, reachable: true, latency_ms: Math.max(Math.round(elapsed), 1), error: '' };
     } catch (error) {
-      results.push({ link, reachable: false, latency_ms: 0, error: error instanceof Error ? error.message : String(error) });
+      return { link, reachable: false, latency_ms: 0, error: error instanceof Error ? error.message : String(error) };
     }
-  }
-  return results;
+  });
 }
 
 async function probeLinksMihomo(
@@ -419,8 +441,7 @@ async function probeLinksMihomo(
 ): Promise<ProbeResult[]> {
   const openRuntime = options.openMihomoRuntime ?? defaultOpenMihomoRuntime;
   const probeDelay = options.probeMihomoProxyDelay ?? defaultProbeMihomoProxyDelay;
-  const results: ProbeResult[] = [];
-  for (const link of links) {
+  return mapWithConcurrency(links, config.concurrency, async (link) => {
     let runtime: Pick<MihomoRuntime, 'controllerUrl' | 'proxyName' | 'close'> | undefined;
     try {
       runtime = await openRuntime(link, {
@@ -429,14 +450,13 @@ async function probeLinksMihomo(
         env: options.env
       });
       const latencyMs = await probeDelay(runtime.controllerUrl, runtime.proxyName, config.probe_url, config.timeout_seconds);
-      results.push({ link, reachable: true, latency_ms: latencyMs, error: '' });
+      return { link, reachable: true, latency_ms: latencyMs, error: '' };
     } catch (error) {
-      results.push({ link, reachable: false, latency_ms: 0, error: error instanceof Error ? error.message : String(error) });
+      return { link, reachable: false, latency_ms: 0, error: error instanceof Error ? error.message : String(error) };
     } finally {
       await runtime?.close();
     }
-  }
-  return results;
+  });
 }
 
 async function testLinkDirect(
@@ -588,13 +608,12 @@ async function speedtestInNode(input: SpeedTestInput, options: SpeedTestBackendO
       error: probe.error ?? ''
     }));
 
-  for (let index = 0; index < candidateLinks.length; index += 1) {
-    const result = await testLink(candidateLinks[index], config, { runtime_path: runtimePath });
+  const testedResults = await mapWithConcurrency(candidateLinks, config.concurrency, async (link) => (
+    testLink(link, config, { runtime_path: runtimePath })
+  ), (result, _index, completed) => {
     if (result.reachable && result.latency_ms <= 0) {
       result.latency_ms = probeByLink.get(result.link)?.latency_ms ?? 0;
     }
-    results.push(result);
-    const completed = index + 1;
     options.progressCallback?.(`[speedtest] ${completed}/${candidateSet.size} reachable=${result.reachable} speed=${result.average_download_mb_s}MB/s`);
     emitEvent(options.eventCallback, 'speedtest_result', {
       completed,
@@ -606,16 +625,15 @@ async function speedtestInNode(input: SpeedTestInput, options: SpeedTestBackendO
       passed_threshold: result.reachable && result.average_download_mb_s >= config.min_download_mb_s,
       error: result.error ?? ''
     });
-  }
+  });
+  results.push(...testedResults);
   return results;
 }
 
 export function selectPipelineStageBackend(stage: string, env: NodeJS.ProcessEnv = process.env): PipelineStageBackend {
-  const stageKey = `AUTOVPN_STAGE_BACKEND_${stage.toUpperCase()}`;
-  const stageOverride = String(env[stageKey] ?? '').trim().toLowerCase();
-  const pipelineOverride = String(env.AUTOVPN_PIPELINE_BACKEND ?? '').trim().toLowerCase();
-  const selected = stageOverride || pipelineOverride || 'node';
-  return selected === 'python' ? 'python' : 'node';
+  void stage;
+  void env;
+  return 'node';
 }
 
 async function defaultResolvePythonCli(env: NodeJS.ProcessEnv): Promise<ResolvedPythonCli> {

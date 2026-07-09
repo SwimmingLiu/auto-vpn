@@ -238,15 +238,15 @@ test('Phase 3 low-risk commands run in Node by default', async () => {
   }
 });
 
-test('Phase 3 migrated non-job commands support explicit Python fallback', async () => {
+test('Phase 3 migrated non-job commands ignore explicit Python fallback envs', async () => {
   const { root, artifactDir } = await createProjectFixture();
   const cases = [
-    { argv: ['doctor', '--project-root', root, '--output', 'json'], env: { AUTOVPN_DOCTOR_BACKEND: 'python' } },
-    { argv: ['profile', 'show', '--project-root', root], env: { AUTOVPN_PROFILE_BACKEND: 'python' } },
-    { argv: ['profile', 'summary', '--project-root', root, '--json'], env: { AUTOVPN_PROFILE_BACKEND: 'python' } },
-    { argv: ['artifacts', 'latest', '--project-root', root], env: { AUTOVPN_ARTIFACTS_BACKEND: 'python' } },
-    { argv: ['artifacts', 'list', '--project-root', root], env: { AUTOVPN_ARTIFACTS_BACKEND: 'python' } },
-    { argv: ['artifacts', 'preview', artifactDir, '--project-root', root, '--json'], env: { AUTOVPN_ARTIFACTS_BACKEND: 'python' } }
+    { argv: ['doctor', '--project-root', root, '--output', 'json'], env: { AUTOVPN_DOCTOR_BACKEND: 'python' }, codes: [0, 1] },
+    { argv: ['profile', 'show', '--project-root', root], env: { AUTOVPN_PROFILE_BACKEND: 'python' }, codes: [0] },
+    { argv: ['profile', 'summary', '--project-root', root, '--json'], env: { AUTOVPN_PROFILE_BACKEND: 'python' }, codes: [0] },
+    { argv: ['artifacts', 'latest', '--project-root', root], env: { AUTOVPN_ARTIFACTS_BACKEND: 'python' }, codes: [0] },
+    { argv: ['artifacts', 'list', '--project-root', root], env: { AUTOVPN_ARTIFACTS_BACKEND: 'python' }, codes: [0] },
+    { argv: ['artifacts', 'preview', artifactDir, '--project-root', root, '--json'], env: { AUTOVPN_ARTIFACTS_BACKEND: 'python' }, codes: [0] }
   ];
 
   for (const item of cases) {
@@ -254,31 +254,29 @@ test('Phase 3 migrated non-job commands support explicit Python fallback', async
       cwd: root,
       env: item.env,
       runForwarder: async (forwardedArgv) => {
-        assert.deepEqual(forwardedArgv, item.argv);
-        return 7;
+        throw new Error(`unexpected Python forwarder call: ${forwardedArgv.join(' ')}`);
       }
     });
 
-    assert.equal(result.code, 7, item.argv.join(' '));
-    assert.equal(result.stdout, '', item.argv.join(' '));
+    assert.ok(item.codes.includes(result.code), item.argv.join(' '));
+    assert.deepEqual(result.forwarded, [], item.argv.join(' '));
+    assert.notEqual(result.stdout, '', item.argv.join(' '));
     assert.equal(result.stderr, '', item.argv.join(' '));
   }
 });
 
-test('Phase 3 leaves doctor human output on the Python backend when requested', async () => {
+test('Phase 3 doctor human output ignores the legacy Python backend request', async () => {
   const { root } = await createProjectFixture();
   const argv = ['doctor', '--project-root', root];
   const result = await runNode(argv, {
     cwd: root,
     env: { AUTOVPN_DOCTOR_BACKEND: 'python' },
     runForwarder: async (forwardedArgv) => {
-      assert.deepEqual(forwardedArgv, argv);
-      return 7;
+      throw new Error(`unexpected Python forwarder call: ${forwardedArgv.join(' ')}`);
     }
   });
 
-  assert.equal(result.code, 7);
-  assert.equal(result.stdout, '');
+  assert.ok([0, 1].includes(result.code));
   assert.equal(result.stderr, '');
 });
 

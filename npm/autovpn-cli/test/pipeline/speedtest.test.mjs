@@ -75,6 +75,41 @@ test('Node speedtest backend preserves order semantics, emits progress and event
   assert.equal(events[1].candidate_count, 2);
 });
 
+test('Node speedtest backend runs full download candidates with configured concurrency', async () => {
+  let active = 0;
+  let maxActive = 0;
+  const completions = [];
+  const results = await speedtestLinksWithBackend({
+    links: ['vmess://a', 'vmess://b', 'vmess://c'],
+    config: {
+      min_download_mb_s: 1,
+      timeout_seconds: 20,
+      concurrency: 2,
+      urls: ['https://speed.example/bytes'],
+      max_download_candidates: 3
+    }
+  }, {
+    env: {},
+    probeLinks: async (links) => links.map((link, index) => ({ link, reachable: true, latency_ms: 10 + index, error: '' })),
+    testLink: async (link) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, link.endsWith('a') ? 30 : 5));
+      active -= 1;
+      return { link, reachable: true, average_download_mb_s: 2, latency_ms: 0, error: '' };
+    },
+    eventCallback: (eventType, payload) => {
+      if (eventType === 'speedtest_result') {
+        completions.push(payload.completed);
+      }
+    }
+  });
+
+  assert.equal(maxActive, 2);
+  assert.deepEqual(results.map((result) => result.link), ['vmess://a', 'vmess://b', 'vmess://c']);
+  assert.deepEqual(completions, [1, 2, 3]);
+});
+
 test('Node speedtest backend can run direct fetch runtime without Python fallback', async () => {
   const calls = [];
   const timeline = [1000, 1030, 2000, 2100];
@@ -250,11 +285,11 @@ test('Node speedtest backend downloads candidate URLs through Mihomo proxy when 
   }]);
 });
 
-test('speedtest backend selection supports Node default and Python rollback flags', async () => {
+test('speedtest backend selection always uses the Node engine', async () => {
   assert.equal(selectPipelineStageBackend('speedtest', {}), 'node');
   assert.equal(selectPipelineStageBackend('speedtest', { AUTOVPN_PIPELINE_BACKEND: ' HYBRID ' }), 'node');
-  assert.equal(selectPipelineStageBackend('speedtest', { AUTOVPN_PIPELINE_BACKEND: ' PYTHON ' }), 'python');
-  assert.equal(selectPipelineStageBackend('speedtest', { AUTOVPN_STAGE_BACKEND_SPEEDTEST: ' python ' }), 'python');
+  assert.equal(selectPipelineStageBackend('speedtest', { AUTOVPN_PIPELINE_BACKEND: ' PYTHON ' }), 'node');
+  assert.equal(selectPipelineStageBackend('speedtest', { AUTOVPN_STAGE_BACKEND_SPEEDTEST: ' python ' }), 'node');
 
   const input = { links: ['vmess://node'], config: { min_download_mb_s: 1, timeout_seconds: 20, concurrency: 1, urls: [] } };
   const fallbackCalls = [];
@@ -270,12 +305,14 @@ test('speedtest backend selection supports Node default and Python rollback flag
   }), [{ link: 'vmess://node', reachable: true, average_download_mb_s: 0, latency_ms: 10, error: '' }]);
   assert.deepEqual(await speedtestLinksWithBackend(input, {
     env: { AUTOVPN_STAGE_BACKEND_SPEEDTEST: 'python' },
-    pythonSpeedtest: fallback
+    pythonSpeedtest: fallback,
+    probeLinks: async () => [{ link: 'vmess://node', reachable: true, latency_ms: 10, error: '' }],
+    testLink: async (link) => ({ link, reachable: true, average_download_mb_s: 0, latency_ms: 10, error: '' })
   }), [{ link: 'vmess://node', reachable: true, average_download_mb_s: 0, latency_ms: 10, error: '' }]);
-  assert.deepEqual(fallbackCalls, [input]);
+  assert.deepEqual(fallbackCalls, []);
 });
 
-test('Python speedtest rollback adapter invokes backend venv Python when no callback is injected', async () => {
+test('speedtest ignores legacy Python rollback env without spawning Python', async () => {
   const spawns = [];
   const input = { links: [], config: { min_download_mb_s: 1, timeout_seconds: 20, concurrency: 1, urls: [] } };
   const result = await speedtestLinksWithBackend(input, {
@@ -301,7 +338,5 @@ test('Python speedtest rollback adapter invokes backend venv Python when no call
   });
 
   assert.deepEqual(result, []);
-  assert.equal(spawns[0].command, '/opt/autovpn/.venv/bin/python');
-  assert.equal(spawns[0].args[0], '-c');
-  assert.deepEqual(spawns[0].options.stdio, ['pipe', 'pipe', 'pipe']);
+  assert.equal(spawns.length, 0);
 });

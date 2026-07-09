@@ -82,7 +82,11 @@ npm install -g \
   "https://github.com/SwimmingLiu/auto-vpn/releases/download/v${AUTOVPN_VERSION}/swimmingliu-autovpn-${AUTOVPN_VERSION}.tgz"
 ```
 
-For commands that still need Python fallback, the npm wrapper resolves `AUTOVPN_PYTHON_CLI`, a matching PATH `autovpn`, or a wrapper-managed virtualenv. Set `AUTOVPN_NO_INSTALL=1` in locked-down CI.
+The npm CLI now runs the pipeline through the Node.js engine. Legacy Python
+backend selectors such as `AUTOVPN_BACKEND=python` and per-stage Python
+rollback flags are rejected or ignored instead of spawning a Python runtime.
+Set `AUTOVPN_NO_INSTALL=1` in locked-down CI to prevent managed npm tool
+installation.
 
 AutoVPN manages npm runtime tools such as `javascript-obfuscator` and `wrangler`
 under `$HOME/.auto-vpn/tools/npm/`. Doctor/preflight checks verify those tools
@@ -91,7 +95,9 @@ on a source checkout's `node_modules`. AutoVPN does not silently install
 unmanaged OS-level dependencies such as Node.js, npm, or Mihomo; install those
 explicitly and rerun `autovpn doctor`.
 
-Pure Python install remains available:
+The historical Python package remains in the repository for compatibility
+tests and migration fixtures, but it is no longer the runtime engine for the
+npm CLI:
 
 ```bash
 python3.12 -m pip install --user pipx
@@ -104,8 +110,7 @@ Runtime flags can be set per command:
 
 ```bash
 VPN_AUTOMATION_RUNTIME_ROOT=/srv/autovpn autovpn run --project-root /opt/autovpn --output jsonl
-AUTOVPN_NO_PYTHON=1 autovpn doctor --project-root /opt/autovpn --output json
-AUTOVPN_BACKEND=python autovpn run --project-root /opt/autovpn --output jsonl
+AUTOVPN_NO_INSTALL=1 autovpn doctor --project-root /opt/autovpn --output json
 ```
 
 ## Project Structure

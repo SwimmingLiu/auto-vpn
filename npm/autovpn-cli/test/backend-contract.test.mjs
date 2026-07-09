@@ -104,7 +104,7 @@ test('PythonBackend executeCli merges project .env before forwarding', async () 
   assert.equal(forwarded[0].options.env.PATH, '/bin');
 });
 
-test('explicit Python CLI foreground path merges project .env', async () => {
+test('explicit Python CLI foreground path is rejected by the Node-only shell', async () => {
   const root = await mkdir(path.join(os.tmpdir(), `autovpn-shell-env-${Date.now()}`), { recursive: true });
   await writeFile(path.join(root, '.env'), 'EXTRA_FROM_DOTENV=value\n', 'utf8');
   const io = createIo();
@@ -121,10 +121,9 @@ test('explicit Python CLI foreground path merges project .env', async () => {
     }
   });
 
-  assert.equal(code, 0);
-  assert.equal(forwarded.length, 1);
-  assert.equal(forwarded[0].options.env.EXTRA_FROM_DOTENV, 'value');
-  assert.equal(forwarded[0].options.env.PATH, '/bin');
+  assert.equal(code, 2);
+  assert.match(io.stderr, /Python backend is no longer supported/);
+  assert.equal(forwarded.length, 0);
 });
 
 test('high-risk CLI commands are executed through backend adapter', async () => {
@@ -785,14 +784,14 @@ test('non-detached resume and retry commands are executed through backend adapte
   }
 });
 
-test('low-risk Python fallbacks are executed through backend adapter', async () => {
+test('low-risk Python backend overrides are ignored by Node-native commands', async () => {
   const io = createIo();
   const directForwarderCalls = [];
   const backendCalls = [];
 
   const code = await runCliShell(['doctor', '--project-root', '.', '--output', 'json'], {
     packageVersion: '1.3.0',
-    cwd: '/repo',
+    cwd: process.cwd(),
     env: { AUTOVPN_DOCTOR_BACKEND: 'python' },
     io,
     runForwarder: async (argv) => {
@@ -807,9 +806,10 @@ test('low-risk Python fallbacks are executed through backend adapter', async () 
     })
   });
 
-  assert.equal(code, 6);
+  assert.notEqual(code, 6);
   assert.deepEqual(directForwarderCalls, []);
-  assert.deepEqual(backendCalls, [['doctor', '--project-root', '/repo', '--output', 'json']]);
+  assert.deepEqual(backendCalls, []);
+  assert.match(io.stdout, /"status"/);
 });
 
 test('PythonBackend parses real JSON job payloads for job metadata methods', async () => {
@@ -839,12 +839,12 @@ test('PythonBackend parses real JSON job payloads for job metadata methods', asy
   assert.deepEqual(spawns[1], ['/opt/autovpn/bin/autovpn', ['jobs', 'status', 'job-1', '--json', '--project-root', '/repo']]);
 });
 
-test('selectBackend defaults to Node backend and supports explicit Python fallback', () => {
+test('selectBackend defaults to Node backend and rejects explicit legacy Python backend', () => {
   const backend = selectBackend({ env: {} });
 
   assert.equal(backend.kind, 'node');
   assert.ok(backend instanceof NodeBackend);
-  assert.equal(selectBackend({ env: { AUTOVPN_BACKEND: 'python' } }).kind, 'python');
+  assert.throws(() => selectBackend({ env: { AUTOVPN_BACKEND: 'python' } }), /no longer supported/);
 });
 
 test('selectBackend supports explicit Node backend selection', () => {
@@ -871,7 +871,7 @@ test('NodeBackend allows full foreground runs through the Node deploy and verify
   assert.equal(events[0].type, 'run_started');
 });
 
-test('NodeBackend allows full runs when deploy Python fallback is explicit', async () => {
+test('NodeBackend ignores explicit legacy Python stage envs for full runs', async () => {
   const projectRoot = await mkdir(path.join(os.tmpdir(), `autovpn-node-backend-deploy-fallback-${Date.now()}`, 'project'), { recursive: true });
   const backend = new NodeBackend({
     env: {

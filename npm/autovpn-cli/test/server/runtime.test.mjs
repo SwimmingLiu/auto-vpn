@@ -150,6 +150,51 @@ test('server runtime restores an active latest job after serve restarts', async 
   assert.deepEqual(calls, [['follow', 'active-job'], ['stop', 'active-job']]);
 });
 
+test('server runtime returns recent latest job events for page refresh hydration', async () => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-runtime-refresh-events-'));
+  const runtimeRoot = path.join(projectRoot, 'state');
+  const job = writeJobFixture(runtimeRoot, 'active-job', { project_root: projectRoot });
+  fs.writeFileSync(job.event_log, [
+    JSON.stringify({ type: 'stage', stage: 'doctor', status: 'success' }),
+    JSON.stringify({ type: 'stage', stage: 'extract', status: 'running' }),
+    JSON.stringify({ type: 'log', message: '[extract] leiting 开始提取' }),
+    ''
+  ].join('\n'), 'utf8');
+  const runtime = createServerRuntime({
+    projectRoot,
+    env: { VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot },
+    followLog: async function* () {}
+  });
+
+  const state = await runtime.loadState();
+
+  assert.equal(state.runState, 'running');
+  assert.deepEqual(state.logEvents?.map((event) => event.type), ['stage', 'stage', 'log']);
+  assert.equal(state.logEvents?.[1].stage, 'extract');
+});
+
+test('server runtime close stops the restored active latest job', async () => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-runtime-close-stops-'));
+  const runtimeRoot = path.join(projectRoot, 'state');
+  const job = writeJobFixture(runtimeRoot, 'active-job', { project_root: projectRoot });
+  const calls = [];
+  const runtime = createServerRuntime({
+    projectRoot,
+    env: { VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot },
+    stopManagedJob: async (_projectRoot, jobId) => {
+      calls.push(jobId);
+      writeJson(job.job_file, { ...job, status: 'stopped', finished_at: '2026-07-09T00:01:00+00:00' });
+      return { job_id: jobId, status: 'stopped' };
+    },
+    followLog: async function* () {}
+  });
+
+  await runtime.close?.();
+
+  assert.deepEqual(calls, [job.job_id]);
+  assert.equal((await runtime.loadState()).runState, 'idle');
+});
+
 test('server runtime retains terminal latest job state only within the configured TTL', async () => {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-runtime-terminal-ttl-'));
   const runtimeRoot = path.join(projectRoot, 'state');

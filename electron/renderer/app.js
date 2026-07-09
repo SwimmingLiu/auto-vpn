@@ -111,9 +111,11 @@ const state = {
   logFilter: '全部',
   settingsDrawer: null,
   isDemo: false,
+  runtime: document.body.dataset.runtime === 'web' ? 'web' : 'electron',
   runState: 'idle',
   runResult: 'idle',
   logEntries: [],
+  extractDedupedFingerprints: new Set(),
   artifactDir: '',
   retryArtifacts: [],
   selectedRetryArtifactDir: '',
@@ -163,6 +165,7 @@ async function bootstrap() {
     ? await window.vpnAutomation.loadState()
     : { profile: await window.vpnAutomation.loadProfile() };
   hydrateInitialRuntimeState(loadedState);
+  hydrateHistoricalEvents(loadedState?.logEvents);
   touchUpdate();
   await refreshQrCode();
   if (!loadedState?.retryArtifacts) {
@@ -194,6 +197,19 @@ function hydrateInitialRuntimeState(loadedState = {}) {
   if (loadedState.deployment) {
     state.deployment = loadedState.deployment;
   }
+}
+
+function hydrateHistoricalEvents(events = []) {
+  if (!Array.isArray(events) || events.length === 0) {
+    return;
+  }
+  const previousRunState = state.runState;
+  const previousRunResult = state.runResult;
+  for (const event of events) {
+    handlePipelineEvent(event, { historical: true });
+  }
+  state.runState = previousRunState;
+  state.runResult = previousRunState === 'idle' ? previousRunResult : previousRunState;
 }
 
 function bindActions() {
@@ -932,6 +948,7 @@ async function runPipeline() {
   state.stageStatus = {};
   state.counts = {};
   state.sourceCounts = {};
+  state.extractDedupedFingerprints = new Set();
   state.logEntries = [];
   state.artifactDir = '';
   state.outputFiles = [];
@@ -981,6 +998,7 @@ async function retryStage() {
   state.stageStatus = {};
   state.counts = {};
   state.sourceCounts = {};
+  state.extractDedupedFingerprints = new Set();
   state.logEntries = [];
   state.artifactDir = '';
   state.outputFiles = [];
@@ -1131,7 +1149,8 @@ function finishRun(result = {}) {
   void hydrateRetryArtifacts();
 }
 
-function handlePipelineEvent(event) {
+function handlePipelineEvent(event, options = {}) {
+  const historical = Boolean(options.historical);
   if (event.type === 'server_state') {
     const nextRunState = String(event.run_state ?? '');
     if (['idle', 'running', 'stopping', 'failed', 'success'].includes(nextRunState)) {
@@ -1151,6 +1170,10 @@ function handlePipelineEvent(event) {
   }
 
   if (event.type === 'run_failed') {
+    if (historical) {
+      appendLog(`[run_failed] ${event.error ?? ''}`);
+      return;
+    }
     if (state.runState !== 'idle' || state.runResult !== 'failed') {
       finishRun({ ok: false, error: event.error });
     }
@@ -1196,16 +1219,34 @@ function handlePipelineEvent(event) {
     appendLog(`[summary] artifacts: ${event.artifact_dir}`);
     const runStatus = String(event.run_status ?? '');
     if (runStatus === 'failed') {
+      if (historical) {
+        state.runResult = 'failed';
+        touchUpdate();
+        renderAll();
+        return;
+      }
       finishRun({ ok: false, error: event.error });
       hydrateArtifactPreview();
       return;
     }
     if (runStatus === 'success') {
+      if (historical) {
+        state.runResult = 'success';
+        touchUpdate();
+        renderAll();
+        return;
+      }
       finishRun({ ok: true, code: 0 });
       hydrateArtifactPreview();
       return;
     }
     if (runStatus === 'stopped') {
+      if (historical) {
+        state.runResult = 'idle';
+        touchUpdate();
+        renderAll();
+        return;
+      }
       finishRun({ stopped: true });
       hydrateArtifactPreview();
       return;
@@ -1327,15 +1368,30 @@ function updateExtractMetrics(event) {
 
   const previous = state.sourceCounts[sourceName] ?? {};
   const rawLinks = Number(event.total_links ?? previous.raw_links ?? 0);
+  const sourceDedupedLinks = Number(event.deduped_links ?? previous.deduped_links ?? rawLinks);
+  if (Array.isArray(event.new_item_fingerprints)) {
+    for (const fingerprint of event.new_item_fingerprints) {
+      if (fingerprint) {
+        state.extractDedupedFingerprints.add(String(fingerprint));
+      }
+    }
+  }
   state.sourceCounts = {
     ...state.sourceCounts,
     [sourceName]: {
       ...previous,
-      raw_links: rawLinks
+      raw_links: rawLinks,
+      deduped_links: sourceDedupedLinks
     }
   };
   state.counts.raw_links = Object.values(state.sourceCounts)
     .reduce((total, item) => total + Number(item?.raw_links ?? 0), 0);
+  if (state.extractDedupedFingerprints.size > 0) {
+    state.counts.deduped_links = state.extractDedupedFingerprints.size;
+  } else {
+    state.counts.deduped_links = Object.values(state.sourceCounts)
+      .reduce((total, item) => total + Number(item?.deduped_links ?? 0), 0);
+  }
 }
 
 async function hydrateArtifactPreview() {
@@ -1362,6 +1418,7 @@ function hydrateArtifactState(result) {
   state.artifactDir = result.artifact_dir;
   state.counts = normalizeCounts(result.counts ?? {});
   state.sourceCounts = normalizeSourceCounts(result.source_counts ?? {});
+  state.extractDedupedFingerprints = new Set();
   state.outputFiles = result.outputFiles ?? [];
   state.nodeRows = result.nodeRows ?? [];
   state.retryContext = result.retry_context ?? {};

@@ -83,6 +83,7 @@ test('CI retry helper verifies npm cache between failed npm attempts', () => {
     });
 
     assert.equal(result.status, 4);
+    assert.match(result.stdout, /enabling Electron mirror fallback/);
     const calls = fs.readFileSync(logFile, 'utf-8').trim().split('\n');
     assert.deepEqual(calls, ['ci', 'cache verify', 'ci']);
   } finally {

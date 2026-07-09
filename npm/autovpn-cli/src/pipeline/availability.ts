@@ -313,6 +313,30 @@ function emitEvent(callback: AvailabilityBackendOptions['eventCallback'], eventT
   }
 }
 
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>,
+  onComplete?: (result: R, index: number, completed: number) => void
+): Promise<R[]> {
+  const limit = Math.max(1, Math.trunc(Number(concurrency) || 1));
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  let completed = 0;
+  async function runWorker(): Promise<void> {
+    while (nextIndex < items.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      const result = await worker(items[index], index);
+      results[index] = result;
+      completed += 1;
+      onComplete?.(result, index, completed);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => runWorker()));
+  return results;
+}
+
 function numberOrDefault(value: unknown, fallback: number): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
@@ -730,9 +754,7 @@ async function checkBatchInNode(input: AvailabilityBatchInput, options: Availabi
       })
       : checkLinkAvailabilityDirect(speedResult, config, { targets, fetch: options.fetch })
   ));
-  const output: AvailabilityResultDict[] = [];
-  for (let index = 0; index < input.results.length; index += 1) {
-    const speedResult = input.results[index];
+  return mapWithConcurrency(input.results, numberOrDefault(input.config.concurrency, 1), async (speedResult) => {
     let availability: AvailabilityResultDict;
     try {
       availability = availabilityResultToDict(await checkLinkAvailability(speedResult, input.config, {
@@ -742,8 +764,8 @@ async function checkBatchInNode(input: AvailabilityBatchInput, options: Availabi
     } catch (error) {
       availability = buildRuntimeErrorResult(speedResult, error instanceof Error ? error.message : String(error), targets);
     }
-    output.push(availability);
-    const completed = index + 1;
+    return availability;
+  }, (availability, _index, completed) => {
     if (options.progressCallback) {
       const statuses = Object.entries(availability.provider_results)
         .map(([name, provider]) => `${name}=${provider.passed ? 'ok' : provider.reason}`)
@@ -757,16 +779,13 @@ async function checkBatchInNode(input: AvailabilityBatchInput, options: Availabi
       all_passed: availability.all_passed,
       provider_results: availability.provider_results
     });
-  }
-  return output;
+  });
 }
 
 export function selectPipelineStageBackend(stage: string, env: NodeJS.ProcessEnv = process.env): PipelineStageBackend {
-  const stageKey = `AUTOVPN_STAGE_BACKEND_${stage.toUpperCase()}`;
-  const stageOverride = String(env[stageKey] ?? '').trim().toLowerCase();
-  const pipelineOverride = String(env.AUTOVPN_PIPELINE_BACKEND ?? '').trim().toLowerCase();
-  const selected = stageOverride || pipelineOverride || 'node';
-  return selected === 'python' ? 'python' : 'node';
+  void stage;
+  void env;
+  return 'node';
 }
 
 async function defaultResolvePythonCli(env: NodeJS.ProcessEnv): Promise<ResolvedPythonCli> {

@@ -69,12 +69,12 @@ test('obfuscate fixture output matches Python golden output', async () => {
   assert.deepEqual(buildWorkerArtifacts(input.rendered_source, input.config, input.secret_query), expected);
 });
 
-test('obfuscate backend selection supports Node default and Python rollback flags', async () => {
+test('obfuscate backend selection always uses the Node engine', async () => {
   assert.equal(selectPipelineStageBackend('obfuscate', {}), 'node');
   assert.equal(selectPipelineStageBackend('obfuscate', { AUTOVPN_PIPELINE_BACKEND: ' HYBRID ' }), 'node');
-  assert.equal(selectPipelineStageBackend('obfuscate', { AUTOVPN_PIPELINE_BACKEND: ' PYTHON ' }), 'python');
-  assert.equal(selectPipelineStageBackend('obfuscate', { AUTOVPN_STAGE_BACKEND_OBFUSCATE: ' python ' }), 'python');
-  assert.equal(selectPipelineStageBackend('obfuscate', { AUTOVPN_PIPELINE_BACKEND: 'python', AUTOVPN_STAGE_BACKEND_OBFUSCATE: '' }), 'python');
+  assert.equal(selectPipelineStageBackend('obfuscate', { AUTOVPN_PIPELINE_BACKEND: ' PYTHON ' }), 'node');
+  assert.equal(selectPipelineStageBackend('obfuscate', { AUTOVPN_STAGE_BACKEND_OBFUSCATE: ' python ' }), 'node');
+  assert.equal(selectPipelineStageBackend('obfuscate', { AUTOVPN_PIPELINE_BACKEND: 'python', AUTOVPN_STAGE_BACKEND_OBFUSCATE: '' }), 'node');
 
   const pythonCalls = [];
   const fallback = async (input) => {
@@ -84,14 +84,16 @@ test('obfuscate backend selection supports Node default and Python rollback flag
   const input = { rendered_source: renderedSource, config: {}, secret_query: 'serect_key=swimmingliu' };
 
   assert.match((await buildWorkerArtifactsWithBackend(input, { env: {}, pythonObfuscate: fallback })).transformed_source, /SUBSCRIPTION_PAYLOAD/);
-  assert.deepEqual(await buildWorkerArtifactsWithBackend(input, {
+  const legacyEnvResult = await buildWorkerArtifactsWithBackend(input, {
     env: { AUTOVPN_STAGE_BACKEND_OBFUSCATE: 'python' },
     pythonObfuscate: fallback
-  }), { transformed_source: 'python-result', modules: {}, manifest: {} });
-  assert.deepEqual(pythonCalls, [input]);
+  });
+  assert.match(legacyEnvResult.transformed_source, /SUBSCRIPTION_PAYLOAD/);
+  assert.ok(Object.keys(legacyEnvResult.modules).length > 0);
+  assert.deepEqual(pythonCalls, []);
 });
 
-test('Python obfuscate rollback adapter invokes backend venv Python when no callback is injected', async () => {
+test('obfuscate ignores legacy Python rollback env without spawning Python', async () => {
   const spawns = [];
   const input = { rendered_source: renderedSource, config: {}, secret_query: 'serect_key=swimmingliu' };
   const result = await buildWorkerArtifactsWithBackend(input, {
@@ -116,8 +118,6 @@ test('Python obfuscate rollback adapter invokes backend venv Python when no call
     }
   });
 
-  assert.equal(result.transformed_source, renderedSource);
-  assert.equal(spawns[0].command, '/opt/autovpn/.venv/bin/python');
-  assert.equal(spawns[0].args[0], '-c');
-  assert.deepEqual(spawns[0].options.stdio, ['pipe', 'pipe', 'pipe']);
+  assert.match(result.transformed_source, /SUBSCRIPTION_PAYLOAD/);
+  assert.equal(spawns.length, 0);
 });

@@ -52,10 +52,12 @@ test('postprocess defaults match Python FilterConfig when filters are omitted', 
 
   assert.deepEqual(runPostprocess(payload), { links: [] });
 
+  const spawns = [];
   const result = await postprocessLinksWithBackend(payload, {
     env: { AUTOVPN_STAGE_BACKEND_POSTPROCESS: 'python' },
     resolvePythonCli: () => ({ command: '/opt/autovpn/.venv/bin/autovpn', args: [] }),
     spawn: (command, args, options) => {
+      spawns.push({ command, args, options });
       const child = new EventEmitter();
       child.stdout = new EventEmitter();
       child.stderr = new EventEmitter();
@@ -75,6 +77,7 @@ test('postprocess defaults match Python FilterConfig when filters are omitted', 
   });
 
   assert.deepEqual(result, { links: [] });
+  assert.equal(spawns.length, 0);
 });
 
 test('postprocess keeps Python filter defaults for explicit empty and partial filters', async () => {
@@ -84,12 +87,13 @@ test('postprocess keeps Python filter defaults for explicit empty and partial fi
   assert.deepEqual(runPostprocess(cnOnly), { links: [] });
   assert.deepEqual(runPostprocess(partial), { links: [] });
 
-  const helperInputs = [];
+  const spawns = [];
   async function runFallback(input) {
     return postprocessLinksWithBackend(input, {
       env: { AUTOVPN_STAGE_BACKEND_POSTPROCESS: 'python' },
       resolvePythonCli: () => ({ command: '/opt/autovpn/.venv/bin/autovpn', args: [] }),
       spawn: (command, args, options) => {
+        spawns.push({ command, args, options });
         const child = new EventEmitter();
         child.stdout = new EventEmitter();
         child.stderr = new EventEmitter();
@@ -98,9 +102,6 @@ test('postprocess keeps Python filter defaults for explicit empty and partial fi
             this.input = String(chunk);
           },
           end() {
-            const helperInput = JSON.parse(this.input);
-            helperInputs.push(helperInput);
-            assert.deepEqual(helperInput.filters.excluded_country_codes, ['CN']);
             child.stdout.emit('data', `${JSON.stringify({ links: [] })}\n`);
             child.emit('close', 0, null);
           }
@@ -112,7 +113,7 @@ test('postprocess keeps Python filter defaults for explicit empty and partial fi
 
   assert.deepEqual(await runFallback(cnOnly), { links: [] });
   assert.deepEqual(await runFallback(partial), { links: [] });
-  assert.deepEqual(helperInputs.map((input) => input.filters.per_country_limit), [{}, { US: 1 }]);
+  assert.equal(spawns.length, 0);
 });
 
 test('postprocess fixture output matches Python golden output', async () => {
@@ -122,12 +123,12 @@ test('postprocess fixture output matches Python golden output', async () => {
   assert.deepEqual(runPostprocess(input).links, expected.links);
 });
 
-test('postprocess backend selection supports Node default and Python rollback flags', async () => {
+test('postprocess backend selection always uses the Node engine', async () => {
   assert.equal(selectPipelineStageBackend('postprocess', {}), 'node');
   assert.equal(selectPipelineStageBackend('postprocess', { AUTOVPN_PIPELINE_BACKEND: ' HYBRID ' }), 'node');
-  assert.equal(selectPipelineStageBackend('postprocess', { AUTOVPN_PIPELINE_BACKEND: ' PYTHON ' }), 'python');
-  assert.equal(selectPipelineStageBackend('postprocess', { AUTOVPN_STAGE_BACKEND_POSTPROCESS: ' python ' }), 'python');
-  assert.equal(selectPipelineStageBackend('postprocess', { AUTOVPN_PIPELINE_BACKEND: 'python', AUTOVPN_STAGE_BACKEND_POSTPROCESS: '' }), 'python');
+  assert.equal(selectPipelineStageBackend('postprocess', { AUTOVPN_PIPELINE_BACKEND: ' PYTHON ' }), 'node');
+  assert.equal(selectPipelineStageBackend('postprocess', { AUTOVPN_STAGE_BACKEND_POSTPROCESS: ' python ' }), 'node');
+  assert.equal(selectPipelineStageBackend('postprocess', { AUTOVPN_PIPELINE_BACKEND: 'python', AUTOVPN_STAGE_BACKEND_POSTPROCESS: '' }), 'node');
 
   const payload = { ranked_links: [{ link: sampleLink, country_code: 'US' }], filters: {} };
   const pythonCalls = [];
@@ -140,11 +141,11 @@ test('postprocess backend selection supports Node default and Python rollback fl
   assert.deepEqual(await postprocessLinksWithBackend(payload, {
     env: { AUTOVPN_STAGE_BACKEND_POSTPROCESS: 'python' },
     pythonPostprocess: fallback
-  }), { links: ['python-result'] });
-  assert.deepEqual(pythonCalls, [payload]);
+  }).then((result) => result.links.length), 1);
+  assert.deepEqual(pythonCalls, []);
 });
 
-test('Python postprocess rollback adapter invokes backend venv Python when no callback is injected', async () => {
+test('postprocess ignores legacy Python rollback env without spawning Python', async () => {
   const payload = { ranked_links: [{ link: sampleLink, country_code: 'US' }], filters: {} };
   const spawns = [];
   const result = await postprocessLinksWithBackend(payload, {
@@ -169,8 +170,6 @@ test('Python postprocess rollback adapter invokes backend venv Python when no ca
     }
   });
 
-  assert.deepEqual(result, { links: [sampleLink] });
-  assert.equal(spawns[0].command, '/opt/autovpn/.venv/bin/python');
-  assert.equal(spawns[0].args[0], '-c');
-  assert.deepEqual(spawns[0].options.stdio, ['pipe', 'pipe', 'pipe']);
+  assert.equal(result.links.length, 1);
+  assert.equal(spawns.length, 0);
 });

@@ -36,12 +36,12 @@ test('render fixture output matches Python golden output', async () => {
   assert.equal(replaceMainData(input.template, input.links), expected);
 });
 
-test('render backend selection supports Node default and Python rollback flags', async () => {
+test('render backend selection always uses the Node engine', async () => {
   assert.equal(selectPipelineStageBackend('render', {}), 'node');
   assert.equal(selectPipelineStageBackend('render', { AUTOVPN_PIPELINE_BACKEND: ' HYBRID ' }), 'node');
-  assert.equal(selectPipelineStageBackend('render', { AUTOVPN_PIPELINE_BACKEND: ' PYTHON ' }), 'python');
-  assert.equal(selectPipelineStageBackend('render', { AUTOVPN_STAGE_BACKEND_RENDER: ' python ' }), 'python');
-  assert.equal(selectPipelineStageBackend('render', { AUTOVPN_PIPELINE_BACKEND: 'python', AUTOVPN_STAGE_BACKEND_RENDER: '' }), 'python');
+  assert.equal(selectPipelineStageBackend('render', { AUTOVPN_PIPELINE_BACKEND: ' PYTHON ' }), 'node');
+  assert.equal(selectPipelineStageBackend('render', { AUTOVPN_STAGE_BACKEND_RENDER: ' python ' }), 'node');
+  assert.equal(selectPipelineStageBackend('render', { AUTOVPN_PIPELINE_BACKEND: 'python', AUTOVPN_STAGE_BACKEND_RENDER: '' }), 'node');
 
   const pythonCalls = [];
   const fallback = async (input) => {
@@ -54,11 +54,11 @@ test('render backend selection supports Node default and Python rollback flags',
   assert.deepEqual(await renderMainDataWithBackend(input, {
     env: { AUTOVPN_STAGE_BACKEND_RENDER: 'python' },
     pythonRender: fallback
-  }), { rendered_source: 'python-result' });
-  assert.deepEqual(pythonCalls, [input]);
+  }), { rendered_source: 'vmess://a' });
+  assert.deepEqual(pythonCalls, []);
 });
 
-test('Python render rollback adapter invokes backend venv Python when no callback is injected', async () => {
+test('render ignores legacy Python rollback env without spawning Python', async () => {
   const spawns = [];
   const input = { template: `const MainData = \`${MAIN_DATA_PLACEHOLDER}\`;`, links: ['vmess://a'] };
   const result = await renderMainDataWithBackend(input, {
@@ -84,12 +84,10 @@ test('Python render rollback adapter invokes backend venv Python when no callbac
   });
 
   assert.deepEqual(result, { rendered_source: 'const MainData = `vmess://a`;' });
-  assert.equal(spawns[0].command, '/opt/autovpn/.venv/bin/python');
-  assert.equal(spawns[0].args[0], '-c');
-  assert.deepEqual(spawns[0].options.stdio, ['pipe', 'pipe', 'pipe']);
+  assert.equal(spawns.length, 0);
 });
 
-test('Python render rollback adapter merges project .env into spawn environment', async () => {
+test('render ignores legacy Python rollback env and does not merge dotenv for a Python spawn', async () => {
   const projectRoot = await mkdtemp(path.join(os.tmpdir(), 'autovpn-render-env-'));
   await mkdir(projectRoot, { recursive: true });
   await writeFile(path.join(projectRoot, '.env'), 'EXTRA_FROM_DOTENV=1\nPATH=/from-dotenv\n', 'utf8');
@@ -117,6 +115,5 @@ test('Python render rollback adapter merges project .env into spawn environment'
     }
   });
 
-  assert.equal(spawns[0].options.env.EXTRA_FROM_DOTENV, '1');
-  assert.equal(spawns[0].options.env.PATH, '/explicit-path');
+  assert.equal(spawns.length, 0);
 });
