@@ -279,6 +279,12 @@ test('served web ui logs in from a password page with inline failure and ban mes
 
     await page.goto(`${service.origin}/`);
     await page.waitForSelector('[data-server-login]');
+    const loginText = await page.locator('[data-server-login]').innerText();
+    assert.match(loginText, /AutoNetwork/);
+    assert.doesNotMatch(loginText, /VPN/);
+    assert.doesNotMatch(loginText, /serve|启动|打印|继续访问/);
+    assert.equal(await page.title(), 'AutoNetwork');
+
     await page.locator('[data-server-password]').fill('wrong-password');
     await page.locator('[data-server-login-submit]').click();
     await page.waitForFunction(() => document.querySelector('[data-server-login-error]')?.textContent?.trim());
