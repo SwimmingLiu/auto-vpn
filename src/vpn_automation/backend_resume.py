@@ -59,6 +59,29 @@ def _has_non_empty_file(path: Path) -> bool:
     return path.exists() and bool(path.read_text(encoding="utf-8").strip())
 
 
+def restore_artifact_counts(artifact_dir: Path, counts: dict[str, Any] | None = None) -> dict[str, Any]:
+    restored: dict[str, Any] = dict(counts or {})
+    file_counts = (
+        ("raw_links", "vpn_node_raw.txt"),
+        ("deduped_links", "vpn_node_deduped.txt"),
+        ("speedtest_links", "vpn_node_speedtest.txt"),
+        ("availability_links", "vpn_node_availability.txt"),
+        ("final_links", "vpn_node_emoji.txt"),
+        ("postprocess_links", "vpn_node_emoji.txt"),
+    )
+    for count_key, file_name in file_counts:
+        try:
+            current = float(restored.get(count_key, 0) or 0)
+        except (TypeError, ValueError):
+            current = 0
+        if current > 0:
+            continue
+        file_count = len(_read_non_empty_lines(artifact_dir / file_name))
+        if file_count > 0:
+            restored[count_key] = file_count
+    return restored
+
+
 def _load_stage_status(artifact_dir: Path) -> dict[str, str]:
     report = _load_json(artifact_dir / "pipeline_report.json")
     return dict(report.get("stage_status", {}))
@@ -74,7 +97,7 @@ def _count_run_db_rows(db_path: Path, table_name: str) -> int:
 def _build_artifact_retry_item(artifact_dir: Path) -> dict[str, Any]:
     report = _load_json(artifact_dir / "pipeline_report.json")
     stage_status = dict(report.get("stage_status", {}))
-    counts = dict(report.get("counts", {}))
+    counts = restore_artifact_counts(artifact_dir, dict(report.get("counts", {})))
     source_counts = dict(report.get("source_counts", {}))
     retry_context = dict(report.get("retry_context", {}))
     run_db_path = artifact_dir / "run.db"
