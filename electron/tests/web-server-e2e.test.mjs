@@ -78,6 +78,108 @@ test('served web ui loads profile and starts a run through the web adapter', asy
   }
 });
 
+test('served web ui restores the latest running state after page refresh', async () => {
+  const service = await createAutoVpnServer({
+    host: '127.0.0.1',
+    port: 0,
+    projectRoot: '/repo',
+    auth: { enabled: false, token: '' },
+    runtime: {
+      loadState: async () => ({
+        profile: {
+          sources: { leiting: { url: '<redacted>', key: '<redacted>', enabled: true } },
+          speed_test: { min_download_mb_s: 1, timeout_seconds: 20, concurrency: 3 },
+          availability_targets: {},
+          deploy: { cloudflare_api_token: '<redacted>' },
+          paths: { project_root: '/repo', artifacts_root: '/repo/artifacts' }
+        },
+        runState: 'running',
+        artifact: {
+          artifact_dir: '/repo/artifacts/20260709-010000',
+          run_status: '',
+          stage_status: { doctor: 'success', extract: 'running' },
+          counts: { raw_links: 12 },
+          source_counts: { leiting: { raw_links: 12 } },
+          outputFiles: [],
+          nodeRows: []
+        },
+        retryArtifacts: []
+      }),
+      stopRun: async () => ({ ok: true, requested: true }),
+      subscribe: () => () => {}
+    }
+  });
+
+  let browser;
+  try {
+    browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1280, height: 820 } });
+    await page.goto(`${service.origin}/`);
+    await page.waitForSelector('#dashboardOverview');
+    await page.locator('#navRuns').click();
+    await page.waitForSelector('#runsWorkspace');
+
+    assert.match(await page.locator('#runStateBadge').innerText(), /运行中/);
+    assert.equal(await page.locator('#runsWorkspace [data-run-action="start"]').isDisabled(), true);
+    assert.equal(await page.locator('#runsWorkspace [data-run-action="stop"]').isDisabled(), false);
+    assert.match(await page.locator('#runsWorkspace').innerText(), /extract|运行中|12/);
+  } finally {
+    await browser?.close();
+    await service.close();
+  }
+});
+
+test('served web ui restores a retained terminal state after page refresh', async () => {
+  const service = await createAutoVpnServer({
+    host: '127.0.0.1',
+    port: 0,
+    projectRoot: '/repo',
+    auth: { enabled: false, token: '' },
+    runtime: {
+      loadState: async () => ({
+        profile: {
+          sources: { leiting: { url: '<redacted>', key: '<redacted>', enabled: true } },
+          speed_test: { min_download_mb_s: 1, timeout_seconds: 20, concurrency: 3 },
+          availability_targets: {},
+          deploy: { cloudflare_api_token: '<redacted>' },
+          paths: { project_root: '/repo', artifacts_root: '/repo/artifacts' }
+        },
+        runState: 'failed',
+        artifact: {
+          artifact_dir: '/repo/artifacts/20260709-011000',
+          run_status: 'failed',
+          stage_status: { doctor: 'success', extract: 'failed' },
+          counts: { raw_links: 7 },
+          source_counts: { leiting: { raw_links: 7 } },
+          error: 'Error: fetch failed',
+          outputFiles: [],
+          nodeRows: []
+        },
+        retryArtifacts: []
+      }),
+      subscribe: () => () => {}
+    }
+  });
+
+  let browser;
+  try {
+    browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1280, height: 820 } });
+    await page.goto(`${service.origin}/`);
+    await page.waitForSelector('#dashboardOverview');
+    await page.locator('#navRuns').click();
+    await page.waitForSelector('#runsWorkspace');
+
+    assert.match(await page.locator('#runStateBadge').innerText(), /失败/);
+    assert.equal(await page.locator('#runsWorkspace [data-run-action="start"]').isDisabled(), false);
+    assert.equal(await page.locator('#runsWorkspace [data-run-action="stop"]').isDisabled(), true);
+    assert.match(await page.locator('#runsWorkspace').innerText(), /失败|7|20260709-011000/);
+  } finally {
+    await browser?.close();
+    await service.close();
+  }
+});
+
 test('served web ui leaves stopping state when stop finds the server run already failed', async () => {
   let subscriber;
   const service = await createAutoVpnServer({

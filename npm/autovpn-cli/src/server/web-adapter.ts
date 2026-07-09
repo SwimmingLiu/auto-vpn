@@ -152,6 +152,7 @@ export function renderWebAdapterScript(options: WebAdapterOptions = {}): string 
   }
 
   window.vpnAutomation = {
+    loadState: async () => state(),
     loadProfile: async () => {
       const payload = await state();
       return payload.profile || {};

@@ -159,15 +159,41 @@ async function bootstrap() {
   }
 
   state.isDemo = false;
-  const loadedProfile = await window.vpnAutomation.loadProfile();
-  state.profile = loadedProfile;
-  state.savedProfile = structuredClone(loadedProfile);
+  const loadedState = window.vpnAutomation.loadState
+    ? await window.vpnAutomation.loadState()
+    : { profile: await window.vpnAutomation.loadProfile() };
+  hydrateInitialRuntimeState(loadedState);
   touchUpdate();
   await refreshQrCode();
-  await hydrateRetryArtifacts();
-  await hydrateLatestArtifact();
+  if (!loadedState?.retryArtifacts) {
+    await hydrateRetryArtifacts();
+  }
+  if (!loadedState?.artifact) {
+    await hydrateLatestArtifact();
+  }
   renderAll();
   state.unsubscribe = window.vpnAutomation.onPipelineEvent(handlePipelineEvent);
+}
+
+function hydrateInitialRuntimeState(loadedState = {}) {
+  const loadedProfile = loadedState.profile ?? {};
+  state.profile = loadedProfile;
+  state.savedProfile = structuredClone(loadedProfile);
+  const nextRunState = String(loadedState.runState ?? '');
+  if (['idle', 'running', 'stopping', 'failed', 'success'].includes(nextRunState)) {
+    state.runState = nextRunState;
+    state.runResult = nextRunState === 'idle' ? state.runResult : nextRunState;
+    state.runStartedAt = nextRunState === 'running' ? Date.now() : null;
+  }
+  if (loadedState.artifact) {
+    hydrateArtifactState(loadedState.artifact);
+  }
+  if (Array.isArray(loadedState.retryArtifacts)) {
+    hydrateRetryArtifactState(loadedState.retryArtifacts);
+  }
+  if (loadedState.deployment) {
+    state.deployment = loadedState.deployment;
+  }
 }
 
 function bindActions() {
@@ -263,6 +289,12 @@ function runTone() {
   }
   if (state.runState === 'stopping') {
     return 'warning';
+  }
+  if (state.runState === 'failed') {
+    return 'danger';
+  }
+  if (state.runState === 'success') {
+    return 'success';
   }
   return 'neutral';
 }
@@ -882,7 +914,7 @@ async function exportLogs() {
 }
 
 async function runPipeline() {
-  if (state.runState !== 'idle' || !state.profile) {
+  if (resolveRunControlState(state.runState).isBusy || !state.profile) {
     return;
   }
 
@@ -939,7 +971,7 @@ async function runPipeline() {
 }
 
 async function retryStage() {
-  if (state.runState !== 'idle' || !state.profile || !state.selectedRetryArtifactDir || !state.selectedRetryStage) {
+  if (resolveRunControlState(state.runState).isBusy || !state.profile || !state.selectedRetryArtifactDir || !state.selectedRetryStage) {
     return;
   }
 
@@ -1065,10 +1097,10 @@ async function stopPipeline() {
 
 function finishRun(result = {}) {
   const messages = getMessages(state.language);
-  state.runState = 'idle';
   state.runStartedAt = null;
 
   if (result.stopped) {
+    state.runState = 'idle';
     state.runResult = 'stopped';
     touchUpdate();
     renderAll();
@@ -1078,6 +1110,7 @@ function finishRun(result = {}) {
   }
 
   if (result.ok) {
+    state.runState = 'success';
     state.runResult = 'success';
     touchUpdate();
     renderAll();
@@ -1086,6 +1119,7 @@ function finishRun(result = {}) {
     return;
   }
 
+  state.runState = 'failed';
   state.runResult = 'failed';
   touchUpdate();
   renderAll();
@@ -1101,7 +1135,7 @@ function handlePipelineEvent(event) {
   if (event.type === 'server_state') {
     const nextRunState = String(event.run_state ?? '');
     if (['idle', 'running', 'stopping', 'failed', 'success'].includes(nextRunState)) {
-      state.runState = nextRunState === 'success' ? 'idle' : nextRunState;
+      state.runState = nextRunState;
       if (['idle', 'failed', 'success'].includes(nextRunState)) {
         state.runStartedAt = null;
       }
@@ -1321,6 +1355,27 @@ async function hydrateArtifactPreview() {
   }
 }
 
+function hydrateArtifactState(result) {
+  if (!result?.artifact_dir) {
+    return;
+  }
+  state.artifactDir = result.artifact_dir;
+  state.counts = normalizeCounts(result.counts ?? {});
+  state.sourceCounts = normalizeSourceCounts(result.source_counts ?? {});
+  state.outputFiles = result.outputFiles ?? [];
+  state.nodeRows = result.nodeRows ?? [];
+  state.retryContext = result.retry_context ?? {};
+  state.deployment = result.deployment ?? state.deployment ?? {};
+  if (result.run_status === 'success') {
+    state.runResult = 'success';
+  } else if (result.run_status === 'failed') {
+    state.runResult = 'failed';
+  }
+  if (result.stage_status) {
+    state.stageStatus = result.stage_status;
+  }
+}
+
 async function hydrateLatestArtifact() {
   if (!window.vpnAutomation?.latestArtifact) {
     return;
@@ -1331,21 +1386,24 @@ async function hydrateLatestArtifact() {
     if (!result?.ok || !result.artifact_dir) {
       return;
     }
-    state.artifactDir = result.artifact_dir;
-    state.counts = normalizeCounts(result.counts ?? {});
-    state.sourceCounts = normalizeSourceCounts(result.source_counts ?? {});
-    state.outputFiles = result.outputFiles ?? [];
-    state.nodeRows = result.nodeRows ?? [];
-    state.retryContext = result.retry_context ?? {};
-    state.deployment = result.deployment ?? {};
-    state.runResult = result.run_status === 'success' ? 'success' : state.runResult;
-    if (result.stage_status) {
-      state.stageStatus = result.stage_status;
-    }
+    hydrateArtifactState(result);
     touchUpdate();
   } catch (error) {
     appendLog(formatMessage(getMessages(state.language).openFailed, { error: error.message }));
   }
+}
+
+function hydrateRetryArtifactState(items = []) {
+  state.retryArtifacts = items;
+  if (!state.selectedRetryArtifactDir) {
+    state.selectedRetryArtifactDir = state.retryArtifacts[0]?.artifact_dir ?? '';
+  }
+  const selectedArtifact = state.retryArtifacts.find((item) => item.artifact_dir === state.selectedRetryArtifactDir) ?? state.retryArtifacts[0];
+  const nextStage = selectedArtifact?.retryable_stages?.includes(state.selectedRetryStage)
+    ? state.selectedRetryStage
+    : resolveDefaultRetryStage(selectedArtifact);
+  state.selectedRetryArtifactDir = selectedArtifact?.artifact_dir ?? '';
+  state.selectedRetryStage = nextStage;
 }
 
 async function hydrateRetryArtifacts() {
@@ -1358,16 +1416,7 @@ async function hydrateRetryArtifacts() {
     if (!result?.ok) {
       return;
     }
-    state.retryArtifacts = result.items ?? [];
-    if (!state.selectedRetryArtifactDir) {
-      state.selectedRetryArtifactDir = state.retryArtifacts[0]?.artifact_dir ?? '';
-    }
-    const selectedArtifact = state.retryArtifacts.find((item) => item.artifact_dir === state.selectedRetryArtifactDir) ?? state.retryArtifacts[0];
-    const nextStage = selectedArtifact?.retryable_stages?.includes(state.selectedRetryStage)
-      ? state.selectedRetryStage
-      : resolveDefaultRetryStage(selectedArtifact);
-    state.selectedRetryArtifactDir = selectedArtifact?.artifact_dir ?? '';
-    state.selectedRetryStage = nextStage;
+    hydrateRetryArtifactState(result.items ?? []);
     touchUpdate();
   } catch (error) {
     appendLog(formatMessage(getMessages(state.language).openFailed, { error: error.message }));

@@ -6,6 +6,57 @@ import test from 'node:test';
 
 import { createServerRuntime, sanitizeProfileForServer } from '../../dist/server/runtime.js';
 
+function writeJson(filePath, payload) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+}
+
+function writeJobFixture(runtimeRoot, jobId, fields = {}) {
+  const jobDir = path.join(runtimeRoot, 'jobs', jobId);
+  const createdAt = fields.created_at ?? '2026-07-09T00:00:00+00:00';
+  const job = {
+    schema_version: 1,
+    job_id: jobId,
+    kind: 'run',
+    status: 'running',
+    pid: process.pid,
+    pgid: process.pid,
+    created_at: createdAt,
+    started_at: createdAt,
+    finished_at: '',
+    updated_at: createdAt,
+    exit_code: null,
+    signal: '',
+    project_root: '',
+    command: [],
+    event_log: path.join(jobDir, 'events.jsonl'),
+    human_log: path.join(jobDir, 'human.log'),
+    stdout_log: path.join(jobDir, 'stdout.log'),
+    stderr_log: path.join(jobDir, 'stderr.log'),
+    artifact_dir: '',
+    session_dir: jobDir,
+    resume_from: '',
+    retry: { source_artifact_dir: '', stage: '' },
+    options: {},
+    stop_requested_at: '',
+    last_event_at: '',
+    last_error: '',
+    job_file: path.join(jobDir, 'job.json'),
+    ...fields
+  };
+  fs.mkdirSync(jobDir, { recursive: true });
+  for (const key of ['event_log', 'human_log', 'stdout_log', 'stderr_log']) {
+    fs.closeSync(fs.openSync(String(job[key]), 'a'));
+  }
+  writeJson(job.job_file, job);
+  writeJson(path.join(runtimeRoot, 'jobs', 'index.json'), {
+    schema_version: 1,
+    latest_job_id: jobId,
+    jobs: [{ job_id: jobId, status: job.status, kind: job.kind, created_at: job.created_at, job_file: job.job_file }]
+  });
+  return job;
+}
+
 test('server profile only redacts Cloudflare token and Pages Secret ADMIN with field labels', () => {
   const profile = sanitizeProfileForServer({
     sources: {
@@ -66,6 +117,132 @@ test('server runtime starts and stops managed detached jobs', async () => {
     ['start', { projectRoot, skipDeploy: true, skipVerify: true, resumeLatest: false, outputFormat: 'jsonl' }],
     ['stop', 'job-1']
   ]);
+});
+
+test('server runtime restores an active latest job after serve restarts', async () => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-runtime-restore-active-'));
+  const runtimeRoot = path.join(projectRoot, 'state');
+  const job = writeJobFixture(runtimeRoot, 'active-job', { project_root: projectRoot });
+  const calls = [];
+  const runtime = createServerRuntime({
+    projectRoot,
+    env: { VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot },
+    stopManagedJob: async (_projectRoot, jobId) => {
+      calls.push(['stop', jobId]);
+      return { job_id: jobId, status: 'stopped' };
+    },
+    followLog: async function* (_projectRoot, jobId) {
+      calls.push(['follow', jobId]);
+      yield JSON.stringify({ type: 'stage', stage: 'extract', status: 'running' }) + '\n';
+    }
+  });
+
+  const state = await runtime.loadState();
+
+  assert.equal(state.runState, 'running');
+  assert.deepEqual(await runtime.stopRun?.(), {
+    ok: true,
+    requested: true,
+    job_id: job.job_id,
+    status: 'stopped',
+    stopped: true
+  });
+  assert.deepEqual(calls, [['follow', 'active-job'], ['stop', 'active-job']]);
+});
+
+test('server runtime retains terminal latest job state only within the configured TTL', async () => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-runtime-terminal-ttl-'));
+  const runtimeRoot = path.join(projectRoot, 'state');
+  writeJobFixture(runtimeRoot, 'fresh-failed-job', {
+    project_root: projectRoot,
+    status: 'failed',
+    pid: 0,
+    finished_at: '2026-07-09T00:09:00+00:00',
+    exit_code: 1
+  });
+  const freshRuntime = createServerRuntime({
+    projectRoot,
+    env: {
+      VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot,
+      AUTOVPN_SERVER_TERMINAL_STATE_TTL_SECONDS: '600'
+    },
+    now: () => new Date('2026-07-09T00:10:00Z'),
+    followLog: async function* () {}
+  });
+
+  assert.equal((await freshRuntime.loadState()).runState, 'failed');
+
+  const expiredRuntime = createServerRuntime({
+    projectRoot,
+    env: {
+      VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot,
+      AUTOVPN_SERVER_TERMINAL_STATE_TTL_SECONDS: '600'
+    },
+    now: () => new Date('2026-07-09T00:30:00Z'),
+    followLog: async function* () {}
+  });
+
+  assert.equal((await expiredRuntime.loadState()).runState, 'idle');
+});
+
+test('server runtime prunes artifacts and jobs older than the configured retention window', async () => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-runtime-prune-'));
+  const runtimeRoot = path.join(projectRoot, 'state');
+  const artifactsRoot = path.join(runtimeRoot, 'artifacts');
+  const oldArtifact = path.join(artifactsRoot, '20260630-000000');
+  const freshArtifact = path.join(artifactsRoot, '20260708-000000');
+  fs.mkdirSync(oldArtifact, { recursive: true });
+  fs.mkdirSync(freshArtifact, { recursive: true });
+  fs.writeFileSync(path.join(oldArtifact, 'pipeline_report.json'), '{"run_status":"failed"}\n', 'utf8');
+  fs.writeFileSync(path.join(freshArtifact, 'pipeline_report.json'), '{"run_status":"success"}\n', 'utf8');
+  fs.utimesSync(oldArtifact, new Date('2026-06-30T00:00:00Z'), new Date('2026-06-30T00:00:00Z'));
+  fs.utimesSync(freshArtifact, new Date('2026-07-08T00:00:00Z'), new Date('2026-07-08T00:00:00Z'));
+  const oldJob = writeJobFixture(runtimeRoot, 'old-job', {
+    project_root: projectRoot,
+    status: 'failed',
+    pid: 0,
+    artifact_dir: oldArtifact,
+    created_at: '2026-06-30T00:00:00+00:00',
+    finished_at: '2026-06-30T00:01:00+00:00',
+    exit_code: 1
+  });
+  const freshJob = writeJobFixture(runtimeRoot, 'fresh-job', {
+    project_root: projectRoot,
+    status: 'success',
+    pid: 0,
+    artifact_dir: freshArtifact,
+    created_at: '2026-07-08T00:00:00+00:00',
+    finished_at: '2026-07-08T00:01:00+00:00',
+    exit_code: 0
+  });
+  writeJson(path.join(runtimeRoot, 'jobs', 'index.json'), {
+    schema_version: 1,
+    latest_job_id: 'fresh-job',
+    jobs: [
+      { job_id: 'old-job', status: 'failed', kind: 'run', created_at: oldJob.created_at, job_file: oldJob.job_file },
+      { job_id: 'fresh-job', status: 'success', kind: 'run', created_at: freshJob.created_at, job_file: freshJob.job_file }
+    ]
+  });
+
+  const runtime = createServerRuntime({
+    projectRoot,
+    env: {
+      VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot,
+      AUTOVPN_SERVER_HISTORY_RETENTION_DAYS: '7'
+    },
+    now: () => new Date('2026-07-09T00:00:00Z'),
+    followLog: async function* () {}
+  });
+
+  await runtime.loadState();
+
+  assert.equal(fs.existsSync(oldArtifact), false);
+  assert.equal(fs.existsSync(path.dirname(oldJob.job_file)), false);
+  assert.equal(fs.existsSync(freshArtifact), true);
+  assert.equal(fs.existsSync(path.dirname(freshJob.job_file)), true);
+  const index = JSON.parse(fs.readFileSync(path.join(runtimeRoot, 'jobs', 'index.json'), 'utf8'));
+  assert.deepEqual(index.jobs.map((item) => item.job_id), ['fresh-job']);
+  assert.equal(index.latest_job_id, 'fresh-job');
 });
 
 test('server runtime forwards opt-in proxy settings through worker env without forcing CLI Python proxy mode', async () => {
