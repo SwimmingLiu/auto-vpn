@@ -19,6 +19,17 @@ permissions:
 
 env:
   RELEASE_TAG_NAME: ${{ github.event.inputs.tag_name || github.event.release.tag_name || github.ref_name }}
+  NPM_CONFIG_AUDIT: "false"
+  NPM_CONFIG_FETCH_RETRIES: "5"
+  NPM_CONFIG_FETCH_RETRY_FACTOR: "2"
+  NPM_CONFIG_FETCH_RETRY_MINTIMEOUT: "20000"
+  NPM_CONFIG_FETCH_RETRY_MAXTIMEOUT: "180000"
+  NPM_CONFIG_FETCH_TIMEOUT: "600000"
+  NPM_CONFIG_FUND: "false"
+  NPM_CONFIG_PREFER_OFFLINE: "true"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PIP_RETRIES: "5"
+  PIP_TIMEOUT: "120"
 
 jobs:
   test:
@@ -37,6 +48,9 @@ jobs:
         with:
           node-version: 24
           cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            npm/autovpn-cli/package-lock.json
 
       - name: Check release tag and package version
         env:
@@ -63,7 +77,8 @@ jobs:
             exit 1
           fi
 
-          git fetch --no-tags origin main:refs/remotes/origin/main
+          bash scripts/ci/retry-command.sh "fetch origin/main" -- \
+            git fetch --no-tags origin main:refs/remotes/origin/main
           TAG_COMMIT="$(git rev-list -n 1 "${TAG_NAME}")"
           if ! git merge-base --is-ancestor "${TAG_COMMIT}" origin/main; then
             echo "Release tag ${TAG_NAME} is not contained in origin/main."
@@ -79,10 +94,13 @@ jobs:
 
       - name: Install dependencies
         run: |
-          npm ci
-          npm ci --prefix npm/autovpn-cli
-          python -m pip install --upgrade pip
-          python -m pip install -e .[dev]
+          bash scripts/ci/retry-command.sh "npm ci" -- npm ci --prefer-offline --no-audit --fund=false
+          bash scripts/ci/retry-command.sh "npm ci --prefix npm/autovpn-cli" -- \
+            npm ci --prefix npm/autovpn-cli --prefer-offline --no-audit --fund=false
+          bash scripts/ci/retry-command.sh "upgrade pip" -- \
+            python -m pip install --retries "${PIP_RETRIES}" --timeout "${PIP_TIMEOUT}" --upgrade pip
+          bash scripts/ci/retry-command.sh "install Python dependencies" -- \
+            python -m pip install --retries "${PIP_RETRIES}" --timeout "${PIP_TIMEOUT}" -e .[dev]
 
       - name: Run Python tests
         run: ./scripts/run_pytest.sh tests -v
@@ -136,6 +154,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
         include:
           - label: macOS Apple Silicon
@@ -175,6 +194,9 @@ jobs:
         with:
           node-version: 24
           cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            npm/autovpn-cli/package-lock.json
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -185,19 +207,13 @@ jobs:
       - name: Install Linux packaging dependencies
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y rpm fakeroot
+          bash scripts/ci/retry-command.sh "apt-get update" -- sudo apt-get update
+          bash scripts/ci/retry-command.sh "apt-get install packaging dependencies" -- \
+            sudo apt-get install -y rpm fakeroot
 
       - name: Install dependencies
         run: |
-          for attempt in 1 2; do
-            npm ci && break
-            if [ "${attempt}" -eq 2 ]; then
-              exit 1
-            fi
-            echo "npm ci failed; retrying in 15 seconds."
-            sleep 15
-          done
+          bash scripts/ci/retry-command.sh "npm ci" -- npm ci --prefer-offline --no-audit --fund=false
         shell: bash
 
       - name: Package Electron app
@@ -205,8 +221,9 @@ jobs:
           AUTOVPN_PACKAGE_PLATFORM: ${{ matrix.package_platform }}
           AUTOVPN_PACKAGE_ARCH: ${{ matrix.package_arch }}
         run: |
-          set -o pipefail
-          npm run package:electron 2>&1 | tee packaging.log
+          AUTOVPN_CI_RETRIES=2 AUTOVPN_CI_RETRY_BASE_SECONDS=60 \
+            bash scripts/ci/retry-command.sh "package Electron app" -- \
+            bash -eo pipefail -c 'rm -rf dist-electron packaging.log; npm run package:electron 2>&1 | tee packaging.log'
         shell: bash
 
       - name: Verify project icon was packaged
@@ -284,15 +301,28 @@ jobs:
         shell: bash
 
       - name: Upload release assets
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ env.RELEASE_TAG_NAME }}
-          files: |
-            dist-electron/**/*.dmg
-            dist-electron/**/*.deb
-            dist-electron/**/*.rpm
-            dist-electron/*-setup.exe
-            dist-electron/*-portable.exe
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          release_files=()
+          while IFS= read -r release_file; do
+            release_files+=("${release_file}")
+          done < <(
+            find dist-electron -type f \( \
+              -name '*.dmg' -o \
+              -name '*.deb' -o \
+              -name '*.rpm' -o \
+              -name '*-setup.exe' -o \
+              -name '*-portable.exe' \
+            \) -print
+          )
+          if [ "${#release_files[@]}" -eq 0 ]; then
+            echo "No Electron release assets found."
+            exit 1
+          fi
+          AUTOVPN_CI_RETRIES=4 bash scripts/ci/retry-command.sh "upload Electron release assets" -- \
+            gh release upload "${RELEASE_TAG_NAME}" "${release_files[@]}" --repo "${GITHUB_REPOSITORY}" --clobber
+        shell: bash
 
   package-cli:
     name: Package AutoVPN CLI
@@ -317,15 +347,21 @@ jobs:
         with:
           node-version: 24
           cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            npm/autovpn-cli/package-lock.json
           registry-url: https://registry.npmjs.org
 
       - name: Build CLI package
         run: |
-          python -m pip install --upgrade pip
-          python -m pip install build twine
+          bash scripts/ci/retry-command.sh "upgrade pip" -- \
+            python -m pip install --retries "${PIP_RETRIES}" --timeout "${PIP_TIMEOUT}" --upgrade pip
+          bash scripts/ci/retry-command.sh "install Python build tools" -- \
+            python -m pip install --retries "${PIP_RETRIES}" --timeout "${PIP_TIMEOUT}" build twine
           python -m build
           python -m twine check dist/*
-          npm ci --prefix npm/autovpn-cli
+          bash scripts/ci/retry-command.sh "npm ci --prefix npm/autovpn-cli" -- \
+            npm ci --prefix npm/autovpn-cli --prefer-offline --no-audit --fund=false
           npm test --prefix npm/autovpn-cli
           cd npm/autovpn-cli
           npm pack --json --pack-destination ../../dist
@@ -346,8 +382,23 @@ jobs:
           else
             echo "Publishing ${PACKAGE_NAME}@${PACKAGE_VERSION} with npm trusted publishing/OIDC."
           fi
-          cd npm/autovpn-cli
-          npm publish --access public --provenance --registry=https://registry.npmjs.org
+          for attempt in 1 2 3; do
+            if (cd npm/autovpn-cli && npm publish --access public --provenance --registry=https://registry.npmjs.org); then
+              exit 0
+            fi
+            if AUTOVPN_CI_RETRIES=3 AUTOVPN_CI_RETRY_BASE_SECONDS=10 \
+              bash scripts/ci/retry-command.sh "verify npm publication visibility" -- \
+              npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version --registry=https://registry.npmjs.org >/dev/null; then
+              echo "${PACKAGE_NAME}@${PACKAGE_VERSION} is visible after a failed publish response; treating publish as complete."
+              exit 0
+            fi
+            if [ "${attempt}" -eq 3 ]; then
+              exit 1
+            fi
+            sleep_seconds=$(( 30 * attempt ))
+            echo "npm publish failed; retrying in ${sleep_seconds} seconds."
+            sleep "${sleep_seconds}"
+          done
         shell: bash
 
       - name: Verify CLI artifacts exist
@@ -364,13 +415,22 @@ jobs:
         shell: bash
 
       - name: Upload CLI release assets
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ env.RELEASE_TAG_NAME }}
-          files: |
-            dist/*.whl
-            dist/*.tar.gz
-            dist/*.tgz
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          release_files=()
+          while IFS= read -r release_file; do
+            release_files+=("${release_file}")
+          done < <(
+            find dist -maxdepth 1 -type f \( -name '*.whl' -o -name '*.tar.gz' -o -name '*.tgz' \) -print
+          )
+          if [ "${#release_files[@]}" -eq 0 ]; then
+            echo "No CLI release assets found."
+            exit 1
+          fi
+          AUTOVPN_CI_RETRIES=4 bash scripts/ci/retry-command.sh "upload CLI release assets" -- \
+            gh release upload "${RELEASE_TAG_NAME}" "${release_files[@]}" --repo "${GITHUB_REPOSITORY}" --clobber
+        shell: bash
 
   publish-release-notes:
     name: Publish release notes
@@ -391,6 +451,7 @@ jobs:
         with:
           node-version: 24
           cache: npm
+          cache-dependency-path: package-lock.json
 
       - name: Generate release notes
         run: |
@@ -402,7 +463,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release edit "${RELEASE_TAG_NAME}" \
+          AUTOVPN_CI_RETRIES=4 bash scripts/ci/retry-command.sh "update release notes" -- \
+            gh release edit "${RELEASE_TAG_NAME}" \
             --repo "${GITHUB_REPOSITORY}" \
             --title "AutoVPN ${RELEASE_TAG_NAME}" \
             --notes-file release-notes.md
