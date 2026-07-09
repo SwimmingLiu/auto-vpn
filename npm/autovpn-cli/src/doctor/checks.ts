@@ -64,6 +64,24 @@ function commandPath(name: string, env: NodeJS.ProcessEnv, platform: NodeJS.Plat
   return '';
 }
 
+function firstExistingPath(candidates: string[]): string {
+  return candidates.find((candidate) => candidate && fs.existsSync(candidate)) ?? '';
+}
+
+function mihomoInstallCandidates(env: NodeJS.ProcessEnv): string[] {
+  const homeDir = String(env.HOME ?? env.USERPROFILE ?? '').trim();
+  return [
+    homeDir ? path.join(homeDir, 'clashctl', 'bin', 'mihomo') : '',
+    '/opt/homebrew/bin/mihomo',
+    '/usr/local/bin/mihomo',
+    '/usr/bin/mihomo'
+  ];
+}
+
+function mihomoPath(env: NodeJS.ProcessEnv): string {
+  return commandPath('mihomo', env) || firstExistingPath(mihomoInstallCandidates(env));
+}
+
 function safeRun(command: string[], env: NodeJS.ProcessEnv): { ok: boolean; message: string } {
   try {
     const { executable, args } = normalizeManagedToolCommandForSpawn(command);
@@ -118,7 +136,7 @@ function loadProfile(profilePath: string): Record<string, any> {
 
 function checkProxyRuntime(env: NodeJS.ProcessEnv): DoctorCheck[] {
   const checks: DoctorCheck[] = [];
-  const mihomo = commandPath('mihomo', env);
+  const mihomo = mihomoPath(env);
   if (!mihomo) {
     checks.push(check('mihomo', 'fail', 'mihomo binary is missing'));
   } else {

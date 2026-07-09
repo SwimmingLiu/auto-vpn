@@ -325,7 +325,7 @@ test('Phase 3 reconciles completed running jobs from summary events', async () =
   assert.equal(payload.artifact_dir, artifactDir);
 });
 
-test('Phase 3 Node doctor reports missing runtime tools', async () => {
+test('Phase 3 Node doctor reports missing Node runtime tools', async () => {
   const { root } = await createProjectFixture();
   const result = await runNode(['doctor', '--project-root', root, '--output', 'json'], {
     cwd: root,
@@ -336,7 +336,6 @@ test('Phase 3 Node doctor reports missing runtime tools', async () => {
 
   assert.equal(result.code, 1);
   assert.equal(payload.ok, false);
-  assert.equal(checks.mihomo.status, 'fail');
   assert.equal(checks.node_binaries.status, 'fail');
   assert.deepEqual(checks.node_binaries.details.missing.sort(), ['node', 'npm']);
 });

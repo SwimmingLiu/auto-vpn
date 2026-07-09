@@ -255,10 +255,38 @@ async function closeChildProcess(process: ChildProcess): Promise<void> {
   });
 }
 
-async function resolveMihomoCommand(runtimePath?: string): Promise<string> {
+async function fileExists(candidate: string): Promise<boolean> {
+  try {
+    const info = await stat(candidate);
+    return info.isFile();
+  } catch {
+    return false;
+  }
+}
+
+async function firstExistingFile(candidates: string[]): Promise<string> {
+  for (const candidate of candidates) {
+    if (candidate && await fileExists(candidate)) {
+      return candidate;
+    }
+  }
+  return '';
+}
+
+function mihomoInstallCandidates(env: NodeJS.ProcessEnv = process.env): string[] {
+  const homeDir = String(env.HOME ?? env.USERPROFILE ?? '').trim();
+  return [
+    homeDir ? path.join(homeDir, 'clashctl', 'bin', 'mihomo') : '',
+    '/opt/homebrew/bin/mihomo',
+    '/usr/local/bin/mihomo',
+    '/usr/bin/mihomo'
+  ];
+}
+
+async function resolveMihomoCommand(runtimePath?: string, env: NodeJS.ProcessEnv = process.env): Promise<string> {
   const candidate = String(runtimePath ?? '').trim();
   if (!candidate) {
-    return 'mihomo';
+    return await firstExistingFile(mihomoInstallCandidates(env)) || 'mihomo';
   }
   try {
     const info = await stat(candidate);
@@ -266,11 +294,11 @@ async function resolveMihomoCommand(runtimePath?: string): Promise<string> {
       return candidate;
     }
     if (info.isDirectory() && path.basename(candidate) === 'runtime') {
-      return 'mihomo';
+      return await firstExistingFile(mihomoInstallCandidates(env)) || 'mihomo';
     }
   } catch {
     if (path.basename(candidate) === 'runtime') {
-      return 'mihomo';
+      return await firstExistingFile(mihomoInstallCandidates(env)) || 'mihomo';
     }
   }
   return candidate;
@@ -293,7 +321,7 @@ export async function openMihomoRuntime(link: string, options: OpenMihomoRuntime
   const configPath = path.join(tempDir, 'config.json');
   await writeFile(configPath, JSON.stringify(config), 'utf8');
 
-  const command = await resolveMihomoCommand(options.runtimePath);
+  const command = await resolveMihomoCommand(options.runtimePath, options.env ?? process.env);
   const child = (options.spawn ?? defaultSpawn)(command, ['-f', configPath], {
     stdio: ['ignore', 'pipe', 'pipe'],
     env: stripProxyEnv(options.env ?? process.env)
