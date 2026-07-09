@@ -146,6 +146,49 @@ test('Node speedtest backend can run direct fetch runtime without Python fallbac
   }]);
 });
 
+test('Node speedtest backend times out stalled response bodies', async () => {
+  const stalledBody = new ReadableStream({
+    pull() {
+      return new Promise(() => {});
+    }
+  });
+  const started = Date.now();
+
+  const result = await Promise.race([
+    speedtestLinksWithBackend({
+      links: ['vmess://stalled'],
+      config: {
+        min_download_mb_s: 1,
+        timeout_seconds: 1,
+        concurrency: 1,
+        urls: ['https://speed.example/stalled'],
+        probe_url: 'https://probe.example/204',
+        max_download_bytes: 1024,
+        max_download_candidates: 1
+      }
+    }, {
+      env: { AUTOVPN_NO_PYTHON: '1' },
+      fetch: async (url) => {
+        if (String(url) === 'https://probe.example/204') {
+          return { ok: true, status: 204, arrayBuffer: async () => new ArrayBuffer(0) };
+        }
+        return { ok: true, status: 200, body: stalledBody };
+      }
+    }),
+    new Promise((resolve) => setTimeout(() => resolve('hung'), 1500))
+  ]);
+
+  assert.notEqual(result, 'hung');
+  assert.ok(Date.now() - started < 1400);
+  assert.deepEqual(result, [{
+    link: 'vmess://stalled',
+    reachable: false,
+    average_download_mb_s: 0,
+    latency_ms: 0,
+    error: 'https://speed.example/stalled: response body timed out after 1000ms'
+  }]);
+});
+
 test('Node speedtest backend can probe links through Mihomo runtime when requested', async () => {
   const opened = [];
   const closed = [];

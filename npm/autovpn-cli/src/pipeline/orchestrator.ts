@@ -520,7 +520,12 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
     const runtimePath = path.join(artifactDir, 'runtime');
     const speedResults = context.stages?.speedtest
       ? await context.stages.speedtest(dedupedLinks, profile.speed_test ?? {}, runtimePath)
-      : await speedtestLinksWithBackend({ links: dedupedLinks, config: profile.speed_test as any, runtime_path: runtimePath }, { cwd: projectRoot, env: runtimeStageEnv });
+      : await speedtestLinksWithBackend({ links: dedupedLinks, config: profile.speed_test as any, runtime_path: runtimePath }, {
+        cwd: projectRoot,
+        env: runtimeStageEnv,
+        progressCallback: (message) => emit('log', { message }),
+        eventCallback: (type, payload) => emit(type, payload)
+      });
     const passedSpeedLinks = speedResults
       .filter((result) => result.reachable && result.average_download_mb_s >= Number(profile.speed_test?.min_download_mb_s ?? 0))
       .map((result) => result.link);
@@ -690,7 +695,12 @@ export async function retryNodePipelineStage(options: NodeRetryStageOptions, con
       await setStage('speedtest', 'running');
       speedResults = context.stages?.speedtest
         ? await context.stages.speedtest(dedupedLinks, profile.speed_test ?? {}, runtimePath)
-        : await speedtestLinksWithBackend({ links: dedupedLinks, config: profile.speed_test as any, runtime_path: runtimePath }, { cwd: projectRoot, env: runtimeStageEnv });
+        : await speedtestLinksWithBackend({ links: dedupedLinks, config: profile.speed_test as any, runtime_path: runtimePath }, {
+          cwd: projectRoot,
+          env: runtimeStageEnv,
+          progressCallback: (message) => emit('log', { message }),
+          eventCallback: (type, payload) => emit(type, payload)
+        });
       const passedSpeedLinks = speedResults
         .filter((result) => result.reachable && result.average_download_mb_s >= Number(profile.speed_test?.min_download_mb_s ?? 0))
         .map((result) => result.link);
