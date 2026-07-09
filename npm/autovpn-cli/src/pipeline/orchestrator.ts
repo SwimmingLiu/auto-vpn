@@ -552,6 +552,32 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
     const limitAvailability = createLimiter(Number(speedConfig.concurrency ?? 1));
     let speedCompleted = 0;
     let availabilityCompleted = 0;
+    let speedArtifactFlush = Promise.resolve();
+    let availabilityArtifactFlush = Promise.resolve();
+
+    const flushStreamingSpeedArtifacts = async (): Promise<void> => {
+      const resultSnapshot = [...speedResults];
+      const linkSnapshot = [...passedSpeedLinks];
+      speedArtifactFlush = speedArtifactFlush.catch(() => undefined).then(async () => {
+        summary.counts.speedtest_links = linkSnapshot.length;
+        await writeLines(artifactDir, 'vpn_node_speedtest.txt', linkSnapshot);
+        await writeJson(artifactDir, 'vpn_node_speedtest_report.json', resultSnapshot);
+        await writeReport();
+      });
+      await speedArtifactFlush;
+    };
+
+    const flushStreamingAvailabilityArtifacts = async (): Promise<void> => {
+      const resultSnapshot = [...availabilityResults];
+      const linkSnapshot = resultSnapshot.filter((result) => result.all_passed).map((result) => result.link);
+      availabilityArtifactFlush = availabilityArtifactFlush.catch(() => undefined).then(async () => {
+        summary.counts.availability_links = linkSnapshot.length;
+        await writeLines(artifactDir, 'vpn_node_availability.txt', linkSnapshot);
+        await writeJson(artifactDir, 'vpn_node_availability_report.json', resultSnapshot);
+        await writeReport();
+      });
+      await availabilityArtifactFlush;
+    };
 
     const runStreamingAvailability = (speedResult: SpeedTestResult): void => {
       const task = limitAvailability(async () => {
@@ -566,15 +592,14 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
         for (const result of results) {
           availabilityResults.push(result);
           availabilityCompleted += 1;
-          if (context.stages?.availability) {
-            emit('availability_link_result', {
-              completed: availabilityCompleted,
-              total: passedSpeedLinks.length,
-              link: result.link,
-              all_passed: result.all_passed,
-              provider_results: result.provider_results
-            });
-          }
+          await flushStreamingAvailabilityArtifacts();
+          emit('availability_link_result', {
+            completed: availabilityCompleted,
+            total: passedSpeedLinks.length,
+            link: result.link,
+            all_passed: result.all_passed,
+            provider_results: result.provider_results
+          });
         }
       });
       availabilityTasks.push(task);
@@ -607,7 +632,10 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
         });
         if (passed) {
           passedSpeedLinks.push(result.link);
+          await flushStreamingSpeedArtifacts();
           runStreamingAvailability(result);
+        } else if (useStreamingStages) {
+          await flushStreamingSpeedArtifacts();
         }
       });
       speedTasks.push(task);
