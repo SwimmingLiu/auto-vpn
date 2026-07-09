@@ -2016,3 +2016,315 @@ body[data-page="logs"] #logCenterTable {
     align-items: flex-start;
   }
 }
+
+@media (max-width: 720px) {
+  html,
+  body,
+  .app-frame,
+  .app-content-shell {
+    min-height: 100%;
+  }
+
+  body {
+    overflow: auto;
+    background: linear-gradient(180deg, #fbfcff 0%, var(--bg) 100%);
+  }
+
+  .app-frame {
+    display: block;
+    height: auto;
+  }
+
+  .workspace-shell {
+    display: block;
+    min-height: 100vh;
+    padding-bottom: calc(76px + env(safe-area-inset-bottom));
+  }
+
+  .sidebar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 80;
+    display: block;
+    padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
+    border: 1px solid rgba(207, 215, 239, 0.82);
+    border-width: 1px 0 0;
+    background: rgba(255, 255, 255, 0.96);
+    box-shadow: 0 -16px 34px rgba(29, 39, 71, 0.12);
+    backdrop-filter: blur(18px);
+  }
+
+  .sidebar-brand {
+    display: none;
+  }
+
+  .sidebar-nav {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 4px;
+    overflow: visible;
+    padding: 0;
+  }
+
+  .nav-item {
+    min-height: 58px;
+    display: grid;
+    justify-items: center;
+    align-content: center;
+    gap: 4px;
+    padding: 4px 2px;
+    border-radius: 14px;
+  }
+
+  .nav-icon {
+    min-width: 0;
+    width: 28px;
+    height: 28px;
+    border-radius: 10px;
+    font-size: 13px;
+    letter-spacing: 0;
+  }
+
+  .nav-copy {
+    display: block;
+    max-width: 100%;
+    font-size: 11px;
+    line-height: 1.1;
+    font-weight: 800;
+    white-space: nowrap;
+  }
+
+  .main-shell {
+    display: block;
+    min-height: auto;
+    padding: 12px 12px 18px;
+  }
+
+  .topbar {
+    position: sticky;
+    top: 0;
+    z-index: 40;
+    grid-template-columns: 1fr;
+    gap: 12px;
+    padding: 14px;
+    border-radius: 20px;
+    backdrop-filter: blur(18px);
+  }
+
+  .topbar-heading h1 {
+    font-size: 26px;
+    line-height: 1.1;
+    letter-spacing: 0;
+  }
+
+  .topbar-heading p {
+    display: none;
+  }
+
+  .page-title-row {
+    justify-content: space-between;
+  }
+
+  .topbar-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .topbar-actions .btn {
+    min-width: 0;
+    padding: 0 8px;
+    min-height: 42px;
+    border-radius: 12px;
+    font-size: 13px;
+  }
+
+  .page-content {
+    overflow: visible;
+    padding: 12px 0 0;
+  }
+
+  body[data-page="logs"] .page-content {
+    overflow: visible;
+  }
+
+  .page-shell,
+  .page-grid,
+  .dashboard-grid,
+  .runs-grid,
+  .logs-grid,
+  .results-grid,
+  .subscriptions-grid,
+  .settings-layout,
+  .metric-grid,
+  .metric-grid.four,
+  .country-grid,
+  .action-grid,
+  .action-grid.four {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+
+  .panel,
+  .page-header-card,
+  .topbar {
+    box-shadow: 0 12px 28px rgba(29, 39, 71, 0.08);
+  }
+
+  .panel {
+    border-radius: 18px;
+    padding: 14px;
+  }
+
+  .page-header-card {
+    display: none;
+  }
+
+  .panel-headline {
+    margin-bottom: 12px;
+  }
+
+  .panel-headline h3,
+  .page-header-copy h2 {
+    font-size: 20px;
+    letter-spacing: 0;
+  }
+
+  .status-hero-card,
+  .artifact-card,
+  .subscription-meta,
+  .about-card {
+    align-items: flex-start;
+  }
+
+  .status-hero-card h3 {
+    font-size: 26px;
+  }
+
+  .status-orb {
+    width: 54px;
+    height: 54px;
+    font-size: 24px;
+  }
+
+  .flow-steps {
+    grid-template-columns: 1fr;
+  }
+
+  .flow-step {
+    display: grid;
+    grid-template-columns: 44px minmax(0, 1fr);
+    align-items: center;
+    text-align: left;
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .flow-icon {
+    width: 42px;
+    height: 42px;
+    margin: 0;
+  }
+
+  .run-control-panel {
+    position: sticky;
+    bottom: calc(76px + env(safe-area-inset-bottom));
+    z-index: 35;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    background: rgba(255, 255, 255, 0.98);
+    backdrop-filter: blur(16px);
+  }
+
+  .run-big {
+    min-height: 50px;
+    border-radius: 14px;
+  }
+
+  .retry-control-card {
+    grid-template-columns: 1fr;
+    gap: 10px;
+    padding: 12px;
+    border-radius: 14px;
+  }
+
+  .toolbar-row,
+  .toolbar-row.log-toolbar,
+  .toolbar-left,
+  .toolbar-right {
+    display: grid;
+    grid-template-columns: 1fr;
+    align-items: stretch;
+    gap: 8px;
+  }
+
+  .toolbar-left {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .toolbar-right .btn,
+  .subtab {
+    width: 100%;
+  }
+
+  .terminal-output,
+  .log-stream {
+    max-height: 58vh;
+    min-height: 320px;
+    overflow: auto;
+    border-radius: 14px;
+  }
+
+  body[data-page="logs"] #logsWorkspace,
+  body[data-page="logs"] #logsWorkspace > .panel {
+    min-height: auto;
+    height: auto;
+  }
+
+  body[data-page="logs"] #logCenterTable {
+    height: 58vh;
+  }
+
+  .table-like,
+  .node-table,
+  .output-list {
+    overflow-x: auto;
+  }
+
+  .settings-drawer-panel {
+    width: 100vw;
+    max-width: none;
+    height: 100vh;
+    max-height: none;
+    border-radius: 0;
+    transform: none !important;
+  }
+
+  .settings-drawer-body {
+    max-height: calc(100vh - 154px);
+    overflow: auto;
+  }
+
+  .toast-root {
+    left: 12px;
+    right: 12px;
+    bottom: calc(86px + env(safe-area-inset-bottom));
+  }
+}
+
+@media (max-width: 380px) {
+  .nav-copy {
+    font-size: 10px;
+  }
+
+  .topbar-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .toolbar-left {
+    grid-template-columns: 1fr;
+  }
+}

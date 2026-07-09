@@ -12,8 +12,6 @@ import { latestJobId, listJobs, loadJob, publicJobPayload, singleActiveJobId, ta
 import { readOptionValue, resolveProjectRoot } from '../runtime/paths.js';
 import { CliIo } from './output.js';
 
-type PythonFallback = (argv: string[]) => Promise<number>;
-
 export interface JobRuntimeOptions {
   spawn?: (command: string, args: string[], options?: Record<string, unknown>) => ChildProcess;
   now?: () => string;
@@ -26,15 +24,20 @@ interface NativeContext extends JobRuntimeOptions {
   env: NodeJS.ProcessEnv;
   io: CliIo;
   readStdin: () => string | Promise<string>;
-  pythonFallback: PythonFallback;
-}
-
-function wantsPython(env: NodeJS.ProcessEnv, key: string): boolean {
-  return String(env[key] ?? '').trim().toLowerCase() === 'python';
 }
 
 function jsonLine(payload: unknown): string {
   return `${JSON.stringify(payload)}\n`;
+}
+
+function renderDoctorHuman(payload: Record<string, unknown>): string {
+  const checks = Array.isArray(payload.checks) ? payload.checks : [];
+  const lines = [`doctor: ${payload.ok ? 'ok' : 'failed'}`];
+  for (const item of checks) {
+    const check = item as Record<string, unknown>;
+    lines.push(`[${String(check.status ?? 'unknown')}] ${String(check.name ?? 'check')}: ${String(check.message ?? '')}`);
+  }
+  return `${lines.join('\n')}\n`;
 }
 
 function positionalAfter(argv: string[], start: number): string {
@@ -96,15 +99,14 @@ export async function runNativeCommand(argv: string[], context: NativeContext): 
   const command = argv[0];
 
   if (command === 'doctor') {
-    if (wantsPython(context.env, 'AUTOVPN_DOCTOR_BACKEND')) return context.pythonFallback(argv);
-    if (readOptionValue(argv, '--output') !== 'json') return undefined;
     const result = await runDoctor(projectRoot, argv, context.env);
-    context.io.writeStdout(jsonLine(result.payload));
+    context.io.writeStdout(readOptionValue(argv, '--output') === 'json'
+      ? jsonLine(result.payload)
+      : renderDoctorHuman(result.payload));
     return result.code;
   }
 
   if (command === 'profile') {
-    if (wantsPython(context.env, 'AUTOVPN_PROFILE_BACKEND')) return context.pythonFallback(argv);
     if (argv[1] === 'show') {
       context.io.writeStdout(jsonLine(profilePayload(projectRoot, context.env)));
       return 0;
@@ -121,7 +123,6 @@ export async function runNativeCommand(argv: string[], context: NativeContext): 
   }
 
   if (command === 'artifacts') {
-    if (wantsPython(context.env, 'AUTOVPN_ARTIFACTS_BACKEND')) return context.pythonFallback(argv);
     const subcommand = argv[1];
     if (subcommand === 'latest') {
       context.io.writeStdout(jsonLine(artifactLatest(projectRoot, context.env)));

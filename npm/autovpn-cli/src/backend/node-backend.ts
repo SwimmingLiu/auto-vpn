@@ -29,7 +29,7 @@ interface EventQueueState {
 }
 
 function unsupported(method: string): Error {
-  return new Error(`Node backend ${method} is not available yet; use AUTOVPN_BACKEND=python`);
+  return new Error(`Node backend ${method} is not available in this execution path`);
 }
 
 function latestIncompleteRunArtifact(projectRoot: string, env: NodeJS.ProcessEnv): string | undefined {

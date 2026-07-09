@@ -46,12 +46,12 @@ test('extract fixture output matches Python golden output', async () => {
   assert.deepEqual(extractLinksFromPlaintext(input.source_name, 'not enough parts'), []);
 });
 
-test('extract backend selection supports Node default and Python rollback flags', async () => {
+test('extract backend selection always uses the Node engine', async () => {
   assert.equal(selectPipelineStageBackend('extract', {}), 'node');
   assert.equal(selectPipelineStageBackend('extract', { AUTOVPN_PIPELINE_BACKEND: ' HYBRID ' }), 'node');
-  assert.equal(selectPipelineStageBackend('extract', { AUTOVPN_PIPELINE_BACKEND: ' PYTHON ' }), 'python');
-  assert.equal(selectPipelineStageBackend('extract', { AUTOVPN_STAGE_BACKEND_EXTRACT: ' python ' }), 'python');
-  assert.equal(selectPipelineStageBackend('extract', { AUTOVPN_PIPELINE_BACKEND: 'python', AUTOVPN_STAGE_BACKEND_EXTRACT: '' }), 'python');
+  assert.equal(selectPipelineStageBackend('extract', { AUTOVPN_PIPELINE_BACKEND: ' PYTHON ' }), 'node');
+  assert.equal(selectPipelineStageBackend('extract', { AUTOVPN_STAGE_BACKEND_EXTRACT: ' python ' }), 'node');
+  assert.equal(selectPipelineStageBackend('extract', { AUTOVPN_PIPELINE_BACKEND: 'python', AUTOVPN_STAGE_BACKEND_EXTRACT: '' }), 'node');
 
   const input = { source_name: 'leiting', source: { url: 'https://example.com/api', key: 'abcdabcdabcdabcd', max_iterations: 0 } };
   const fallbackCalls = [];
@@ -66,9 +66,10 @@ test('extract backend selection supports Node default and Python rollback flags'
   }), { source_name: 'leiting', requested_iterations: 0, successful_iterations: 0, failed_iterations: 0, links: ['node-result'] });
   assert.deepEqual(await fetchSourceLinksWithBackend(input, {
     env: { AUTOVPN_STAGE_BACKEND_EXTRACT: 'python' },
-    pythonExtract: fallback
-  }), { source_name: 'leiting', requested_iterations: 0, successful_iterations: 0, failed_iterations: 0, links: ['python-result'] });
-  assert.deepEqual(fallbackCalls, [input]);
+    pythonExtract: fallback,
+    fetchSourceLinks: async (payload) => ({ source_name: payload.source_name, requested_iterations: 0, successful_iterations: 0, failed_iterations: 0, links: ['node-result'] })
+  }), { source_name: 'leiting', requested_iterations: 0, successful_iterations: 0, failed_iterations: 0, links: ['node-result'] });
+  assert.deepEqual(fallbackCalls, []);
 });
 
 test('Node extract backend fetches encrypted runtime source without Python fallback', async () => {
@@ -144,6 +145,10 @@ test('Node extract backend emits source progress events while extracting', async
   assert.equal(events[1].url, undefined);
   assert.doesNotMatch(JSON.stringify(events), /fixture\.example\/source/);
   assert.equal(events[3].total_links, 1);
+  assert.equal(events[3].deduped_links, 1);
+  assert.equal(events[3].new_item_fingerprints.length, 1);
+  assert.match(events[3].new_item_fingerprints[0], /^[a-f0-9]{64}$/);
+  assert.doesNotMatch(JSON.stringify(events[3].new_item_fingerprints), /vmess|fixture/);
 });
 
 test('Node extract backend uses curl TLS fallback without enabling proxy by default', async () => {
@@ -343,7 +348,7 @@ test('Node extract backend only uses upstream proxy when explicitly enabled', as
   assert.deepEqual(curlCalls, [{ url: 'https://fixture.example/source', proxyUrl: 'http://127.0.0.1:7897' }]);
 });
 
-test('Python extract rollback adapter invokes backend venv Python when no callback is injected', async () => {
+test('extract ignores legacy Python rollback env without spawning Python', async () => {
   const spawns = [];
   const input = { source_name: 'leiting', source: { url: 'https://example.com/api', key: 'abcdabcdabcdabcd', max_iterations: 0 } };
   const result = await fetchSourceLinksWithBackend(input, {
@@ -369,7 +374,5 @@ test('Python extract rollback adapter invokes backend venv Python when no callba
   });
 
   assert.equal(result.source_name, 'leiting');
-  assert.equal(spawns[0].command, '/opt/autovpn/.venv/bin/python');
-  assert.equal(spawns[0].args[0], '-c');
-  assert.deepEqual(spawns[0].options.stdio, ['pipe', 'pipe', 'pipe']);
+  assert.equal(spawns.length, 0);
 });

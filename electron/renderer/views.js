@@ -175,7 +175,8 @@ export function buildViewModel(state, messages, language) {
     runStateLabel: messages.runStateLabels[state.runState] ?? messages.runStateLabels.idle,
     runStateTone: runStateTone(state.runState),
     settingsDrawer: state.settingsDrawer ?? null,
-    modalTransform: state.modalTransform ?? ''
+    modalTransform: state.modalTransform ?? '',
+    runtime: state.runtime ?? 'electron'
   };
 }
 
@@ -587,7 +588,7 @@ function buildLogsPage(vm, messages) {
           <div class="toolbar-right">
             <button class="btn btn-secondary small" data-action="copy-log" type="button">复制日志</button>
             <button class="btn btn-secondary small" data-action="clear-log" type="button">清空显示</button>
-            <button class="btn btn-primary small" data-action="open-log-file" type="button">打开日志文件</button>
+            ${vm.runtime === 'web' ? '' : '<button class="btn btn-primary small" data-action="open-log-file" type="button">打开日志文件</button>'}
           </div>
         </div>
         <div id="logCenterTable" class="terminal-output log-stream">

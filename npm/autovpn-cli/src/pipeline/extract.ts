@@ -133,6 +133,27 @@ function generateVmessLink(payload: Record<string, unknown>): string {
   return `vmess://${encoded}`;
 }
 
+function linkFingerprint(link: string): string {
+  try {
+    const encoded = String(link).replace(/^vmess:\/\//, '');
+    const padded = encoded + '='.repeat((4 - (encoded.length % 4)) % 4);
+    const payload = JSON.parse(Buffer.from(padded, 'base64url').toString('utf8')) as Record<string, unknown>;
+    const canonical = JSON.stringify([
+      payload.add ?? '',
+      payload.port ?? '',
+      payload.id ?? '',
+      payload.net ?? '',
+      payload.host ?? '',
+      payload.path ?? '',
+      payload.tls ?? '',
+      payload.sni ?? ''
+    ].map((value) => String(value)));
+    return crypto.createHash('sha256').update(canonical).digest('hex');
+  } catch {
+    return crypto.createHash('sha256').update(String(link)).digest('hex');
+  }
+}
+
 function payloadFromOutboundConfig(psName: string, jsonText: string): Record<string, unknown> {
   const config = JSON.parse(jsonText) as Record<string, any>;
   const outbound = (config.outbounds ?? []).find((item: Record<string, unknown>) => item.protocol === 'vmess');
@@ -178,11 +199,9 @@ export function extractLinksFromPlaintext(sourceName: string, plaintext: string)
 }
 
 export function selectPipelineStageBackend(stage: string, env: NodeJS.ProcessEnv = process.env): PipelineStageBackend {
-  const stageKey = `AUTOVPN_STAGE_BACKEND_${stage.toUpperCase()}`;
-  const stageOverride = String(env[stageKey] ?? '').trim().toLowerCase();
-  const pipelineOverride = String(env.AUTOVPN_PIPELINE_BACKEND ?? '').trim().toLowerCase();
-  const selected = stageOverride || pipelineOverride || 'node';
-  return selected === 'python' ? 'python' : 'node';
+  void stage;
+  void env;
+  return 'node';
 }
 
 async function defaultResolvePythonCli(env: NodeJS.ProcessEnv): Promise<ResolvedPythonCli> {
@@ -407,6 +426,7 @@ async function fetchSourceLinksInNode(input: ExtractInput, options: ExtractBacke
       successes += 1;
       failures = 0;
       let newItems = 0;
+      const newItemFingerprints: string[] = [];
       for (const link of extracted) {
         if (seen.has(link)) {
           continue;
@@ -414,6 +434,7 @@ async function fetchSourceLinksInNode(input: ExtractInput, options: ExtractBacke
         seen.add(link);
         links.push(link);
         newItems += 1;
+        newItemFingerprints.push(linkFingerprint(link));
       }
       emitExtractEvent(options, 'extract_iteration', {
         source_name: input.source_name,
@@ -421,7 +442,9 @@ async function fetchSourceLinksInNode(input: ExtractInput, options: ExtractBacke
         requested_iterations: maxIterations,
         new_items: newItems,
         extracted_links: extracted.length,
-        total_links: links.length
+        total_links: links.length,
+        deduped_links: links.length,
+        new_item_fingerprints: newItemFingerprints
       });
       plateau = newItems === 0 ? plateau + 1 : 0;
       if (plateau >= plateauLimit && attempt >= minIterations) {

@@ -103,7 +103,12 @@ test('served web ui restores the latest running state after page refresh', async
           outputFiles: [],
           nodeRows: []
         },
-        retryArtifacts: []
+        retryArtifacts: [],
+        logEvents: [
+          { type: 'stage', stage: 'doctor', status: 'success' },
+          { type: 'stage', stage: 'extract', status: 'running' },
+          { type: 'log', message: '[extract] leiting 开始提取' }
+        ]
       }),
       stopRun: async () => ({ ok: true, requested: true }),
       subscribe: () => () => {}
@@ -123,6 +128,10 @@ test('served web ui restores the latest running state after page refresh', async
     assert.equal(await page.locator('#runsWorkspace [data-run-action="start"]').isDisabled(), true);
     assert.equal(await page.locator('#runsWorkspace [data-run-action="stop"]').isDisabled(), false);
     assert.match(await page.locator('#runsWorkspace').innerText(), /extract|运行中|12/);
+    await page.locator('#navLogs').click();
+    await page.waitForSelector('#logsWorkspace');
+    assert.match(await page.locator('#logsWorkspace').innerText(), /leiting 开始提取/);
+    assert.equal(await page.locator('[data-action="open-log-file"]').count(), 0);
   } finally {
     await browser?.close();
     await service.close();
@@ -680,12 +689,96 @@ test('served web ui handles visible browser controls across all pages', async ()
     await page.getByRole('button', { name: '复制日志' }).click();
     await page.waitForSelector('[data-toast]');
     await page.getByRole('button', { name: '清空显示' }).click();
-    await page.getByRole('button', { name: '打开日志文件' }).click();
+    assert.equal(await page.getByRole('button', { name: '打开日志文件' }).count(), 0);
 
     assert.ok(calls.some(([name]) => name === 'retry'));
     assert.ok(calls.some(([name]) => name === 'start'));
     assert.ok(calls.some(([name]) => name === 'stop'));
     assert.ok(calls.some(([name, projectName]) => name === 'profile' && projectName === 'web-sub-nodes'));
+  } finally {
+    await browser?.close();
+    await service.close();
+  }
+});
+
+test('served web ui supports mobile bottom navigation and run controls', async () => {
+  const calls = [];
+  let subscriber;
+  const service = await createAutoVpnServer({
+    host: '127.0.0.1',
+    port: 0,
+    projectRoot: '/repo',
+    auth: { enabled: false, token: '' },
+    runtime: {
+      loadState: async () => ({
+        profile: {
+          sources: {
+            leiting: { url: 'https://capture.example/api', key: 'redacted', enabled: true, max_iterations: 40 }
+          },
+          speed_test: { min_download_mb_s: 1, timeout_seconds: 20, concurrency: 3 },
+          availability_targets: {},
+          deploy: {
+            project_name: 'sub-nodes',
+            pages_project_url: 'https://sub-nodes.pages.dev',
+            subscription_url: 'https://vpn.example.top/sub',
+            cloudflare_auth_mode: 'api_token',
+            cloudflare_api_token: '<redacted>'
+          },
+          paths: { project_root: '/repo', artifacts_root: '/repo/artifacts' }
+        },
+        runState: 'idle',
+        artifact: {
+          artifact_dir: '/repo/artifacts/20260703-120000',
+          counts: { raw_links: 5, deduped_links: 4, speedtest_links: 3, availability_links: 2 },
+          source_counts: { leiting: { raw_links: 5, deduped_links: 4 } },
+          outputFiles: [],
+          nodeRows: []
+        },
+        retryArtifacts: [],
+        logEvents: [{ type: 'log', message: '[extract] leiting 开始提取' }]
+      }),
+      startRun: async (options) => {
+        calls.push(['start', options]);
+        queueMicrotask(() => subscriber?.({ type: 'stage', stage: 'extract', status: 'running' }));
+        return { ok: true, runId: 'mobile-run' };
+      },
+      stopRun: async () => {
+        calls.push(['stop']);
+        queueMicrotask(() => subscriber?.({ type: 'finished', ok: true, stopped: true }));
+        return { ok: true, requested: true, stopped: true };
+      },
+      subscribe: (handler) => {
+        subscriber = handler;
+        return () => {
+          subscriber = undefined;
+        };
+      }
+    }
+  });
+
+  let browser;
+  try {
+    browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true });
+    await page.goto(`${service.origin}/`);
+    await page.waitForSelector('#dashboardOverview');
+
+    const navBox = await page.locator('#sidebarNav').boundingBox();
+    assert.ok(navBox);
+    assert.ok(navBox.y > 760);
+
+    await page.locator('#navRuns').click();
+    await page.waitForSelector('#runsWorkspace');
+    await page.locator('#runsWorkspace [data-run-action="start"]').click();
+    await page.waitForFunction(() => document.querySelector('#runsWorkspace [data-run-action="start"]')?.disabled);
+    await page.locator('#runsWorkspace [data-run-action="stop"]').click();
+
+    await page.locator('#navLogs').click();
+    await page.waitForSelector('#logsWorkspace');
+    assert.match(await page.locator('#logsWorkspace').innerText(), /extract|leiting/);
+    assert.equal(await page.locator('[data-action="open-log-file"]').count(), 0);
+    assert.ok(calls.some(([name]) => name === 'start'));
+    assert.ok(calls.some(([name]) => name === 'stop'));
   } finally {
     await browser?.close();
     await service.close();

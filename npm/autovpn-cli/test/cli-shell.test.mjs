@@ -56,7 +56,7 @@ test('prints Node-native version without invoking Python backend', async () => {
   assert.deepEqual(forwarded, []);
 });
 
-test('AUTOVPN_CLI_SHELL=python disables Node shell and forwards all arguments', async () => {
+test('AUTOVPN_CLI_SHELL=python is rejected because the CLI is Node-only', async () => {
   const io = createIo();
   const forwarded = [];
 
@@ -70,10 +70,10 @@ test('AUTOVPN_CLI_SHELL=python disables Node shell and forwards all arguments', 
     }
   });
 
-  assert.equal(code, 5);
+  assert.equal(code, 2);
   assert.equal(io.stdout, '');
-  assert.equal(io.stderr, '');
-  assert.deepEqual(forwarded, [['--version']]);
+  assert.match(io.stderr, /Python backend is no longer supported/);
+  assert.deepEqual(forwarded, []);
 });
 
 test('rejects unknown top-level commands before invoking Python backend', async () => {
@@ -152,7 +152,7 @@ test('validates jobs subcommands when parent options precede the subcommand', as
   assert.deepEqual(forwarded, []);
 });
 
-test('normalizes provided project root and forwards business commands through explicit Python backend', async () => {
+test('AUTOVPN_BACKEND=python is rejected before business command forwarding', async () => {
   const io = createIo();
   const forwarded = [];
   const rawRoot = path.join(process.cwd(), '.', 'nested', '..');
@@ -167,10 +167,10 @@ test('normalizes provided project root and forwards business commands through ex
     }
   });
 
-  assert.equal(code, 7);
+  assert.equal(code, 2);
   assert.equal(io.stdout, '');
-  assert.equal(io.stderr, '');
-  assert.deepEqual(forwarded, [['run', '--project-root', process.cwd(), '--output', 'jsonl']]);
+  assert.match(io.stderr, /Python backend is no longer supported/);
+  assert.deepEqual(forwarded, []);
 });
 
 test('serve starts the native web server without invoking backend executeCli', async () => {

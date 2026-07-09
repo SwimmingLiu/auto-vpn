@@ -66,6 +66,11 @@ function isEnabled(value: string | undefined): boolean {
   return ['1', 'true', 'yes', 'on'].includes(String(value ?? '').trim().toLowerCase());
 }
 
+function wantsDeprecatedPythonShell(env: NodeJS.ProcessEnv): boolean {
+  return String(env.AUTOVPN_CLI_SHELL ?? '').trim().toLowerCase() === 'python'
+    || String(env.AUTOVPN_BACKEND ?? '').trim().toLowerCase() === 'python';
+}
+
 async function resolvePackageVersion(options: CliShellOptions): Promise<string> {
   if (options.packageVersion) {
     return options.packageVersion;
@@ -122,6 +127,21 @@ function resolveResumeSessionDir(job: Record<string, any>): string {
     }
   }
   return '';
+}
+
+async function waitForServeShutdown(server: { close(): Promise<void> }): Promise<void> {
+  let closing: Promise<void> | undefined;
+  const closeOnce = () => {
+    closing ??= server.close();
+    return closing;
+  };
+  await new Promise<void>((resolve) => {
+    const shutdown = () => {
+      void closeOnce().finally(resolve);
+    };
+    process.once('SIGINT', shutdown);
+    process.once('SIGTERM', shutdown);
+  });
 }
 
 async function runForegroundPipeline(argv: string[], backend: ShellBackend, io: CliIo, cwd: string): Promise<number | undefined> {
@@ -215,8 +235,9 @@ export async function runCliShell(argv: string[], options: CliShellOptions = {})
   const runForwarder = options.runForwarder ?? defaultRunForwarder;
   const cwd = options.cwd ?? process.cwd();
 
-  if (env.AUTOVPN_CLI_SHELL === 'python') {
-    return runForwarder(argv, { env, cwd });
+  if (wantsDeprecatedPythonShell(env)) {
+    io.writeStderr('autovpn: Python backend is no longer supported; AutoVPN now runs on the NodeJS engine\n');
+    return 2;
   }
 
   if (isEnabled(env.AUTOVPN_WRAPPER_PROBE) && argv.length === 1 && argv[0] === '--version') {
@@ -267,27 +288,17 @@ export async function runCliShell(argv: string[], options: CliShellOptions = {})
         await server.close();
         return 0;
       }
-      await new Promise(() => {});
+      await waitForServeShutdown(server);
       return 0;
     }
-    let pythonFallbackBackend: ShellBackend | undefined;
-    const runExplicitPythonFallback = (fallbackArgv: string[]): Promise<number> => {
-      pythonFallbackBackend ??= createBackend({
-        env: { ...env, AUTOVPN_BACKEND: 'python' },
-        cwd,
-        runForwarder
-      });
-      return pythonFallbackBackend.executeCli(fallbackArgv);
-    };
     if (isPipelineProxyCommand(normalizedArgv)) {
-      return runExplicitPythonFallback(normalizedArgv);
+      throw new Error('--proxy is now handled by serve and Node runtime proxy settings; Python proxy mode is no longer supported');
     }
     const nativeResult = await runNativeCommand(normalizedArgv, {
       cwd,
       env,
       io,
       readStdin: options.readStdin ?? defaultReadStdin,
-      pythonFallback: runExplicitPythonFallback,
       spawn: options.spawn,
       now: options.now,
       jobId: options.jobId,

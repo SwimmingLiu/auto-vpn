@@ -285,14 +285,17 @@ export async function createAutoVpnServer(options: CreateAutoVpnServerOptions): 
 
   return {
     origin: `http://${originHost}:${port}`,
-    close: () => new Promise((resolve, reject) => {
-      server.close((error) => {
-        if (error) {
-          reject(error);
-          return;
-        }
-        resolve();
+    close: async () => {
+      await options.runtime.close?.();
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          resolve();
+        });
       });
-    })
+    }
   };
 }

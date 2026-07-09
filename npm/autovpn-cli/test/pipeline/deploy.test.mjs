@@ -226,10 +226,10 @@ test('Cloudflare credential and Wrangler env helpers match Python precedence', (
   });
 });
 
-test('deploy backend selection supports explicit Python rollback', async () => {
+test('deploy backend selection always uses the Node engine', async () => {
   assert.equal(selectPipelineStageBackend('deploy', {}), 'node');
-  assert.equal(selectPipelineStageBackend('deploy', { AUTOVPN_STAGE_BACKEND_DEPLOY: ' python ' }), 'python');
-  assert.equal(selectPipelineStageBackend('deploy', { AUTOVPN_PIPELINE_BACKEND: ' python ' }), 'python');
+  assert.equal(selectPipelineStageBackend('deploy', { AUTOVPN_STAGE_BACKEND_DEPLOY: ' python ' }), 'node');
+  assert.equal(selectPipelineStageBackend('deploy', { AUTOVPN_PIPELINE_BACKEND: ' python ' }), 'node');
 });
 
 test('Node deploy backend runs Wrangler and returns Python-compatible base metadata', async () => {
@@ -983,7 +983,7 @@ test('Node deploy backend recovers latest existing share project when requested 
   assert.equal(runCalls[1][5], 'sub-links-share-05');
 });
 
-test('Node deploy backend keeps remaining complex deploy side effects on Python fallback', async () => {
+test('Node deploy backend preserves blocked Pages project detection', async () => {
   assert.equal(isBlockedPagesError('', 'Your Pages project has been blocked. [code: 8000119]'), true);
 });
 
@@ -1119,58 +1119,7 @@ test('CloudflareHttpClient uses Cloudflare auth headers and verifies DNS records
   await assert.rejects(() => client.verifyUrl('https://missing.example.com/sub'), /URL verification failed/);
 });
 
-test('Python deploy fallback invokes backend venv Python when no callback is injected', async () => {
-  const spawns = [];
-  const result = await deployPagesWithBackend({
-    projectRoot: '/repo',
-    bundleDir: '/repo/artifacts/pages_bundle',
-    deploy: { project_name: 'sub-nodes' }
-  }, {
-    cwd: '/repo',
-    env: { AUTOVPN_STAGE_BACKEND_DEPLOY: 'python' },
-    resolvePythonCli: () => ({ command: '/opt/autovpn/.venv/bin/autovpn', args: [] }),
-    spawn: (command, args, options) => {
-      spawns.push({ command, args, options });
-      return fakeChild('{"returncode":0}');
-    }
-  });
-
-  assert.deepEqual(result, { returncode: 0 });
-  assert.equal(spawns[0].command, '/opt/autovpn/.venv/bin/python');
-  assert.equal(spawns[0].args[0], '-c');
-  assert.deepEqual(spawns[0].options.stdio, ['pipe', 'pipe', 'pipe']);
-});
-
-test('Python deploy fallback rejects PATH autovpn because interpreter cannot be inferred safely', async () => {
-  await assert.rejects(() => deployPagesWithBackend({
-    projectRoot: '/repo',
-    bundleDir: '/repo/artifacts/pages_bundle',
-    deploy: { project_name: 'sub-nodes' }
-  }, {
-    env: { AUTOVPN_STAGE_BACKEND_DEPLOY: 'python' },
-    resolvePythonCli: () => ({ command: 'autovpn', args: [] }),
-    spawn: () => fakeChild('{"returncode":0}')
-  }), /absolute AUTOVPN_PYTHON_CLI path/);
-});
-
-test('Python verify fallback invokes backend venv Python and verify success matches Python semantics', async () => {
-  const spawns = [];
-  const result = await verifyDeploymentWithBackend({
-    projectRoot: '/repo',
-    deploy: { project_name: 'sub-nodes' },
-    deployment: { returncode: 0 }
-  }, {
-    cwd: '/repo',
-    env: { AUTOVPN_STAGE_BACKEND_VERIFY: 'python' },
-    resolvePythonCli: () => ({ command: '/opt/autovpn/.venv/bin/autovpn', args: [] }),
-    spawn: (command, args, options) => {
-      spawns.push({ command, args, options });
-      return fakeChild('{"secret_ok":true,"subscription_ok":true}');
-    }
-  });
-
-  assert.deepEqual(result, { secret_ok: true, subscription_ok: true });
-  assert.equal(spawns[0].command, '/opt/autovpn/.venv/bin/python');
+test('verify success helper keeps Node deployment semantics', async () => {
   assert.equal(isVerifySuccess({ secret_ok: true, subscription_ok: true }), true);
   assert.equal(isVerifySuccess({ pages_domain_ok: false, secret_ok: true, subscription_ok: true }), false);
   assert.equal(isVerifySuccess({ pages_domain_ok: true, secret_ok: true, subscription_ok: false }), false);

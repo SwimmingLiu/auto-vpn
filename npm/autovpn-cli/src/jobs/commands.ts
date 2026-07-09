@@ -9,11 +9,6 @@ import { StopProcessOptions, processMatchesJob as defaultProcessMatchesJob, term
 
 type SpawnLike = (command: string, args: string[], options?: Record<string, unknown>) => ChildProcess;
 
-interface ResolvedPythonCli {
-  command: string;
-  args: string[];
-}
-
 interface ResolvedWorkerCli {
   command: string;
   args: string[];
@@ -23,7 +18,6 @@ export interface JobCommandOptions extends JobStoreOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   spawn?: SpawnLike;
-  resolvePythonCli?: () => ResolvedPythonCli | Promise<ResolvedPythonCli>;
   processMatchesJob?: (pid: number, command: string[]) => boolean;
 }
 
@@ -52,26 +46,13 @@ export interface DetachedRetryCommand {
   outputFormat?: 'jsonl' | 'human';
 }
 
-async function defaultResolvePythonCli(env: NodeJS.ProcessEnv): Promise<ResolvedPythonCli> {
-  // @ts-expect-error Phase 1 runner remains plain ESM JavaScript.
-  const runner = await import('../../lib/runner.mjs');
-  return runner.resolveOrInstallPythonCli({ env });
-}
-
 function defaultResolveNodeCli(): ResolvedWorkerCli {
   const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
   return { command: process.execPath, args: [path.join(packageRoot, 'bin', 'autovpn.mjs')] };
 }
 
-function wantsNodeWorker(env: NodeJS.ProcessEnv): boolean {
-  return String(env.AUTOVPN_BACKEND ?? '').trim().toLowerCase() !== 'python';
-}
-
-async function resolveDetachedWorker(env: NodeJS.ProcessEnv, options: JobCommandOptions): Promise<ResolvedWorkerCli> {
-  if (wantsNodeWorker(env)) {
-    return defaultResolveNodeCli();
-  }
-  return options.resolvePythonCli ? await options.resolvePythonCli() : await defaultResolvePythonCli(env);
+async function resolveDetachedWorker(_env: NodeJS.ProcessEnv, _options: JobCommandOptions): Promise<ResolvedWorkerCli> {
+  return defaultResolveNodeCli();
 }
 
 function pushFlag(argv: string[], enabled: boolean | undefined, flag: string): void {
@@ -169,7 +150,7 @@ export async function startDetachedResume(command: DetachedResumeCommand, option
     options: { source_job_id: command.sourceJobId, session_dir: command.sessionDir, output_format: outputFormat },
     resumeFrom: command.sessionDir
   });
-  const pythonArgs = [
+  const resumeArgs = [
     'resume',
     'pipeline',
     '--project-root',
@@ -183,8 +164,8 @@ export async function startDetachedResume(command: DetachedResumeCommand, option
     '--human-log',
     String(job.human_log)
   ];
-  job.command = [resolved.command, ...resolved.args, ...pythonArgs];
-  const child = spawnDetached(resolved.command, [...resolved.args, ...pythonArgs], job, options);
+  job.command = [resolved.command, ...resolved.args, ...resumeArgs];
+  const child = spawnDetached(resolved.command, [...resolved.args, ...resumeArgs], job, options);
   job.pid = Number(child.pid ?? 0);
   job.pgid = Number(child.pid ?? 0);
   return jobStore.writeJob(job);
@@ -202,7 +183,7 @@ export async function startDetachedRetry(command: DetachedRetryCommand, options:
     options: { artifact_dir: command.artifactDir, stage: command.stage, output_format: outputFormat },
     retry
   });
-  const pythonArgs = [
+  const retryArgs = [
     'retry-stage',
     '--project-root',
     command.projectRoot,
@@ -217,8 +198,8 @@ export async function startDetachedRetry(command: DetachedRetryCommand, options:
     '--human-log',
     String(job.human_log)
   ];
-  job.command = [resolved.command, ...resolved.args, ...pythonArgs];
-  const child = spawnDetached(resolved.command, [...resolved.args, ...pythonArgs], job, options);
+  job.command = [resolved.command, ...resolved.args, ...retryArgs];
+  const child = spawnDetached(resolved.command, [...resolved.args, ...retryArgs], job, options);
   job.pid = Number(child.pid ?? 0);
   job.pgid = Number(child.pid ?? 0);
   return jobStore.writeJob(job);

@@ -87,7 +87,7 @@ test('Node job store creates Python-compatible job metadata and index', async ()
   assert.deepEqual(indexPayload.jobs.map((item) => item.job_id), ['20260628-000000-node01']);
 });
 
-test('AUTOVPN_BACKEND=python run --detach --json is owned by Node job manager and spawns Python worker', async () => {
+test('AUTOVPN_BACKEND=python run --detach --json is rejected before spawning a worker', async () => {
   const projectRoot = await createProject();
   const spawns = [];
   const io = createIo();
@@ -110,19 +110,10 @@ test('AUTOVPN_BACKEND=python run --detach --json is owned by Node job manager an
     jobId: () => '20260628-000000-node02'
   });
 
-  const payload = JSON.parse(io.stdout);
-  assert.equal(code, 0);
-  assert.equal(payload.ok, true);
-  assert.equal(payload.job_id, '20260628-000000-node02');
-  assert.equal(payload.pid, 5678);
-  assert.equal(payload.options.skip_deploy, true);
-  assert.equal(payload.options.skip_verify, true);
-  assert.equal(spawns.length, 1);
-  assert.equal(spawns[0].command, '/venv/bin/autovpn');
-  assert.deepEqual(spawns[0].args, [
-    'run', '--project-root', payload.project_root, '--output', 'jsonl', '--event-log', payload.event_log, '--human-log', payload.human_log, '--skip-deploy', '--skip-verify'
-  ]);
-  assert.equal(spawns[0].options.detached, process.platform !== 'win32');
+  assert.equal(code, 2);
+  assert.equal(io.stdout, '');
+  assert.match(io.stderr, /Python backend is no longer supported/);
+  assert.equal(spawns.length, 0);
 });
 
 test('default run --detach spawns the Node CLI worker', async () => {
@@ -382,7 +373,7 @@ test('top-level stop refuses to choose when multiple jobs are active', async () 
   assert.match(io.stderr, /multiple active jobs/);
 });
 
-test('AUTOVPN_BACKEND=python jobs resume and retry detached are dispatched by Node with compatible metadata', async () => {
+test('AUTOVPN_BACKEND=python jobs resume and retry detached are rejected before dispatch', async () => {
   const projectRoot = await createProject();
   const sessionDir = path.join(jobsRoot(), 'source-job');
   await mkdir(sessionDir, { recursive: true });
@@ -420,15 +411,10 @@ test('AUTOVPN_BACKEND=python jobs resume and retry detached are dispatched by No
     jobId: () => 'retry-job'
   });
 
-  assert.equal(resume, 0);
-  assert.equal(retry, 0);
-  const resumePayload = JSON.parse(await readFile(path.join(jobsRoot(), 'resume-job', 'job.json'), 'utf8'));
-  assert.equal(spawns[0].command, '/venv/bin/autovpn');
-  assert.deepEqual(spawns[0].args.slice(0, 5), ['resume', 'pipeline', '--project-root', resumePayload.project_root, '--session']);
-  assert.equal(spawns[0].args[5], sessionDir);
-  assert.equal(spawns[1].command, '/venv/bin/autovpn');
-  assert.deepEqual(spawns[1].args.slice(0, 7), ['retry-stage', '--project-root', resumePayload.project_root, '--artifact-dir', artifactDir, '--stage', 'deploy']);
-  assert.equal(JSON.parse(retryIo.stdout).retry.stage, 'deploy');
+  assert.equal(resume, 2);
+  assert.equal(retry, 2);
+  assert.equal(spawns.length, 0);
+  assert.match(retryIo.stderr, /Python backend is no longer supported/);
 });
 
 test('default jobs resume and retry detached spawn Node CLI workers', async () => {

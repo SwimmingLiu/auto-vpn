@@ -35,12 +35,12 @@ test('dedupe fixture output matches Python golden output', async () => {
   assert.deepEqual(dedupeVmessLinks(input), expected);
 });
 
-test('dedupe stage backend selection supports Node default and Python rollback flags', async () => {
+test('dedupe stage backend selection always uses the Node engine', async () => {
   assert.equal(selectPipelineStageBackend('dedupe', {}), 'node');
   assert.equal(selectPipelineStageBackend('dedupe', { AUTOVPN_PIPELINE_BACKEND: ' Hybrid ' }), 'node');
-  assert.equal(selectPipelineStageBackend('dedupe', { AUTOVPN_PIPELINE_BACKEND: ' Python ' }), 'python');
-  assert.equal(selectPipelineStageBackend('dedupe', { AUTOVPN_STAGE_BACKEND_DEDUPE: ' PYTHON ' }), 'python');
-  assert.equal(selectPipelineStageBackend('dedupe', { AUTOVPN_PIPELINE_BACKEND: 'python', AUTOVPN_STAGE_BACKEND_DEDUPE: '' }), 'python');
+  assert.equal(selectPipelineStageBackend('dedupe', { AUTOVPN_PIPELINE_BACKEND: ' Python ' }), 'node');
+  assert.equal(selectPipelineStageBackend('dedupe', { AUTOVPN_STAGE_BACKEND_DEDUPE: ' PYTHON ' }), 'node');
+  assert.equal(selectPipelineStageBackend('dedupe', { AUTOVPN_PIPELINE_BACKEND: 'python', AUTOVPN_STAGE_BACKEND_DEDUPE: '' }), 'node');
 
   const pythonCalls = [];
   const fallback = async (links) => {
@@ -52,11 +52,11 @@ test('dedupe stage backend selection supports Node default and Python rollback f
   assert.deepEqual(await dedupeVmessLinksWithBackend([sameNodeA, sameNodeB], {
     env: { AUTOVPN_STAGE_BACKEND_DEDUPE: 'python' },
     pythonDedupe: fallback
-  }), ['python-result']);
-  assert.deepEqual(pythonCalls, [[sameNodeA, sameNodeB]]);
+  }), [sameNodeA]);
+  assert.deepEqual(pythonCalls, []);
 });
 
-test('Python rollback adapter invokes backend venv Python when no callback is injected', async () => {
+test('dedupe ignores legacy Python rollback env without spawning Python', async () => {
   const spawns = [];
   const result = await dedupeVmessLinksWithBackend([sameNodeA, sameNodeB], {
     env: { AUTOVPN_STAGE_BACKEND_DEDUPE: 'python' },
@@ -81,8 +81,5 @@ test('Python rollback adapter invokes backend venv Python when no callback is in
   });
 
   assert.deepEqual(result, [sameNodeA]);
-  assert.equal(spawns.length, 1);
-  assert.equal(spawns[0].command, '/opt/autovpn/.venv/bin/python');
-  assert.equal(spawns[0].args[0], '-c');
-  assert.deepEqual(spawns[0].options.stdio, ['pipe', 'pipe', 'pipe']);
+  assert.equal(spawns.length, 0);
 });

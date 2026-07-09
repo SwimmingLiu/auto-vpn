@@ -19,6 +19,7 @@ export interface ServerState {
   artifact?: Record<string, unknown>;
   retryArtifacts?: unknown[];
   deployment?: Record<string, unknown>;
+  logEvents?: unknown[];
 }
 
 export interface ServerRuntime {
@@ -28,6 +29,7 @@ export interface ServerRuntime {
   startRetry?(options: { artifactDir?: string; stage?: string }): Promise<Record<string, unknown>>;
   stopRun?(): Promise<Record<string, unknown>>;
   subscribe?(handler: (event: unknown) => void): () => void;
+  close?(): Promise<void>;
 }
 
 type StartDetachedRun = typeof defaultStartDetachedRun;
@@ -186,6 +188,17 @@ function latestJob(projectRoot: string, env: NodeJS.ProcessEnv): Record<string, 
     return loadJob(projectRoot, latestJobId(projectRoot, env), env);
   } catch {
     return undefined;
+  }
+}
+
+function latestJobEvents(job: Record<string, any> | undefined, maxEvents = 1000): unknown[] {
+  const eventLog = String(job?.event_log ?? '');
+  if (!eventLog || !fs.existsSync(eventLog)) return [];
+  try {
+    const lines = fs.readFileSync(eventLog, 'utf8').split(/\r?\n/).filter(Boolean);
+    return lines.slice(-maxEvents).map((line) => parseJsonLine(line)).filter(Boolean);
+  } catch {
+    return [];
   }
 }
 
@@ -390,12 +403,14 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
       const artifact = normalizeLatestArtifact(options.projectRoot, options.env ?? process.env);
       restoreRunState(artifact);
       const retries = artifactList(options.projectRoot, options.env ?? process.env);
+      const job = latestJob(options.projectRoot, options.env ?? process.env);
       return {
         profile: sanitizeProfileForServer(profilePayload(options.projectRoot, options.env)),
         runState,
         artifact,
         retryArtifacts: Array.isArray(retries.items) ? retries.items : [],
-        deployment: (artifact?.deployment ?? {}) as Record<string, unknown>
+        deployment: (artifact?.deployment ?? {}) as Record<string, unknown>,
+        logEvents: latestJobEvents(job)
       };
     },
     async saveProfile(profile) {
@@ -480,6 +495,16 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
     subscribe(handler) {
       subscribers.add(handler);
       return () => subscribers.delete(handler);
+    },
+    async close() {
+      unsubscribeLogs?.();
+      if (!activeJobId) {
+        const artifact = normalizeLatestArtifact(options.projectRoot, options.env ?? process.env);
+        restoreRunState(artifact);
+      }
+      if ((runState === 'running' || runState === 'stopping') && activeJobId) {
+        await this.stopRun?.();
+      }
     }
   };
 }

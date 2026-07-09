@@ -155,6 +155,41 @@ test('Node availability batch preserves order, emits events, and downgrades runt
   assert.deepEqual(events.map((event) => event.type), ['availability_link_result', 'availability_link_result']);
 });
 
+test('Node availability batch checks links with configured concurrency', async () => {
+  let active = 0;
+  let maxActive = 0;
+  const results = [
+    { ...speedResult, link: 'vmess://a' },
+    { ...speedResult, link: 'vmess://b' },
+    { ...speedResult, link: 'vmess://c' }
+  ];
+
+  const batch = await checkLinkAvailabilityBatchWithBackend({
+    results,
+    config: { concurrency: 2, timeout_seconds: 20 },
+    targets: {
+      custom: { url: 'https://custom.example/', enabled: true, allowed_hosts: ['custom.example'], negative_phrases: [] }
+    }
+  }, {
+    env: {},
+    checkLinkAvailability: async (speed) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => setTimeout(resolve, speed.link.endsWith('a') ? 30 : 5));
+      active -= 1;
+      return {
+        speed_result: speed,
+        provider_results: {
+          custom: { provider: 'custom', passed: true, reason: 'ok', status_code: 200, final_url: 'https://custom.example/', matched_phrase: '' }
+        }
+      };
+    }
+  });
+
+  assert.equal(maxActive, 2);
+  assert.deepEqual(batch.map((item) => item.link), ['vmess://a', 'vmess://b', 'vmess://c']);
+});
+
 test('Node availability returns an empty result without requiring a runtime checker', async () => {
   assert.deepEqual(await checkLinkAvailabilityBatchWithBackend({
     results: [],
@@ -337,12 +372,12 @@ test('fetchUrlViaHttpProxy rejects an HTTPS tunnel that closes before a provider
   }
 });
 
-test('availability backend selection supports Node default and Python rollback flags', async () => {
+test('availability backend selection always uses the Node engine', async () => {
   assert.equal(selectPipelineStageBackend('availability', {}), 'node');
   assert.equal(selectPipelineStageBackend('availability', { AUTOVPN_PIPELINE_BACKEND: ' HYBRID ' }), 'node');
-  assert.equal(selectPipelineStageBackend('availability', { AUTOVPN_PIPELINE_BACKEND: ' PYTHON ' }), 'python');
-  assert.equal(selectPipelineStageBackend('availability', { AUTOVPN_STAGE_BACKEND_AVAILABILITY: ' python ' }), 'python');
-  assert.equal(selectPipelineStageBackend('availability', { AUTOVPN_PIPELINE_BACKEND: 'python', AUTOVPN_STAGE_BACKEND_AVAILABILITY: '' }), 'python');
+  assert.equal(selectPipelineStageBackend('availability', { AUTOVPN_PIPELINE_BACKEND: ' PYTHON ' }), 'node');
+  assert.equal(selectPipelineStageBackend('availability', { AUTOVPN_STAGE_BACKEND_AVAILABILITY: ' python ' }), 'node');
+  assert.equal(selectPipelineStageBackend('availability', { AUTOVPN_PIPELINE_BACKEND: 'python', AUTOVPN_STAGE_BACKEND_AVAILABILITY: '' }), 'node');
 
   const fallbackCalls = [];
   const fallback = async (input) => {
@@ -357,12 +392,20 @@ test('availability backend selection supports Node default and Python rollback f
   }))[0].all_passed, true);
   assert.deepEqual(await checkLinkAvailabilityBatchWithBackend(input, {
     env: { AUTOVPN_STAGE_BACKEND_AVAILABILITY: 'python' },
-    pythonAvailability: fallback
-  }), [{ ...speedResult, all_passed: true, provider_results: {} }]);
-  assert.deepEqual(fallbackCalls, [input]);
+    pythonAvailability: fallback,
+    checkLinkAvailability: async (speed) => ({ speed_result: speed, provider_results: {} })
+  }), [{
+    link: speedResult.link,
+    reachable: speedResult.reachable,
+    average_download_mb_s: speedResult.average_download_mb_s,
+    latency_ms: speedResult.latency_ms,
+    all_passed: true,
+    provider_results: {}
+  }]);
+  assert.deepEqual(fallbackCalls, []);
 });
 
-test('Python availability rollback adapter invokes backend venv Python when no callback is injected', async () => {
+test('availability ignores legacy Python rollback env without spawning Python', async () => {
   const spawns = [];
   const input = { results: [speedResult], config: { concurrency: 1, timeout_seconds: 20 }, targets: [] };
   const result = await checkLinkAvailabilityBatchWithBackend(input, {
@@ -388,7 +431,5 @@ test('Python availability rollback adapter invokes backend venv Python when no c
   });
 
   assert.equal(result[0].link, 'vmess://node');
-  assert.equal(spawns[0].command, '/opt/autovpn/.venv/bin/python');
-  assert.equal(spawns[0].args[0], '-c');
-  assert.deepEqual(spawns[0].options.stdio, ['pipe', 'pipe', 'pipe']);
+  assert.equal(spawns.length, 0);
 });

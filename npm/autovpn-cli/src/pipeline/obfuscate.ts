@@ -225,11 +225,9 @@ export function buildWorkerArtifacts(
 }
 
 export function selectPipelineStageBackend(stage: string, env: NodeJS.ProcessEnv = process.env): PipelineStageBackend {
-  const stageKey = `AUTOVPN_STAGE_BACKEND_${stage.toUpperCase()}`;
-  const stageOverride = String(env[stageKey] ?? '').trim().toLowerCase();
-  const pipelineOverride = String(env.AUTOVPN_PIPELINE_BACKEND ?? '').trim().toLowerCase();
-  const selected = stageOverride || pipelineOverride || 'node';
-  return selected === 'python' ? 'python' : 'node';
+  void stage;
+  void env;
+  return 'node';
 }
 
 async function defaultResolvePythonCli(env: NodeJS.ProcessEnv): Promise<ResolvedPythonCli> {

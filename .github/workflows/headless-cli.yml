@@ -47,6 +47,21 @@ jobs:
             package-lock.json
             npm/autovpn-cli/package-lock.json
 
+      - name: Cache browser runtime downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/electron
+            ~/Library/Caches/electron
+            ~/AppData/Local/electron/Cache
+            ~/.cache/electron-builder
+            ~/Library/Caches/electron-builder
+            ~/AppData/Local/electron-builder/Cache
+            ~/.cache/ms-playwright
+          key: ${{ runner.os }}-${{ runner.arch }}-browser-runtime-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-browser-runtime-
+
       - name: Upgrade pip
         run: |
           bash scripts/ci/retry-command.sh "upgrade pip" -- \
@@ -129,6 +144,21 @@ jobs:
           cache-dependency-path: |
             package-lock.json
             npm/autovpn-cli/package-lock.json
+
+      - name: Cache browser runtime downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/electron
+            ~/Library/Caches/electron
+            ~/AppData/Local/electron/Cache
+            ~/.cache/electron-builder
+            ~/Library/Caches/electron-builder
+            ~/AppData/Local/electron-builder/Cache
+            ~/.cache/ms-playwright
+          key: ${{ runner.os }}-${{ runner.arch }}-browser-runtime-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-browser-runtime-
 
       - name: Install Linux packaging dependencies
         run: |
