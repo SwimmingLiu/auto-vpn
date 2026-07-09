@@ -29,7 +29,6 @@ export function renderWebAdapterScript(options: WebAdapterOptions = {}): string 
       '.server-login-brand{display:flex;align-items:center;gap:14px;}',
       '.server-login-logo{width:54px;height:54px;object-fit:contain;border-radius:18px;}',
       '.server-login-title{margin:0;font-size:28px;font-weight:850;letter-spacing:0;}',
-      '.server-login-copy{margin:5px 0 0;color:var(--text-soft,#6d7794);line-height:1.5;}',
       '.server-login-form{display:grid;gap:14px;}',
       '.server-login-form input{width:100%;min-height:48px;border:1px solid var(--border,#dfe5f5);border-radius:14px;background:#fff;color:var(--text,#1e2746);padding:0 14px;outline:none;}',
       '.server-login-form input:focus{border-color:rgba(91,92,226,.45);box-shadow:0 0 0 4px rgba(91,92,226,.12);}',
@@ -51,6 +50,7 @@ export function renderWebAdapterScript(options: WebAdapterOptions = {}): string 
 
   function showLoginPage(message = '', banned = false) {
     ensureLoginStyles();
+    document.title = 'AutoNetwork';
     let root = document.querySelector('[data-server-login]');
     if (!root) {
       root = document.createElement('section');
@@ -61,8 +61,7 @@ export function renderWebAdapterScript(options: WebAdapterOptions = {}): string 
         '<div class="server-login-brand">',
         '<img class="server-login-logo" src="./assets/vpn-auto-logo-v2-minimal.svg" alt="" aria-hidden="true" />',
         '<div>',
-        '<h1 class="server-login-title">AutoVPN</h1>',
-        '<p class="server-login-copy">输入 serve 启动时打印的密码继续访问。</p>',
+        '<h1 class="server-login-title">AutoNetwork</h1>',
         '</div>',
         '</div>',
         '<form class="server-login-form" data-server-login-form>',
