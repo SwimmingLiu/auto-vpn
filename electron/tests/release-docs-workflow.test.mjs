@@ -14,7 +14,7 @@ function readProjectFile(...segments) {
 function extractReleaseTagValidationScript(workflow) {
   const startMarker = 'PKG_VERSION="$(node -p "require(\'./package.json\').version")"';
   const start = workflow.indexOf(startMarker);
-  const end = workflow.indexOf('git fetch --no-tags origin main:refs/remotes/origin/main', start);
+  const end = workflow.indexOf('bash scripts/ci/retry-command.sh "fetch origin/main"', start);
 
   assert.notEqual(start, -1, 'workflow should define package version lookup before tag validation');
   assert.notEqual(end, -1, 'workflow should fetch origin/main after tag validation');
@@ -120,14 +120,15 @@ test('README follows the AutoVPN desktop app structure', () => {
 test('release workflow packages AutoVPN for native OS and CPU variants after a GitHub Release is published', () => {
   const workflow = readProjectFile('.github', 'workflows', 'release-electron.yml');
   const testJob = extractWorkflowSegment(workflow, '  test:', '  package-electron:');
+  const packageJob = extractWorkflowSegment(workflow, '  package-electron:', '  package-cli:');
   const packageInstallAndBuild = extractWorkflowSegment(
-    workflow,
-    '      - name: Install dependencies\n        run: |\n          for attempt in 1 2',
+    packageJob,
+    '      - name: Install dependencies\n        run: |\n          bash scripts/ci/retry-command.sh "npm ci"',
     '      - name: Verify project icon was packaged'
   );
   const packageInstallStep = extractWorkflowSegment(
-    workflow,
-    '      - name: Install dependencies\n        run: |\n          for attempt in 1 2',
+    packageJob,
+    '      - name: Install dependencies\n        run: |\n          bash scripts/ci/retry-command.sh "npm ci"',
     '      - name: Package Electron app'
   );
 
@@ -154,10 +155,12 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
     'EXPECTED_TAG="v${PKG_VERSION}"',
     'Release tag ${TAG_NAME} does not match package.json version ${PKG_VERSION}',
     'git fetch --no-tags origin main:refs/remotes/origin/main',
+    'scripts/ci/retry-command.sh "fetch origin/main"',
     'TAG_COMMIT="$(git rev-list -n 1 "${TAG_NAME}")"',
     'git merge-base --is-ancestor "${TAG_COMMIT}" origin/main',
     'Release tag ${TAG_NAME} is not contained in origin/main',
     'fail-fast: false',
+    'max-parallel: 2',
     'package_platform: mac',
     'package_platform: linux',
     'package_platform: win',
@@ -170,12 +173,19 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
     'windows-2025',
     'windows-11-arm',
     'node-version: 24',
+    'cache-dependency-path:',
+    'npm/autovpn-cli/package-lock.json',
+    'NPM_CONFIG_FETCH_RETRIES: "5"',
+    'NPM_CONFIG_FETCH_TIMEOUT: "600000"',
+    'NPM_CONFIG_PREFER_OFFLINE: "true"',
     'registry-url: https://registry.npmjs.org',
     'python-version: "3.12"',
     'npm ci',
-    'for attempt in 1 2',
-    'npm ci && break',
-    'npm ci failed; retrying in 15 seconds.',
+    'scripts/ci/retry-command.sh "npm ci"',
+    '--prefer-offline --no-audit --fund=false',
+    'scripts/ci/retry-command.sh "npm ci --prefix npm/autovpn-cli"',
+    'scripts/ci/retry-command.sh "upgrade pip"',
+    'python -m pip install --retries "${PIP_RETRIES}" --timeout "${PIP_TIMEOUT}" --upgrade pip',
     './scripts/run_pytest.sh tests -v',
     'Build npm CLI web server',
     'npm run build --prefix npm/autovpn-cli',
@@ -190,7 +200,7 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
     'process.wait(timeout=600)',
     'Electron tests timed out after 600 seconds.',
     'npm run package:electron',
-    'set -o pipefail',
+    'bash -eo pipefail -c',
     'AUTOVPN_PACKAGE_PLATFORM: ${{ matrix.package_platform }}',
     'AUTOVPN_PACKAGE_ARCH: ${{ matrix.package_arch }}',
     'default Electron icon is used',
@@ -204,13 +214,8 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
     'AutoVPN-${PKG_VERSION}-${{ matrix.package_arch }}-setup.exe',
     'AutoVPN-${PKG_VERSION}-${{ matrix.package_arch }}-portable.exe',
     'Missing release artifact: ${artifact}',
-    'dist-electron/**/*.deb',
-    'dist-electron/**/*.rpm',
-    'dist-electron/*-setup.exe',
-    'dist-electron/*-portable.exe',
-    'softprops/action-gh-release',
-    'tag_name: ${{ env.RELEASE_TAG_NAME }}',
-    'dist-electron/**/*.dmg',
+    'upload Electron release assets',
+    'gh release upload "${RELEASE_TAG_NAME}" "${release_files[@]}" --repo "${GITHUB_REPOSITORY}" --clobber',
     'python -m build',
     'python -m twine check dist/*',
     'Publish npm CLI package',
@@ -219,12 +224,14 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
     'Publishing ${PACKAGE_NAME}@${PACKAGE_VERSION} with NPM_TOKEN.',
     'Publishing ${PACKAGE_NAME}@${PACKAGE_VERSION} with npm trusted publishing/OIDC.',
     'npm publish --access public --provenance --registry=https://registry.npmjs.org',
-    'dist/*.whl',
-    'dist/*.tar.gz',
+    'verify npm publication visibility',
+    'is visible after a failed publish response; treating publish as complete.',
+    'upload CLI release assets',
     'vpn_subscription_automation-${PKG_VERSION}-py3-none-any.whl',
     'vpn_subscription_automation-${PKG_VERSION}.tar.gz',
     'publish-release-notes:',
     'node scripts/generate-release-notes.mjs',
+    'update release notes',
     'gh release edit "${RELEASE_TAG_NAME}"',
     'AutoVPN ${RELEASE_TAG_NAME}'
   ]) {
@@ -239,7 +246,7 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
   assert.doesNotMatch(workflow, /dist-electron\/\*\*\/\*\.blockmap/);
   assert.doesNotMatch(workflow, /dist-electron\/\*\*\/\*\.exe/);
   assert.doesNotMatch(workflow, /dist-electron\/mac-\*/);
-  assert.match(testJob, /python -m pip install -e \.\[dev\]/);
+  assert.match(testJob, /python -m pip install .* -e \.\[dev\]/);
   assert.doesNotMatch(packageInstallAndBuild, /python -m pip install -e \.\[dev\]/);
   assert.match(packageInstallStep, /shell: bash/);
   assert.doesNotMatch(packageInstallAndBuild, /Install Playwright browser runtime/);
@@ -254,9 +261,14 @@ test('headless CI packages the Linux Electron app and verifies version and icon 
     'electron-package:',
     'name: Linux Electron package',
     'needs: headless',
-    'for attempt in 1 2 3',
-    'npm ci failed; retrying in 15 seconds.',
-    'npm ci --prefix npm/autovpn-cli failed; retrying in 15 seconds.',
+    'NPM_CONFIG_FETCH_RETRIES: "5"',
+    'NPM_CONFIG_FETCH_TIMEOUT: "600000"',
+    'NPM_CONFIG_PREFER_OFFLINE: "true"',
+    'cache-dependency-path:',
+    'npm/autovpn-cli/package-lock.json',
+    'scripts/ci/retry-command.sh "npm ci"',
+    'scripts/ci/retry-command.sh "npm ci --prefix npm/autovpn-cli"',
+    '--prefer-offline --no-audit --fund=false',
     'sudo apt-get install -y rpm fakeroot',
     'AUTOVPN_PACKAGE_PLATFORM: linux',
     'AUTOVPN_PACKAGE_ARCH: x64',

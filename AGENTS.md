@@ -1,5 +1,7 @@
 DO NOT send optional commentary
 
+void product pamphlet copy, consider the target audience of this project
+
 # Delivery Workflow
 
 ## Project scope convention
