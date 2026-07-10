@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -181,6 +182,57 @@ test('Node extract backend emits source progress events while extracting', async
   assert.equal(events[3].new_item_fingerprints.length, 1);
   assert.match(events[3].new_item_fingerprints[0], /^[a-f0-9]{64}$/);
   assert.doesNotMatch(JSON.stringify(events[3].new_item_fingerprints), /vmess|fixture/);
+});
+
+test('Node extract fingerprints ignore VMess display names when canonical fields match', async () => {
+  const key = 'abcdabcdabcdabcd';
+  const canonicalFields = {
+    add: '203.0.113.10',
+    port: '443',
+    id: '12345678-1234-1234-1234-123456789abc',
+    net: 'ws',
+    host: 'edge.example.com',
+    path: '/vpn',
+    tls: 'tls',
+    sni: 'edge.example.com'
+  };
+  const links = [
+    vmessLink({ ...canonicalFields, ps: 'Leiting display name' }),
+    vmessLink({ ...canonicalFields, ps: 'Heidong display name' })
+  ];
+  const fingerprints = [];
+
+  for (const [index, link] of links.entries()) {
+    const events = [];
+    await fetchSourceLinksWithBackend({
+      source_name: index === 0 ? 'leiting' : 'heidong',
+      source: {
+        url: 'https://fixture.example/source',
+        key,
+        max_iterations: 1,
+        min_iterations: 1,
+        plateau_limit: 1,
+        failure_limit: 1,
+        max_runtime_seconds: 0
+      }
+    }, {
+      env: { AUTOVPN_NO_PYTHON: '1' },
+      eventCallback: (type, payload) => events.push({ type, ...payload }),
+      fetch: async () => ({
+        ok: true,
+        status: 200,
+        text: async () => encryptPayload(link, key)
+      })
+    });
+    const iteration = events.find((event) => event.type === 'extract_iteration');
+    fingerprints.push(iteration.new_item_fingerprints[0]);
+    assert.doesNotMatch(JSON.stringify(iteration), /vmess:\/\//);
+    assert.doesNotMatch(JSON.stringify(iteration), new RegExp(link.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  }
+
+  assert.notEqual(links[0], links[1]);
+  assert.equal(fingerprints[0], fingerprints[1]);
+  assert.match(fingerprints[0], /^[a-f0-9]{64}$/);
 });
 
 test('Node extract backend uses curl TLS fallback without enabling proxy by default', async () => {
@@ -407,3 +459,16 @@ test('extract ignores legacy Python rollback env without spawning Python', async
   assert.equal(result.source_name, 'leiting');
   assert.equal(spawns.length, 0);
 });
+
+function vmessLink(payload) {
+  return `vmess://${Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url')}`;
+}
+
+function encryptPayload(plaintext, key) {
+  const keyBuffer = Buffer.from(key, 'utf8');
+  const input = Buffer.from(plaintext, 'utf8');
+  const padded = Buffer.concat([input, Buffer.alloc((16 - (input.length % 16)) % 16)]);
+  const cipher = crypto.createCipheriv('aes-128-cbc', keyBuffer, keyBuffer);
+  cipher.setAutoPadding(false);
+  return Buffer.concat([cipher.update(padded), cipher.final()]).toString('base64');
+}
