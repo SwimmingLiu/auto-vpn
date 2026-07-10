@@ -381,13 +381,18 @@ test('runNodePipeline drains sibling speedtest workers before terminal failure e
         } finally {
           delayedResourceClosed = true;
         }
-      }
+      },
+      availability: async (results) => results.map((result) => ({ ...result, all_passed: true, provider_results: {} }))
     }
   }), /first candidate failed/);
 
   assert.equal(delayedResourceClosed, true);
-  await new Promise((resolve) => setTimeout(resolve, 60));
   assert.equal(events.at(-1).type, 'run_failed');
+  const summary = events.at(-2);
+  assert.equal(summary.type, 'summary');
+  assert.equal(summary.stage_status.speedtest, 'failed');
+  assert.equal(summary.stage_status.availability, 'failed');
+  assert.equal(Object.values(summary.stage_status).includes('running'), false);
 });
 
 test('runNodePipeline forwards native speedtest progress events to the job log', async () => {

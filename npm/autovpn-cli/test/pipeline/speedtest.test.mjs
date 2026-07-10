@@ -327,6 +327,51 @@ test('Node Mihomo probe emits progress as each concurrent probe completes', asyn
   ]);
 });
 
+test('Node Mihomo probe drains sibling runtimes before surfacing a progress callback error', async () => {
+  const firstLink = 'vmess://first';
+  const secondLink = 'vmess://second';
+  let releaseSecond;
+  let secondRuntimeClosed = false;
+  const probePromise = probeSpeedtestLinksInNode({
+    links: [firstLink, secondLink],
+    config: { min_download_mb_s: 1, timeout_seconds: 1, concurrency: 2, probe_url: 'https://probe.example/204' },
+    runtime_path: '/opt/mihomo'
+  }, {
+    env: {},
+    openMihomoRuntime: async (link) => ({
+      controllerUrl: link,
+      proxyName: 'runtime-node',
+      proxies: { http: 'http://127.0.0.1:8080', https: 'http://127.0.0.1:8080' },
+      close: async () => {
+        if (link === secondLink) secondRuntimeClosed = true;
+      }
+    }),
+    probeMihomoProxyDelay: async (controllerUrl) => {
+      if (controllerUrl === secondLink) {
+        await new Promise((resolve) => {
+          releaseSecond = resolve;
+        });
+      }
+      return 10;
+    },
+    eventCallback: (type, payload) => {
+      if (type === 'speedtest_probe_result' && payload.link === firstLink) {
+        throw new Error('progress callback failed');
+      }
+    }
+  });
+
+  const settledBeforeSibling = await Promise.race([
+    probePromise.then(() => true, () => true),
+    new Promise((resolve) => setTimeout(() => resolve(false), 30))
+  ]);
+  releaseSecond?.();
+  await assert.rejects(probePromise, /progress callback failed/);
+
+  assert.equal(settledBeforeSibling, false);
+  assert.equal(secondRuntimeClosed, true);
+});
+
 for (const [name, makeError] of [
   ['malformed config', () => new Error('malformed vmess configuration')],
   ['caller abort', () => Object.assign(new Error('The operation was aborted by the caller'), { name: 'AbortError' })]

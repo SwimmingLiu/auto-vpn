@@ -796,6 +796,9 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
         });
       } catch (error) {
         await Promise.allSettled(streamingAvailabilityTasks);
+        if (summary.stage_status.availability === 'running') {
+          await setStage('availability', 'failed', false);
+        }
         throw error;
       }
       speedResults = [

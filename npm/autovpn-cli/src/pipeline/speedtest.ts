@@ -135,7 +135,11 @@ async function mapWithConcurrency<T, R>(
       onComplete?.(result, index, completed);
     }
   }
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => runWorker()));
+  const workers = await Promise.allSettled(Array.from({ length: Math.min(limit, items.length) }, () => runWorker()));
+  const failed = workers.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+  if (failed) {
+    throw failed.reason;
+  }
   return results;
 }
 
