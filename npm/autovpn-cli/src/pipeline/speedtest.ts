@@ -20,6 +20,8 @@ type FetchLike = (url: string, init?: Record<string, unknown>) => Promise<{
   arrayBuffer?: () => Promise<ArrayBuffer>;
 }>;
 
+const PROBE_MAX_ATTEMPTS = 2;
+
 interface ResolvedPythonCli {
   command: string;
   args: string[];
@@ -239,6 +241,41 @@ function requireOkResponse(response: Awaited<ReturnType<FetchLike>>, allowedStat
   }
 }
 
+function isTransientProbeError(error: unknown): boolean {
+  const name = error instanceof Error ? error.name : '';
+  const message = error instanceof Error ? error.message : String(error);
+  const code = typeof error === 'object' && error !== null && 'code' in error
+    ? String((error as { code?: unknown }).code ?? '')
+    : '';
+  const statusMatch = /\bstatus(?:\s+code)?\s+(\d{3})\b/i.exec(message);
+  if (statusMatch) {
+    const status = Number(statusMatch[1]);
+    return status >= 500 && status <= 599;
+  }
+  if (['AbortError', 'TimeoutError'].includes(name)) {
+    return true;
+  }
+  if (['ECONNRESET', 'ETIMEDOUT'].includes(code.toUpperCase())) {
+    return true;
+  }
+  return /\b(?:timeout|timed out|ECONNRESET|ETIMEDOUT|socket|fetch failed)\b/i.test(message);
+}
+
+async function retryTransientProbe<T>(operation: () => Promise<T>): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= PROBE_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      if (attempt >= PROBE_MAX_ATTEMPTS || !isTransientProbeError(error)) {
+        throw error;
+      }
+    }
+  }
+  throw lastError;
+}
+
 function socketConnect(host: string, port: number, timeoutMs: number): Promise<net.Socket> {
   return new Promise((resolve, reject) => {
     const socket = net.createConnection({ host, port });
@@ -446,12 +483,14 @@ async function probeLinksDirect(
   const now = options.now ?? defaultNow;
   const timeoutMs = Math.max(1, Number(config.timeout_seconds)) * 1000;
   return mapWithConcurrency(links, config.concurrency, async (link) => {
-    const started = now();
     try {
-      const response = await fetchWithTimeout(fetchImpl, config.probe_url, timeoutMs);
-      const elapsed = Math.max(now() - started, 1);
-      requireOkResponse(response, new Set([200, 204]));
-      return { link, reachable: true, latency_ms: Math.max(Math.round(elapsed), 1), error: '' };
+      return await retryTransientProbe(async () => {
+        const started = now();
+        const response = await fetchWithTimeout(fetchImpl, config.probe_url, timeoutMs);
+        const elapsed = Math.max(now() - started, 1);
+        requireOkResponse(response, new Set([200, 204]));
+        return { link, reachable: true, latency_ms: Math.max(Math.round(elapsed), 1), error: '' };
+      });
     } catch (error) {
       return { link, reachable: false, latency_ms: 0, error: error instanceof Error ? error.message : String(error) };
     }
@@ -467,19 +506,23 @@ async function probeLinksMihomo(
   const openRuntime = options.openMihomoRuntime ?? defaultOpenMihomoRuntime;
   const probeDelay = options.probeMihomoProxyDelay ?? defaultProbeMihomoProxyDelay;
   return mapWithConcurrency(links, config.concurrency, async (link) => {
-    let runtime: Pick<MihomoRuntime, 'controllerUrl' | 'proxyName' | 'close'> | undefined;
     try {
-      runtime = await openRuntime(link, {
-        runtimePath,
-        startupWaitSeconds: config.startup_wait_seconds,
-        env: options.env
+      return await retryTransientProbe(async () => {
+        let runtime: Pick<MihomoRuntime, 'controllerUrl' | 'proxyName' | 'close'> | undefined;
+        try {
+          runtime = await openRuntime(link, {
+            runtimePath,
+            startupWaitSeconds: config.startup_wait_seconds,
+            env: options.env
+          });
+          const latencyMs = await probeDelay(runtime.controllerUrl, runtime.proxyName, config.probe_url, config.timeout_seconds);
+          return { link, reachable: true, latency_ms: latencyMs, error: '' };
+        } finally {
+          await runtime?.close();
+        }
       });
-      const latencyMs = await probeDelay(runtime.controllerUrl, runtime.proxyName, config.probe_url, config.timeout_seconds);
-      return { link, reachable: true, latency_ms: latencyMs, error: '' };
     } catch (error) {
       return { link, reachable: false, latency_ms: 0, error: error instanceof Error ? error.message : String(error) };
-    } finally {
-      await runtime?.close();
     }
   });
 }

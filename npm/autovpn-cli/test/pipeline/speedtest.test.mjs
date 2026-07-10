@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import {
   aggregateSpeedMeasurements,
   downloadUrlViaHttpProxy,
+  probeSpeedtestLinksInNode,
   selectPipelineStageBackend,
   selectSpeedtestCandidates,
   speedtestLinksWithBackend
@@ -44,6 +45,222 @@ test('selectSpeedtestCandidates uses Python-compatible latency and link ordering
     { link: 'vmess://a', reachable: true, latency_ms: 10, error: '' },
     { link: 'vmess://down', reachable: false, latency_ms: 0, error: 'timeout' }
   ], 0), ['vmess://a', 'vmess://b', 'vmess://z']);
+});
+
+test('Node direct probe retries a transient 502 and succeeds on 204', async () => {
+  const statuses = [502, 204];
+  const results = await probeSpeedtestLinksInNode({
+    links: ['vmess://retry'],
+    config: {
+      min_download_mb_s: 1,
+      timeout_seconds: 1,
+      concurrency: 1,
+      probe_url: 'https://probe.example/204'
+    }
+  }, {
+    env: { AUTOVPN_SPEEDTEST_RUNTIME: 'direct' },
+    now: (() => {
+      const values = [100, 120, 200, 225];
+      return () => values.shift();
+    })(),
+    fetch: async () => {
+      const status = statuses.shift();
+      return { ok: status === 204, status };
+    }
+  });
+
+  assert.equal(statuses.length, 0);
+  assert.deepEqual(results, [{ link: 'vmess://retry', reachable: true, latency_ms: 25, error: '' }]);
+});
+
+test('Node direct probe exhausts bounded retries for a permanent 502', async () => {
+  let attempts = 0;
+  const results = await probeSpeedtestLinksInNode({
+    links: ['vmess://down'],
+    config: {
+      min_download_mb_s: 1,
+      timeout_seconds: 1,
+      concurrency: 1,
+      probe_url: 'https://probe.example/204'
+    }
+  }, {
+    env: { AUTOVPN_SPEEDTEST_RUNTIME: 'direct' },
+    fetch: async () => {
+      attempts += 1;
+      return { ok: false, status: 502 };
+    }
+  });
+
+  assert.equal(attempts, 2);
+  assert.deepEqual(results, [{ link: 'vmess://down', reachable: false, latency_ms: 0, error: 'unexpected status 502' }]);
+});
+
+test('Node direct probe does not retry a permanent 4xx response', async () => {
+  let attempts = 0;
+  const results = await probeSpeedtestLinksInNode({
+    links: ['vmess://rejected'],
+    config: {
+      min_download_mb_s: 1,
+      timeout_seconds: 1,
+      concurrency: 1,
+      probe_url: 'https://probe.example/204'
+    }
+  }, {
+    env: { AUTOVPN_SPEEDTEST_RUNTIME: 'direct' },
+    fetch: async () => {
+      attempts += 1;
+      return { ok: false, status: 403 };
+    }
+  });
+
+  assert.equal(attempts, 1);
+  assert.deepEqual(results, [{ link: 'vmess://rejected', reachable: false, latency_ms: 0, error: 'unexpected status 403' }]);
+});
+
+test('Node direct probe retries a timeout error', async () => {
+  let attempts = 0;
+  const results = await probeSpeedtestLinksInNode({
+    links: ['vmess://timeout'],
+    config: {
+      min_download_mb_s: 1,
+      timeout_seconds: 1,
+      concurrency: 1,
+      probe_url: 'https://probe.example/204'
+    }
+  }, {
+    env: { AUTOVPN_SPEEDTEST_RUNTIME: 'direct' },
+    fetch: async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        const error = new Error('request timed out');
+        error.name = 'TimeoutError';
+        throw error;
+      }
+      return { ok: true, status: 204 };
+    }
+  });
+
+  assert.equal(attempts, 2);
+  assert.equal(results[0].reachable, true);
+});
+
+test('Node Mihomo probe retries an unexpected 5xx controller response', async () => {
+  let attempts = 0;
+  let closes = 0;
+  const results = await probeSpeedtestLinksInNode({
+    links: ['vmess://mihomo-retry'],
+    config: {
+      min_download_mb_s: 1,
+      timeout_seconds: 1,
+      concurrency: 1,
+      probe_url: 'https://probe.example/204'
+    },
+    runtime_path: '/opt/mihomo'
+  }, {
+    env: {},
+    openMihomoRuntime: async () => ({
+      controllerUrl: 'http://127.0.0.1:9090',
+      proxyName: 'runtime-node',
+      proxies: { http: 'http://127.0.0.1:8080', https: 'http://127.0.0.1:8080' },
+      close: async () => { closes += 1; }
+    }),
+    probeMihomoProxyDelay: async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw new Error('mihomo proxy delay probe failed with status 502');
+      }
+      return 24;
+    }
+  });
+
+  assert.equal(attempts, 2);
+  assert.equal(closes, 2);
+  assert.deepEqual(results, [{ link: 'vmess://mihomo-retry', reachable: true, latency_ms: 24, error: '' }]);
+});
+
+test('Node direct download uses an alternate URL after the primary fails', async () => {
+  const calls = [];
+  const timeline = [0, 1000, 2000, 3000];
+  const results = await speedtestLinksWithBackend({
+    links: ['vmess://alternate'],
+    config: {
+      min_download_mb_s: 2,
+      timeout_seconds: 1,
+      concurrency: 1,
+      urls: ['https://primary.example/bytes', 'https://alternate.example/bytes'],
+      max_download_bytes: 2 * 1024 * 1024,
+      max_download_candidates: 1
+    }
+  }, {
+    env: { AUTOVPN_SPEEDTEST_RUNTIME: 'direct' },
+    probeLinks: async (links) => links.map((link) => ({ link, reachable: true, latency_ms: 10, error: '' })),
+    now: () => timeline.shift(),
+    fetch: async (url) => {
+      calls.push(String(url));
+      if (String(url).includes('primary')) {
+        throw new Error('fetch failed');
+      }
+      return { ok: true, status: 200, arrayBuffer: async () => new Uint8Array(2 * 1024 * 1024).buffer };
+    }
+  });
+
+  assert.deepEqual(calls, ['https://primary.example/bytes', 'https://alternate.example/bytes']);
+  assert.equal(results[0].reachable, true);
+  assert.equal(results[0].average_download_mb_s, 2);
+  assert.match(results[0].error, /primary.*fetch failed/);
+  assert.equal(results[0].average_download_mb_s >= 2, true);
+});
+
+test('Node direct download fails when all configured URLs fail', async () => {
+  const results = await speedtestLinksWithBackend({
+    links: ['vmess://all-down'],
+    config: {
+      min_download_mb_s: 1,
+      timeout_seconds: 1,
+      concurrency: 1,
+      urls: ['https://one.example/bytes', 'https://two.example/bytes'],
+      max_download_candidates: 1
+    }
+  }, {
+    env: { AUTOVPN_SPEEDTEST_RUNTIME: 'direct' },
+    probeLinks: async (links) => links.map((link) => ({ link, reachable: true, latency_ms: 10, error: '' })),
+    fetch: async (url) => {
+      throw new Error(`failed ${new URL(String(url)).hostname}`);
+    }
+  });
+
+  assert.equal(results[0].reachable, false);
+  assert.equal(results[0].average_download_mb_s, 0);
+  assert.match(results[0].error, /one\.example/);
+  assert.match(results[0].error, /two\.example/);
+});
+
+test('Node direct download averages only successful endpoint samples', async () => {
+  const timeline = [0, 1000, 2000, 3000, 4000, 5000];
+  const results = await speedtestLinksWithBackend({
+    links: ['vmess://samples'],
+    config: {
+      min_download_mb_s: 1,
+      timeout_seconds: 1,
+      concurrency: 1,
+      urls: ['https://one.example/bytes', 'https://failed.example/bytes', 'https://three.example/bytes'],
+      max_download_bytes: 3 * 1024 * 1024,
+      max_download_candidates: 1
+    }
+  }, {
+    env: { AUTOVPN_SPEEDTEST_RUNTIME: 'direct' },
+    probeLinks: async (links) => links.map((link) => ({ link, reachable: true, latency_ms: 10, error: '' })),
+    now: () => timeline.shift(),
+    fetch: async (url) => {
+      if (String(url).includes('failed')) {
+        throw new Error('fetch failed');
+      }
+      const bytes = String(url).includes('one.') ? 1024 * 1024 : 3 * 1024 * 1024;
+      return { ok: true, status: 200, arrayBuffer: async () => new Uint8Array(bytes).buffer };
+    }
+  });
+
+  assert.equal(results[0].average_download_mb_s, 2);
 });
 
 test('Node speedtest backend preserves order semantics, emits progress and events', async () => {

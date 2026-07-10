@@ -156,11 +156,11 @@ test('runNodePipeline blocks deploy when final node count is below the configure
   }), /final node count 2 is below deploy minimum 10/);
 });
 
-test('runNodePipeline streams extracted links into speedtest before all sources finish', async () => {
+test('runNodePipeline globally probes and ranks streamed links before bounded downloads', async () => {
   const projectRoot = await makeProject();
   const profilePath = path.join(projectRoot, 'state', 'profile.toml');
   await writeFile(profilePath, [
-    await readFile(profilePath, 'utf8'),
+    (await readFile(profilePath, 'utf8')).replace('max_download_candidates = 0', 'max_download_candidates = 2'),
     '',
     '[sources.slow_fixture]',
     'url = "https://fixture.example/slow"',
@@ -176,8 +176,11 @@ test('runNodePipeline streams extracted links into speedtest before all sources 
   const firstLink = vmessLink('first', 'one.example');
   const duplicateFirstLink = vmessLink('duplicate-first', 'one.example');
   const secondLink = vmessLink('second', 'two.example');
-  let slowSourceFinished = false;
-  const calls = [];
+  const thirdLink = vmessLink('third', 'three.example');
+  const probed = [];
+  const downloaded = [];
+  const availabilityCalls = [];
+  const events = [];
 
   const result = await runNodePipeline({
     projectRoot,
@@ -190,33 +193,54 @@ test('runNodePipeline streams extracted links into speedtest before all sources 
       VPN_AUTOMATION_PROFILE_PATH: profilePath
     },
     now: () => new Date('2026-06-29T01:02:03Z'),
+    emit: (event) => events.push(event),
     stages: {
       extract: async ({ source_name }, stream) => {
         if (source_name === 'fixture') {
           await stream?.onLinks?.([firstLink, duplicateFirstLink]);
           return { source_name, requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink, duplicateFirstLink] };
         }
-        await new Promise((resolve) => setTimeout(resolve, 60));
-        slowSourceFinished = true;
-        await stream?.onLinks?.([secondLink]);
-        return { source_name, requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [secondLink] };
+        await stream?.onLinks?.([secondLink, thirdLink]);
+        return { source_name, requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [secondLink, thirdLink] };
       },
       speedtest: async () => {
         throw new Error('batch speedtest must not run when streaming is available');
       },
-      speedtestLink: async (link) => {
-        calls.push({ stage: 'speedtest', name: vmessName(link), slowSourceFinished });
-        return { link, reachable: true, average_download_mb_s: 3, latency_ms: 20, error: '' };
+      speedtestProbe: async (links) => {
+        probed.push(...links);
+        return links.map((link) => ({
+          link,
+          reachable: true,
+          latency_ms: link === firstLink ? 30 : link === secondLink ? 10 : 20,
+          error: ''
+        }));
       },
-      availability: async (results) => results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} })),
+      speedtestLink: async (link) => {
+        downloaded.push(link);
+        return link === thirdLink
+          ? { link, reachable: false, average_download_mb_s: 0, latency_ms: 0, error: 'all downloads failed' }
+          : { link, reachable: true, average_download_mb_s: 3, latency_ms: 0, error: '' };
+      },
+      availability: async (results) => {
+        availabilityCalls.push(...results.map((result) => result.link));
+        return results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} }));
+      },
       countryLookup: () => 'US',
       obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { main_module: '_worker.js', modules: [] } })
     }
   });
 
   assert.equal(result.run_status, 'success');
-  assert.deepEqual(calls.map((call) => call.name), ['first', 'second']);
-  assert.equal(calls[0].slowSourceFinished, false);
+  assert.deepEqual(probed.map(vmessName), ['first', 'second', 'third']);
+  assert.deepEqual(downloaded.map(vmessName), ['second', 'third']);
+  assert.deepEqual(availabilityCalls.map(vmessName), ['second']);
+  assert.equal(downloaded.includes(firstLink), false);
+  const selected = events.find((event) => event.type === 'speedtest_selected');
+  assert.deepEqual({ reachable_count: selected.reachable_count, candidate_count: selected.candidate_count }, {
+    reachable_count: 3,
+    candidate_count: 2
+  });
+  assert.equal(events.filter((event) => event.type === 'speedtest_probe_result').length, 3);
 });
 
 test('runNodePipeline forwards native speedtest progress events to the job log', async () => {
@@ -270,18 +294,14 @@ test('runNodePipeline forwards native speedtest progress events to the job log',
   assert.ok(events.some((event) => event.type === 'speedtest_result' && event.link === firstLink));
 });
 
-test('runNodePipeline persists streamed availability results before all speedtests finish', async () => {
+test('runNodePipeline starts availability only after selected speedtests finish', async () => {
   const projectRoot = await makeProject();
-  const events = [];
   const firstLink = vmessLink('first', 'one.example');
   const secondLink = vmessLink('second', 'two.example');
-  let releaseSecondSpeedtest;
-  let firstAvailabilityEvent;
-  const firstAvailabilitySeen = new Promise((resolve) => {
-    firstAvailabilityEvent = resolve;
-  });
+  let selectedSpeedtestsFinished = 0;
+  let availabilityObservedCompleted = 0;
 
-  const runPromise = runNodePipeline({
+  await runNodePipeline({
     projectRoot,
     skipDeploy: true,
     skipVerify: true,
@@ -292,12 +312,6 @@ test('runNodePipeline persists streamed availability results before all speedtes
       VPN_AUTOMATION_PROFILE_PATH: path.join(projectRoot, 'state', 'profile.toml')
     },
     now: () => new Date('2026-06-29T01:02:03Z'),
-    emit: (event) => {
-      events.push(event);
-      if (event.type === 'availability_link_result' && event.link === firstLink) {
-        firstAvailabilityEvent(event);
-      }
-    },
     stages: {
       extract: async () => ({
         source_name: 'fixture',
@@ -306,27 +320,23 @@ test('runNodePipeline persists streamed availability results before all speedtes
         failed_iterations: 0,
         links: [firstLink, secondLink]
       }),
+      speedtestProbe: async (links) => links.map((link, index) => ({ link, reachable: true, latency_ms: 10 + index, error: '' })),
       speedtestLink: async (link) => {
-        if (link === secondLink) {
-          await new Promise((resolve) => {
-            releaseSecondSpeedtest = resolve;
-          });
-        }
+        await new Promise((resolve) => setTimeout(resolve, link === firstLink ? 5 : 10));
+        selectedSpeedtestsFinished += 1;
         return { link, reachable: true, average_download_mb_s: 3, latency_ms: 20, error: '' };
       },
-      availability: async (results) => results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} })),
+      availability: async (results) => {
+        availabilityObservedCompleted = selectedSpeedtestsFinished;
+        return results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} }));
+      },
       countryLookup: () => 'US',
       obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
     }
   });
 
-  await firstAvailabilitySeen;
-  const artifactDir = events.find((event) => event.type === 'run_started').artifact_dir;
-  assert.deepEqual((await readFile(path.join(artifactDir, 'vpn_node_availability.txt'), 'utf8')).trim().split(/\n/), [firstLink]);
-  assert.deepEqual(JSON.parse(await readFile(path.join(artifactDir, 'vpn_node_availability_report.json'), 'utf8')).map((result) => result.link), [firstLink]);
-
-  releaseSecondSpeedtest();
-  await runPromise;
+  assert.equal(selectedSpeedtestsFinished, 2);
+  assert.equal(availabilityObservedCompleted, 2);
 });
 
 test('runNodePipeline fails fast when no links pass speedtest', async () => {
