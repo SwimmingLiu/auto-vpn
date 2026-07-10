@@ -102,6 +102,23 @@ test('evaluateProviderResponse rejects challenge pages, bad hosts, http errors, 
   }).matched_phrase, 'blocked');
 });
 
+test('evaluateProviderResponse accepts the expected ChatGPT iOS availability response', () => {
+  const result = evaluateProviderResponse({
+    name: 'chatgpt_ios',
+    url: 'https://ios.chat.openai.com/',
+    allowed_hosts: ['ios.chat.openai.com'],
+    negative_phrases: []
+  }, {
+    final_url: 'https://ios.chat.openai.com/',
+    status_code: 403,
+    title: '',
+    body: 'Request is not allowed. Please try again later.'
+  });
+
+  assert.equal(result.passed, true);
+  assert.equal(result.reason, 'ok');
+});
+
 test('availability fixture output matches Python golden output', async () => {
   const input = JSON.parse(await readFile(path.join(fixtureDir, 'input.json'), 'utf8'));
   const expected = JSON.parse(await readFile(path.join(fixtureDir, 'output.json'), 'utf8'));
@@ -211,7 +228,7 @@ test('Node availability backend can run direct fetch runtime without Python fall
       custom: { url: 'https://custom.example/', enabled: true, allowed_hosts: ['custom.example'], negative_phrases: ['blocked'] }
     }
   }, {
-    env: { AUTOVPN_NO_PYTHON: '1' },
+    env: { AUTOVPN_NO_PYTHON: '1', AUTOVPN_AVAILABILITY_RUNTIME: 'direct' },
     fetch: async (url) => {
       calls.push(String(url));
       return {
@@ -229,7 +246,7 @@ test('Node availability backend can run direct fetch runtime without Python fall
   assert.equal(result[0].provider_results.custom.final_url, 'https://custom.example/');
 });
 
-test('Node availability backend can check providers through Mihomo proxy when requested', async () => {
+test('Node availability backend checks providers through Mihomo proxy by default', async () => {
   const opened = [];
   const closed = [];
   const fetches = [];
@@ -241,7 +258,7 @@ test('Node availability backend can check providers through Mihomo proxy when re
       custom: { url: 'http://custom.example/ok', enabled: true, allowed_hosts: ['custom.example'], negative_phrases: ['blocked'] }
     }
   }, {
-    env: { AUTOVPN_AVAILABILITY_RUNTIME: 'mihomo' },
+    env: {},
     openMihomoRuntime: async (link, options) => {
       opened.push({ link, options });
       return {
@@ -267,7 +284,7 @@ test('Node availability backend can check providers through Mihomo proxy when re
     options: {
       runtimePath: '/opt/mihomo',
       startupWaitSeconds: 1,
-      env: { AUTOVPN_AVAILABILITY_RUNTIME: 'mihomo' }
+      env: {}
     }
   }]);
   assert.deepEqual(fetches, [{

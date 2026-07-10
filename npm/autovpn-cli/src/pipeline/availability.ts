@@ -231,6 +231,48 @@ export function evaluateProviderResponse(
     };
   }
 
+  if (target.name.trim().toLowerCase().replaceAll('-', '_') === 'chatgpt_ios') {
+    const body = response.body.toLowerCase();
+    if (body.includes('you may be connected to a disallowed isp')) {
+      return {
+        provider: target.name,
+        passed: false,
+        reason: 'disallowed_isp',
+        status_code: statusCode,
+        final_url: finalUrl,
+        matched_phrase: ''
+      };
+    }
+    if (body.includes('request is not allowed. please try again later.')) {
+      return {
+        provider: target.name,
+        passed: true,
+        reason: 'ok',
+        status_code: statusCode,
+        final_url: finalUrl,
+        matched_phrase: ''
+      };
+    }
+    if (body.includes('sorry, you have been blocked')) {
+      return {
+        provider: target.name,
+        passed: false,
+        reason: 'blocked',
+        status_code: statusCode,
+        final_url: finalUrl,
+        matched_phrase: ''
+      };
+    }
+    return {
+      provider: target.name,
+      passed: false,
+      reason: 'unlock_failed',
+      status_code: statusCode,
+      final_url: finalUrl,
+      matched_phrase: ''
+    };
+  }
+
   if (statusCode >= 400) {
     return {
       provider: target.name,
@@ -744,7 +786,8 @@ async function checkBatchInNode(input: AvailabilityBatchInput, options: Availabi
     return [];
   }
   const targets = normalizeProviderTargets(input.targets);
-  const useMihomoRuntime = String((options.env ?? process.env).AUTOVPN_AVAILABILITY_RUNTIME ?? '').trim().toLowerCase() === 'mihomo';
+  const requestedRuntime = String((options.env ?? process.env).AUTOVPN_AVAILABILITY_RUNTIME ?? '').trim().toLowerCase();
+  const useMihomoRuntime = requestedRuntime !== 'direct';
   const checkLinkAvailability = options.checkLinkAvailability ?? ((speedResult: SpeedTestResult, config: Record<string, unknown>) => (
     useMihomoRuntime
       ? checkLinkAvailabilityMihomo(speedResult, config, {
