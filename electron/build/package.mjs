@@ -578,7 +578,7 @@ export function stageAutoVpnCliRuntime(projectRoot, options = {}) {
   });
 
   ensureCleanDir(paths.runtimeRoot);
-  for (const entry of ['bin', 'dist', 'lib']) {
+  for (const entry of ['bin', 'dist']) {
     fs.cpSync(path.join(paths.sourceRoot, entry), path.join(paths.runtimeRoot, entry), { recursive: true });
   }
   fs.copyFileSync(path.join(paths.sourceRoot, 'package.json'), path.join(paths.runtimeRoot, 'package.json'));

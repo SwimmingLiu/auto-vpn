@@ -1,16 +1,3 @@
-import path from 'node:path';
-import { spawn as defaultSpawn, ChildProcess } from 'node:child_process';
-import { mergeProjectEnv } from '../runtime/env.js';
-
-export type PipelineStageBackend = 'node' | 'python';
-
-type SpawnLike = (command: string, args: string[], options?: Record<string, unknown>) => ChildProcess;
-
-interface ResolvedPythonCli {
-  command: string;
-  args: string[];
-}
-
 export interface WorkerBuildConfigInput {
   environment_name?: string;
   entry_filename?: string;
@@ -53,13 +40,7 @@ export interface WorkerBuildArtifacts {
   manifest: Record<string, unknown>;
 }
 
-export interface ObfuscateBackendOptions {
-  cwd?: string;
-  env?: NodeJS.ProcessEnv;
-  spawn?: SpawnLike;
-  resolvePythonCli?: () => ResolvedPythonCli | Promise<ResolvedPythonCli>;
-  pythonObfuscate?: (input: ObfuscateInput) => WorkerBuildArtifacts | Promise<WorkerBuildArtifacts>;
-}
+export interface ObfuscateBackendOptions {}
 
 const DEFAULT_WORKER_BUILD_CONFIG: WorkerBuildConfigResolved = {
   environment_name: 'production',
@@ -75,27 +56,6 @@ const DEFAULT_WORKER_BUILD_CONFIG: WorkerBuildConfigResolved = {
   enable_identifier_randomization: true,
   emit_sidecar_modules: true
 };
-
-const PYTHON_OBFUSCATE_HELPER = `
-import json
-import sys
-from vpn_automation.config.models import WorkerBuildConfig
-from vpn_automation.pipeline.worker_build import build_worker_artifacts
-
-payload = json.load(sys.stdin)
-config = WorkerBuildConfig(**(payload.get("config") or {}))
-artifacts = build_worker_artifacts(payload["rendered_source"], config, payload["secret_query"])
-json.dump(
-    {
-        "transformed_source": artifacts.transformed_source,
-        "modules": artifacts.modules,
-        "manifest": artifacts.manifest,
-    },
-    sys.stdout,
-    ensure_ascii=False,
-)
-sys.stdout.write("\\n")
-`;
 
 function jsonStringLiteral(value: string): string {
   return JSON.stringify(value);
@@ -224,66 +184,7 @@ export function buildWorkerArtifacts(
   };
 }
 
-export function selectPipelineStageBackend(stage: string, env: NodeJS.ProcessEnv = process.env): PipelineStageBackend {
-  void stage;
-  void env;
-  return 'node';
-}
-
-async function defaultResolvePythonCli(env: NodeJS.ProcessEnv): Promise<ResolvedPythonCli> {
-  // @ts-expect-error Phase 1 runner remains plain ESM JavaScript.
-  const runner = await import('../../lib/runner.mjs');
-  return runner.resolveOrInstallPythonCli({ env });
-}
-
-function pythonCommandFor(resolved: ResolvedPythonCli): string {
-  const command = resolved.command;
-  const name = path.basename(command).toLowerCase();
-  if (['autovpn', 'autovpn.exe'].includes(name)) {
-    const executable = process.platform === 'win32' ? 'python.exe' : 'python';
-    return path.join(path.dirname(command), executable);
-  }
-  return process.platform === 'win32' ? 'python.exe' : 'python3';
-}
-
-async function obfuscateWithPython(input: ObfuscateInput, options: ObfuscateBackendOptions): Promise<WorkerBuildArtifacts> {
-  const env = mergeProjectEnv(options.cwd ?? process.cwd(), options.env ?? process.env);
-  const resolved = options.resolvePythonCli ? await options.resolvePythonCli() : await defaultResolvePythonCli(env);
-  const child = (options.spawn ?? defaultSpawn)(pythonCommandFor(resolved), ['-c', PYTHON_OBFUSCATE_HELPER], {
-    cwd: options.cwd ?? process.cwd(),
-    env,
-    stdio: ['pipe', 'pipe', 'pipe']
-  });
-  let stdout = '';
-  let stderr = '';
-  child.stdout?.on('data', (chunk) => {
-    stdout += String(chunk);
-  });
-  child.stderr?.on('data', (chunk) => {
-    stderr += String(chunk);
-  });
-  const completion = new Promise<WorkerBuildArtifacts>((resolve, reject) => {
-    child.on('error', reject);
-    child.on('close', (code) => {
-      if (code !== 0) {
-        reject(new Error(`Python obfuscate backend failed with exit code ${code}: ${stderr.trim()}`));
-        return;
-      }
-      try {
-        resolve(JSON.parse(stdout) as WorkerBuildArtifacts);
-      } catch (error) {
-        reject(new Error(`Python obfuscate backend returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`));
-      }
-    });
-  });
-  child.stdin?.write(JSON.stringify(input));
-  child.stdin?.end();
-  return completion;
-}
-
 export async function buildWorkerArtifactsWithBackend(input: ObfuscateInput, options: ObfuscateBackendOptions = {}): Promise<WorkerBuildArtifacts> {
-  if (selectPipelineStageBackend('obfuscate', options.env ?? process.env) === 'python') {
-    return options.pythonObfuscate ? options.pythonObfuscate(input) : obfuscateWithPython(input, options);
-  }
+  void options;
   return buildWorkerArtifacts(input.rendered_source, input.config, input.secret_query);
 }

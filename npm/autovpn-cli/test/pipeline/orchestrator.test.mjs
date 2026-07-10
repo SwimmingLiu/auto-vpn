@@ -9,7 +9,7 @@ import { resumeNodePipeline, retryNodePipelineStage, runNodePipeline } from '../
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '../../../..');
-const fixtureDir = path.join(repoRoot, 'tests', 'fixtures', 'node-migration', 'pipeline', 'orchestrator');
+const fixtureDir = path.join(repoRoot, 'npm', 'autovpn-cli', 'test', 'fixtures', 'node-migration', 'pipeline', 'orchestrator');
 
 function vmessLink(name, address) {
   return `vmess://${Buffer.from(JSON.stringify({

@@ -46,7 +46,7 @@ test('stageAutoVpnCliRuntime builds, copies, and installs the production CLI', (
   assert.equal(typeof packageBuild.stageAutoVpnCliRuntime, 'function');
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vpn-staged-cli-'));
   const sourceRoot = path.join(projectRoot, 'npm', 'autovpn-cli');
-  for (const relativePath of ['bin/autovpn.mjs', 'dist/cli/main.js', 'lib/runtime.js']) {
+  for (const relativePath of ['bin/autovpn.mjs', 'dist/cli/main.js']) {
     const filePath = path.join(sourceRoot, relativePath);
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(filePath, relativePath, 'utf-8');
@@ -60,7 +60,6 @@ test('stageAutoVpnCliRuntime builds, copies, and installs the production CLI', (
 
   assert.equal(fs.readFileSync(staged.runtimeEntry, 'utf-8'), 'bin/autovpn.mjs');
   assert.equal(fs.existsSync(path.join(staged.runtimeRoot, 'dist', 'cli', 'main.js')), true);
-  assert.equal(fs.existsSync(path.join(staged.runtimeRoot, 'lib', 'runtime.js')), true);
   assert.deepEqual(calls.map(({ command, args }) => ({ command, args })), [
     { command: 'npm', args: ['run', 'build', '--prefix', sourceRoot] },
     { command: 'npm', args: packageBuild.buildAutoVpnCliProductionInstallArgs(staged.runtimeRoot) }
@@ -80,7 +79,7 @@ test('staged packaged CLI executes version and profile commands', () => {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vpn-packaged-cli-smoke-'));
   const testSourceRoot = path.join(projectRoot, 'npm', 'autovpn-cli');
   fs.mkdirSync(testSourceRoot, { recursive: true });
-  for (const entry of ['bin', 'dist', 'lib']) {
+  for (const entry of ['bin', 'dist']) {
     fs.cpSync(path.join(sourceCliRoot, entry), path.join(testSourceRoot, entry), { recursive: true });
   }
   fs.copyFileSync(path.join(sourceCliRoot, 'package.json'), path.join(testSourceRoot, 'package.json'));

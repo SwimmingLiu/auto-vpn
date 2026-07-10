@@ -47,7 +47,7 @@ export interface LogOptions {
 }
 
 export interface AutoVpnBackend {
-  kind: 'python' | 'node';
+  kind: 'node';
   run(options: RunOptions): AsyncIterable<AutoVpnEvent>;
   retryStage(options: RetryOptions): AsyncIterable<AutoVpnEvent>;
   resume(options: ResumeOptions): AsyncIterable<AutoVpnEvent>;
@@ -57,5 +57,3 @@ export interface AutoVpnBackend {
   readLogs(options: LogOptions): AsyncIterable<string>;
   executeCli(argv: string[]): Promise<number>;
 }
-
-export type RunForwarder = (argv: string[], options?: { env?: NodeJS.ProcessEnv; cwd?: string }) => Promise<number>;

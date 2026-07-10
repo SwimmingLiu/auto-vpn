@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { EventEmitter } from 'node:events';
 import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -10,14 +9,13 @@ import {
   aggregateSpeedMeasurements,
   downloadUrlViaHttpProxy,
   probeSpeedtestLinksInNode,
-  selectPipelineStageBackend,
   selectSpeedtestCandidates,
   speedtestLinksWithBackend
 } from '../../dist/pipeline/speedtest.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '../../../..');
-const fixtureDir = path.join(repoRoot, 'tests', 'fixtures', 'node-migration', 'pipeline', 'speedtest');
+const fixtureDir = path.join(repoRoot, 'npm', 'autovpn-cli', 'test', 'fixtures', 'node-migration', 'pipeline', 'speedtest');
 
 function streamingBody(byteLength) {
   let sent = false;
@@ -725,58 +723,11 @@ test('Node speedtest backend downloads candidate URLs through Mihomo proxy when 
   }]);
 });
 
-test('speedtest backend selection always uses the Node engine', async () => {
-  assert.equal(selectPipelineStageBackend('speedtest', {}), 'node');
-  assert.equal(selectPipelineStageBackend('speedtest', { AUTOVPN_PIPELINE_BACKEND: ' HYBRID ' }), 'node');
-  assert.equal(selectPipelineStageBackend('speedtest', { AUTOVPN_PIPELINE_BACKEND: ' PYTHON ' }), 'node');
-  assert.equal(selectPipelineStageBackend('speedtest', { AUTOVPN_STAGE_BACKEND_SPEEDTEST: ' python ' }), 'node');
-
+test('speedtest backend API preserves Node dependency injection', async () => {
   const input = { links: ['vmess://node'], config: { min_download_mb_s: 1, timeout_seconds: 20, concurrency: 1, urls: [] } };
-  const fallbackCalls = [];
-  const fallback = async (payload) => {
-    fallbackCalls.push(payload);
-    return [{ link: payload.links[0], reachable: true, average_download_mb_s: 0, latency_ms: 10, error: '' }];
-  };
 
   assert.deepEqual(await speedtestLinksWithBackend(input, {
-    env: {},
     probeLinks: async () => [{ link: 'vmess://node', reachable: true, latency_ms: 10, error: '' }],
     testLink: async (link) => ({ link, reachable: true, average_download_mb_s: 0, latency_ms: 10, error: '' })
   }), [{ link: 'vmess://node', reachable: true, average_download_mb_s: 0, latency_ms: 10, error: '' }]);
-  assert.deepEqual(await speedtestLinksWithBackend(input, {
-    env: { AUTOVPN_STAGE_BACKEND_SPEEDTEST: 'python' },
-    pythonSpeedtest: fallback,
-    probeLinks: async () => [{ link: 'vmess://node', reachable: true, latency_ms: 10, error: '' }],
-    testLink: async (link) => ({ link, reachable: true, average_download_mb_s: 0, latency_ms: 10, error: '' })
-  }), [{ link: 'vmess://node', reachable: true, average_download_mb_s: 0, latency_ms: 10, error: '' }]);
-  assert.deepEqual(fallbackCalls, []);
-});
-
-test('speedtest ignores legacy Python rollback env without spawning Python', async () => {
-  const spawns = [];
-  const input = { links: [], config: { min_download_mb_s: 1, timeout_seconds: 20, concurrency: 1, urls: [] } };
-  const result = await speedtestLinksWithBackend(input, {
-    env: { AUTOVPN_STAGE_BACKEND_SPEEDTEST: 'python' },
-    resolvePythonCli: () => ({ command: '/opt/autovpn/.venv/bin/autovpn', args: [] }),
-    spawn: (command, args, options) => {
-      spawns.push({ command, args, options });
-      const child = new EventEmitter();
-      child.stdout = new EventEmitter();
-      child.stderr = new EventEmitter();
-      child.stdin = {
-        write(chunk) {
-          this.input = String(chunk);
-        },
-        end() {
-          JSON.parse(this.input);
-          child.stdout.emit('data', '[]\n');
-          child.emit('close', 0, null);
-        }
-      };
-      return child;
-    }
-  });
-
-  assert.deepEqual(result, []);
-  assert.equal(spawns.length, 0);
 });

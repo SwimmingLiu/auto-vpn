@@ -1,8 +1,5 @@
-import path from 'node:path';
-import { spawn as defaultSpawn, ChildProcess } from 'node:child_process';
 import net from 'node:net';
 import tls from 'node:tls';
-import { mergeProjectEnv } from '../runtime/env.js';
 import {
   openMihomoRuntime as defaultOpenMihomoRuntime,
   probeMihomoProxyDelay as defaultProbeMihomoProxyDelay,
@@ -10,9 +7,6 @@ import {
   OpenMihomoRuntimeOptions
 } from './proxy-runtime.js';
 
-export type PipelineStageBackend = 'node' | 'python';
-
-type SpawnLike = (command: string, args: string[], options?: Record<string, unknown>) => ChildProcess;
 type FetchLike = (url: string, init?: Record<string, unknown>) => Promise<{
   ok?: boolean;
   status?: number;
@@ -21,11 +15,6 @@ type FetchLike = (url: string, init?: Record<string, unknown>) => Promise<{
 }>;
 
 const PROBE_MAX_ATTEMPTS = 2;
-
-interface ResolvedPythonCli {
-  command: string;
-  args: string[];
-}
 
 export interface SpeedTestConfigInput {
   min_download_mb_s: number;
@@ -62,38 +51,16 @@ export interface SpeedTestInput {
 export interface SpeedTestBackendOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
-  spawn?: SpawnLike;
   fetch?: FetchLike;
   now?: () => number;
-  resolvePythonCli?: () => ResolvedPythonCli | Promise<ResolvedPythonCli>;
   openMihomoRuntime?: (link: string, options: OpenMihomoRuntimeOptions) => Promise<Pick<MihomoRuntime, 'controllerUrl' | 'proxyName' | 'proxies' | 'close'>>;
   probeMihomoProxyDelay?: (controllerUrl: string, proxyName: string, probeUrl: string, timeoutSeconds: number) => Promise<number>;
   downloadUrlViaHttpProxy?: (url: string, proxyUrl: string, maxBytes: number, timeoutSeconds: number) => Promise<number>;
   probeLinks?: (links: string[], config: Required<SpeedTestConfigInput>, options: { runtime_path: string }) => ProbeResult[] | Promise<ProbeResult[]>;
   testLink?: (link: string, config: Required<SpeedTestConfigInput>, options: { runtime_path: string }) => SpeedTestResult | Promise<SpeedTestResult>;
-  pythonSpeedtest?: (input: SpeedTestInput) => SpeedTestResult[] | Promise<SpeedTestResult[]>;
   progressCallback?: (message: string) => void;
   eventCallback?: (eventType: string, payload: Record<string, unknown>) => void;
 }
-
-const PYTHON_SPEEDTEST_HELPER = `
-import json
-import sys
-from vpn_automation.config.models import SpeedTestConfig
-from vpn_automation.pipeline.speedtest import speedtest_links
-
-payload = json.load(sys.stdin)
-output = [
-    item.__dict__
-    for item in speedtest_links(
-        payload.get("links", []),
-        SpeedTestConfig(**payload["config"]),
-        runtime_path=payload.get("runtime_path", ""),
-    )
-]
-json.dump(output, sys.stdout, ensure_ascii=False)
-sys.stdout.write("\\n")
-`;
 
 export function aggregateSpeedMeasurements(values: number[]): number {
   if (values.length === 0) {
@@ -723,67 +690,7 @@ async function speedtestInNode(input: SpeedTestInput, options: SpeedTestBackendO
   return results;
 }
 
-export function selectPipelineStageBackend(stage: string, env: NodeJS.ProcessEnv = process.env): PipelineStageBackend {
-  void stage;
-  void env;
-  return 'node';
-}
-
-async function defaultResolvePythonCli(env: NodeJS.ProcessEnv): Promise<ResolvedPythonCli> {
-  // @ts-expect-error Phase 1 runner remains plain ESM JavaScript.
-  const runner = await import('../../lib/runner.mjs');
-  return runner.resolveOrInstallPythonCli({ env });
-}
-
-function pythonCommandFor(resolved: ResolvedPythonCli): string {
-  const command = resolved.command;
-  const name = path.basename(command).toLowerCase();
-  if (['autovpn', 'autovpn.exe'].includes(name)) {
-    const executable = process.platform === 'win32' ? 'python.exe' : 'python';
-    return path.join(path.dirname(command), executable);
-  }
-  return process.platform === 'win32' ? 'python.exe' : 'python3';
-}
-
-async function speedtestWithPython(input: SpeedTestInput, options: SpeedTestBackendOptions): Promise<SpeedTestResult[]> {
-  const env = mergeProjectEnv(options.cwd ?? process.cwd(), options.env ?? process.env);
-  const resolved = options.resolvePythonCli ? await options.resolvePythonCli() : await defaultResolvePythonCli(env);
-  const child = (options.spawn ?? defaultSpawn)(pythonCommandFor(resolved), ['-c', PYTHON_SPEEDTEST_HELPER], {
-    cwd: options.cwd ?? process.cwd(),
-    env,
-    stdio: ['pipe', 'pipe', 'pipe']
-  });
-  let stdout = '';
-  let stderr = '';
-  child.stdout?.on('data', (chunk) => {
-    stdout += String(chunk);
-  });
-  child.stderr?.on('data', (chunk) => {
-    stderr += String(chunk);
-  });
-  const completion = new Promise<SpeedTestResult[]>((resolve, reject) => {
-    child.on('error', reject);
-    child.on('close', (code) => {
-      if (code !== 0) {
-        reject(new Error(`Python speedtest backend failed with exit code ${code}: ${stderr.trim()}`));
-        return;
-      }
-      try {
-        resolve(JSON.parse(stdout) as SpeedTestResult[]);
-      } catch (error) {
-        reject(new Error(`Python speedtest backend returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`));
-      }
-    });
-  });
-  child.stdin?.write(JSON.stringify(input));
-  child.stdin?.end();
-  return completion;
-}
-
 export async function speedtestLinksWithBackend(input: SpeedTestInput, options: SpeedTestBackendOptions = {}): Promise<SpeedTestResult[]> {
-  if (selectPipelineStageBackend('speedtest', options.env ?? process.env) === 'python') {
-    return options.pythonSpeedtest ? options.pythonSpeedtest(input) : speedtestWithPython(input, options);
-  }
   return speedtestInNode(input, options);
 }
 

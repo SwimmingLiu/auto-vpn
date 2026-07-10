@@ -1,9 +1,5 @@
 import crypto from 'node:crypto';
-import path from 'node:path';
 import { spawn as defaultSpawn, ChildProcess } from 'node:child_process';
-import { mergeProjectEnv } from '../runtime/env.js';
-
-export type PipelineStageBackend = 'node' | 'python';
 
 type SpawnLike = (command: string, args: string[], options?: Record<string, unknown>) => ChildProcess;
 type FetchLike = (url: string, init?: Record<string, unknown>) => Promise<{
@@ -13,11 +9,6 @@ type FetchLike = (url: string, init?: Record<string, unknown>) => Promise<{
 }>;
 type CurlFetchLike = (url: string, proxyUrl: string) => Promise<string>;
 type ExtractEventCallback = (type: string, payload: Record<string, unknown>) => void;
-
-interface ResolvedPythonCli {
-  command: string;
-  args: string[];
-}
 
 export interface SourceConfigInput {
   url: string;
@@ -55,37 +46,13 @@ export interface ExtractBackendOptions {
   curlFetch?: CurlFetchLike;
   eventCallback?: ExtractEventCallback;
   linksCallback?: (links: string[]) => void | Promise<void>;
-  resolvePythonCli?: () => ResolvedPythonCli | Promise<ResolvedPythonCli>;
   fetchSourceLinks?: (input: ExtractInput) => ExtractedSourceResult | Promise<ExtractedSourceResult>;
-  pythonExtract?: (input: ExtractInput) => ExtractedSourceResult | Promise<ExtractedSourceResult>;
 }
 
 export interface RuntimeSourceUrlOptions {
   randomInt?: (start: number, end: number) => number;
   timeNow?: () => number;
 }
-
-const PYTHON_EXTRACT_HELPER = `
-import json
-import sys
-from vpn_automation.config.models import SourceConfig
-from vpn_automation.pipeline.extract import fetch_source_links
-
-payload = json.load(sys.stdin)
-result = fetch_source_links(payload["source_name"], SourceConfig(**payload["source"]))
-json.dump(
-    {
-        "source_name": result.source_name,
-        "requested_iterations": result.requested_iterations,
-        "successful_iterations": result.successful_iterations,
-        "failed_iterations": result.failed_iterations,
-        "links": result.links,
-    },
-    sys.stdout,
-    ensure_ascii=False,
-)
-sys.stdout.write("\\n")
-`;
 
 function defaultRandomInt(start: number, end: number): number {
   return Math.floor(Math.random() * (end - start + 1)) + start;
@@ -197,28 +164,6 @@ export function extractLinksFromPlaintext(sourceName: string, plaintext: string)
   const psName = parts[0].trim() || sourceName;
   const jsonText = parts[1].trim();
   return [generateVmessLink(payloadFromOutboundConfig(psName, jsonText))];
-}
-
-export function selectPipelineStageBackend(stage: string, env: NodeJS.ProcessEnv = process.env): PipelineStageBackend {
-  void stage;
-  void env;
-  return 'node';
-}
-
-async function defaultResolvePythonCli(env: NodeJS.ProcessEnv): Promise<ResolvedPythonCli> {
-  // @ts-expect-error Phase 1 runner remains plain ESM JavaScript.
-  const runner = await import('../../lib/runner.mjs');
-  return runner.resolveOrInstallPythonCli({ env });
-}
-
-function pythonCommandFor(resolved: ResolvedPythonCli): string {
-  const command = resolved.command;
-  const name = path.basename(command).toLowerCase();
-  if (['autovpn', 'autovpn.exe'].includes(name)) {
-    const executable = process.platform === 'win32' ? 'python.exe' : 'python';
-    return path.join(path.dirname(command), executable);
-  }
-  return process.platform === 'win32' ? 'python.exe' : 'python3';
 }
 
 function numberOrDefault(value: unknown, fallback: number): number {
@@ -484,44 +429,6 @@ async function fetchSourceLinksInNode(input: ExtractInput, options: ExtractBacke
   };
 }
 
-async function extractWithPython(input: ExtractInput, options: ExtractBackendOptions): Promise<ExtractedSourceResult> {
-  const env = mergeProjectEnv(options.cwd ?? process.cwd(), options.env ?? process.env);
-  const resolved = options.resolvePythonCli ? await options.resolvePythonCli() : await defaultResolvePythonCli(env);
-  const child = (options.spawn ?? defaultSpawn)(pythonCommandFor(resolved), ['-c', PYTHON_EXTRACT_HELPER], {
-    cwd: options.cwd ?? process.cwd(),
-    env,
-    stdio: ['pipe', 'pipe', 'pipe']
-  });
-  let stdout = '';
-  let stderr = '';
-  child.stdout?.on('data', (chunk) => {
-    stdout += String(chunk);
-  });
-  child.stderr?.on('data', (chunk) => {
-    stderr += String(chunk);
-  });
-  const completion = new Promise<ExtractedSourceResult>((resolve, reject) => {
-    child.on('error', reject);
-    child.on('close', (code) => {
-      if (code !== 0) {
-        reject(new Error(`Python extract backend failed with exit code ${code}: ${stderr.trim()}`));
-        return;
-      }
-      try {
-        resolve(JSON.parse(stdout) as ExtractedSourceResult);
-      } catch (error) {
-        reject(new Error(`Python extract backend returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`));
-      }
-    });
-  });
-  child.stdin?.write(JSON.stringify(input));
-  child.stdin?.end();
-  return completion;
-}
-
 export async function fetchSourceLinksWithBackend(input: ExtractInput, options: ExtractBackendOptions = {}): Promise<ExtractedSourceResult> {
-  if (selectPipelineStageBackend('extract', options.env ?? process.env) === 'python') {
-    return options.pythonExtract ? options.pythonExtract(input) : extractWithPython(input, options);
-  }
   return options.fetchSourceLinks ? options.fetchSourceLinks(input) : fetchSourceLinksInNode(input, options);
 }

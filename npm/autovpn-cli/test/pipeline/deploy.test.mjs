@@ -30,7 +30,6 @@ import {
   resolveLatestExistingProjectName,
   resolveVerifySubscriptionUrl,
   rewriteUrlHost,
-  selectPipelineStageBackend,
   verifyDeploymentWithBackend
 } from '../../dist/pipeline/deploy.js';
 
@@ -224,12 +223,6 @@ test('Cloudflare credential and Wrangler env helpers match Python precedence', (
     CLOUDFLARE_API_KEY: 'global-key',
     CLOUDFLARE_EMAIL: 'user@example.com'
   });
-});
-
-test('deploy backend selection always uses the Node engine', async () => {
-  assert.equal(selectPipelineStageBackend('deploy', {}), 'node');
-  assert.equal(selectPipelineStageBackend('deploy', { AUTOVPN_STAGE_BACKEND_DEPLOY: ' python ' }), 'node');
-  assert.equal(selectPipelineStageBackend('deploy', { AUTOVPN_PIPELINE_BACKEND: ' python ' }), 'node');
 });
 
 test('Node deploy backend runs Wrangler and returns Python-compatible base metadata', async () => {

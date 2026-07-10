@@ -1,12 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { validateCommand } from './commands/index.js';
 import { CliUsageError } from './errors.js';
 import { normalizeProjectRootArgs } from './global-options.js';
 import { JobRuntimeOptions, runNativeCommand } from './native-commands.js';
 import { CliIo, defaultIo, renderHelp } from './output.js';
-import { AutoVpnBackend, RunForwarder } from '../backend/types.js';
+import { AutoVpnBackend } from '../backend/types.js';
 import { selectBackend } from '../backend/select-backend.js';
 import { loadJob } from '../jobs/read.js';
 import { readOptionValue, resolveProjectRoot } from '../runtime/paths.js';
@@ -18,14 +19,13 @@ import { createServerRuntime } from '../server/runtime.js';
 type ReadPackageVersion = () => string | Promise<string>;
 type ReadStdin = () => string | Promise<string>;
 type ShellBackend = Pick<AutoVpnBackend, 'executeCli'> & Partial<Pick<AutoVpnBackend, 'kind' | 'run' | 'retryStage' | 'resume'>>;
-type CreateBackend = (options: { env: NodeJS.ProcessEnv; cwd: string; runForwarder: RunForwarder }) => ShellBackend;
+type CreateBackend = (options: { env: NodeJS.ProcessEnv; cwd: string }) => ShellBackend;
 type CreateServer = typeof createAutoVpnServer;
 
 export interface CliShellOptions {
   packageVersion?: string;
   env?: NodeJS.ProcessEnv;
   io?: CliIo;
-  runForwarder?: RunForwarder;
   createBackend?: CreateBackend;
   readPackageVersion?: ReadPackageVersion;
   readStdin?: ReadStdin;
@@ -39,19 +39,13 @@ export interface CliShellOptions {
 }
 
 async function defaultReadPackageVersion(): Promise<string> {
-  // @ts-expect-error The Phase 1 runner is plain ESM JavaScript.
-  const runner = await import('../../lib/runner.mjs');
-  return String(runner.readPackageVersion());
+  const packagePath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'package.json');
+  const manifest = JSON.parse(await fs.promises.readFile(packagePath, 'utf8')) as { version?: unknown };
+  return String(manifest.version ?? '');
 }
 
-function defaultCreateBackend(options: { env: NodeJS.ProcessEnv; cwd: string; runForwarder: RunForwarder }): ShellBackend {
+function defaultCreateBackend(options: { env: NodeJS.ProcessEnv; cwd: string }): ShellBackend {
   return selectBackend(options);
-}
-
-async function defaultRunForwarder(argv: string[], options?: { env?: NodeJS.ProcessEnv; cwd?: string }): Promise<number> {
-  // @ts-expect-error The Phase 1 runner is plain ESM JavaScript.
-  const runner = await import('../../lib/runner.mjs');
-  return Number(await runner.runForwarder(argv, options));
 }
 
 async function defaultReadStdin(): Promise<string> {
@@ -60,15 +54,6 @@ async function defaultReadStdin(): Promise<string> {
     chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
   }
   return Buffer.concat(chunks).toString('utf8');
-}
-
-function isEnabled(value: string | undefined): boolean {
-  return ['1', 'true', 'yes', 'on'].includes(String(value ?? '').trim().toLowerCase());
-}
-
-function wantsDeprecatedPythonShell(env: NodeJS.ProcessEnv): boolean {
-  return String(env.AUTOVPN_CLI_SHELL ?? '').trim().toLowerCase() === 'python'
-    || String(env.AUTOVPN_BACKEND ?? '').trim().toLowerCase() === 'python';
 }
 
 async function resolvePackageVersion(options: CliShellOptions): Promise<string> {
@@ -232,17 +217,7 @@ async function runForegroundPipeline(argv: string[], backend: ShellBackend, io: 
 export async function runCliShell(argv: string[], options: CliShellOptions = {}): Promise<number> {
   const env = options.env ?? process.env;
   const io = options.io ?? defaultIo();
-  const runForwarder = options.runForwarder ?? defaultRunForwarder;
   const cwd = options.cwd ?? process.cwd();
-
-  if (wantsDeprecatedPythonShell(env)) {
-    io.writeStderr('autovpn: Python backend is no longer supported; AutoVPN now runs on the NodeJS engine\n');
-    return 2;
-  }
-
-  if (isEnabled(env.AUTOVPN_WRAPPER_PROBE) && argv.length === 1 && argv[0] === '--version') {
-    return 42;
-  }
 
   if (argv[0] === '--help' || argv[0] === '-h') {
     io.writeStdout(renderHelp());
@@ -258,7 +233,7 @@ export async function runCliShell(argv: string[], options: CliShellOptions = {})
     const normalizedArgv = normalizeProjectRootArgs(argv, cwd);
     validateCommand(normalizedArgv);
     const createBackend = options.createBackend ?? defaultCreateBackend;
-    const backend = createBackend({ env, cwd, runForwarder });
+    const backend = createBackend({ env, cwd });
     if (normalizedArgv[0] === 'serve') {
       const serveOptions = parseServeOptions(normalizedArgv, { cwd, env });
       const serverFactory = options.createServer ?? createAutoVpnServer;
@@ -292,7 +267,7 @@ export async function runCliShell(argv: string[], options: CliShellOptions = {})
       return 0;
     }
     if (isPipelineProxyCommand(normalizedArgv)) {
-      throw new Error('--proxy is now handled by serve and Node runtime proxy settings; Python proxy mode is no longer supported');
+      throw new Error('--proxy is handled by serve and Node runtime proxy settings');
     }
     const nativeResult = await runNativeCommand(normalizedArgv, {
       cwd,

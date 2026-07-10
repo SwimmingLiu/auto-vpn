@@ -16,7 +16,7 @@
     "electron:dev": "electron .",
     "pretest:electron": "npm run build:autovpn-cli",
     "test:electron": "node --test --test-concurrency=1 electron/tests/*.test.mjs",
-    "test:all": "./scripts/run_pytest.sh tests -v && npm run test:electron",
+    "test:all": "npm test --prefix npm/autovpn-cli && npm run test:electron",
     "package:electron": "node electron/build/package.mjs"
   },
   "devDependencies": {
@@ -29,9 +29,7 @@
     "files": [
       "electron/**/*",
       "!electron/tests/**/*",
-      "src/**/*",
-      "templates/**/*",
-      "pyproject.toml"
+      "templates/**/*"
     ],
     "directories": {
       "output": "dist-electron"

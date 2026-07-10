@@ -1,1 +1,0 @@
-"""vpn-subscription-automation package."""

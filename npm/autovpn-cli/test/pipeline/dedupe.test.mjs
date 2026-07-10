@@ -1,15 +1,14 @@
 import assert from 'node:assert/strict';
-import { EventEmitter } from 'node:events';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { canonicalVmessKey, dedupeVmessLinks, dedupeVmessLinksWithBackend, parseVmessLink, selectPipelineStageBackend } from '../../dist/pipeline/dedupe.js';
+import { canonicalVmessKey, dedupeVmessLinks, dedupeVmessLinksWithBackend, parseVmessLink } from '../../dist/pipeline/dedupe.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '../../../..');
-const fixtureDir = path.join(repoRoot, 'tests', 'fixtures', 'node-migration', 'pipeline', 'dedupe');
+const fixtureDir = path.join(repoRoot, 'npm', 'autovpn-cli', 'test', 'fixtures', 'node-migration', 'pipeline', 'dedupe');
 
 const sameNodeA = 'vmess://eyJ2IjoiMiIsImFkZCI6IjEuMS4xLjEiLCJwb3J0IjoiNDQzIiwiaWQiOiJ1dWlkIiwibmV0Ijoid3MiLCJob3N0IjoiMS4xLjEuMSIsInBhdGgiOiIvd3MiLCJ0bHMiOiJ0bHMiLCJzbmkiOiIiLCJwcyI6IkEifQ==';
 const sameNodeB = 'vmess://eyJ2IjoiMiIsImFkZCI6IjEuMS4xLjEiLCJwb3J0IjoiNDQzIiwiaWQiOiJ1dWlkIiwibmV0Ijoid3MiLCJob3N0IjoiMS4xLjEuMSIsInBhdGgiOiIvd3MiLCJ0bHMiOiJ0bHMiLCJzbmkiOiIiLCJwcyI6IkIifQ==';
@@ -35,51 +34,6 @@ test('dedupe fixture output matches Python golden output', async () => {
   assert.deepEqual(dedupeVmessLinks(input), expected);
 });
 
-test('dedupe stage backend selection always uses the Node engine', async () => {
-  assert.equal(selectPipelineStageBackend('dedupe', {}), 'node');
-  assert.equal(selectPipelineStageBackend('dedupe', { AUTOVPN_PIPELINE_BACKEND: ' Hybrid ' }), 'node');
-  assert.equal(selectPipelineStageBackend('dedupe', { AUTOVPN_PIPELINE_BACKEND: ' Python ' }), 'node');
-  assert.equal(selectPipelineStageBackend('dedupe', { AUTOVPN_STAGE_BACKEND_DEDUPE: ' PYTHON ' }), 'node');
-  assert.equal(selectPipelineStageBackend('dedupe', { AUTOVPN_PIPELINE_BACKEND: 'python', AUTOVPN_STAGE_BACKEND_DEDUPE: '' }), 'node');
-
-  const pythonCalls = [];
-  const fallback = async (links) => {
-    pythonCalls.push(links);
-    return ['python-result'];
-  };
-
-  assert.deepEqual(await dedupeVmessLinksWithBackend([sameNodeA, sameNodeB], { env: {}, pythonDedupe: fallback }), [sameNodeA]);
-  assert.deepEqual(await dedupeVmessLinksWithBackend([sameNodeA, sameNodeB], {
-    env: { AUTOVPN_STAGE_BACKEND_DEDUPE: 'python' },
-    pythonDedupe: fallback
-  }), [sameNodeA]);
-  assert.deepEqual(pythonCalls, []);
-});
-
-test('dedupe ignores legacy Python rollback env without spawning Python', async () => {
-  const spawns = [];
-  const result = await dedupeVmessLinksWithBackend([sameNodeA, sameNodeB], {
-    env: { AUTOVPN_STAGE_BACKEND_DEDUPE: 'python' },
-    resolvePythonCli: () => ({ command: '/opt/autovpn/.venv/bin/autovpn', args: [] }),
-    spawn: (command, args, options) => {
-      spawns.push({ command, args, options });
-      const child = new EventEmitter();
-      child.stdout = new EventEmitter();
-      child.stderr = new EventEmitter();
-      child.stdin = {
-        write(chunk) {
-          this.input = String(chunk);
-        },
-        end() {
-          const payload = JSON.parse(this.input);
-          child.stdout.emit('data', `${JSON.stringify([payload.links[0]])}\n`);
-          child.emit('close', 0, null);
-        }
-      };
-      return child;
-    }
-  });
-
-  assert.deepEqual(result, [sameNodeA]);
-  assert.equal(spawns.length, 0);
+test('dedupe backend API runs the Node implementation', async () => {
+  assert.deepEqual(await dedupeVmessLinksWithBackend([sameNodeA, sameNodeB]), [sameNodeA]);
 });

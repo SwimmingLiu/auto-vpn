@@ -1,3 +1,0 @@
-[console_scripts]
-autovpn = vpn_automation.cli:main
-vpn-subscription-automation = vpn_automation.app:main

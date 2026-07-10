@@ -87,35 +87,6 @@ test('Node job store creates Python-compatible job metadata and index', async ()
   assert.deepEqual(indexPayload.jobs.map((item) => item.job_id), ['20260628-000000-node01']);
 });
 
-test('AUTOVPN_BACKEND=python run --detach --json is rejected before spawning a worker', async () => {
-  const projectRoot = await createProject();
-  const spawns = [];
-  const io = createIo();
-
-  const code = await runCliShell(['run', '--project-root', projectRoot, '--skip-deploy', '--skip-verify', '--detach', '--json'], {
-    cwd: projectRoot,
-    packageVersion: '1.3.0',
-    env: runtimeEnv({ AUTOVPN_BACKEND: 'python', AUTOVPN_PYTHON_CLI: '/venv/bin/autovpn' }),
-    io,
-    createBackend: () => ({
-      executeCli: async () => {
-        throw new Error('detached run should not be forwarded to Python CLI job manager');
-      }
-    }),
-    runForwarder: async () => {
-      throw new Error('detached run should not use direct forwarder');
-    },
-    spawn: fakeSpawn(spawns, 5678),
-    now: () => '2026-06-28T00:00:00+00:00',
-    jobId: () => '20260628-000000-node02'
-  });
-
-  assert.equal(code, 2);
-  assert.equal(io.stdout, '');
-  assert.match(io.stderr, /Python backend is no longer supported/);
-  assert.equal(spawns.length, 0);
-});
-
 test('default run --detach spawns the Node CLI worker', async () => {
   const projectRoot = await createProject();
   const spawns = [];
@@ -373,50 +344,6 @@ test('top-level stop refuses to choose when multiple jobs are active', async () 
   assert.match(io.stderr, /multiple active jobs/);
 });
 
-test('AUTOVPN_BACKEND=python jobs resume and retry detached are rejected before dispatch', async () => {
-  const projectRoot = await createProject();
-  const sessionDir = path.join(jobsRoot(), 'source-job');
-  await mkdir(sessionDir, { recursive: true });
-  await writeFile(path.join(sessionDir, 'session.json'), '{}\n', 'utf8');
-  const store = createJobStore(projectRoot, { now: () => '2026-06-28T00:00:00+00:00', jobId: () => 'source-job' });
-  store.createRunningJob({
-    kind: 'run',
-    command: ['/venv/bin/autovpn', 'run'],
-    pid: 1111,
-    options: { session_dir: sessionDir, output_format: 'jsonl' }
-  });
-  const artifactDir = path.join(projectRoot, 'artifacts', '20260628-000000');
-  await mkdir(artifactDir, { recursive: true });
-  const spawns = [];
-
-  const resume = await runCliShell(['jobs', 'resume', 'source-job', '--project-root', projectRoot, '--detach', '--json'], {
-    cwd: projectRoot,
-    packageVersion: '1.3.0',
-    env: runtimeEnv({ AUTOVPN_BACKEND: 'python', AUTOVPN_PYTHON_CLI: '/venv/bin/autovpn' }),
-    io: createIo(),
-    createBackend: () => ({ executeCli: async () => 99 }),
-    spawn: fakeSpawn(spawns, 2222),
-    now: () => '2026-06-28T00:00:01+00:00',
-    jobId: () => 'resume-job'
-  });
-  const retryIo = createIo();
-  const retry = await runCliShell(['jobs', 'retry', '--project-root', projectRoot, '--artifact-dir', artifactDir, '--stage', 'deploy', '--detach', '--json'], {
-    cwd: projectRoot,
-    packageVersion: '1.3.0',
-    env: runtimeEnv({ AUTOVPN_BACKEND: 'python', AUTOVPN_PYTHON_CLI: '/venv/bin/autovpn' }),
-    io: retryIo,
-    createBackend: () => ({ executeCli: async () => 99 }),
-    spawn: fakeSpawn(spawns, 3333),
-    now: () => '2026-06-28T00:00:02+00:00',
-    jobId: () => 'retry-job'
-  });
-
-  assert.equal(resume, 2);
-  assert.equal(retry, 2);
-  assert.equal(spawns.length, 0);
-  assert.match(retryIo.stderr, /Python backend is no longer supported/);
-});
-
 test('default jobs resume and retry detached spawn Node CLI workers', async () => {
   const projectRoot = await createProject();
   const sessionDir = path.join(jobsRoot(), 'source-node-job');
@@ -607,27 +534,6 @@ test('logs --follow is handled by Node for completed jobs', async () => {
   assert.equal(code, 0);
   assert.equal(io.stdout, 'two\nthree\n');
   assert.deepEqual(backendCalls, []);
-});
-
-test('Phase 5 owned job commands ignore Python jobs backend override', async () => {
-  const projectRoot = await createProject();
-  const spawns = [];
-  const io = createIo();
-
-  const code = await runCliShell(['run', '--project-root', projectRoot, '--detach', '--json'], {
-    cwd: projectRoot,
-    packageVersion: '1.3.0',
-    env: { AUTOVPN_PYTHON_CLI: '/venv/bin/autovpn', AUTOVPN_JOBS_BACKEND: 'python' },
-    io,
-    createBackend: () => ({ executeCli: async () => 99 }),
-    spawn: fakeSpawn(spawns, 5555),
-    now: () => '2026-06-28T00:00:00+00:00',
-    jobId: () => 'override-job'
-  });
-
-  assert.equal(code, 0);
-  assert.equal(JSON.parse(io.stdout).job_id, 'override-job');
-  assert.equal(spawns.length, 1);
 });
 
 test('logs --follow writes new chunks before the job finishes', async () => {

@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { EventEmitter } from 'node:events';
 import http from 'node:http';
 import net from 'node:net';
 import { readFile } from 'node:fs/promises';
@@ -12,13 +11,12 @@ import {
   checkLinkAvailabilityBatchWithBackend,
   evaluateProviderResponse,
   fetchUrlViaHttpProxy,
-  normalizeProviderTargets,
-  selectPipelineStageBackend
+  normalizeProviderTargets
 } from '../../dist/pipeline/availability.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '../../../..');
-const fixtureDir = path.join(repoRoot, 'tests', 'fixtures', 'node-migration', 'pipeline', 'availability');
+const fixtureDir = path.join(repoRoot, 'npm', 'autovpn-cli', 'test', 'fixtures', 'node-migration', 'pipeline', 'availability');
 
 const speedResult = {
   link: 'vmess://node',
@@ -460,27 +458,10 @@ test('fetchUrlViaHttpProxy rejects an HTTPS tunnel that closes before a provider
   }
 });
 
-test('availability backend selection always uses the Node engine', async () => {
-  assert.equal(selectPipelineStageBackend('availability', {}), 'node');
-  assert.equal(selectPipelineStageBackend('availability', { AUTOVPN_PIPELINE_BACKEND: ' HYBRID ' }), 'node');
-  assert.equal(selectPipelineStageBackend('availability', { AUTOVPN_PIPELINE_BACKEND: ' PYTHON ' }), 'node');
-  assert.equal(selectPipelineStageBackend('availability', { AUTOVPN_STAGE_BACKEND_AVAILABILITY: ' python ' }), 'node');
-  assert.equal(selectPipelineStageBackend('availability', { AUTOVPN_PIPELINE_BACKEND: 'python', AUTOVPN_STAGE_BACKEND_AVAILABILITY: '' }), 'node');
-
-  const fallbackCalls = [];
-  const fallback = async (input) => {
-    fallbackCalls.push(input);
-    return [{ ...speedResult, all_passed: true, provider_results: {} }];
-  };
+test('availability backend API preserves Node dependency injection', async () => {
   const input = { results: [speedResult], config: { concurrency: 1, timeout_seconds: 20 }, targets: [] };
 
-  assert.equal((await checkLinkAvailabilityBatchWithBackend(input, {
-    env: {},
-    checkLinkAvailability: async (speed) => ({ speed_result: speed, provider_results: {} })
-  }))[0].all_passed, true);
   assert.deepEqual(await checkLinkAvailabilityBatchWithBackend(input, {
-    env: { AUTOVPN_STAGE_BACKEND_AVAILABILITY: 'python' },
-    pythonAvailability: fallback,
     checkLinkAvailability: async (speed) => ({ speed_result: speed, provider_results: {} })
   }), [{
     link: speedResult.link,
@@ -490,34 +471,4 @@ test('availability backend selection always uses the Node engine', async () => {
     all_passed: true,
     provider_results: {}
   }]);
-  assert.deepEqual(fallbackCalls, []);
-});
-
-test('availability ignores legacy Python rollback env without spawning Python', async () => {
-  const spawns = [];
-  const input = { results: [speedResult], config: { concurrency: 1, timeout_seconds: 20 }, targets: [] };
-  const result = await checkLinkAvailabilityBatchWithBackend(input, {
-    env: { AUTOVPN_STAGE_BACKEND_AVAILABILITY: 'python' },
-    resolvePythonCli: () => ({ command: '/opt/autovpn/.venv/bin/autovpn', args: [] }),
-    spawn: (command, args, options) => {
-      spawns.push({ command, args, options });
-      const child = new EventEmitter();
-      child.stdout = new EventEmitter();
-      child.stderr = new EventEmitter();
-      child.stdin = {
-        write(chunk) {
-          this.input = String(chunk);
-        },
-        end() {
-          const helperInput = JSON.parse(this.input);
-          child.stdout.emit('data', `${JSON.stringify([{ ...helperInput.results[0], all_passed: true, provider_results: {} }])}\n`);
-          child.emit('close', 0, null);
-        }
-      };
-      return child;
-    }
-  });
-
-  assert.equal(result[0].link, 'vmess://node');
-  assert.equal(spawns.length, 0);
 });

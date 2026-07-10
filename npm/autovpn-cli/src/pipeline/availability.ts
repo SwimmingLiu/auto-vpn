@@ -1,18 +1,12 @@
-import path from 'node:path';
-import { spawn as defaultSpawn, ChildProcess } from 'node:child_process';
 import http from 'node:http';
 import net from 'node:net';
 import tls from 'node:tls';
-import { mergeProjectEnv } from '../runtime/env.js';
 import {
   openMihomoRuntime as defaultOpenMihomoRuntime,
   MihomoRuntime,
   OpenMihomoRuntimeOptions
 } from './proxy-runtime.js';
 
-export type PipelineStageBackend = 'node' | 'python';
-
-type SpawnLike = (command: string, args: string[], options?: Record<string, unknown>) => ChildProcess;
 type FetchLike = (url: string, init?: Record<string, unknown>) => Promise<{
   ok?: boolean;
   status?: number;
@@ -28,11 +22,6 @@ export interface ProxiedFetchResponse {
 
 interface ProxiedHttpResponse extends ProxiedFetchResponse {
   headers: Record<string, string | string[] | undefined>;
-}
-
-interface ResolvedPythonCli {
-  command: string;
-  args: string[];
 }
 
 export interface ProviderTarget {
@@ -86,13 +75,10 @@ export interface AvailabilityBatchInput {
 export interface AvailabilityBackendOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
-  spawn?: SpawnLike;
   fetch?: FetchLike;
-  resolvePythonCli?: () => ResolvedPythonCli | Promise<ResolvedPythonCli>;
   openMihomoRuntime?: (link: string, options: OpenMihomoRuntimeOptions) => Promise<Pick<MihomoRuntime, 'proxies' | 'close'>>;
   fetchUrlViaHttpProxy?: (url: string, proxyUrl: string, timeoutSeconds: number) => Promise<ProxiedFetchResponse>;
   checkLinkAvailability?: (speedResult: SpeedTestResult, config: Record<string, unknown>, options: { runtime_path: string; targets: ProviderTarget[] }) => AvailabilityResult | Promise<AvailabilityResult>;
-  pythonAvailability?: (input: AvailabilityBatchInput) => AvailabilityResultDict[] | Promise<AvailabilityResultDict[]>;
   progressCallback?: (message: string) => void;
   eventCallback?: (eventType: string, payload: Record<string, unknown>) => void;
 }
@@ -114,43 +100,6 @@ const CHALLENGE_PHRASES = [
 const GEMINI_REGION_MARKERS = [',2,1,200,"', ',2,1,200,\\"'];
 const CLAUDE_BLOCKED_CODES = new Set(['AF', 'BY', 'CN', 'CU', 'HK', 'IR', 'KP', 'MO', 'RU', 'SY']);
 const GEMINI_BLOCKED_CODES = new Set(['CHN', 'RUS', 'BLR', 'CUB', 'IRN', 'PRK', 'SYR', 'HKG', 'MAC']);
-
-const PYTHON_AVAILABILITY_HELPER = `
-import json
-import sys
-from vpn_automation.config.models import AvailabilityTargetConfig, SpeedTestConfig
-from vpn_automation.pipeline.availability import ProviderTarget, check_link_availability_batch
-from vpn_automation.pipeline.speedtest import SpeedTestResult
-
-payload = json.load(sys.stdin)
-config = SpeedTestConfig(**payload["config"])
-results = [SpeedTestResult(**item) for item in payload.get("results", [])]
-raw_targets = payload.get("targets", None)
-targets = None
-if isinstance(raw_targets, list):
-    targets = tuple(
-        ProviderTarget(
-            name=str(item["name"]),
-            url=str(item["url"]),
-            allowed_hosts=tuple(item.get("allowed_hosts") or []),
-            negative_phrases=tuple(item.get("negative_phrases") or []),
-        )
-        for item in raw_targets
-    )
-elif isinstance(raw_targets, dict):
-    targets = {name: AvailabilityTargetConfig(**value) for name, value in raw_targets.items()}
-output = [
-    item.to_dict()
-    for item in check_link_availability_batch(
-        results,
-        config,
-        runtime_path=payload.get("runtime_path", ""),
-        targets=targets,
-    )
-]
-json.dump(output, sys.stdout, ensure_ascii=False)
-sys.stdout.write("\\n")
-`;
 
 function providerResultWithDefaults(result: ProviderCheckResult): Required<ProviderCheckResult> {
   return {
@@ -895,69 +844,9 @@ async function checkBatchInNode(input: AvailabilityBatchInput, options: Availabi
   });
 }
 
-export function selectPipelineStageBackend(stage: string, env: NodeJS.ProcessEnv = process.env): PipelineStageBackend {
-  void stage;
-  void env;
-  return 'node';
-}
-
-async function defaultResolvePythonCli(env: NodeJS.ProcessEnv): Promise<ResolvedPythonCli> {
-  // @ts-expect-error Phase 1 runner remains plain ESM JavaScript.
-  const runner = await import('../../lib/runner.mjs');
-  return runner.resolveOrInstallPythonCli({ env });
-}
-
-function pythonCommandFor(resolved: ResolvedPythonCli): string {
-  const command = resolved.command;
-  const name = path.basename(command).toLowerCase();
-  if (['autovpn', 'autovpn.exe'].includes(name)) {
-    const executable = process.platform === 'win32' ? 'python.exe' : 'python';
-    return path.join(path.dirname(command), executable);
-  }
-  return process.platform === 'win32' ? 'python.exe' : 'python3';
-}
-
-async function availabilityWithPython(input: AvailabilityBatchInput, options: AvailabilityBackendOptions): Promise<AvailabilityResultDict[]> {
-  const env = mergeProjectEnv(options.cwd ?? process.cwd(), options.env ?? process.env);
-  const resolved = options.resolvePythonCli ? await options.resolvePythonCli() : await defaultResolvePythonCli(env);
-  const child = (options.spawn ?? defaultSpawn)(pythonCommandFor(resolved), ['-c', PYTHON_AVAILABILITY_HELPER], {
-    cwd: options.cwd ?? process.cwd(),
-    env,
-    stdio: ['pipe', 'pipe', 'pipe']
-  });
-  let stdout = '';
-  let stderr = '';
-  child.stdout?.on('data', (chunk) => {
-    stdout += String(chunk);
-  });
-  child.stderr?.on('data', (chunk) => {
-    stderr += String(chunk);
-  });
-  const completion = new Promise<AvailabilityResultDict[]>((resolve, reject) => {
-    child.on('error', reject);
-    child.on('close', (code) => {
-      if (code !== 0) {
-        reject(new Error(`Python availability backend failed with exit code ${code}: ${stderr.trim()}`));
-        return;
-      }
-      try {
-        resolve(JSON.parse(stdout) as AvailabilityResultDict[]);
-      } catch (error) {
-        reject(new Error(`Python availability backend returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`));
-      }
-    });
-  });
-  child.stdin?.write(JSON.stringify(input));
-  child.stdin?.end();
-  return completion;
-}
-
 export async function checkLinkAvailabilityBatchWithBackend(
   input: AvailabilityBatchInput,
   options: AvailabilityBackendOptions = {}
 ): Promise<AvailabilityResultDict[]> {
-  if (selectPipelineStageBackend('availability', options.env ?? process.env) === 'python') {
-    return options.pythonAvailability ? options.pythonAvailability(input) : availabilityWithPython(input, options);
-  }
   return checkBatchInNode(input, options);
 }

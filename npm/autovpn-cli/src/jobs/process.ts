@@ -18,7 +18,7 @@ export function processMatchesJob(pid: number, command: string[]): boolean {
   }
   try {
     const cmdline = fs.readFileSync(cmdlinePath).toString('utf8').replaceAll('\0', ' ');
-    const markers = ['vpn_automation.backend'];
+    const markers: string[] = [];
     if (command.length > 0) {
       markers.push(path.basename(String(command[0])));
     }

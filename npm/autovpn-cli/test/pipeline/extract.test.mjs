@@ -11,13 +11,12 @@ import {
   decryptPayload,
   extractLinksFromPlaintext,
   fetchSourceLinksWithBackend,
-  selectPipelineStageBackend,
   transformNodeId
 } from '../../dist/pipeline/extract.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '../../../..');
-const fixtureDir = path.join(repoRoot, 'tests', 'fixtures', 'node-migration', 'pipeline', 'extract');
+const fixtureDir = path.join(repoRoot, 'npm', 'autovpn-cli', 'test', 'fixtures', 'node-migration', 'pipeline', 'extract');
 
 test('buildRuntimeSourceUrl rewrites time and randomized area like Python', () => {
   const source = { url: 'https://example.com/api?area=2&t=123', key: 'abc', use_random_area: true, area_min: 30, area_max: 20 };
@@ -47,30 +46,11 @@ test('extract fixture output matches Python golden output', async () => {
   assert.deepEqual(extractLinksFromPlaintext(input.source_name, 'not enough parts'), []);
 });
 
-test('extract backend selection always uses the Node engine', async () => {
-  assert.equal(selectPipelineStageBackend('extract', {}), 'node');
-  assert.equal(selectPipelineStageBackend('extract', { AUTOVPN_PIPELINE_BACKEND: ' HYBRID ' }), 'node');
-  assert.equal(selectPipelineStageBackend('extract', { AUTOVPN_PIPELINE_BACKEND: ' PYTHON ' }), 'node');
-  assert.equal(selectPipelineStageBackend('extract', { AUTOVPN_STAGE_BACKEND_EXTRACT: ' python ' }), 'node');
-  assert.equal(selectPipelineStageBackend('extract', { AUTOVPN_PIPELINE_BACKEND: 'python', AUTOVPN_STAGE_BACKEND_EXTRACT: '' }), 'node');
-
+test('extract backend API preserves Node dependency injection', async () => {
   const input = { source_name: 'leiting', source: { url: 'https://example.com/api', key: 'abcdabcdabcdabcd', max_iterations: 0 } };
-  const fallbackCalls = [];
-  const fallback = async (payload) => {
-    fallbackCalls.push(payload);
-    return { source_name: payload.source_name, requested_iterations: 0, successful_iterations: 0, failed_iterations: 0, links: ['python-result'] };
-  };
-
   assert.deepEqual(await fetchSourceLinksWithBackend(input, {
-    env: {},
     fetchSourceLinks: async (payload) => ({ source_name: payload.source_name, requested_iterations: 0, successful_iterations: 0, failed_iterations: 0, links: ['node-result'] })
   }), { source_name: 'leiting', requested_iterations: 0, successful_iterations: 0, failed_iterations: 0, links: ['node-result'] });
-  assert.deepEqual(await fetchSourceLinksWithBackend(input, {
-    env: { AUTOVPN_STAGE_BACKEND_EXTRACT: 'python' },
-    pythonExtract: fallback,
-    fetchSourceLinks: async (payload) => ({ source_name: payload.source_name, requested_iterations: 0, successful_iterations: 0, failed_iterations: 0, links: ['node-result'] })
-  }), { source_name: 'leiting', requested_iterations: 0, successful_iterations: 0, failed_iterations: 0, links: ['node-result'] });
-  assert.deepEqual(fallbackCalls, []);
 });
 
 test('Node extract backend fetches encrypted runtime source without Python fallback', async () => {
@@ -458,35 +438,6 @@ test('Node extract backend only uses upstream proxy when explicitly enabled', as
   });
 
   assert.deepEqual(curlCalls, [{ url: 'https://fixture.example/source', proxyUrl: 'http://127.0.0.1:7897' }]);
-});
-
-test('extract ignores legacy Python rollback env without spawning Python', async () => {
-  const spawns = [];
-  const input = { source_name: 'leiting', source: { url: 'https://example.com/api', key: 'abcdabcdabcdabcd', max_iterations: 0 } };
-  const result = await fetchSourceLinksWithBackend(input, {
-    env: { AUTOVPN_STAGE_BACKEND_EXTRACT: 'python' },
-    resolvePythonCli: () => ({ command: '/opt/autovpn/.venv/bin/autovpn', args: [] }),
-    spawn: (command, args, options) => {
-      spawns.push({ command, args, options });
-      const child = new EventEmitter();
-      child.stdout = new EventEmitter();
-      child.stderr = new EventEmitter();
-      child.stdin = {
-        write(chunk) {
-          this.input = String(chunk);
-        },
-        end() {
-          const helperInput = JSON.parse(this.input);
-          child.stdout.emit('data', `${JSON.stringify({ source_name: helperInput.source_name, requested_iterations: 0, successful_iterations: 0, failed_iterations: 0, links: [] })}\n`);
-          child.emit('close', 0, null);
-        }
-      };
-      return child;
-    }
-  });
-
-  assert.equal(result.source_name, 'leiting');
-  assert.equal(spawns.length, 0);
 });
 
 function vmessLink(payload) {
