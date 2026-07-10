@@ -77,7 +77,7 @@ authentication layer.
 If npm is unavailable, install the CLI tarball from the latest GitHub Release:
 
 ```bash
-export AUTOVPN_VERSION=1.6.5
+export AUTOVPN_VERSION=1.6.6
 npm install -g \
   "https://github.com/SwimmingLiu/auto-vpn/releases/download/v${AUTOVPN_VERSION}/swimmingliu-autovpn-${AUTOVPN_VERSION}.tgz"
 ```
