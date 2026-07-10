@@ -617,7 +617,9 @@ export class CloudflareHttpClient implements CloudflareDeployClient {
           signal: options.signal ?? AbortSignal.timeout(timeoutMs)
         });
       } catch (error) {
-        const retryable = error instanceof TypeError && !options.signal?.aborted;
+        const transientFailure = error instanceof TypeError
+          || (error instanceof Error && error.name === 'TimeoutError');
+        const retryable = transientFailure && !options.signal?.aborted;
         if (!retryable || attempt === CLOUDFLARE_API_MAX_ATTEMPTS) {
           throw error;
         }

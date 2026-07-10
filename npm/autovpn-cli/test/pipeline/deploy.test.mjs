@@ -1166,6 +1166,29 @@ test('CloudflareHttpClient retries transient URL verification failures', async (
   assert.equal(attempts, 2);
 });
 
+test('CloudflareHttpClient retries per-attempt request timeouts', async () => {
+  let attempts = 0;
+  const client = new CloudflareHttpClient({
+    auth_mode: 'api_token',
+    api_token: 'token',
+    account_id: 'account-id',
+    email: '',
+    global_api_key: ''
+  }, {
+    fetch: async () => {
+      attempts += 1;
+      if (attempts < 3) {
+        throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+      }
+      return new Response('ok', { status: 200 });
+    }
+  });
+
+  assert.equal(await client.verifyUrl('https://example.invalid/'), true);
+  assert.equal(attempts, 3);
+});
+
+
 test('verify success helper keeps Node deployment semantics', async () => {
   assert.equal(isVerifySuccess({ secret_ok: true, subscription_ok: true }), true);
   assert.equal(isVerifySuccess({ pages_domain_ok: false, secret_ok: true, subscription_ok: true }), false);
