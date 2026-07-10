@@ -111,6 +111,10 @@ const CHALLENGE_PHRASES = [
   'enable javascript and cookies'
 ];
 
+const GEMINI_REGION_MARKERS = [',2,1,200,"', ',2,1,200,\\"'];
+const CLAUDE_BLOCKED_CODES = new Set(['AF', 'BY', 'CN', 'CU', 'HK', 'IR', 'KP', 'MO', 'RU', 'SY']);
+const GEMINI_BLOCKED_CODES = new Set(['CHN', 'RUS', 'BLR', 'CUB', 'IRN', 'PRK', 'SYR', 'HKG', 'MAC']);
+
 const PYTHON_AVAILABILITY_HELPER = `
 import json
 import sys
@@ -172,6 +176,33 @@ function hostnameFor(url: string): string {
   }
 }
 
+function targetKey(target: ProviderTarget): string {
+  return target.name.trim().toLowerCase().replaceAll('-', '_').replaceAll(' ', '_');
+}
+
+function extractTraceLocation(body: string): string {
+  for (const line of body.split(/\r?\n/)) {
+    if (line.startsWith('loc=')) {
+      return line.slice(4).trim().toUpperCase();
+    }
+  }
+  return '';
+}
+
+function extractGeminiCountryCode(body: string): string {
+  for (const marker of GEMINI_REGION_MARKERS) {
+    const index = body.indexOf(marker);
+    if (index < 0) {
+      continue;
+    }
+    const code = body.slice(index + marker.length, index + marker.length + 3);
+    if (/^[A-Z]{3}$/.test(code)) {
+      return code;
+    }
+  }
+  return '';
+}
+
 export function normalizeProviderTargets(
   targets?: Record<string, AvailabilityTargetConfig> | ProviderTarget[] | null
 ): ProviderTarget[] {
@@ -228,6 +259,87 @@ export function evaluateProviderResponse(
       status_code: statusCode,
       final_url: finalUrl,
       matched_phrase: ''
+    };
+  }
+
+  const key = targetKey(target);
+  if (key === 'chatgpt_ios') {
+    const body = response.body.toLowerCase();
+    if (body.includes('you may be connected to a disallowed isp')) {
+      return {
+        provider: target.name,
+        passed: false,
+        reason: 'disallowed_isp',
+        status_code: statusCode,
+        final_url: finalUrl,
+        matched_phrase: ''
+      };
+    }
+    if (body.includes('request is not allowed. please try again later.')) {
+      return {
+        provider: target.name,
+        passed: true,
+        reason: 'ok',
+        status_code: statusCode,
+        final_url: finalUrl,
+        matched_phrase: ''
+      };
+    }
+    if (body.includes('sorry, you have been blocked')) {
+      return {
+        provider: target.name,
+        passed: false,
+        reason: 'blocked',
+        status_code: statusCode,
+        final_url: finalUrl,
+        matched_phrase: ''
+      };
+    }
+    return {
+      provider: target.name,
+      passed: false,
+      reason: 'unlock_failed',
+      status_code: statusCode,
+      final_url: finalUrl,
+      matched_phrase: ''
+    };
+  }
+
+  if (key === 'chatgpt' || key === 'chatgpt_web') {
+    const unsupported = response.body.toLowerCase().includes('unsupported_country');
+    return {
+      provider: target.name,
+      passed: !unsupported,
+      reason: unsupported ? 'unsupported_region' : 'ok',
+      status_code: statusCode,
+      final_url: finalUrl,
+      matched_phrase: unsupported ? 'unsupported_country' : ''
+    };
+  }
+
+  if (key === 'claude') {
+    const countryCode = extractTraceLocation(response.body);
+    const blocked = CLAUDE_BLOCKED_CODES.has(countryCode);
+    return {
+      provider: target.name,
+      passed: Boolean(countryCode) && !blocked,
+      reason: !countryCode ? 'unlock_failed' : blocked ? 'unsupported_region' : 'ok',
+      status_code: statusCode,
+      final_url: finalUrl,
+      matched_phrase: countryCode
+    };
+  }
+
+  if (key === 'gemini') {
+    const countryCode = extractGeminiCountryCode(response.body);
+    const blocked = GEMINI_BLOCKED_CODES.has(countryCode);
+    return {
+      provider: target.name,
+      passed: Boolean(countryCode) && !blocked,
+      reason: !countryCode ? 'unlock_failed' : blocked ? 'unsupported_region' : 'ok',
+      status_code: statusCode,
+      final_url: finalUrl,
+      matched_phrase: countryCode
     };
   }
 
@@ -744,7 +856,8 @@ async function checkBatchInNode(input: AvailabilityBatchInput, options: Availabi
     return [];
   }
   const targets = normalizeProviderTargets(input.targets);
-  const useMihomoRuntime = String((options.env ?? process.env).AUTOVPN_AVAILABILITY_RUNTIME ?? '').trim().toLowerCase() === 'mihomo';
+  const requestedRuntime = String((options.env ?? process.env).AUTOVPN_AVAILABILITY_RUNTIME ?? '').trim().toLowerCase();
+  const useMihomoRuntime = requestedRuntime !== 'direct';
   const checkLinkAvailability = options.checkLinkAvailability ?? ((speedResult: SpeedTestResult, config: Record<string, unknown>) => (
     useMihomoRuntime
       ? checkLinkAvailabilityMihomo(speedResult, config, {

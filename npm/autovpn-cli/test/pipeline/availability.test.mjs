@@ -102,6 +102,94 @@ test('evaluateProviderResponse rejects challenge pages, bad hosts, http errors, 
   }).matched_phrase, 'blocked');
 });
 
+test('evaluateProviderResponse accepts the expected ChatGPT iOS availability response', () => {
+  const result = evaluateProviderResponse({
+    name: 'chatgpt_ios',
+    url: 'https://ios.chat.openai.com/',
+    allowed_hosts: ['ios.chat.openai.com'],
+    negative_phrases: []
+  }, {
+    final_url: 'https://ios.chat.openai.com/',
+    status_code: 403,
+    title: '',
+    body: 'Request is not allowed. Please try again later.'
+  });
+
+  assert.equal(result.passed, true);
+  assert.equal(result.reason, 'ok');
+});
+
+test('evaluateProviderResponse normalizes spaced ChatGPT iOS target names', () => {
+  const result = evaluateProviderResponse({
+    name: 'ChatGPT iOS',
+    url: 'https://ios.chat.openai.com/',
+    allowed_hosts: ['ios.chat.openai.com'],
+    negative_phrases: []
+  }, {
+    final_url: 'https://ios.chat.openai.com/',
+    status_code: 403,
+    title: '',
+    body: 'Request is not allowed. Please try again later.'
+  });
+
+  assert.equal(result.passed, true);
+  assert.equal(result.reason, 'ok');
+});
+
+test('evaluateProviderResponse rejects Gemini blocked regions returned with HTTP 200', () => {
+  const result = evaluateProviderResponse({
+    name: 'gemini',
+    url: 'https://gemini.google.com/',
+    allowed_hosts: ['gemini.google.com'],
+    negative_phrases: []
+  }, {
+    final_url: 'https://gemini.google.com/',
+    status_code: 200,
+    title: '',
+    body: 'prefix,2,1,200,"CHNsuffix'
+  });
+
+  assert.equal(result.passed, false);
+  assert.equal(result.reason, 'unsupported_region');
+  assert.equal(result.matched_phrase, 'CHN');
+});
+
+test('evaluateProviderResponse rejects ChatGPT Web unsupported countries returned with HTTP 200', () => {
+  const result = evaluateProviderResponse({
+    name: 'chatgpt_web',
+    url: 'https://api.openai.com/compliance/cookie_requirements',
+    allowed_hosts: ['api.openai.com'],
+    negative_phrases: []
+  }, {
+    final_url: 'https://api.openai.com/compliance/cookie_requirements',
+    status_code: 200,
+    title: '',
+    body: '{"unsupported_country":true}'
+  });
+
+  assert.equal(result.passed, false);
+  assert.equal(result.reason, 'unsupported_region');
+  assert.equal(result.matched_phrase, 'unsupported_country');
+});
+
+test('evaluateProviderResponse rejects Claude blocked regions returned with HTTP 200', () => {
+  const result = evaluateProviderResponse({
+    name: 'claude',
+    url: 'https://claude.ai/cdn-cgi/trace',
+    allowed_hosts: ['claude.ai'],
+    negative_phrases: []
+  }, {
+    final_url: 'https://claude.ai/cdn-cgi/trace',
+    status_code: 200,
+    title: '',
+    body: 'loc=CN\n'
+  });
+
+  assert.equal(result.passed, false);
+  assert.equal(result.reason, 'unsupported_region');
+  assert.equal(result.matched_phrase, 'CN');
+});
+
 test('availability fixture output matches Python golden output', async () => {
   const input = JSON.parse(await readFile(path.join(fixtureDir, 'input.json'), 'utf8'));
   const expected = JSON.parse(await readFile(path.join(fixtureDir, 'output.json'), 'utf8'));
@@ -211,7 +299,7 @@ test('Node availability backend can run direct fetch runtime without Python fall
       custom: { url: 'https://custom.example/', enabled: true, allowed_hosts: ['custom.example'], negative_phrases: ['blocked'] }
     }
   }, {
-    env: { AUTOVPN_NO_PYTHON: '1' },
+    env: { AUTOVPN_NO_PYTHON: '1', AUTOVPN_AVAILABILITY_RUNTIME: 'direct' },
     fetch: async (url) => {
       calls.push(String(url));
       return {
@@ -229,25 +317,29 @@ test('Node availability backend can run direct fetch runtime without Python fall
   assert.equal(result[0].provider_results.custom.final_url, 'https://custom.example/');
 });
 
-test('Node availability backend can check providers through Mihomo proxy when requested', async () => {
+test('Node availability backend checks providers through Mihomo proxy by default', async () => {
   const opened = [];
   const closed = [];
   const fetches = [];
   const result = await checkLinkAvailabilityBatchWithBackend({
-    results: [speedResult],
-    config: { concurrency: 1, timeout_seconds: 20, startup_wait_seconds: 1 },
+    results: [
+      { ...speedResult, link: 'vmess://node-a' },
+      { ...speedResult, link: 'vmess://node-b' }
+    ],
+    config: { concurrency: 2, timeout_seconds: 20, startup_wait_seconds: 1 },
     runtime_path: '/opt/mihomo',
     targets: {
       custom: { url: 'http://custom.example/ok', enabled: true, allowed_hosts: ['custom.example'], negative_phrases: ['blocked'] }
     }
   }, {
-    env: { AUTOVPN_AVAILABILITY_RUNTIME: 'mihomo' },
+    env: {},
     openMihomoRuntime: async (link, options) => {
       opened.push({ link, options });
+      const port = link.endsWith('-a') ? 18080 : 18081;
       return {
         proxies: {
-          http: 'http://127.0.0.1:18080',
-          https: 'http://127.0.0.1:18080'
+          http: `http://127.0.0.1:${port}`,
+          https: `http://127.0.0.1:${port}`
         },
         close: async () => closed.push(link)
       };
@@ -262,22 +354,18 @@ test('Node availability backend can check providers through Mihomo proxy when re
     }
   });
 
-  assert.deepEqual(opened, [{
-    link: 'vmess://node',
-    options: {
-      runtimePath: '/opt/mihomo',
-      startupWaitSeconds: 1,
-      env: { AUTOVPN_AVAILABILITY_RUNTIME: 'mihomo' }
-    }
-  }]);
-  assert.deepEqual(fetches, [{
-    url: 'http://custom.example/ok',
-    proxyUrl: 'http://127.0.0.1:18080',
-    timeoutSeconds: 20
-  }]);
-  assert.deepEqual(closed, ['vmess://node']);
-  assert.equal(result[0].all_passed, true);
-  assert.equal(result[0].provider_results.custom.reason, 'ok');
+  assert.deepEqual(opened.map(({ link }) => link).sort(), ['vmess://node-a', 'vmess://node-b']);
+  assert.deepEqual(opened.map(({ options }) => options), [
+    { runtimePath: '/opt/mihomo', startupWaitSeconds: 1, env: {} },
+    { runtimePath: '/opt/mihomo', startupWaitSeconds: 1, env: {} }
+  ]);
+  assert.deepEqual(fetches.map(({ proxyUrl }) => proxyUrl).sort(), [
+    'http://127.0.0.1:18080',
+    'http://127.0.0.1:18081'
+  ]);
+  assert.ok(fetches.every(({ url, timeoutSeconds }) => url === 'http://custom.example/ok' && timeoutSeconds === 20));
+  assert.deepEqual(closed.sort(), ['vmess://node-a', 'vmess://node-b']);
+  assert.ok(result.every((item) => item.all_passed && item.provider_results.custom.reason === 'ok'));
 });
 
 test('fetchUrlViaHttpProxy returns provider status and body through an HTTP proxy', async () => {
