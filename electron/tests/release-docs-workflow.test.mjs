@@ -221,6 +221,7 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
     'npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version --registry=https://registry.npmjs.org',
     'Publishing ${PACKAGE_NAME}@${PACKAGE_VERSION} with NPM_TOKEN.',
     'Publishing ${PACKAGE_NAME}@${PACKAGE_VERSION} with npm trusted publishing/OIDC.',
+    'PACKAGE_TARBALL="./dist/swimmingliu-autovpn-${PACKAGE_VERSION}.tgz"',
     'npm publish "${PACKAGE_TARBALL}" --access public --provenance --registry=https://registry.npmjs.org',
     'verify npm publication visibility',
     'is visible after a failed publish response; treating publish as complete.',
