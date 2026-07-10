@@ -111,6 +111,10 @@ const CHALLENGE_PHRASES = [
   'enable javascript and cookies'
 ];
 
+const GEMINI_REGION_MARKERS = [',2,1,200,"', ',2,1,200,\\"'];
+const CLAUDE_BLOCKED_CODES = new Set(['AF', 'BY', 'CN', 'CU', 'HK', 'IR', 'KP', 'MO', 'RU', 'SY']);
+const GEMINI_BLOCKED_CODES = new Set(['CHN', 'RUS', 'BLR', 'CUB', 'IRN', 'PRK', 'SYR', 'HKG', 'MAC']);
+
 const PYTHON_AVAILABILITY_HELPER = `
 import json
 import sys
@@ -172,6 +176,33 @@ function hostnameFor(url: string): string {
   }
 }
 
+function targetKey(target: ProviderTarget): string {
+  return target.name.trim().toLowerCase().replaceAll('-', '_').replaceAll(' ', '_');
+}
+
+function extractTraceLocation(body: string): string {
+  for (const line of body.split(/\r?\n/)) {
+    if (line.startsWith('loc=')) {
+      return line.slice(4).trim().toUpperCase();
+    }
+  }
+  return '';
+}
+
+function extractGeminiCountryCode(body: string): string {
+  for (const marker of GEMINI_REGION_MARKERS) {
+    const index = body.indexOf(marker);
+    if (index < 0) {
+      continue;
+    }
+    const code = body.slice(index + marker.length, index + marker.length + 3);
+    if (/^[A-Z]{3}$/.test(code)) {
+      return code;
+    }
+  }
+  return '';
+}
+
 export function normalizeProviderTargets(
   targets?: Record<string, AvailabilityTargetConfig> | ProviderTarget[] | null
 ): ProviderTarget[] {
@@ -231,7 +262,8 @@ export function evaluateProviderResponse(
     };
   }
 
-  if (target.name.trim().toLowerCase().replaceAll('-', '_') === 'chatgpt_ios') {
+  const key = targetKey(target);
+  if (key === 'chatgpt_ios') {
     const body = response.body.toLowerCase();
     if (body.includes('you may be connected to a disallowed isp')) {
       return {
@@ -270,6 +302,44 @@ export function evaluateProviderResponse(
       status_code: statusCode,
       final_url: finalUrl,
       matched_phrase: ''
+    };
+  }
+
+  if (key === 'chatgpt' || key === 'chatgpt_web') {
+    const unsupported = response.body.toLowerCase().includes('unsupported_country');
+    return {
+      provider: target.name,
+      passed: !unsupported,
+      reason: unsupported ? 'unsupported_region' : 'ok',
+      status_code: statusCode,
+      final_url: finalUrl,
+      matched_phrase: unsupported ? 'unsupported_country' : ''
+    };
+  }
+
+  if (key === 'claude') {
+    const countryCode = extractTraceLocation(response.body);
+    const blocked = CLAUDE_BLOCKED_CODES.has(countryCode);
+    return {
+      provider: target.name,
+      passed: Boolean(countryCode) && !blocked,
+      reason: !countryCode ? 'unlock_failed' : blocked ? 'unsupported_region' : 'ok',
+      status_code: statusCode,
+      final_url: finalUrl,
+      matched_phrase: countryCode
+    };
+  }
+
+  if (key === 'gemini') {
+    const countryCode = extractGeminiCountryCode(response.body);
+    const blocked = GEMINI_BLOCKED_CODES.has(countryCode);
+    return {
+      provider: target.name,
+      passed: Boolean(countryCode) && !blocked,
+      reason: !countryCode ? 'unlock_failed' : blocked ? 'unsupported_region' : 'ok',
+      status_code: statusCode,
+      final_url: finalUrl,
+      matched_phrase: countryCode
     };
   }
 

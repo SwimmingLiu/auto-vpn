@@ -119,6 +119,77 @@ test('evaluateProviderResponse accepts the expected ChatGPT iOS availability res
   assert.equal(result.reason, 'ok');
 });
 
+test('evaluateProviderResponse normalizes spaced ChatGPT iOS target names', () => {
+  const result = evaluateProviderResponse({
+    name: 'ChatGPT iOS',
+    url: 'https://ios.chat.openai.com/',
+    allowed_hosts: ['ios.chat.openai.com'],
+    negative_phrases: []
+  }, {
+    final_url: 'https://ios.chat.openai.com/',
+    status_code: 403,
+    title: '',
+    body: 'Request is not allowed. Please try again later.'
+  });
+
+  assert.equal(result.passed, true);
+  assert.equal(result.reason, 'ok');
+});
+
+test('evaluateProviderResponse rejects Gemini blocked regions returned with HTTP 200', () => {
+  const result = evaluateProviderResponse({
+    name: 'gemini',
+    url: 'https://gemini.google.com/',
+    allowed_hosts: ['gemini.google.com'],
+    negative_phrases: []
+  }, {
+    final_url: 'https://gemini.google.com/',
+    status_code: 200,
+    title: '',
+    body: 'prefix,2,1,200,"CHNsuffix'
+  });
+
+  assert.equal(result.passed, false);
+  assert.equal(result.reason, 'unsupported_region');
+  assert.equal(result.matched_phrase, 'CHN');
+});
+
+test('evaluateProviderResponse rejects ChatGPT Web unsupported countries returned with HTTP 200', () => {
+  const result = evaluateProviderResponse({
+    name: 'chatgpt_web',
+    url: 'https://api.openai.com/compliance/cookie_requirements',
+    allowed_hosts: ['api.openai.com'],
+    negative_phrases: []
+  }, {
+    final_url: 'https://api.openai.com/compliance/cookie_requirements',
+    status_code: 200,
+    title: '',
+    body: '{"unsupported_country":true}'
+  });
+
+  assert.equal(result.passed, false);
+  assert.equal(result.reason, 'unsupported_region');
+  assert.equal(result.matched_phrase, 'unsupported_country');
+});
+
+test('evaluateProviderResponse rejects Claude blocked regions returned with HTTP 200', () => {
+  const result = evaluateProviderResponse({
+    name: 'claude',
+    url: 'https://claude.ai/cdn-cgi/trace',
+    allowed_hosts: ['claude.ai'],
+    negative_phrases: []
+  }, {
+    final_url: 'https://claude.ai/cdn-cgi/trace',
+    status_code: 200,
+    title: '',
+    body: 'loc=CN\n'
+  });
+
+  assert.equal(result.passed, false);
+  assert.equal(result.reason, 'unsupported_region');
+  assert.equal(result.matched_phrase, 'CN');
+});
+
 test('availability fixture output matches Python golden output', async () => {
   const input = JSON.parse(await readFile(path.join(fixtureDir, 'input.json'), 'utf8'));
   const expected = JSON.parse(await readFile(path.join(fixtureDir, 'output.json'), 'utf8'));
