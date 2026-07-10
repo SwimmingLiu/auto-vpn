@@ -105,6 +105,16 @@ export function resolveNodeVendorRuntimePaths(projectRoot) {
   };
 }
 
+export function resolveAutoVpnCliRuntimePaths(projectRoot) {
+  const sourceRoot = path.join(projectRoot, 'npm', 'autovpn-cli');
+  const runtimeRoot = path.join(projectRoot, 'electron', 'runtime', 'autovpn-cli');
+  return {
+    sourceRoot,
+    runtimeRoot,
+    runtimeEntry: path.join(runtimeRoot, 'bin', 'autovpn.mjs')
+  };
+}
+
 export function resolvePlaywrightBrowserRuntimePaths(projectRoot) {
   return {
     browserDir: path.join(projectRoot, 'electron', 'runtime', 'playwright-browsers')
@@ -257,6 +267,16 @@ export function buildNodeVendorInstallArgs(vendorDir) {
     '--prefix',
     vendorDir,
     ...RUNTIME_NODE_DEPENDENCIES
+  ];
+}
+
+export function buildAutoVpnCliProductionInstallArgs(runtimeRoot) {
+  return [
+    'install',
+    '--omit=dev',
+    '--ignore-scripts',
+    '--prefix',
+    runtimeRoot
   ];
 }
 
@@ -528,6 +548,29 @@ export function stageNodeVendorRuntime(projectRoot) {
   return vendorDir;
 }
 
+export function stageAutoVpnCliRuntime(projectRoot, options = {}) {
+  const { run = runOrThrow } = options;
+  const paths = resolveAutoVpnCliRuntimePaths(projectRoot);
+  logPackageStage('Building packaged AutoVPN CLI');
+  run('npm', ['run', 'build', '--prefix', paths.sourceRoot], {
+    cwd: projectRoot,
+    timeout: 300000
+  });
+
+  ensureCleanDir(paths.runtimeRoot);
+  for (const entry of ['bin', 'dist', 'lib']) {
+    fs.cpSync(path.join(paths.sourceRoot, entry), path.join(paths.runtimeRoot, entry), { recursive: true });
+  }
+  fs.copyFileSync(path.join(paths.sourceRoot, 'package.json'), path.join(paths.runtimeRoot, 'package.json'));
+
+  logPackageStage('Installing packaged AutoVPN CLI production dependencies');
+  run('npm', buildAutoVpnCliProductionInstallArgs(paths.runtimeRoot), {
+    cwd: projectRoot,
+    timeout: 300000
+  });
+  return paths;
+}
+
 export function stagePlaywrightBrowserRuntime(projectRoot, options = {}) {
   const { browserDir } = resolvePlaywrightBrowserRuntimePaths(projectRoot);
   const {
@@ -663,6 +706,7 @@ export function runPackaging(projectRoot) {
 
   logPackageStage('Staging share worker runtime');
   stageShareWorkerRuntime(projectRoot);
+  stageAutoVpnCliRuntime(projectRoot);
   stagePythonVendorRuntime(projectRoot, {
     platform: platforms[0],
     arch: archs[0]

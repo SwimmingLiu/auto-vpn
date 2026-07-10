@@ -12,6 +12,34 @@ test('resolveSignalTarget targets the child process on Windows', () => {
   assert.equal(resolveSignalTarget({ pid: 4242 }, 'win32'), 4242);
 });
 
+test('signalProcessTree terminates the complete Windows process tree', () => {
+  const calls = [];
+  const signaled = signalProcessTree({ pid: 4242 }, 'SIGTERM', {
+    platform: 'win32',
+    runTaskkill: (args) => {
+      calls.push(args);
+      return { status: 0 };
+    }
+  });
+
+  assert.equal(signaled, true);
+  assert.deepEqual(calls, [['/PID', '4242', '/T']]);
+});
+
+test('signalProcessTree force-kills the complete Windows process tree after timeout', () => {
+  const calls = [];
+  const signaled = signalProcessTree({ pid: 4242 }, 'SIGKILL', {
+    platform: 'win32',
+    runTaskkill: (args) => {
+      calls.push(args);
+      return { status: 0 };
+    }
+  });
+
+  assert.equal(signaled, true);
+  assert.deepEqual(calls, [['/PID', '4242', '/T', '/F']]);
+});
+
 test('signalProcessTree preserves detached process-group stopping for the Node backend', () => {
   const calls = [];
   const signaled = signalProcessTree(

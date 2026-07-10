@@ -114,8 +114,11 @@ export function buildBackendEnv(
   return env;
 }
 
-export function resolveNodeCliEntry(projectRoot) {
-  return path.join(projectRoot, 'npm', 'autovpn-cli', 'bin', 'autovpn.mjs');
+export function resolveNodeCliEntry(projectRoot, options = {}) {
+  const relativeRoot = options.isPackaged
+    ? path.join('electron', 'runtime', 'autovpn-cli')
+    : path.join('npm', 'autovpn-cli');
+  return path.join(projectRoot, relativeRoot, 'bin', 'autovpn.mjs');
 }
 
 const BACKEND_COMMANDS = new Map([
@@ -133,10 +136,13 @@ export function buildBackendInvocation(projectRoot, command, extraArgs = [], opt
     throw new Error(`Unsupported Electron backend command: ${command}`);
   }
   const isPackaged = Boolean(options.isPackaged);
-  const nodeExecutable = options.nodeExecutable || process.env.npm_node_execpath || process.execPath;
+  const env = options.env ?? process.env;
+  const confirmedNodeExecutable = options.nodeExecutable || env.npm_node_execpath || '';
+  const isElectron = options.isElectron ?? Boolean(process.versions.electron);
   const electronExecutable = options.electronExecutable || process.execPath;
+  const runAsNode = isPackaged || (isElectron && !confirmedNodeExecutable);
   const args = [
-    resolveNodeCliEntry(projectRoot),
+    resolveNodeCliEntry(projectRoot, { isPackaged }),
     ...mappedCommand,
     '--project-root',
     projectRoot,
@@ -147,9 +153,9 @@ export function buildBackendInvocation(projectRoot, command, extraArgs = [], opt
   }
 
   return {
-    command: isPackaged ? electronExecutable : nodeExecutable,
+    command: runAsNode ? electronExecutable : (confirmedNodeExecutable || process.execPath),
     args,
-    runAsNode: isPackaged
+    runAsNode
   };
 }
 

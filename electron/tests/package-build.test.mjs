@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import * as packageBuild from '../build/package.mjs';
 import {
   buildSvgIconRenderHtml,
   buildPackageArchList,
@@ -29,6 +31,73 @@ import {
   stagePlaywrightBrowserRuntime,
   stageShareWorkerRuntime
 } from '../build/package.mjs';
+
+test('resolveAutoVpnCliRuntimePaths stages the packaged CLI under electron runtime', () => {
+  assert.equal(typeof packageBuild.resolveAutoVpnCliRuntimePaths, 'function');
+  const paths = packageBuild.resolveAutoVpnCliRuntimePaths('/tmp/project');
+
+  assert.equal(paths.sourceRoot, '/tmp/project/npm/autovpn-cli');
+  assert.equal(paths.runtimeRoot, '/tmp/project/electron/runtime/autovpn-cli');
+  assert.equal(paths.runtimeEntry, '/tmp/project/electron/runtime/autovpn-cli/bin/autovpn.mjs');
+});
+
+test('stageAutoVpnCliRuntime builds, copies, and installs the production CLI', () => {
+  assert.equal(typeof packageBuild.stageAutoVpnCliRuntime, 'function');
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vpn-staged-cli-'));
+  const sourceRoot = path.join(projectRoot, 'npm', 'autovpn-cli');
+  for (const relativePath of ['bin/autovpn.mjs', 'dist/cli/main.js', 'lib/runtime.js']) {
+    const filePath = path.join(sourceRoot, relativePath);
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, relativePath, 'utf-8');
+  }
+  fs.writeFileSync(path.join(sourceRoot, 'package.json'), JSON.stringify({ name: '@swimmingliu/autovpn' }), 'utf-8');
+  const calls = [];
+
+  const staged = packageBuild.stageAutoVpnCliRuntime(projectRoot, {
+    run: (command, args, options) => calls.push({ command, args, options })
+  });
+
+  assert.equal(fs.readFileSync(staged.runtimeEntry, 'utf-8'), 'bin/autovpn.mjs');
+  assert.equal(fs.existsSync(path.join(staged.runtimeRoot, 'dist', 'cli', 'main.js')), true);
+  assert.equal(fs.existsSync(path.join(staged.runtimeRoot, 'lib', 'runtime.js')), true);
+  assert.deepEqual(calls.map(({ command, args }) => ({ command, args })), [
+    { command: 'npm', args: ['run', 'build', '--prefix', sourceRoot] },
+    { command: 'npm', args: packageBuild.buildAutoVpnCliProductionInstallArgs(staged.runtimeRoot) }
+  ]);
+});
+
+test('staged packaged CLI executes version and profile commands', () => {
+  assert.equal(typeof packageBuild.stageAutoVpnCliRuntime, 'function');
+  const sourceProjectRoot = process.cwd();
+  const sourceCliRoot = path.join(sourceProjectRoot, 'npm', 'autovpn-cli');
+  if (!fs.existsSync(path.join(sourceCliRoot, 'dist', 'cli', 'main.js'))) {
+    const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+    const build = spawnSync(npmCommand, ['run', 'build', '--prefix', sourceCliRoot], { encoding: 'utf-8' });
+    assert.equal(build.status, 0, build.stderr || build.stdout);
+  }
+
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vpn-packaged-cli-smoke-'));
+  const testSourceRoot = path.join(projectRoot, 'npm', 'autovpn-cli');
+  fs.mkdirSync(testSourceRoot, { recursive: true });
+  for (const entry of ['bin', 'dist', 'lib']) {
+    fs.cpSync(path.join(sourceCliRoot, entry), path.join(testSourceRoot, entry), { recursive: true });
+  }
+  fs.copyFileSync(path.join(sourceCliRoot, 'package.json'), path.join(testSourceRoot, 'package.json'));
+  const staged = packageBuild.stageAutoVpnCliRuntime(projectRoot, { run: () => {} });
+  fs.cpSync(path.join(sourceCliRoot, 'node_modules'), path.join(staged.runtimeRoot, 'node_modules'), { recursive: true });
+
+  const version = spawnSync(process.execPath, [staged.runtimeEntry, '--version'], { encoding: 'utf-8' });
+  assert.equal(version.status, 0, version.stderr || version.stdout);
+  assert.match(version.stdout, /^autovpn \d+\.\d+\.\d+\n$/);
+
+  const runtimeRoot = path.join(projectRoot, 'state');
+  const profile = spawnSync(process.execPath, [staged.runtimeEntry, 'profile', 'show', '--project-root', projectRoot], {
+    encoding: 'utf-8',
+    env: { ...process.env, VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot }
+  });
+  assert.equal(profile.status, 0, profile.stderr || profile.stdout);
+  assert.equal(JSON.parse(profile.stdout).paths.profile_path, path.join(runtimeRoot, 'profile.toml'));
+});
 
 test('resolveLiveProfilePath prefers the repo-anchor state file for worktrees', () => {
   const projectRoot = '/Users/demo/vpn-subscription-automation/.worktrees/feature-a';

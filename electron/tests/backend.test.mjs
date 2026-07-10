@@ -89,7 +89,33 @@ test('buildBackendInvocation uses the packaged Electron executable as Node', () 
   });
 
   assert.equal(invocation.command, '/Applications/AutoVPN.app/Contents/MacOS/AutoVPN');
+  assert.equal(
+    invocation.args[0],
+    '/Applications/AutoVPN.app/Contents/Resources/app.asar/electron/runtime/autovpn-cli/bin/autovpn.mjs'
+  );
   assert.equal(invocation.runAsNode, true);
+});
+
+test('buildBackendInvocation runs direct Electron development launches as Node', () => {
+  const invocation = buildBackendInvocation('/repo', 'profile', [], {
+    env: {},
+    isElectron: true,
+    electronExecutable: '/Applications/Electron.app/Contents/MacOS/Electron'
+  });
+
+  assert.equal(invocation.command, '/Applications/Electron.app/Contents/MacOS/Electron');
+  assert.equal(invocation.runAsNode, true);
+});
+
+test('buildBackendInvocation prefers a confirmed development Node executable', () => {
+  const invocation = buildBackendInvocation('/repo', 'profile', [], {
+    env: { npm_node_execpath: '/opt/node/bin/node' },
+    isElectron: true,
+    electronExecutable: '/Applications/Electron.app/Contents/MacOS/Electron'
+  });
+
+  assert.equal(invocation.command, '/opt/node/bin/node');
+  assert.equal(invocation.runAsNode, false);
 });
 
 test('buildBackendInvocation maps legacy internal commands to public CLI commands', () => {
@@ -131,19 +157,21 @@ test('buildBackendInvocation appends extra args and jsonl output for retry-stage
 
 test('buildBackendEnv sets Electron run-as-node only for packaged invocations', () => {
   const previous = process.env.ELECTRON_RUN_AS_NODE;
-  process.env.ELECTRON_RUN_AS_NODE = 'inherited';
-  const developmentEnv = buildBackendEnv('/repo', '/profile.toml', '/bundled.toml');
-  const packagedEnv = buildBackendEnv('/repo', '/profile.toml', '/bundled.toml', '', { runAsNode: true });
+  try {
+    process.env.ELECTRON_RUN_AS_NODE = 'inherited';
+    const developmentEnv = buildBackendEnv('/repo', '/profile.toml', '/bundled.toml');
+    const packagedEnv = buildBackendEnv('/repo', '/profile.toml', '/bundled.toml', '', { runAsNode: true });
 
-  assert.equal(developmentEnv.ELECTRON_RUN_AS_NODE, undefined);
-  assert.equal(packagedEnv.ELECTRON_RUN_AS_NODE, '1');
-  assert.equal(developmentEnv.VPN_AUTOMATION_PROFILE_PATH, '/profile.toml');
-  assert.equal(developmentEnv.VPN_AUTOMATION_BUNDLED_PROFILE_PATH, '/bundled.toml');
-
-  if (previous === undefined) {
-    delete process.env.ELECTRON_RUN_AS_NODE;
-  } else {
-    process.env.ELECTRON_RUN_AS_NODE = previous;
+    assert.equal(developmentEnv.ELECTRON_RUN_AS_NODE, undefined);
+    assert.equal(packagedEnv.ELECTRON_RUN_AS_NODE, '1');
+    assert.equal(developmentEnv.VPN_AUTOMATION_PROFILE_PATH, '/profile.toml');
+    assert.equal(developmentEnv.VPN_AUTOMATION_BUNDLED_PROFILE_PATH, '/bundled.toml');
+  } finally {
+    if (previous === undefined) {
+      delete process.env.ELECTRON_RUN_AS_NODE;
+    } else {
+      process.env.ELECTRON_RUN_AS_NODE = previous;
+    }
   }
 });
 
