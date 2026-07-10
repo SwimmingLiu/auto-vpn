@@ -322,8 +322,11 @@ test('Node availability backend checks providers through Mihomo proxy by default
   const closed = [];
   const fetches = [];
   const result = await checkLinkAvailabilityBatchWithBackend({
-    results: [speedResult],
-    config: { concurrency: 1, timeout_seconds: 20, startup_wait_seconds: 1 },
+    results: [
+      { ...speedResult, link: 'vmess://node-a' },
+      { ...speedResult, link: 'vmess://node-b' }
+    ],
+    config: { concurrency: 2, timeout_seconds: 20, startup_wait_seconds: 1 },
     runtime_path: '/opt/mihomo',
     targets: {
       custom: { url: 'http://custom.example/ok', enabled: true, allowed_hosts: ['custom.example'], negative_phrases: ['blocked'] }
@@ -332,10 +335,11 @@ test('Node availability backend checks providers through Mihomo proxy by default
     env: {},
     openMihomoRuntime: async (link, options) => {
       opened.push({ link, options });
+      const port = link.endsWith('-a') ? 18080 : 18081;
       return {
         proxies: {
-          http: 'http://127.0.0.1:18080',
-          https: 'http://127.0.0.1:18080'
+          http: `http://127.0.0.1:${port}`,
+          https: `http://127.0.0.1:${port}`
         },
         close: async () => closed.push(link)
       };
@@ -350,22 +354,18 @@ test('Node availability backend checks providers through Mihomo proxy by default
     }
   });
 
-  assert.deepEqual(opened, [{
-    link: 'vmess://node',
-    options: {
-      runtimePath: '/opt/mihomo',
-      startupWaitSeconds: 1,
-      env: {}
-    }
-  }]);
-  assert.deepEqual(fetches, [{
-    url: 'http://custom.example/ok',
-    proxyUrl: 'http://127.0.0.1:18080',
-    timeoutSeconds: 20
-  }]);
-  assert.deepEqual(closed, ['vmess://node']);
-  assert.equal(result[0].all_passed, true);
-  assert.equal(result[0].provider_results.custom.reason, 'ok');
+  assert.deepEqual(opened.map(({ link }) => link).sort(), ['vmess://node-a', 'vmess://node-b']);
+  assert.deepEqual(opened.map(({ options }) => options), [
+    { runtimePath: '/opt/mihomo', startupWaitSeconds: 1, env: {} },
+    { runtimePath: '/opt/mihomo', startupWaitSeconds: 1, env: {} }
+  ]);
+  assert.deepEqual(fetches.map(({ proxyUrl }) => proxyUrl).sort(), [
+    'http://127.0.0.1:18080',
+    'http://127.0.0.1:18081'
+  ]);
+  assert.ok(fetches.every(({ url, timeoutSeconds }) => url === 'http://custom.example/ok' && timeoutSeconds === 20));
+  assert.deepEqual(closed.sort(), ['vmess://node-a', 'vmess://node-b']);
+  assert.ok(result.every((item) => item.all_passed && item.provider_results.custom.reason === 'ok'));
 });
 
 test('fetchUrlViaHttpProxy returns provider status and body through an HTTP proxy', async () => {
