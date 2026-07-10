@@ -178,9 +178,26 @@ function defaultNow(): number {
 
 async function fetchWithTimeout(fetchImpl: FetchLike, url: string, timeoutMs: number): Promise<Awaited<ReturnType<FetchLike>>> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let internallyTimedOut = false;
+  const timer = setTimeout(() => {
+    internallyTimedOut = true;
+    controller.abort();
+  }, timeoutMs);
   try {
-    return await fetchImpl(url, { signal: controller.signal });
+    const response = await fetchImpl(url, { signal: controller.signal });
+    if (internallyTimedOut) {
+      const error = new Error(`request timed out after ${timeoutMs}ms`) as Error & { code?: string };
+      error.code = 'AUTOVPN_INTERNAL_TIMEOUT';
+      throw error;
+    }
+    return response;
+  } catch (error) {
+    if (internallyTimedOut && !(error instanceof Error && (error as Error & { code?: string }).code === 'AUTOVPN_INTERNAL_TIMEOUT')) {
+      const timeoutError = new Error(`request timed out after ${timeoutMs}ms`, { cause: error }) as Error & { code?: string };
+      timeoutError.code = 'AUTOVPN_INTERNAL_TIMEOUT';
+      throw timeoutError;
+    }
+    throw error;
   } finally {
     clearTimeout(timer);
   }
@@ -206,6 +223,7 @@ async function readResponseBytes(response: Awaited<ReturnType<FetchLike>>, maxBy
   if (response.body?.getReader) {
     const reader = response.body.getReader();
     let timedOut = false;
+    let reachedCap = false;
     try {
       return await withBodyTimeout(async () => {
         let total = 0;
@@ -215,6 +233,9 @@ async function readResponseBytes(response: Awaited<ReturnType<FetchLike>>, maxBy
             break;
           }
           total += Math.min(value.byteLength, maxBytes - total);
+          if (total >= maxBytes) {
+            reachedCap = true;
+          }
         }
         return total;
       }, timeoutMs);
@@ -222,16 +243,13 @@ async function readResponseBytes(response: Awaited<ReturnType<FetchLike>>, maxBy
       timedOut = error instanceof Error && error.message.includes('response body timed out');
       throw error;
     } finally {
-      if (timedOut) {
+      if (timedOut || reachedCap) {
         await reader.cancel().catch(() => {});
       }
       reader.releaseLock();
     }
   }
-  if (response.arrayBuffer) {
-    return await withBodyTimeout(async () => Math.min((await response.arrayBuffer!()).byteLength, maxBytes), timeoutMs);
-  }
-  return 0;
+  throw new Error('streaming response body required for bounded speed test downloads');
 }
 
 function requireOkResponse(response: Awaited<ReturnType<FetchLike>>, allowedStatuses: Set<number>): void {
@@ -242,23 +260,19 @@ function requireOkResponse(response: Awaited<ReturnType<FetchLike>>, allowedStat
 }
 
 function isTransientProbeError(error: unknown): boolean {
-  const name = error instanceof Error ? error.name : '';
   const message = error instanceof Error ? error.message : String(error);
   const code = typeof error === 'object' && error !== null && 'code' in error
     ? String((error as { code?: unknown }).code ?? '')
     : '';
-  const statusMatch = /\bstatus(?:\s+code)?\s+(\d{3})\b/i.exec(message);
+  const statusMatch = /(?:unexpected status|failed with status)\s+(\d{3})\b/i.exec(message);
   if (statusMatch) {
     const status = Number(statusMatch[1]);
     return status >= 500 && status <= 599;
   }
-  if (['AbortError', 'TimeoutError'].includes(name)) {
+  if (['AUTOVPN_INTERNAL_TIMEOUT', 'ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ECONNREFUSED', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT'].includes(code.toUpperCase())) {
     return true;
   }
-  if (['ECONNRESET', 'ETIMEDOUT'].includes(code.toUpperCase())) {
-    return true;
-  }
-  return /\b(?:timeout|timed out|ECONNRESET|ETIMEDOUT|socket|fetch failed)\b/i.test(message);
+  return error instanceof TypeError && message.trim().toLowerCase() === 'fetch failed';
 }
 
 async function retryTransientProbe<T>(operation: () => Promise<T>): Promise<T> {

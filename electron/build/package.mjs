@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import TOML from '@iarna/toml';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -39,68 +40,46 @@ export function resolveRuntimePaths(projectRoot) {
   };
 }
 
+export const BUNDLED_PROFILE_SENSITIVE_SOURCE_KEYS = Object.freeze(['url', 'key']);
+export const BUNDLED_PROFILE_SENSITIVE_DEPLOY_KEYS = Object.freeze([
+  'subscription_url',
+  'verify_subscription_url',
+  'secret_query',
+  'account_id',
+  'cloudflare_api_token',
+  'cloudflare_global_key',
+  'cloudflare_email',
+  'pages_secret_admin'
+]);
+
 export function sanitizeBundledProfileToml(payload) {
   const normalizedPayload = payload.replaceAll('VPN Subscription Automation', 'AutoVPN');
-  const availabilityBlock = `[availability_targets]
-[availability_targets.gemini]
-url = "https://gemini.google.com"
-enabled = true
-
-[availability_targets.chatgpt_ios]
-url = "https://ios.chat.openai.com/"
-enabled = true
-
-[availability_targets.chatgpt_web]
-url = "https://api.openai.com/compliance/cookie_requirements"
-enabled = true
-
-[availability_targets.claude]
-url = "https://claude.ai/cdn-cgi/trace"
-enabled = true`;
-  const availabilityStart = normalizedPayload.indexOf('[availability_targets]');
-  let withAvailability;
-  if (availabilityStart === -1) {
-    withAvailability = `${normalizedPayload.trimEnd()}\n\n${availabilityBlock}\n`;
-  } else {
-    const afterAvailability = normalizedPayload.slice(availabilityStart + '[availability_targets]'.length);
-    const nextTopLevelMatch = afterAvailability.match(/\n\[[^\].\n]+]/);
-    if (nextTopLevelMatch?.index === undefined) {
-      withAvailability = `${normalizedPayload.slice(0, availabilityStart).trimEnd()}\n\n${availabilityBlock}\n`;
-    } else {
-      const availabilityEnd = availabilityStart + '[availability_targets]'.length + nextTopLevelMatch.index;
-      withAvailability = `${normalizedPayload.slice(0, availabilityStart).trimEnd()}\n\n${availabilityBlock}\n\n${normalizedPayload.slice(availabilityEnd).trimStart()}`;
+  const profile = TOML.parse(normalizedPayload);
+  for (const source of Object.values(profile.sources ?? {})) {
+    if (!source || typeof source !== 'object' || Array.isArray(source)) {
+      continue;
+    }
+    for (const key of BUNDLED_PROFILE_SENSITIVE_SOURCE_KEYS) {
+      if (Object.prototype.hasOwnProperty.call(source, key)) {
+        source[key] = '';
+      }
     }
   }
-
-  const deploySecretKeys = new Set([
-    'subscription_url',
-    'verify_subscription_url',
-    'secret_query',
-    'account_id',
-    'cloudflare_api_token',
-    'cloudflare_global_key',
-    'cloudflare_email',
-    'pages_secret_admin'
-  ]);
-  let section = '';
-  return withAvailability.split(/\r?\n/).map((line) => {
-    const sectionMatch = /^\s*\[([^\]]+)]\s*$/.exec(line);
-    if (sectionMatch) {
-      section = sectionMatch[1];
-      return line;
+  if (profile.deploy && typeof profile.deploy === 'object' && !Array.isArray(profile.deploy)) {
+    for (const key of BUNDLED_PROFILE_SENSITIVE_DEPLOY_KEYS) {
+      if (Object.prototype.hasOwnProperty.call(profile.deploy, key)) {
+        profile.deploy[key] = '';
+      }
     }
-    const fieldMatch = /^(\s*)([A-Za-z0-9_]+)(\s*=\s*).*$/.exec(line);
-    if (!fieldMatch) {
-      return line;
-    }
-    const key = fieldMatch[2];
-    const sourceCredential = section.startsWith('sources.') && ['url', 'key'].includes(key);
-    const deployCredential = section === 'deploy' && deploySecretKeys.has(key);
-    if (!sourceCredential && !deployCredential) {
-      return line;
-    }
-    return `${fieldMatch[1]}${key}${fieldMatch[3]}""`;
-  }).join('\n');
+  }
+  profile.availability_targets = {
+    gemini: { url: 'https://gemini.google.com', enabled: true },
+    chatgpt_ios: { url: 'https://ios.chat.openai.com/', enabled: true },
+    chatgpt_web: { url: 'https://api.openai.com/compliance/cookie_requirements', enabled: true },
+    claude: { url: 'https://claude.ai/cdn-cgi/trace', enabled: true }
+  };
+  const comment = normalizedPayload.includes('# AutoVPN runtime profile') ? '# AutoVPN runtime profile\n' : '';
+  return `${comment}${TOML.stringify(profile)}`;
 }
 
 function stageBundledProfile(sourcePath, bundledSeedPath) {

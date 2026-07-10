@@ -200,12 +200,26 @@ cloudflare_auth_mode = "api_token"
   assert.equal((sanitized.match(/= ""/g) ?? []).length, 10);
 });
 
+test('sanitizeBundledProfileToml structurally blanks multiline and inline credentials', () => {
+  const sanitized = sanitizeBundledProfileToml(`[sources]
+fixture = { url = "PRIVATE_VALUE_1", key = "PRIVATE_VALUE_2", enabled = true }
+
+[deploy]
+cloudflare_api_token = """PRIVATE_VALUE_3"""
+pages_secret_admin = "PRIVATE_VALUE_4"
+cloudflare_auth_mode = "api_token"
+`);
+
+  assert.doesNotMatch(sanitized, /PRIVATE_VALUE_/);
+  assert.match(sanitized, /cloudflare_auth_mode/);
+});
+
 test('packaging profile staging always uses the sanitized default seed', () => {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vpn-packaged-profile-'));
   const runtimeDir = path.join(projectRoot, 'electron', 'runtime');
   fs.mkdirSync(runtimeDir, { recursive: true });
   fs.mkdirSync(path.join(projectRoot, 'state'), { recursive: true });
-  fs.writeFileSync(path.join(runtimeDir, 'default-profile.toml'), '[deploy]\nproject_name = "default-seed"\nsecret_query = ""\n', 'utf8');
+  fs.writeFileSync(path.join(runtimeDir, 'default-profile.toml'), '[sources.fixture]\nurl = "PRIVATE_VALUE_2"\nkey = "PRIVATE_VALUE_3"\n\n[deploy]\nproject_name = "default-seed"\nsecret_query = "PRIVATE_VALUE_4"\npages_secret_admin = "PRIVATE_VALUE_5"\n', 'utf8');
   fs.writeFileSync(path.join(projectRoot, 'state', 'profile.toml'), '[deploy]\nproject_name = "live-state"\nsecret_query = "PRIVATE_VALUE_1"\n', 'utf8');
 
   const bundledPath = stageBundledProfileForPackaging(projectRoot);

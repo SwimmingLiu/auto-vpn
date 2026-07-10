@@ -408,14 +408,27 @@ async function restoreResumeSpeedResults(artifactDir: string, eventLog: string, 
 
 async function forEachWithConcurrency<T>(items: T[], concurrency: number, mapper: (item: T) => Promise<void>): Promise<void> {
   let nextIndex = 0;
+  let failed = false;
+  let firstError: unknown;
   const workerCount = Math.max(1, Math.min(Math.max(1, Math.floor(concurrency)), items.length));
-  await Promise.all(Array.from({ length: workerCount }, async () => {
-    while (nextIndex < items.length) {
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (nextIndex < items.length && !failed) {
       const index = nextIndex;
       nextIndex += 1;
-      await mapper(items[index]);
+      try {
+        await mapper(items[index]);
+      } catch (error) {
+        if (!failed) {
+          failed = true;
+          firstError = error;
+        }
+      }
     }
-  }));
+  });
+  await Promise.allSettled(workers);
+  if (failed) {
+    throw firstError;
+  }
 }
 
 async function speedtestResumeStateFromEventLog(eventLog: string): Promise<{ probes: Map<string, ProbeResult>; fullResults: Map<string, SpeedTestResult> }> {

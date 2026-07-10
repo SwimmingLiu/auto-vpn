@@ -19,6 +19,21 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '../../../..');
 const fixtureDir = path.join(repoRoot, 'tests', 'fixtures', 'node-migration', 'pipeline', 'speedtest');
 
+function streamingBody(byteLength) {
+  let sent = false;
+  return {
+    getReader: () => ({
+      read: async () => {
+        if (sent) return { done: true, value: undefined };
+        sent = true;
+        return { done: false, value: new Uint8Array(byteLength) };
+      },
+      cancel: async () => {},
+      releaseLock: () => {}
+    })
+  };
+}
+
 test('speedtest fixture output matches Python golden output', async () => {
   const input = JSON.parse(await readFile(path.join(fixtureDir, 'input.json'), 'utf8'));
   const expected = JSON.parse(await readFile(path.join(fixtureDir, 'output.json'), 'utf8'));
@@ -117,7 +132,7 @@ test('Node direct probe does not retry a permanent 4xx response', async () => {
   assert.deepEqual(results, [{ link: 'vmess://rejected', reachable: false, latency_ms: 0, error: 'unexpected status 403' }]);
 });
 
-test('Node direct probe retries a timeout error', async () => {
+test('Node direct probe retries a tagged internal timeout error', async () => {
   let attempts = 0;
   const results = await probeSpeedtestLinksInNode({
     links: ['vmess://timeout'],
@@ -133,7 +148,7 @@ test('Node direct probe retries a timeout error', async () => {
       attempts += 1;
       if (attempts === 1) {
         const error = new Error('request timed out');
-        error.name = 'TimeoutError';
+        error.code = 'AUTOVPN_INTERNAL_TIMEOUT';
         throw error;
       }
       return { ok: true, status: 204 };
@@ -142,6 +157,41 @@ test('Node direct probe retries a timeout error', async () => {
 
   assert.equal(attempts, 2);
   assert.equal(results[0].reachable, true);
+});
+
+test('Node direct probe does not retry a caller AbortError', async () => {
+  let attempts = 0;
+  const results = await probeSpeedtestLinksInNode({
+    links: ['vmess://caller-abort'],
+    config: { min_download_mb_s: 1, timeout_seconds: 1, concurrency: 1, probe_url: 'https://probe.example/204' }
+  }, {
+    env: { AUTOVPN_SPEEDTEST_RUNTIME: 'direct' },
+    fetch: async () => {
+      attempts += 1;
+      const error = new Error('The operation was aborted by the caller');
+      error.name = 'AbortError';
+      throw error;
+    }
+  });
+
+  assert.equal(attempts, 1);
+  assert.equal(results[0].reachable, false);
+});
+
+test('Node direct probe does not retry malformed socket configuration text', async () => {
+  let attempts = 0;
+  await probeSpeedtestLinksInNode({
+    links: ['vmess://malformed'],
+    config: { min_download_mb_s: 1, timeout_seconds: 1, concurrency: 1, probe_url: 'https://probe.example/204' }
+  }, {
+    env: { AUTOVPN_SPEEDTEST_RUNTIME: 'direct' },
+    fetch: async () => {
+      attempts += 1;
+      throw new Error('malformed socket configuration');
+    }
+  });
+
+  assert.equal(attempts, 1);
 });
 
 test('Node Mihomo probe retries an unexpected 5xx controller response', async () => {
@@ -200,7 +250,7 @@ test('Node direct download uses an alternate URL after the primary fails', async
       if (String(url).includes('primary')) {
         throw new Error('fetch failed');
       }
-      return { ok: true, status: 200, arrayBuffer: async () => new Uint8Array(2 * 1024 * 1024).buffer };
+      return { ok: true, status: 200, body: streamingBody(2 * 1024 * 1024) };
     }
   });
 
@@ -256,11 +306,71 @@ test('Node direct download averages only successful endpoint samples', async () 
         throw new Error('fetch failed');
       }
       const bytes = String(url).includes('one.') ? 1024 * 1024 : 3 * 1024 * 1024;
-      return { ok: true, status: 200, arrayBuffer: async () => new Uint8Array(bytes).buffer };
+      return { ok: true, status: 200, body: streamingBody(bytes) };
     }
   });
 
   assert.equal(results[0].average_download_mb_s, 2);
+});
+
+test('Node direct download cancels a streaming reader immediately at the byte cap', async () => {
+  let reads = 0;
+  let cancels = 0;
+  let releases = 0;
+  const results = await speedtestLinksWithBackend({
+    links: ['vmess://capped-stream'],
+    config: {
+      min_download_mb_s: 0,
+      timeout_seconds: 1,
+      concurrency: 1,
+      urls: ['https://speed.example/bytes'],
+      max_download_bytes: 1024,
+      max_download_candidates: 1
+    }
+  }, {
+    env: { AUTOVPN_SPEEDTEST_RUNTIME: 'direct' },
+    probeLinks: async (links) => links.map((link) => ({ link, reachable: true, latency_ms: 10, error: '' })),
+    fetch: async () => ({
+      ok: true,
+      status: 200,
+      body: {
+        getReader: () => ({
+          read: async () => {
+            reads += 1;
+            return { done: false, value: new Uint8Array(1024) };
+          },
+          cancel: async () => { cancels += 1; },
+          releaseLock: () => { releases += 1; }
+        })
+      }
+    })
+  });
+
+  assert.equal(results[0].reachable, true);
+  assert.equal(reads, 1);
+  assert.equal(cancels, 1);
+  assert.equal(releases, 1);
+});
+
+test('Node direct download rejects non-streaming arrayBuffer responses', async () => {
+  const results = await speedtestLinksWithBackend({
+    links: ['vmess://non-streaming'],
+    config: {
+      min_download_mb_s: 0,
+      timeout_seconds: 1,
+      concurrency: 1,
+      urls: ['https://speed.example/bytes'],
+      max_download_bytes: 1024,
+      max_download_candidates: 1
+    }
+  }, {
+    env: { AUTOVPN_SPEEDTEST_RUNTIME: 'direct' },
+    probeLinks: async (links) => links.map((link) => ({ link, reachable: true, latency_ms: 10, error: '' })),
+    fetch: async () => ({ ok: true, status: 200, arrayBuffer: async () => new Uint8Array(2048).buffer })
+  });
+
+  assert.equal(results[0].reachable, false);
+  assert.match(results[0].error, /streaming response body required/);
 });
 
 test('Node speedtest backend preserves order semantics, emits progress and events', async () => {
@@ -362,7 +472,7 @@ test('Node speedtest backend can run direct fetch runtime without Python fallbac
       if (String(url) === 'https://probe.example/204') {
         return { ok: true, status: 204, arrayBuffer: async () => new ArrayBuffer(0) };
       }
-      return { ok: true, status: 200, arrayBuffer: async () => new Uint8Array(1024).buffer };
+      return { ok: true, status: 200, body: streamingBody(1024) };
     }
   });
 

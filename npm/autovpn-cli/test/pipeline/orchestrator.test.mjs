@@ -33,6 +33,21 @@ function vmessName(link) {
   return JSON.parse(Buffer.from(link.replace(/^vmess:\/\//, ''), 'base64url').toString('utf8')).ps;
 }
 
+function streamingBody(byteLength) {
+  let sent = false;
+  return {
+    getReader: () => ({
+      read: async () => {
+        if (sent) return { done: true, value: undefined };
+        sent = true;
+        return { done: false, value: new Uint8Array(byteLength) };
+      },
+      cancel: async () => {},
+      releaseLock: () => {}
+    })
+  };
+}
+
 async function makeProject() {
   const projectRoot = await mkdtemp(path.join(os.tmpdir(), 'autovpn-node-run-'));
   await mkdir(path.join(projectRoot, 'templates'), { recursive: true });
@@ -243,6 +258,82 @@ test('runNodePipeline globally probes and ranks streamed links before bounded do
   assert.equal(events.filter((event) => event.type === 'speedtest_probe_result').length, 3);
 });
 
+test('runNodePipeline keeps unlimited candidates associated across events and artifacts', async () => {
+  const projectRoot = await makeProject();
+  const links = [
+    vmessLink('first', 'one.example'),
+    vmessLink('second', 'two.example'),
+    vmessLink('third', 'three.example')
+  ];
+  const events = [];
+  const result = await runNodePipeline({ projectRoot, skipDeploy: true, skipVerify: true, output: 'jsonl' }, {
+    env: {
+      VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'),
+      VPN_AUTOMATION_PROFILE_PATH: path.join(projectRoot, 'state', 'profile.toml')
+    },
+    now: () => new Date('2026-06-29T01:02:03Z'),
+    emit: (event) => events.push(event),
+    stages: {
+      extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links }),
+      speedtestProbe: async (input) => input.map((link, index) => ({ link, reachable: true, latency_ms: [30, 10, 20][index], error: '' })),
+      speedtestLink: async (link) => ({ link, reachable: true, average_download_mb_s: 3, latency_ms: 0, error: '' }),
+      availability: async (results) => results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} })),
+      countryLookup: () => 'US',
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
+    }
+  });
+
+  const ranked = [links[1], links[2], links[0]];
+  const selected = events.find((event) => event.type === 'speedtest_selected');
+  const resultEvents = events.filter((event) => event.type === 'speedtest_result');
+  const report = JSON.parse(await readFile(path.join(result.artifact_dir, 'vpn_node_speedtest_report.json'), 'utf8'));
+  assert.equal(selected.candidate_count, 3);
+  assert.deepEqual(resultEvents.map((event) => event.link), ranked);
+  assert.deepEqual(report.map((entry) => entry.link), ranked);
+  assert.deepEqual((await readFile(path.join(result.artifact_dir, 'vpn_node_speedtest.txt'), 'utf8')).trim().split(/\n/), ranked);
+  assert.equal(events.at(-1).type, 'summary');
+  assert.equal(events.some((event) => event.type === 'run_failed'), false);
+});
+
+test('runNodePipeline drains sibling speedtest workers before terminal failure events', async () => {
+  const projectRoot = await makeProject();
+  const profilePath = path.join(projectRoot, 'state', 'profile.toml');
+  await writeFile(profilePath, (await readFile(profilePath, 'utf8')).replace('concurrency = 1', 'concurrency = 2'), 'utf8');
+  const firstLink = vmessLink('first', 'one.example');
+  const secondLink = vmessLink('second', 'two.example');
+  const events = [];
+  let delayedResourceClosed = false;
+
+  await assert.rejects(() => runNodePipeline({ projectRoot, skipDeploy: true, skipVerify: true, output: 'jsonl' }, {
+    env: {
+      VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'),
+      VPN_AUTOMATION_PROFILE_PATH: profilePath
+    },
+    now: () => new Date('2026-06-29T01:02:03Z'),
+    emit: (event) => events.push(event),
+    stages: {
+      extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink, secondLink] }),
+      speedtestProbe: async (links) => links.map((link, index) => ({ link, reachable: true, latency_ms: 10 + index, error: '' })),
+      speedtestLink: async (link) => {
+        if (link === firstLink) {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          throw new Error('first candidate failed');
+        }
+        try {
+          await new Promise((resolve) => setTimeout(resolve, 40));
+          return { link, reachable: true, average_download_mb_s: 3, latency_ms: 0, error: '' };
+        } finally {
+          delayedResourceClosed = true;
+        }
+      }
+    }
+  }), /first candidate failed/);
+
+  assert.equal(delayedResourceClosed, true);
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(events.at(-1).type, 'run_failed');
+});
+
 test('runNodePipeline forwards native speedtest progress events to the job log', async () => {
   const projectRoot = await makeProject();
   const events = [];
@@ -259,7 +350,7 @@ test('runNodePipeline forwards native speedtest progress events to the job log',
       return { ok: true, status: 204, arrayBuffer: async () => new ArrayBuffer(0) };
     }
     if (String(url) === 'https://speed.example/10mb') {
-      return { ok: true, status: 200, arrayBuffer: async () => new Uint8Array(5_000_000).buffer };
+      return { ok: true, status: 200, body: streamingBody(5_000_000) };
     }
     throw new Error(`unexpected fetch URL ${url}`);
   };
@@ -1072,7 +1163,7 @@ test('retryNodePipelineStage emits one final probe event per retried node', asyn
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url) => String(url).includes('generate_204')
     ? { ok: true, status: 204, arrayBuffer: async () => new ArrayBuffer(0) }
-    : { ok: true, status: 200, arrayBuffer: async () => new Uint8Array(5_000_000).buffer };
+    : { ok: true, status: 200, body: streamingBody(5_000_000) };
   try {
     await retryNodePipelineStage({
       projectRoot,
