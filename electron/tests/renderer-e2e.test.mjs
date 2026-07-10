@@ -88,11 +88,16 @@ test('renderer updates live global dedupe counts from canonical extract fingerpr
 
     await page.goto(`${server.origin}/index.html`);
     await page.waitForSelector('#dashboardOverview');
+    await page.waitForFunction(() => typeof window.__emitPipelineEvent === 'function');
+    await page.locator('#navRuns').click();
+    await page.locator('#runsWorkspace [data-run-action="start"]').click();
+    await page.waitForFunction(() => window.__runCalls === 1);
     await page.evaluate((fingerprint) => {
       window.__emitPipelineEvent({
         type: 'extract_iteration',
         source_name: 'leiting',
         iteration: 1,
+        requested_iterations: 1,
         new_items: 1,
         extracted_links: 1,
         total_links: 1,
@@ -103,6 +108,7 @@ test('renderer updates live global dedupe counts from canonical extract fingerpr
         type: 'extract_iteration',
         source_name: 'heidong',
         iteration: 1,
+        requested_iterations: 1,
         new_items: 1,
         extracted_links: 1,
         total_links: 1,
@@ -111,6 +117,7 @@ test('renderer updates live global dedupe counts from canonical extract fingerpr
       });
     }, duplicateFingerprint);
 
+    await page.locator('#navDashboard').click();
     const rawMetric = await page.locator('[data-metric-key="raw_links"]').innerText();
     const dedupedMetric = await page.locator('[data-metric-key="deduped_links"]').innerText();
     assert.match(rawMetric, /^\s*原始节点\s+2\b/);
@@ -128,15 +135,24 @@ test('renderer updates live global dedupe counts from canonical extract fingerpr
     assert.doesNotMatch(eventAndLogText, /vmess:\/\//);
     assert.doesNotMatch(eventAndLogText, new RegExp(firstLink.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
     assert.doesNotMatch(eventAndLogText, new RegExp(duplicateLink.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    for (const secret of Object.values(canonicalFields)) {
+      assert.doesNotMatch(eventAndLogText, new RegExp(String(secret).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    }
+    assert.deepEqual(
+      await page.evaluate(() => Object.keys(window.__extractEvents[0]).sort()),
+      ['deduped_links', 'extracted_links', 'iteration', 'new_item_fingerprints', 'new_items', 'requested_iterations', 'source_name', 'total_links', 'type'].sort()
+    );
 
+    await page.evaluate(() => window.__emitPipelineEvent({ type: 'finished', ok: true, code: 0 }));
     await page.locator('#navRuns').click();
     await page.locator('#runsWorkspace [data-run-action="start"]').click();
-    await page.waitForFunction(() => window.__runCalls === 1);
+    await page.waitForFunction(() => window.__runCalls === 2);
     await page.evaluate((fingerprint) => {
       window.__emitPipelineEvent({
         type: 'extract_iteration',
         source_name: 'leiting',
         iteration: 1,
+        requested_iterations: 1,
         new_items: 1,
         extracted_links: 1,
         total_links: 1,

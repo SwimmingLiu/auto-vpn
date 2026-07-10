@@ -198,9 +198,14 @@ test('Node extract fingerprints ignore VMess display names when canonical fields
   };
   const links = [
     vmessLink({ ...canonicalFields, ps: 'Leiting display name' }),
-    vmessLink({ ...canonicalFields, ps: 'Heidong display name' })
+    vmessLink({ ...canonicalFields, ps: 'Heidong display name' }),
+    vmessLink({ ...canonicalFields, ps: 'Changed canonical path', path: '/different-path' })
   ];
   const fingerprints = [];
+  const expectedFingerprint = expectedCanonicalFingerprint(canonicalFields);
+  const expectedChangedFingerprint = expectedCanonicalFingerprint({ ...canonicalFields, path: '/different-path' });
+  assert.equal(expectedFingerprint, '6c5936884d4953495532f635a7e270dfa3902328593cfedeacc455eb1ee3d132');
+  assert.equal(expectedChangedFingerprint, '06267a541f4792ee8e1ace16481bcf346750ae0363cf54f313d7dc95b1d7aaa0');
 
   for (const [index, link] of links.entries()) {
     const events = [];
@@ -226,13 +231,37 @@ test('Node extract fingerprints ignore VMess display names when canonical fields
     });
     const iteration = events.find((event) => event.type === 'extract_iteration');
     fingerprints.push(iteration.new_item_fingerprints[0]);
-    assert.doesNotMatch(JSON.stringify(iteration), /vmess:\/\//);
-    assert.doesNotMatch(JSON.stringify(iteration), new RegExp(link.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    const serializedIteration = JSON.stringify(iteration);
+    assert.deepEqual(Object.keys(iteration).sort(), [
+      'deduped_links',
+      'extracted_links',
+      'iteration',
+      'new_item_fingerprints',
+      'new_items',
+      'requested_iterations',
+      'source_name',
+      'total_links',
+      'type'
+    ].sort());
+    assert.doesNotMatch(serializedIteration, /vmess:\/\//);
+    assert.doesNotMatch(serializedIteration, new RegExp(link.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    for (const secret of [
+      canonicalFields.add,
+      canonicalFields.id,
+      canonicalFields.host,
+      index === 2 ? '/different-path' : canonicalFields.path
+    ]) {
+      assert.doesNotMatch(serializedIteration, new RegExp(String(secret).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    }
   }
 
   assert.notEqual(links[0], links[1]);
   assert.equal(fingerprints[0], fingerprints[1]);
-  assert.match(fingerprints[0], /^[a-f0-9]{64}$/);
+  assert.equal(fingerprints[0], expectedFingerprint);
+  assert.equal(fingerprints[1], expectedFingerprint);
+  assert.equal(fingerprints[2], expectedChangedFingerprint);
+  assert.notEqual(fingerprints[2], expectedFingerprint);
+  assert.match(expectedFingerprint, /^[a-f0-9]{64}$/);
 });
 
 test('Node extract backend uses curl TLS fallback without enabling proxy by default', async () => {
@@ -462,6 +491,20 @@ test('extract ignores legacy Python rollback env without spawning Python', async
 
 function vmessLink(payload) {
   return `vmess://${Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url')}`;
+}
+
+function expectedCanonicalFingerprint(payload) {
+  const canonical = JSON.stringify([
+    payload.add,
+    payload.port,
+    payload.id,
+    payload.net,
+    payload.host,
+    payload.path,
+    payload.tls,
+    payload.sni
+  ].map(String));
+  return crypto.createHash('sha256').update(canonical).digest('hex');
 }
 
 function encryptPayload(plaintext, key) {
