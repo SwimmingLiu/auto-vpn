@@ -50,7 +50,8 @@ function createWindow() {
     projectRoot,
     runtimeProfilePath,
     bundledProfilePath,
-    runtimeArtifactsPath
+    runtimeArtifactsPath,
+    isPackaged: app.isPackaged
   });
   activeLifecycles.add(lifecycle);
   win.on('close', () => {

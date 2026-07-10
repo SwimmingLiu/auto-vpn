@@ -12,7 +12,7 @@ test('resolveSignalTarget targets the child process on Windows', () => {
   assert.equal(resolveSignalTarget({ pid: 4242 }, 'win32'), 4242);
 });
 
-test('signalProcessTree sends signals to the detached process group', () => {
+test('signalProcessTree preserves detached process-group stopping for the Node backend', () => {
   const calls = [];
   const signaled = signalProcessTree(
     { pid: 4242, kill: () => false },

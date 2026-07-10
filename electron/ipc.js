@@ -1,12 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 
 import { clipboard, ipcMain, shell } from 'electron';
 import QRCode from 'qrcode';
 
 import { mergeLatestArtifactPreview, previewArtifactDirectory } from './lib/artifact-preview.js';
-import { buildBackendEnv, buildBackendInvocation, parseBackendEventLine } from './lib/backend.js';
+import { buildBackendEnv, buildBackendInvocation, createNdjsonDecoder } from './lib/backend.js';
 import { signalProcessTree } from './lib/process-lifecycle.js';
 import { resolveStateProfilePath } from './paths.js';
 
@@ -36,7 +36,8 @@ export function registerIpcHandlers({
   projectRoot,
   runtimeProfilePath = '',
   bundledProfilePath = '',
-  runtimeArtifactsPath = ''
+  runtimeArtifactsPath = '',
+  isPackaged = false
 }) {
   for (const channel of IPC_CHANNELS) {
     ipcMain.removeHandler(channel);
@@ -84,29 +85,31 @@ export function registerIpcHandlers({
   }
 
   ipcMain.handle('profile:load', async () => {
-    const invocation = buildBackendInvocation(projectRoot, 'profile');
+    const invocation = buildBackendInvocation(projectRoot, 'profile', [], { isPackaged });
     const output = await runCommand(
-      invocation.commands,
+      invocation.command,
       invocation.args,
       projectRoot,
       runtimeProfilePath,
       bundledProfilePath,
       '',
-      runtimeArtifactsPath
+      runtimeArtifactsPath,
+      invocation.runAsNode
     );
     return JSON.parse(output.stdout);
   });
 
   ipcMain.handle('profile:save', async (_event, payload) => {
-    const invocation = buildBackendInvocation(projectRoot, 'profile-save');
+    const invocation = buildBackendInvocation(projectRoot, 'profile-save', [], { isPackaged });
     await runCommand(
-      invocation.commands,
+      invocation.command,
       invocation.args,
       projectRoot,
       runtimeProfilePath,
       bundledProfilePath,
       JSON.stringify(payload),
-      runtimeArtifactsPath
+      runtimeArtifactsPath,
+      invocation.runAsNode
     );
     return { ok: true };
   });
@@ -138,8 +141,7 @@ export function registerIpcHandlers({
       return { ok: false, code: null, signal: null, stopped: false, error: 'already_running' };
     }
 
-    const invocation = buildBackendInvocation(projectRoot, 'run');
-    const command = selectBackendCommand(invocation.commands);
+    const invocation = buildBackendInvocation(projectRoot, 'run', [], { isPackaged });
     const runArgs = [...invocation.args];
     if (options?.skipDeploy) {
       runArgs.push('--skip-deploy');
@@ -147,9 +149,11 @@ export function registerIpcHandlers({
     if (options?.skipVerify) {
       runArgs.push('--skip-verify');
     }
-    const child = spawn(command, runArgs, {
+    const child = spawn(invocation.command, runArgs, {
       cwd: projectRoot,
-      env: buildBackendEnv(projectRoot, runtimeProfilePath, bundledProfilePath, runtimeArtifactsPath),
+      env: buildBackendEnv(projectRoot, runtimeProfilePath, bundledProfilePath, runtimeArtifactsPath, {
+        runAsNode: invocation.runAsNode
+      }),
       detached: true,
       stdio: ['ignore', 'pipe', 'pipe']
     });
@@ -159,14 +163,8 @@ export function registerIpcHandlers({
     child.stdout.setEncoding('utf-8');
     child.stderr.setEncoding('utf-8');
 
-    child.stdout.on('data', (chunk) => {
-      for (const line of chunk.split(/\r?\n/)) {
-        const event = parseBackendEventLine(line);
-        if (event) {
-          emit(event);
-        }
-      }
-    });
+    const decoder = createNdjsonDecoder(emit);
+    child.stdout.on('data', (chunk) => decoder.push(chunk));
 
     child.stderr.on('data', (chunk) => {
       const message = String(chunk).trim();
@@ -189,6 +187,7 @@ export function registerIpcHandlers({
     });
 
     child.on('close', (code, signal) => {
+      decoder.flush();
       clearStopTimer();
       activePipelineChild = null;
       const stopped = stopRequested || signal === 'SIGTERM' || signal === 'SIGKILL';
@@ -228,15 +227,16 @@ export function registerIpcHandlers({
   });
 
   ipcMain.handle('artifact:latest', async () => {
-    const invocation = buildBackendInvocation(projectRoot, 'artifact-latest');
+    const invocation = buildBackendInvocation(projectRoot, 'artifact-latest', [], { isPackaged });
     const output = await runCommand(
-      invocation.commands,
+      invocation.command,
       invocation.args,
       projectRoot,
       runtimeProfilePath,
       bundledProfilePath,
       '',
-      runtimeArtifactsPath
+      runtimeArtifactsPath,
+      invocation.runAsNode
     );
     const report = JSON.parse(output.stdout);
     if (!report?.ok) {
@@ -246,15 +246,16 @@ export function registerIpcHandlers({
   });
 
   ipcMain.handle('artifact:list', async () => {
-    const invocation = buildBackendInvocation(projectRoot, 'artifact-list');
+    const invocation = buildBackendInvocation(projectRoot, 'artifact-list', [], { isPackaged });
     const output = await runCommand(
-      invocation.commands,
+      invocation.command,
       invocation.args,
       projectRoot,
       runtimeProfilePath,
       bundledProfilePath,
       '',
-      runtimeArtifactsPath
+      runtimeArtifactsPath,
+      invocation.runAsNode
     );
     return JSON.parse(output.stdout);
   });
@@ -275,11 +276,12 @@ export function registerIpcHandlers({
       artifactDir,
       '--stage',
       stageName
-    ]);
-    const command = selectBackendCommand(invocation.commands);
-    const child = spawn(command, invocation.args, {
+    ], { isPackaged });
+    const child = spawn(invocation.command, invocation.args, {
       cwd: projectRoot,
-      env: buildBackendEnv(projectRoot, runtimeProfilePath, bundledProfilePath, runtimeArtifactsPath),
+      env: buildBackendEnv(projectRoot, runtimeProfilePath, bundledProfilePath, runtimeArtifactsPath, {
+        runAsNode: invocation.runAsNode
+      }),
       detached: true,
       stdio: ['ignore', 'pipe', 'pipe']
     });
@@ -289,14 +291,8 @@ export function registerIpcHandlers({
     child.stdout.setEncoding('utf-8');
     child.stderr.setEncoding('utf-8');
 
-    child.stdout.on('data', (chunk) => {
-      for (const line of chunk.split(/\r?\n/)) {
-        const event = parseBackendEventLine(line);
-        if (event) {
-          emit(event);
-        }
-      }
-    });
+    const decoder = createNdjsonDecoder(emit);
+    child.stdout.on('data', (chunk) => decoder.push(chunk));
 
     child.stderr.on('data', (chunk) => {
       const message = String(chunk).trim();
@@ -319,6 +315,7 @@ export function registerIpcHandlers({
     });
 
     child.on('close', (code, signal) => {
+      decoder.flush();
       clearStopTimer();
       activePipelineChild = null;
       const stopped = stopRequested || signal === 'SIGTERM' || signal === 'SIGKILL';
@@ -357,19 +354,19 @@ export function registerIpcHandlers({
 }
 
 function runCommand(
-  commands,
+  command,
   args,
   cwd,
   runtimeProfilePath = '',
   bundledProfilePath = '',
   input = '',
-  runtimeArtifactsPath = ''
+  runtimeArtifactsPath = '',
+  runAsNode = false
 ) {
   return new Promise((resolve, reject) => {
-    const command = selectBackendCommand(commands);
     const child = spawn(command, args, {
       cwd,
-      env: buildBackendEnv(cwd, runtimeProfilePath, bundledProfilePath, runtimeArtifactsPath),
+      env: buildBackendEnv(cwd, runtimeProfilePath, bundledProfilePath, runtimeArtifactsPath, { runAsNode }),
       stdio: ['pipe', 'pipe', 'pipe']
     });
 
@@ -409,21 +406,4 @@ async function openPathWithShell(targetPath, { strictExists = false } = {}) {
 
   const error = await shell.openPath(resolved);
   return error ? { ok: false, error } : { ok: true, path: resolved };
-}
-
-function selectBackendCommand(commands) {
-  for (const command of commands) {
-    if (command.startsWith('/')) {
-      if (fs.existsSync(command)) {
-        return command;
-      }
-      continue;
-    }
-
-    const probe = spawnSync(command, ['-c', 'pass'], { stdio: 'ignore' });
-    if (!probe.error) {
-      return command;
-    }
-  }
-  throw new Error(`No runnable backend python found in candidates: ${commands.join(', ')}`);
 }
