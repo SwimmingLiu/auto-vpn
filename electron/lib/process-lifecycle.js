@@ -77,3 +77,10 @@ export function requestProcessTreeStop(
 
   return { signaled, timer };
 }
+
+export function pipelineStopResponse({ signaled, timer }) {
+  return {
+    ok: Boolean(signaled || (timer !== null && timer !== undefined)),
+    requested: true
+  };
+}

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { requestProcessTreeStop, resolveSignalTarget, signalProcessTree } from '../lib/process-lifecycle.js';
+import { pipelineStopResponse, requestProcessTreeStop, resolveSignalTarget, signalProcessTree } from '../lib/process-lifecycle.js';
 
 test('resolveSignalTarget targets the detached process group on macOS and Linux', () => {
   assert.equal(resolveSignalTarget({ pid: 4242 }, 'darwin'), -4242);
@@ -126,4 +126,18 @@ test('requestProcessTreeStop does not force-kill a Windows tree confirmed exited
   active = false;
   timer();
   assert.deepEqual(calls, [['/PID', '4242', '/T']]);
+});
+
+test('pipeline stop reports accepted while Windows forced escalation is pending', () => {
+  assert.deepEqual(pipelineStopResponse({ signaled: false, timer: { unref() {} } }), {
+    ok: true,
+    requested: true
+  });
+});
+
+test('pipeline stop reports failure when neither a signal nor escalation was scheduled', () => {
+  assert.deepEqual(pipelineStopResponse({ signaled: false, timer: null }), {
+    ok: false,
+    requested: true
+  });
 });

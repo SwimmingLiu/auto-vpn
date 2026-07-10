@@ -7,7 +7,7 @@ import QRCode from 'qrcode';
 
 import { mergeLatestArtifactPreview, previewArtifactDirectory } from './lib/artifact-preview.js';
 import { buildBackendEnv, buildBackendInvocation, createNdjsonDecoder } from './lib/backend.js';
-import { requestProcessTreeStop } from './lib/process-lifecycle.js';
+import { pipelineStopResponse, requestProcessTreeStop } from './lib/process-lifecycle.js';
 import { attachPipelineChildFinalizer } from './lib/pipeline-child-finalizer.js';
 import { resolveStateProfilePath } from './paths.js';
 
@@ -74,7 +74,7 @@ export function registerIpcHandlers({
     });
     stopTimer = stop.timer;
 
-    return { ok: stop.signaled, requested: true };
+    return pipelineStopResponse(stop);
   }
 
   ipcMain.handle('profile:load', async () => {
