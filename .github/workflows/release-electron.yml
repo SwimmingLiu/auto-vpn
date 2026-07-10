@@ -27,9 +27,6 @@ env:
   NPM_CONFIG_FETCH_TIMEOUT: "600000"
   NPM_CONFIG_FUND: "false"
   NPM_CONFIG_PREFER_OFFLINE: "true"
-  PIP_DISABLE_PIP_VERSION_CHECK: "1"
-  PIP_RETRIES: "5"
-  PIP_TIMEOUT: "120"
 
 jobs:
   test:
@@ -73,9 +70,8 @@ jobs:
         run: |
           PKG_VERSION="$(node -p "require('./package.json').version")"
           NPM_CLI_VERSION="$(node -p "require('./npm/autovpn-cli/package.json').version")"
-          PY_VERSION="$(node -p "require('node:fs').readFileSync('pyproject.toml', 'utf8').match(/^version\\s*=\\s*\\\"([^\\\"]+)\\\"/m)[1]")"
-          if [ "${NPM_CLI_VERSION}" != "${PKG_VERSION}" ] || [ "${PY_VERSION}" != "${PKG_VERSION}" ]; then
-            echo "Version mismatch: package.json=${PKG_VERSION} npm/autovpn-cli=${NPM_CLI_VERSION} pyproject=${PY_VERSION}"
+          if [ "${NPM_CLI_VERSION}" != "${PKG_VERSION}" ]; then
+            echo "Version mismatch: package.json=${PKG_VERSION} npm/autovpn-cli=${NPM_CLI_VERSION}"
             exit 1
           fi
           EXPECTED_TAG="v${PKG_VERSION}"
@@ -101,59 +97,43 @@ jobs:
           fi
         shell: bash
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-
       - name: Install dependencies
         run: |
           bash scripts/ci/retry-command.sh "npm ci" -- npm ci --prefer-offline --no-audit --fund=false
           bash scripts/ci/retry-command.sh "npm ci --prefix npm/autovpn-cli" -- \
             npm ci --prefix npm/autovpn-cli --prefer-offline --no-audit --fund=false
-          bash scripts/ci/retry-command.sh "upgrade pip" -- \
-            python -m pip install --retries "${PIP_RETRIES}" --timeout "${PIP_TIMEOUT}" --upgrade pip
-          bash scripts/ci/retry-command.sh "install Python dependencies" -- \
-            python -m pip install --retries "${PIP_RETRIES}" --timeout "${PIP_TIMEOUT}" -e .[dev]
-
-      - name: Run Python tests
-        run: ./scripts/run_pytest.sh tests -v
 
       - name: Build npm CLI web server
         run: npm run build --prefix npm/autovpn-cli
 
       - name: Run Electron tests
         run: |
-          python - <<'PY'
-          import glob
-          import os
-          import signal
-          import subprocess
-          import sys
+          node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import { spawnSync } from 'node:child_process';
 
-          test_files = sorted(glob.glob("electron/tests/*.test.mjs"))
-          browser_dependent_tests = {
-              'app-launch.test.mjs',
-              'renderer-e2e.test.mjs',
-              'renderer-visual.test.mjs',
-              'web-server-e2e.test.mjs',
-              'web-server-visual.test.mjs',
+          const excluded = new Set([
+            'app-launch.test.mjs',
+            'renderer-e2e.test.mjs',
+            'renderer-visual.test.mjs',
+            'web-server-e2e.test.mjs',
+            'web-server-visual.test.mjs'
+          ]);
+          const testFiles = fs.readdirSync('electron/tests')
+            .filter((file) => file.endsWith('.test.mjs') && !excluded.has(file))
+            .sort()
+            .map((file) => path.join('electron/tests', file));
+          const result = spawnSync(process.execPath, ['--test', '--test-timeout=600000', ...testFiles], {
+            stdio: 'inherit',
+            timeout: 600000
+          });
+          if (result.error?.code === 'ETIMEDOUT') {
+            console.error('Electron tests timed out after 600 seconds.');
+            process.exit(124);
           }
-          test_files = [test_file for test_file in test_files if os.path.basename(test_file) not in browser_dependent_tests]
-          command = ["node", "--test", "--test-timeout=600000", *test_files]
-          process = subprocess.Popen(command, start_new_session=True)
-          try:
-              raise SystemExit(process.wait(timeout=600))
-          except subprocess.TimeoutExpired:
-              print("Electron tests timed out after 600 seconds.", file=sys.stderr)
-              os.killpg(process.pid, signal.SIGTERM)
-              try:
-                  process.wait(timeout=10)
-              except subprocess.TimeoutExpired:
-                  os.killpg(process.pid, signal.SIGKILL)
-              raise SystemExit(124)
-          PY
+          process.exit(result.status ?? 1);
+          NODE
 
       - name: Run npm CLI wrapper tests
         run: |
@@ -255,12 +235,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-${{ runner.arch }}-browser-runtime-
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-
       - name: Install Linux packaging dependencies
         if: runner.os == 'Linux'
         run: |
@@ -271,6 +245,8 @@ jobs:
       - name: Install dependencies
         run: |
           bash scripts/ci/retry-command.sh "npm ci" -- npm ci --prefer-offline --no-audit --fund=false
+          bash scripts/ci/retry-command.sh "npm ci --prefix npm/autovpn-cli" -- \
+            npm ci --prefix npm/autovpn-cli --prefer-offline --no-audit --fund=false
         shell: bash
 
       - name: Package Electron app
@@ -401,12 +377,6 @@ jobs:
           ref: ${{ env.RELEASE_TAG_NAME }}
           fetch-depth: 0
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -419,15 +389,10 @@ jobs:
 
       - name: Build CLI package
         run: |
-          bash scripts/ci/retry-command.sh "upgrade pip" -- \
-            python -m pip install --retries "${PIP_RETRIES}" --timeout "${PIP_TIMEOUT}" --upgrade pip
-          bash scripts/ci/retry-command.sh "install Python build tools" -- \
-            python -m pip install --retries "${PIP_RETRIES}" --timeout "${PIP_TIMEOUT}" build twine
-          python -m build
-          python -m twine check dist/*
           bash scripts/ci/retry-command.sh "npm ci --prefix npm/autovpn-cli" -- \
             npm ci --prefix npm/autovpn-cli --prefer-offline --no-audit --fund=false
           npm test --prefix npm/autovpn-cli
+          mkdir -p dist
           cd npm/autovpn-cli
           npm pack --json --pack-destination ../../dist
         shell: bash
@@ -468,14 +433,7 @@ jobs:
 
       - name: Verify CLI artifacts exist
         run: |
-          PKG_VERSION="$(python - <<'PY'
-          import tomllib
-          with open("pyproject.toml", "rb") as handle:
-              print(tomllib.load(handle)["project"]["version"])
-          PY
-          )"
-          test -f "dist/vpn_subscription_automation-${PKG_VERSION}-py3-none-any.whl"
-          test -f "dist/vpn_subscription_automation-${PKG_VERSION}.tar.gz"
+          PKG_VERSION="$(node -p "require('./package.json').version")"
           test -f "dist/swimmingliu-autovpn-${PKG_VERSION}.tgz"
         shell: bash
 
@@ -487,7 +445,7 @@ jobs:
           while IFS= read -r release_file; do
             release_files+=("${release_file}")
           done < <(
-            find dist -maxdepth 1 -type f \( -name '*.whl' -o -name '*.tar.gz' -o -name '*.tgz' \) -print
+            find dist -maxdepth 1 -type f -name '*.tgz' -print
           )
           if [ "${#release_files[@]}" -eq 0 ]; then
             echo "No CLI release assets found."

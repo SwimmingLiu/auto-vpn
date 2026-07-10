@@ -18,9 +18,6 @@ env:
   NPM_CONFIG_FETCH_TIMEOUT: "600000"
   NPM_CONFIG_FUND: "false"
   NPM_CONFIG_PREFER_OFFLINE: "true"
-  PIP_DISABLE_PIP_VERSION_CHECK: "1"
-  PIP_RETRIES: "5"
-  PIP_TIMEOUT: "120"
 
 jobs:
   headless:
@@ -31,12 +28,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-          cache: pip
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -62,16 +53,6 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-${{ runner.arch }}-browser-runtime-
 
-      - name: Upgrade pip
-        run: |
-          bash scripts/ci/retry-command.sh "upgrade pip" -- \
-            python -m pip install --retries "${PIP_RETRIES}" --timeout "${PIP_TIMEOUT}" --upgrade pip
-
-      - name: Install Python dependencies
-        run: |
-          bash scripts/ci/retry-command.sh "install Python dependencies" -- \
-            python -m pip install --retries "${PIP_RETRIES}" --timeout "${PIP_TIMEOUT}" -e .[dev]
-
       - name: Install Node dependencies
         run: |
           bash scripts/ci/retry-command.sh "npm ci" -- npm ci --prefer-offline --no-audit --fund=false
@@ -80,9 +61,6 @@ jobs:
         run: |
           bash scripts/ci/retry-command.sh "npm ci --prefix npm/autovpn-cli" -- \
             npm ci --prefix npm/autovpn-cli --prefer-offline --no-audit --fund=false
-
-      - name: Run Python tests
-        run: ./scripts/run_pytest.sh tests -q
 
       - name: Run Electron headless Node tests
         run: |
@@ -110,20 +88,19 @@ jobs:
 
       - name: Smoke npm CLI wrapper
         run: |
-          PY_AUTOVPN="$(command -v autovpn)"
-          AUTOVPN_PYTHON_CLI="${PY_AUTOVPN}" AUTOVPN_NO_INSTALL=1 npx -y ./npm/autovpn-cli/*.tgz --help
-          AUTOVPN_PYTHON_CLI="${PY_AUTOVPN}" AUTOVPN_NO_INSTALL=1 npx -y ./npm/autovpn-cli/*.tgz --version
-          AUTOVPN_PYTHON_CLI="${PY_AUTOVPN}" AUTOVPN_NO_INSTALL=1 npx -y ./npm/autovpn-cli/*.tgz doctor --project-root "$PWD" --output json > npm-doctor.json || npm_doctor_status=$?
-          python -m json.tool npm-doctor.json >/dev/null
+          npx -y ./npm/autovpn-cli/*.tgz --help
+          npx -y ./npm/autovpn-cli/*.tgz --version
+          npx -y ./npm/autovpn-cli/*.tgz doctor --project-root "$PWD" --output json > npm-doctor.json || npm_doctor_status=$?
+          node -e "JSON.parse(require('node:fs').readFileSync('npm-doctor.json', 'utf8'))"
           echo "npm_doctor_status=${npm_doctor_status:-0}"
 
       - name: Smoke headless CLI
         run: |
-          autovpn profile summary --project-root "$PWD" --json
-          autovpn artifacts latest --project-root "$PWD"
-          autovpn artifacts list --project-root "$PWD"
-          autovpn doctor --project-root "$PWD" --output json > doctor.json || doctor_status=$?
-          python -m json.tool doctor.json >/dev/null
+          node npm/autovpn-cli/bin/autovpn.mjs profile summary --project-root "$PWD" --json
+          node npm/autovpn-cli/bin/autovpn.mjs artifacts latest --project-root "$PWD"
+          node npm/autovpn-cli/bin/autovpn.mjs artifacts list --project-root "$PWD"
+          node npm/autovpn-cli/bin/autovpn.mjs doctor --project-root "$PWD" --output json > doctor.json || doctor_status=$?
+          node -e "JSON.parse(require('node:fs').readFileSync('doctor.json', 'utf8'))"
           echo "doctor_status=${doctor_status:-0}"
 
   electron-package:
@@ -169,6 +146,8 @@ jobs:
       - name: Install dependencies
         run: |
           bash scripts/ci/retry-command.sh "npm ci" -- npm ci --prefer-offline --no-audit --fund=false
+          bash scripts/ci/retry-command.sh "npm ci --prefix npm/autovpn-cli" -- \
+            npm ci --prefix npm/autovpn-cli --prefer-offline --no-audit --fund=false
 
       - name: Package Electron app
         env:

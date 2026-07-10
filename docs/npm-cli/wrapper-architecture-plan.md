@@ -1,5 +1,8 @@
 # npm Wrapper Architecture Plan
 
+> Historical migration record. It is not an active architecture or release
+> contract.
+
 ## Decision
 
 Add an independent npm package at `npm/autovpn-cli`. The package name should be `@swimmingliu/autovpn`, and it should expose one bin command:

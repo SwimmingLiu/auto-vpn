@@ -213,8 +213,8 @@ test('createNdjsonDecoder flushes a final unterminated event on close', () => {
 test('findProjectRoot climbs out of packaged output to repo root', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vpn-electron-root-'));
   const projectRoot = path.join(root, 'vpn-subscription-automation');
-  fs.mkdirSync(path.join(projectRoot, 'src', 'vpn_automation'), { recursive: true });
-  fs.writeFileSync(path.join(projectRoot, 'pyproject.toml'), '', 'utf-8');
+  fs.mkdirSync(path.join(projectRoot, 'electron'), { recursive: true });
+  fs.writeFileSync(path.join(projectRoot, 'package.json'), '{"name":"vpn-subscription-automation"}', 'utf-8');
 
   const execPath = path.join(
     projectRoot,
@@ -328,10 +328,13 @@ test('resolveRuntimeArtifactsPath defaults to the user runtime artifacts directo
   );
 });
 
-test('buildBackendEnv exposes packaged runtime artifacts path to Python backend', () => {
+test('buildBackendEnv exposes runtime paths without Python environment selectors', () => {
   const env = buildBackendEnv('/repo', '/profile.toml', '/bundled.toml', '/runtime/artifacts');
 
   assert.equal(env.VPN_AUTOMATION_ARTIFACTS_ROOT, '/runtime/artifacts');
+  assert.equal(Object.hasOwn(env, 'PYTHONPATH'), false);
+  assert.equal(Object.hasOwn(env, 'AUTOVPN_PYTHON_CLI'), false);
+  assert.equal(Object.hasOwn(env, 'AUTOVPN_NO_PYTHON'), false);
 });
 
 test('buildBackendEnv points Playwright at bundled Chromium headless shell when packaged browser exists', () => {

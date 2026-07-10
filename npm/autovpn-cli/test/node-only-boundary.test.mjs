@@ -7,7 +7,8 @@ import { fileURLToPath } from 'node:url';
 const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const repoRoot = path.resolve(cliRoot, '..', '..');
 const activeRoots = [
-  path.join(repoRoot, 'src'),
+  path.join(repoRoot, 'electron', 'lib'),
+  path.join(repoRoot, 'electron', 'build'),
   path.join(repoRoot, 'scripts'),
   path.join(cliRoot, 'src'),
   path.join(cliRoot, 'lib'),
@@ -16,12 +17,26 @@ const activeRoots = [
 ];
 const manifests = [
   path.join(repoRoot, 'package.json'),
-  path.join(repoRoot, 'pyproject.toml'),
-  path.join(cliRoot, 'package.json')
+  path.join(cliRoot, 'package.json'),
+  path.join(repoRoot, '.github', 'workflows', 'headless-cli.yml'),
+  path.join(repoRoot, '.github', 'workflows', 'release-electron.yml'),
+  path.join(repoRoot, 'README.md'),
+  path.join(cliRoot, 'README.md'),
+  ...[
+    'README.md',
+    'agent-skill.md',
+    'headless-cli.md',
+    'job-manager.md',
+    'linux-delivery.md',
+    'linux-headless-guide.md'
+  ].map((file) => path.join(repoRoot, 'docs', 'headless-agent', file)),
+  ...[
+    'node-first-contract.md',
+    'node-first-event-schema.md',
+    'node-first-migration-sop.md'
+  ].map((file) => path.join(repoRoot, 'docs', 'npm-cli', file))
 ];
-const excludedFiles = new Set([
-  path.join(repoRoot, 'scripts', 'generate-release-notes.mjs')
-]);
+const excludedFiles = new Set();
 const forbidden = [
   /vpn_automation/,
   /pythonCommandFor/,
@@ -36,6 +51,9 @@ const forbidden = [
   /\bpython(?:Command|Bin|Cli|Backend|Helper|Runtime|Vendor)[A-Z0-9_]*\b/i,
   /(?:spawn|execFile|execFileSync|spawnSync)[\s\S]{0,120}\bpython(?:3(?:\.\d+)?)?\b/i,
   /\b(?:pytest|pipx?|wheel|PyPI)\b/i,
+  /\b(?:twine|sdist)\b/i,
+  /setup-python/i,
+  /python-vendor/i,
   /pyproject\.toml/
 ];
 
@@ -56,10 +74,6 @@ test('active runtime and package surfaces are Node-only', () => {
   for (const file of files) {
     const relative = path.relative(repoRoot, file);
     const content = fs.readFileSync(file, 'utf8');
-    if (relative.startsWith('src/vpn_automation/')) {
-      violations.push(relative);
-      continue;
-    }
     for (const pattern of forbidden) {
       if (pattern.test(content) || pattern.test(relative)) {
         violations.push(`${relative}: ${pattern}`);

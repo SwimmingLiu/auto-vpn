@@ -48,7 +48,7 @@ export function buildReleaseNotes({
 - [64位](${downloadBaseUrl}/AutoVPN-${resolvedVersion}-x86_64.rpm) | [ARM64](${downloadBaseUrl}/AutoVPN-${resolvedVersion}-aarch64.rpm)
 
 ### CLI
-- [Python Wheel](${downloadBaseUrl}/vpn_subscription_automation-${resolvedVersion}-py3-none-any.whl) | [Source Tarball](${downloadBaseUrl}/vpn_subscription_automation-${resolvedVersion}.tar.gz)
+- [npm CLI tarball](${downloadBaseUrl}/swimmingliu-autovpn-${resolvedVersion}.tgz)
 
 ### FAQ
 - [项目说明](https://github.com/${repoSlug}#readme)

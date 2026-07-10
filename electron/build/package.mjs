@@ -6,12 +6,6 @@ import TOML from '@iarna/toml';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const RUNTIME_PYTHON_DEPENDENCIES = [
-  'cryptography>=45.0.0,<47',
-  'python-dotenv>=1.0.1',
-  'requests>=2.32.0',
-  'tomlkit>=0.13.2'
-];
 const RUNTIME_NODE_DEPENDENCIES = [
   'playwright@1.59.1'
 ];
@@ -113,12 +107,6 @@ export function resolveShareWorkerPaths(projectRoot) {
   };
 }
 
-export function resolvePythonVendorRuntimePaths(projectRoot) {
-  return {
-    vendorDir: path.join(projectRoot, 'electron', 'runtime', 'python-vendor')
-  };
-}
-
 export function resolveNodeVendorRuntimePaths(projectRoot) {
   return {
     vendorDir: path.join(projectRoot, 'electron', 'runtime', 'node-vendor')
@@ -193,90 +181,6 @@ function fileExistsNonEmpty(filePath) {
 export function shouldBundlePlaywrightBrowserRuntime(env = process.env) {
   const value = String(env.AUTOVPN_BUNDLE_PLAYWRIGHT_BROWSER ?? '').trim().toLowerCase();
   return ['1', 'true', 'yes', 'on'].includes(value);
-}
-
-function canRunCommand(command) {
-  const result = spawnSync(command, ['-c', 'pass'], { stdio: 'ignore' });
-  return !result.error && result.status === 0;
-}
-
-export function selectRunnablePythonCandidate(candidates, canRun = canRunCommand) {
-  for (const candidate of candidates) {
-    if (candidate.startsWith('/') && !fs.existsSync(candidate)) {
-      continue;
-    }
-    if (!candidate.startsWith('/') && !canRun(candidate)) {
-      continue;
-    }
-    return candidate;
-  }
-  throw new Error(`No Python runtime found in candidates: ${candidates.join(', ')}`);
-}
-
-function selectPythonForVendorInstall(projectRoot) {
-  const candidates = [
-    path.join(projectRoot, '.venv', 'bin', 'python'),
-    path.join(projectRoot, '.venv', 'bin', 'python3'),
-    '/opt/homebrew/bin/python3.14',
-    '/opt/homebrew/bin/python3.12',
-    '/usr/local/bin/python3.14',
-    '/usr/local/bin/python3.12',
-    'python3.12',
-    'python3',
-    'python'
-  ];
-
-  return selectRunnablePythonCandidate(candidates);
-}
-
-function resolvePythonVendorPlatformTag(platform, arch) {
-  const normalizedPlatform = normalizePackagePlatform(platform);
-  const normalizedArch = normalizePackageArch(arch);
-  if (normalizedPlatform === 'mac') {
-    if (normalizedArch === 'x64') return 'macosx_10_13_x86_64';
-    if (normalizedArch === 'arm64') return 'macosx_11_0_arm64';
-  }
-  if (normalizedPlatform === 'linux') {
-    if (normalizedArch === 'x64') return 'manylinux2014_x86_64';
-    if (normalizedArch === 'arm64') return 'manylinux2014_aarch64';
-  }
-  if (normalizedPlatform === 'win') {
-    if (normalizedArch === 'x64') return 'win_amd64';
-    if (normalizedArch === 'arm64') return 'win_arm64';
-  }
-  throw new Error(`Unsupported Python vendor target: ${platform}-${arch}`);
-}
-
-export function buildPythonVendorInstallArgs(vendorDir, target = {}) {
-  const platform = target.platform ?? buildPackagePlatformList()[0];
-  const arch = target.arch ?? buildPackageArchList()[0];
-  const platformTag = resolvePythonVendorPlatformTag(platform, arch);
-  const args = [
-    '-m',
-    'pip',
-    'install',
-    '--disable-pip-version-check',
-    '--only-binary',
-    ':all:',
-    '--target',
-    vendorDir
-  ];
-  if (platformTag) {
-    args.push(
-      '--platform',
-      platformTag,
-      '--implementation',
-      'cp',
-      '--python-version',
-      '3.12',
-      '--abi',
-      'cp312'
-    );
-  }
-  args.push(
-    ...RUNTIME_PYTHON_DEPENDENCIES
-  );
-  return args;
 }
 
 export function buildNodeVendorInstallArgs(vendorDir) {
@@ -548,18 +452,6 @@ export function stageShareWorkerRuntime(projectRoot) {
   return runtimePath;
 }
 
-export function stagePythonVendorRuntime(projectRoot, target = {}) {
-  const { vendorDir } = resolvePythonVendorRuntimePaths(projectRoot);
-  logPackageStage('Installing Python runtime wheels');
-  ensureCleanDir(vendorDir);
-  runOrThrow(
-    selectPythonForVendorInstall(projectRoot),
-    buildPythonVendorInstallArgs(vendorDir, target),
-    { cwd: projectRoot, timeout: 300000 }
-  );
-  return vendorDir;
-}
-
 export function stageNodeVendorRuntime(projectRoot) {
   const { vendorDir } = resolveNodeVendorRuntimePaths(projectRoot);
   logPackageStage('Installing Node runtime dependencies');
@@ -708,6 +600,16 @@ export function cleanElectronOutputDir(projectRoot) {
   fs.rmSync(path.join(projectRoot, 'dist-electron'), { recursive: true, force: true });
 }
 
+export function removeLegacyRuntimeArtifacts(projectRoot) {
+  const legacyVendorDir = path.join(
+    projectRoot,
+    'electron',
+    'runtime',
+    ['python', 'vendor'].join('-')
+  );
+  fs.rmSync(legacyVendorDir, { recursive: true, force: true });
+}
+
 export function runPackaging(projectRoot) {
   const { runtimeDir } = resolveRuntimePaths(projectRoot);
   const platforms = buildPackagePlatformList();
@@ -715,6 +617,7 @@ export function runPackaging(projectRoot) {
   logPackageStage(`Packaging platforms=${platforms.join(',')} archs=${archs.join(',')}`);
   cleanElectronOutputDir(projectRoot);
   fs.mkdirSync(runtimeDir, { recursive: true });
+  removeLegacyRuntimeArtifacts(projectRoot);
 
   if (stageBundledProfileForPackaging(projectRoot)) {
     logPackageStage('Bundling sanitized runtime profile from default profile');
@@ -723,10 +626,6 @@ export function runPackaging(projectRoot) {
   logPackageStage('Staging share worker runtime');
   stageShareWorkerRuntime(projectRoot);
   stageAutoVpnCliRuntime(projectRoot);
-  stagePythonVendorRuntime(projectRoot, {
-    platform: platforms[0],
-    arch: archs[0]
-  });
   stageNodeVendorRuntime(projectRoot);
   if (shouldBundlePlaywrightBrowserRuntime()) {
     stagePlaywrightBrowserRuntime(projectRoot);

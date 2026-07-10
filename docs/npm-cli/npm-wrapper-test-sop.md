@@ -1,5 +1,8 @@
 # AutoVPN npm CLI Wrapper Test SOP
 
+> Historical migration record. This is not an active test or release procedure.
+> Use `node-first-migration-sop.md` for the current gate.
+
 ## Purpose
 
 This SOP defines the complete test and verification workflow for the AutoVPN npm/npx CLI wrapper work. It covers every task in [npm-wrapper-sop.md](./npm-wrapper-sop.md), including Python CLI contract stabilization, npm wrapper behavior, optional backend installers, documentation updates, CI/release changes, package artifacts, Agent usage, and security invariants.

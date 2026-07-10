@@ -1,35 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-export function buildPythonCandidates(projectRoot) {
-  return [
-    path.join(projectRoot, '.venv', 'bin', 'python'),
-    path.join(projectRoot, '.venv', 'bin', 'python3'),
-    '/opt/homebrew/bin/python3.12',
-    '/opt/homebrew/bin/python3.14',
-    '/usr/local/bin/python3.12',
-    '/usr/local/bin/python3.14',
-    'python3.12',
-    'python3',
-    'python'
-  ];
-}
-
-export function resolveBackendPython(projectRoot) {
-  const candidates = buildPythonCandidates(projectRoot);
-
-  return candidates.filter((candidate, index) => {
-    if (candidate.startsWith('/')) {
-      return fs.existsSync(candidate);
-    }
-    return candidates.indexOf(candidate) === index;
-  });
-}
-
-export function resolvePythonVendorPath(projectRoot) {
-  return path.join(projectRoot, 'electron', 'runtime', 'python-vendor');
-}
-
 export function resolveNodeVendorPath(projectRoot) {
   return path.join(projectRoot, 'electron', 'runtime', 'node-vendor', 'node_modules');
 }
@@ -86,18 +57,12 @@ export function buildBackendEnv(
   runtimeArtifactsPath = '',
   options = {}
 ) {
-  const pythonPaths = [path.join(projectRoot, 'src')];
-  const vendorPath = resolvePythonVendorPath(projectRoot);
-  if (fs.existsSync(vendorPath)) {
-    pythonPaths.push(vendorPath);
-  }
   const nodeVendorPath = resolveNodeVendorPath(projectRoot);
   const playwrightBrowsersPath = resolvePlaywrightBrowsersPath(projectRoot);
   const bundledChromiumPath = resolveBundledChromiumPath(projectRoot);
 
   const env = {
     ...process.env,
-    PYTHONPATH: pythonPaths.join(path.delimiter),
     VPN_AUTOMATION_PROFILE_PATH: runtimeProfilePath,
     VPN_AUTOMATION_BUNDLED_PROFILE_PATH: bundledProfilePath,
     VPN_AUTOMATION_ARTIFACTS_ROOT: runtimeArtifactsPath,
@@ -105,6 +70,12 @@ export function buildBackendEnv(
     PLAYWRIGHT_BROWSERS_PATH: fs.existsSync(playwrightBrowsersPath) ? playwrightBrowsersPath : '',
     PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH: fs.existsSync(bundledChromiumPath) ? bundledChromiumPath : ''
   };
+
+  for (const key of Object.keys(env)) {
+    if (/^PYTHON/i.test(key) || /^AUTOVPN_.*(?:PYTHON|BACKEND)/i.test(key)) {
+      delete env[key];
+    }
+  }
 
   if (options.runAsNode) {
     env.ELECTRON_RUN_AS_NODE = '1';

@@ -1,133 +1,68 @@
-# AutoVPN Linux Headless Guide
+# Linux Headless Guide
 
-This guide installs and validates AutoVPN on a Linux server with terminal access only. The supported Linux surface is the `autovpn` CLI; Electron packaging remains macOS desktop-focused.
+## Requirements
 
-## Ubuntu/Debian Install
+- Node.js `>=22.5.0`
+- npm
+- Mihomo for per-node proxy measurements
+- Cloudflare Wrangler credentials only when deployment is enabled
 
-```bash
-sudo apt-get update
-sudo apt-get install -y \
-  git curl ca-certificates build-essential \
-  python3.12 python3.12-venv python3-pip \
-  nodejs npm
-```
-
-Install Mihomo with your preferred distro package or release binary, then verify:
+## Install
 
 ```bash
-mihomo -v
+npm install -g @swimmingliu/autovpn
+autovpn --version
 ```
 
-Install the project:
+For a pinned GitHub Release tarball:
 
 ```bash
-sudo mkdir -p /opt/autovpn
-sudo chown "$USER":"$USER" /opt/autovpn
-git clone https://github.com/SwimmingLiu/vpn-subscription-automation.git /opt/autovpn/vpn-subscription-automation
-
-cd /opt/autovpn/vpn-subscription-automation
-python3.12 -m venv .venv
-source .venv/bin/activate
-pip install --upgrade pip
-pip install -e .[dev]
-npx playwright install --with-deps chromium-headless-shell
+export AUTOVPN_VERSION=1.6.6
+npm install -g "https://github.com/SwimmingLiu/auto-vpn/releases/download/v${AUTOVPN_VERSION}/swimmingliu-autovpn-${AUTOVPN_VERSION}.tgz"
 ```
 
-AutoVPN manages npm runtime tools such as `javascript-obfuscator` and
-`wrangler` under `$HOME/.auto-vpn/tools/npm/`. Doctor/preflight checks verify
-those managed tools before a run, and runtime stages use the managed executables
-instead of requiring project-local `npx` installs. AutoVPN does not silently
-install unmanaged OS-level dependencies such as Node.js, npm, or Mihomo; install
-those with your system package manager or release binaries, then rerun doctor.
-
-## Runtime Configuration
-
-Bootstrap the profile:
+## Configure
 
 ```bash
-autovpn profile show --project-root /opt/autovpn/vpn-subscription-automation
-autovpn profile summary --project-root /opt/autovpn/vpn-subscription-automation --json
+export PROJECT_ROOT=/opt/autovpn
+export VPN_AUTOMATION_RUNTIME_ROOT=/srv/autovpn
+autovpn doctor --project-root "$PROJECT_ROOT" --output human
 ```
 
-Edit:
+The runtime root contains the profile, artifacts, job logs, and managed npm
+tools. Restrict its permissions because profile and deployment data can be
+sensitive.
+
+## Run
 
 ```bash
-vim "$HOME/.auto-vpn/profile.toml"
+autovpn run --project-root "$PROJECT_ROOT" --output jsonl
 ```
 
-Optional `.env`:
-
-```env
-CLOUDFLARE_API_TOKEN=
-CLOUDFLARE_ACCOUNT_ID=
-VPN_AUTOMATION_UPSTREAM_PROXY=
-VPN_AUTOMATION_DEPLOY_PROXY=
-```
-
-Do not place real secret values in documentation, tickets, screenshots, or Agent prompts.
-
-## Dependency Matrix
-
-| Dependency | Used By | Doctor Check |
-|---|---|---|
-| Python >= 3.12 | Python backend and CLI | `python_version`, `python_imports` |
-| Mihomo | speed/connectivity runtime | `mihomo`, `localhost_port` |
-| Node/npm/npx | managed npm tool installation and availability probes | `node_binaries` |
-| Managed `javascript-obfuscator` | worker obfuscation stage | `javascript_obfuscator` |
-| Playwright package and Chromium/headless shell | availability checks | `playwright`, `playwright_browser` |
-| Cloudflare credentials and managed Wrangler | deploy/verify stages | `cloudflare_credentials`, `cloudflare_account`, `wrangler`, `deploy_urls` |
-
-## Validation
-
-Run local readiness checks:
+For a detached service-style run:
 
 ```bash
-autovpn doctor --project-root /opt/autovpn/vpn-subscription-automation --output human
-autovpn doctor --project-root /opt/autovpn/vpn-subscription-automation --output json
+autovpn run --project-root "$PROJECT_ROOT" --detach --json
+autovpn status --project-root "$PROJECT_ROOT" --json
+autovpn logs --project-root "$PROJECT_ROOT" --tail 200
 ```
 
-Run deploy readiness only after Cloudflare credentials are configured:
+Use `--skip-deploy --skip-verify` for a local pipeline diagnostic.
+
+## Server UI
 
 ```bash
-autovpn doctor --project-root /opt/autovpn/vpn-subscription-automation --deploy --strict --output human
+autovpn serve --project-root "$PROJECT_ROOT" --host 127.0.0.1 --port 8765
 ```
 
-Run without deploy first:
+Use SSH port forwarding for remote access. A non-loopback bind must have an
+explicit token unless the operator deliberately enables no-auth mode on a
+trusted network.
+
+## Upgrade
 
 ```bash
-autovpn run --project-root /opt/autovpn/vpn-subscription-automation --skip-deploy --skip-verify --output human
-autovpn artifacts latest --project-root /opt/autovpn/vpn-subscription-automation
+npm install -g @swimmingliu/autovpn@latest
+autovpn --version
+autovpn doctor --project-root "$PROJECT_ROOT" --output human
 ```
-
-Run deploy only after `doctor --deploy --strict` passes:
-
-```bash
-autovpn run --project-root /opt/autovpn/vpn-subscription-automation --output human
-```
-
-## Troubleshooting
-
-| Symptom | Action |
-|---|---|
-| `mihomo` fails | Install Mihomo and ensure it is on `PATH`; run `mihomo -v`. |
-| `node_binaries` fails | Install Node.js/npm and confirm `node`, `npm`, and `npx` are on `PATH`. |
-| `playwright_browser` warns | Run `npx playwright install --with-deps chromium-headless-shell` from the project root. |
-| `javascript_obfuscator` fails | Rerun `autovpn doctor` after Node.js/npm are available; AutoVPN verifies the managed tool under `$HOME/.auto-vpn/tools/npm/`. |
-| `wrangler` fails | Rerun `autovpn doctor --deploy` after Node.js/npm are available; AutoVPN verifies managed Wrangler under `$HOME/.auto-vpn/tools/npm/`. |
-| `cloudflare_credentials` fails in deploy mode | Set `CLOUDFLARE_API_TOKEN` or profile Cloudflare credentials. |
-| `cloudflare_account` fails | Set `CLOUDFLARE_ACCOUNT_ID` or profile `deploy.account_id`. |
-| `network_reachability` fails | Check server outbound network, proxy env vars, and configured speed/availability URLs. |
-| `profile_path` or `artifacts_root` fails | Fix ownership and write permissions under `$HOME/.auto-vpn/`, or set `VPN_AUTOMATION_RUNTIME_ROOT` to a writable directory. |
-
-## Redaction Rules
-
-Do not print, paste, upload, or attach:
-
-- source keys or full source URLs with tokens
-- Cloudflare API tokens, global keys, email/account identifiers when sensitive
-- `deploy.secret_query`
-- full subscription URLs or verification URLs with secrets
-- full `vmess://` node links
-- raw artifact files that contain node lists
-
-When reporting status, use counts, stage names, check names, and artifact directory names instead of secret-bearing values.

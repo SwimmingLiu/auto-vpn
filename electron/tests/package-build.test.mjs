@@ -16,18 +16,15 @@ import {
   isPlaywrightBrowserRuntimeReady,
   resolveNodeVendorRuntimePaths,
   resolvePlaywrightBrowserRuntimePaths,
-  buildPythonVendorInstallArgs,
   cleanElectronOutputDir,
   resolveIconPaths,
   resolveLiveProfilePath,
-  resolvePythonVendorRuntimePaths,
   sanitizeBundledProfileToml,
   stageBundledProfileForPackaging,
   resolveShareWorkerPaths,
   buildCommandSpawnOptions,
   runOrThrow,
   retryOperation,
-  selectRunnablePythonCandidate,
   shouldBundlePlaywrightBrowserRuntime,
   stagePlaywrightBrowserRuntime,
   stageShareWorkerRuntime
@@ -64,6 +61,31 @@ test('stageAutoVpnCliRuntime builds, copies, and installs the production CLI', (
     { command: 'npm', args: ['run', 'build', '--prefix', sourceRoot] },
     { command: 'npm', args: packageBuild.buildAutoVpnCliProductionInstallArgs(staged.runtimeRoot) }
   ]);
+});
+
+test('removeLegacyRuntimeArtifacts deletes stale vendor content before packaging', () => {
+  assert.equal(typeof packageBuild.removeLegacyRuntimeArtifacts, 'function');
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vpn-stale-python-runtime-'));
+  const vendorRoot = path.join(projectRoot, 'electron', 'runtime', 'python-vendor');
+  fs.mkdirSync(vendorRoot, { recursive: true });
+  fs.writeFileSync(path.join(vendorRoot, 'dependency.py'), 'stale', 'utf-8');
+
+  packageBuild.removeLegacyRuntimeArtifacts(projectRoot);
+
+  assert.equal(fs.existsSync(vendorRoot), false);
+});
+
+test('Electron package inputs contain only Node runtime manifests and staged CLI content', () => {
+  const packageJson = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf-8'));
+  const packageInputs = packageJson.build.files;
+  const packageSource = fs.readFileSync(path.join(process.cwd(), 'electron', 'build', 'package.mjs'), 'utf-8');
+
+  assert.ok(packageInputs.includes('electron/**/*'));
+  assert.ok(packageInputs.includes('templates/**/*'));
+  assert.equal(packageInputs.some((entry) => /(^|\/)src(\/|$)/.test(entry)), false);
+  assert.equal(packageInputs.some((entry) => /pyproject\.toml|python-vendor/i.test(entry)), false);
+  assert.doesNotMatch(packageSource, /RUNTIME_PYTHON_DEPENDENCIES|stagePythonVendorRuntime|buildPythonVendorInstallArgs/);
+  assert.match(packageSource, /removeLegacyRuntimeArtifacts\(projectRoot\)/);
 });
 
 test('staged packaged CLI executes version and profile commands', () => {
@@ -361,66 +383,6 @@ test('buildElectronBuilderArgs only emits architecture flags supported by every 
   );
 });
 
-test('buildPythonVendorInstallArgs installs target-platform Python 3.12 wheels into vendor dir', () => {
-  assert.deepEqual(buildPythonVendorInstallArgs('/tmp/vendor', {
-    platform: 'linux',
-    arch: 'x64'
-  }), [
-    '-m',
-    'pip',
-    'install',
-    '--disable-pip-version-check',
-    '--only-binary',
-    ':all:',
-    '--target',
-    '/tmp/vendor',
-    '--platform',
-    'manylinux2014_x86_64',
-    '--implementation',
-    'cp',
-    '--python-version',
-    '3.12',
-    '--abi',
-    'cp312',
-    'cryptography>=45.0.0,<47',
-    'python-dotenv>=1.0.1',
-    'requests>=2.32.0',
-    'tomlkit>=0.13.2'
-  ]);
-
-  assert.deepEqual(buildPythonVendorInstallArgs('/tmp/vendor', {
-    platform: 'win',
-    arch: 'arm64'
-  }), [
-    '-m',
-    'pip',
-    'install',
-    '--disable-pip-version-check',
-    '--only-binary',
-    ':all:',
-    '--target',
-    '/tmp/vendor',
-    '--platform',
-    'win_arm64',
-    '--implementation',
-    'cp',
-    '--python-version',
-    '3.12',
-    '--abi',
-    'cp312',
-    'cryptography>=45.0.0,<47',
-    'python-dotenv>=1.0.1',
-    'requests>=2.32.0',
-    'tomlkit>=0.13.2'
-  ]);
-});
-
-test('resolvePythonVendorRuntimePaths stores packaged dependencies under electron runtime', () => {
-  assert.deepEqual(resolvePythonVendorRuntimePaths('/tmp/project'), {
-    vendorDir: '/tmp/project/electron/runtime/python-vendor'
-  });
-});
-
 test('resolveNodeVendorRuntimePaths stores packaged browser probe dependencies under electron runtime', () => {
   assert.deepEqual(resolveNodeVendorRuntimePaths('/tmp/project'), {
     vendorDir: '/tmp/project/electron/runtime/node-vendor'
@@ -522,29 +484,14 @@ test('buildPlaywrightBrowserInstallArgs installs only the Chromium headless shel
   ]);
 });
 
-test('selectRunnablePythonCandidate skips missing commands on PATH', () => {
-  assert.equal(
-    selectRunnablePythonCandidate(['python3.12', 'python3'], (candidate) => candidate === 'python3'),
-    'python3'
-  );
-});
-
-test('selectRunnablePythonCandidate can fall back to the Windows setup-python command', () => {
-  assert.equal(
-    selectRunnablePythonCandidate(['python3.12', 'python3', 'python'], (candidate) => candidate === 'python'),
-    'python'
-  );
-});
-
-test('buildCommandSpawnOptions avoids a Windows shell for Python pip arguments', () => {
-  assert.equal(buildCommandSpawnOptions('python', {}, 'win32').shell, false);
-  assert.equal(buildCommandSpawnOptions('/opt/homebrew/bin/python3.12', {}, 'darwin').shell, false);
+test('buildCommandSpawnOptions uses a Windows shell for npm commands only', () => {
+  assert.equal(buildCommandSpawnOptions('node', {}, 'win32').shell, false);
   assert.equal(buildCommandSpawnOptions('npm', {}, 'win32').shell, true);
   assert.equal(buildCommandSpawnOptions('npx', {}, 'win32').shell, true);
 });
 
 test('buildCommandSpawnOptions streams package command output by default', () => {
-  assert.equal(buildCommandSpawnOptions('python').stdio, 'inherit');
+  assert.equal(buildCommandSpawnOptions('node').stdio, 'inherit');
   assert.equal(buildCommandSpawnOptions('npm').stdio, 'inherit');
 });
 

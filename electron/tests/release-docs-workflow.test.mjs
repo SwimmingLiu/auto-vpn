@@ -42,11 +42,6 @@ function runReleaseTagValidation(script, { version, tagName }) {
       JSON.stringify({ version }),
       'utf-8'
     );
-    fs.writeFileSync(
-      path.join(tempDir, 'pyproject.toml'),
-      `[project]\nversion = "${version}"\n`,
-      'utf-8'
-    );
     return spawnSync('bash', ['-euo', 'pipefail', '-c', script], {
       cwd: tempDir,
       env: {
@@ -183,25 +178,21 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
     'NPM_CONFIG_FETCH_TIMEOUT: "600000"',
     'NPM_CONFIG_PREFER_OFFLINE: "true"',
     'registry-url: https://registry.npmjs.org',
-    'python-version: "3.12"',
     'npm ci',
     'scripts/ci/retry-command.sh "npm ci"',
     '--prefer-offline --no-audit --fund=false',
     'scripts/ci/retry-command.sh "npm ci --prefix npm/autovpn-cli"',
-    'scripts/ci/retry-command.sh "upgrade pip"',
-    'python -m pip install --retries "${PIP_RETRIES}" --timeout "${PIP_TIMEOUT}" --upgrade pip',
-    './scripts/run_pytest.sh tests -v',
     'Build npm CLI web server',
     'npm run build --prefix npm/autovpn-cli',
-    'test_files = sorted(glob.glob("electron/tests/*.test.mjs"))',
-    'browser_dependent_tests = {',
+    'const testFiles = fs.readdirSync(\'electron/tests\')',
+    'const excluded = new Set([',
     "'app-launch.test.mjs'",
     "'renderer-e2e.test.mjs'",
     "'renderer-visual.test.mjs'",
     "'web-server-e2e.test.mjs'",
     "'web-server-visual.test.mjs'",
-    'test_files = [test_file for test_file in test_files if os.path.basename(test_file) not in browser_dependent_tests]',
-    'process.wait(timeout=600)',
+    "spawnSync(process.execPath, ['--test', '--test-timeout=600000', ...testFiles]",
+    'timeout: 600000',
     'Electron tests timed out after 600 seconds.',
     'npm run package:electron',
     'bash -eo pipefail -c',
@@ -222,8 +213,8 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
     'existing_assets="$(gh release view "${RELEASE_TAG_NAME}" --repo "${GITHUB_REPOSITORY}" --json assets --jq \'.assets[].name\')"',
     'already exists on ${RELEASE_TAG_NAME}; skipping upload.',
     'gh release upload "${RELEASE_TAG_NAME}" "${release_file}" --repo "${GITHUB_REPOSITORY}"',
-    'python -m build',
-    'python -m twine check dist/*',
+    'npm test --prefix npm/autovpn-cli',
+    'npm pack --json --pack-destination ../../dist',
     'Publish npm CLI package',
     'NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}',
     'npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version --registry=https://registry.npmjs.org',
@@ -234,8 +225,7 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
     'is visible after a failed publish response; treating publish as complete.',
     'upload ${asset_name}',
     'already exists on ${RELEASE_TAG_NAME}; skipping upload.',
-    'vpn_subscription_automation-${PKG_VERSION}-py3-none-any.whl',
-    'vpn_subscription_automation-${PKG_VERSION}.tar.gz',
+    'dist/swimmingliu-autovpn-${PKG_VERSION}.tgz',
     'publish-release-notes:',
     'node scripts/generate-release-notes.mjs',
     'update release notes',
@@ -253,16 +243,44 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
   assert.doesNotMatch(workflow, /dist-electron\/\*\*\/\*\.blockmap/);
   assert.doesNotMatch(workflow, /dist-electron\/\*\*\/\*\.exe/);
   assert.doesNotMatch(workflow, /dist-electron\/mac-\*/);
-  assert.match(testJob, /python -m pip install .* -e \.\[dev\]/);
-  assert.doesNotMatch(packageInstallAndBuild, /python -m pip install -e \.\[dev\]/);
+  assert.match(testJob, /npm test --prefix npm\/autovpn-cli/);
+  assert.match(packageInstallStep, /npm ci --prefix npm\/autovpn-cli/);
   assert.match(packageInstallStep, /shell: bash/);
   assert.doesNotMatch(packageInstallAndBuild, /Install Playwright browser runtime/);
   assert.doesNotMatch(packageInstallAndBuild, /PLAYWRIGHT_BROWSERS_PATH: electron\/runtime\/playwright-browsers/);
   assert.doesNotMatch(packageInstallAndBuild, /npx playwright install chromium-headless-shell/);
 });
 
+test('active CI and release workflows are Node-only and publish only npm and Electron assets', () => {
+  const headless = readProjectFile('.github', 'workflows', 'headless-cli.yml');
+  const release = readProjectFile('.github', 'workflows', 'release-electron.yml');
+  const workflows = `${headless}\n${release}`;
+
+  for (const pattern of [
+    /setup-python/i,
+    /\bpython(?:3(?:\.\d+)?)?\b/i,
+    /\bpip(?:x)?\b/i,
+    /\bpytest\b/i,
+    /\btwine\b/i,
+    /\bPyPI\b/i,
+    /\bwheel\b/i,
+    /\bsdist\b/i,
+    /pyproject\.toml/i,
+    /python-vendor/i,
+    /\.whl\b/i
+  ]) {
+    assert.doesNotMatch(workflows, pattern);
+  }
+
+  assert.match(headless, /node -e .*JSON\.parse/);
+  assert.match(release, /npm pack --json --pack-destination \.\.\/\.\.\/dist/);
+  assert.match(release, /dist\/swimmingliu-autovpn-\$\{PKG_VERSION\}\.tgz/);
+  assert.doesNotMatch(release, /find dist .*\.tar\.gz/);
+});
+
 test('headless CI packages the Linux Electron app and verifies version and icon output', () => {
   const workflow = readProjectFile('.github', 'workflows', 'headless-cli.yml');
+  const packageJob = workflow.slice(workflow.indexOf('  electron-package:'));
 
   for (const requiredText of [
     'electron-package:',
@@ -291,6 +309,7 @@ test('headless CI packages the Linux Electron app and verifies version and icon 
   ]) {
     assert.ok(workflow.includes(requiredText), `headless workflow should contain ${requiredText}`);
   }
+  assert.match(packageJob, /npm ci --prefix npm\/autovpn-cli/);
 });
 
 test('release workflow runs its shared test gate on Ubuntu', () => {
