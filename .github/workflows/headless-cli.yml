@@ -64,7 +64,7 @@ jobs:
 
       - name: Run Electron headless Node tests
         run: |
-          node --test \
+          node --test --test-concurrency=1 \
             electron/tests/backend.test.mjs \
             electron/tests/package-build.test.mjs \
             electron/tests/process-lifecycle.test.mjs \

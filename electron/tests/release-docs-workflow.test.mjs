@@ -286,6 +286,7 @@ test('active CI and release workflows are Node-only and publish only npm and Ele
   }
 
   assert.match(headless, /node -e .*JSON\.parse/);
+  assert.match(headless, /node --test --test-concurrency=1/);
   assert.match(release, /npm pack --json --pack-destination \.\.\/\.\.\/dist/);
   assert.match(release, /dist\/swimmingliu-autovpn-\$\{PKG_VERSION\}\.tgz/);
   assert.doesNotMatch(release, /find dist .*\.tar\.gz/);
