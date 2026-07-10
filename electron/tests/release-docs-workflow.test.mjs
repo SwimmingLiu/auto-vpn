@@ -89,7 +89,7 @@ test('README follows the AutoVPN desktop app structure', () => {
     '.dmg` for Apple Silicon or Intel',
     '.deb` or `.rpm` for x64 or ARM64',
     'portable `.exe` for x64 or ARM64',
-    'export AUTOVPN_VERSION=1.6.6',
+    'export AUTOVPN_VERSION=1.6.7',
     'npm install -g @swimmingliu/autovpn',
     'autovpn --version',
     'autovpn doctor --project-root',
@@ -286,6 +286,7 @@ test('active CI and release workflows are Node-only and publish only npm and Ele
   }
 
   assert.match(headless, /node -e .*JSON\.parse/);
+  assert.match(headless, /node --test --test-concurrency=1/);
   assert.match(release, /npm pack --json --pack-destination \.\.\/\.\.\/dist/);
   assert.match(release, /dist\/swimmingliu-autovpn-\$\{PKG_VERSION\}\.tgz/);
   assert.doesNotMatch(release, /find dist .*\.tar\.gz/);
@@ -338,7 +339,7 @@ test('release package version matches the next release tag', () => {
   const packageJson = JSON.parse(readProjectFile('package.json'));
   const packageLock = JSON.parse(readProjectFile('package-lock.json'));
 
-  assert.equal(packageJson.version, '1.6.6');
+  assert.equal(packageJson.version, '1.6.7');
   assert.equal(packageLock.version, packageJson.version);
   assert.equal(packageLock.packages[''].version, packageJson.version);
 });

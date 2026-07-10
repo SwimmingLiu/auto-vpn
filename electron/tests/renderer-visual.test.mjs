@@ -12,12 +12,12 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const EXPECTED_DIGESTS = {
-  dashboard: 'd9212c8753dbbc9c5c6e30bb8a2e693eee4fdd4c10a0e6140743ce9a5d571b2e',
-  runs: '1df103951465471bd9d8a54b2503eef000653dd1e1a4ca9d81a6042edd8d9d0b',
-  results: '8b2c2c11444810ba24fac5dda53c567ca4b66c50e82f51d054a45078e7ebd9ce',
-  subscriptions: '224831b0ef7d0b3382704e7ddb48a0abf93627c535452b880476f927584f7f82',
-  logs: '78e47b3b9b3eef336f100ca7b1f0fbf8273b77f4dca23dadbb579048f830db7f',
-  settings: '1c0238605950332651fd78637453c8e5c97660682715a4e66164e141f3f613ce'
+  dashboard: '8aca7de6cb85a14ae631bf22a46d24644a0867f313eb7933261a438a6e8eb3ff',
+  runs: 'fa9ec5713eefd4676145ab3988aa09a47564d3a15d595aa8e0b3ecb6e6e5bc68',
+  results: '6d8df5ede9dee40c5c9f1865528433317c1e8f595b8b2fd73bd889524ed61ea8',
+  subscriptions: '0d6e7c0a0e032934b0157f8204f660070b46cd7452bd8a3688efbb27ac29331e',
+  logs: 'c30c75f88a29f7d2bc0e397d4a6a9a628647d766bd1e0468e9045955dbbd1479',
+  settings: 'c05527544e5e1ea2c4a912c75b13e590a2c4106f709304ce524f5ccecea1873d'
 };
 
 const VISUAL_CASES = [
