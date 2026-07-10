@@ -88,7 +88,7 @@ urls = ["https://example.invalid/file"]
   await writeFile(path.join(artifactDir, 'pipeline_report.json'), JSON.stringify({
     run_status: 'success',
     stage_status: { extract: 'success', deploy: 'success' },
-    counts: { raw_links: 2, final_links: 1 },
+    counts: { raw_links: 2, final_links: 1, postprocess_links: 1 },
     source_counts: { xuanfeng: { raw_links: 2 } },
     deployment: {
       pages_project_url: 'https://sub-nodes.pages.dev',

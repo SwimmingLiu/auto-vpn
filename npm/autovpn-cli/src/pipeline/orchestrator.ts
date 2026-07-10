@@ -7,6 +7,7 @@ import { AutoVpnEvent } from '../events/schema.js';
 import { mergeProjectEnv } from '../runtime/env.js';
 import { resolveArtifactsRoot, resolveProfilePath } from '../runtime/paths.js';
 import { redactText } from '../runtime/redaction.js';
+import { resolveWorkerTemplatePath } from '../runtime/templates.js';
 import { fetchSourceLinksWithBackend, ExtractedSourceResult, SourceConfigInput } from './extract.js';
 import { canonicalVmessKey, dedupeVmessLinksWithBackend, parseVmessLink } from './dedupe.js';
 import {
@@ -788,7 +789,7 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
     await setStage('postprocess', 'success');
 
     await setStage('render', 'running');
-    const template = await readFile(path.join(projectRoot, 'templates', 'vmess_node.js'), 'utf8');
+    const template = await readFile(resolveWorkerTemplatePath(projectRoot), 'utf8');
     const rendered = await renderMainDataWithBackend({ template, links: postprocessed.links }, { cwd: projectRoot, env });
     await setStage('render', 'success');
 
@@ -969,6 +970,8 @@ export async function retryNodePipelineStage(options: NodeRetryStageOptions, con
         await writeReport();
         throw new Error('No links passed availability');
       }
+      const availableLinkSet = new Set(availableLinks);
+      availabilityResults = availabilityResults.filter((result) => availableLinkSet.has(result.link));
       await setStage('availability', 'success');
     } else if (isStageAtOrAfter(stage, 'postprocess')) {
       const availableLinks = new Set(await readLines(path.join(retryArtifactDir, 'vpn_node_availability.txt')));
@@ -1011,7 +1014,7 @@ export async function retryNodePipelineStage(options: NodeRetryStageOptions, con
         throw new Error('No postprocess output available to retry render');
       }
       await setStage('render', 'running');
-      const template = await readFile(path.join(projectRoot, 'templates', 'vmess_node.js'), 'utf8');
+      const template = await readFile(resolveWorkerTemplatePath(projectRoot), 'utf8');
       const rendered = await renderMainDataWithBackend({ template, links: finalLinks }, { cwd: projectRoot, env });
       await writeFile(path.join(retryArtifactDir, 'vmess_node.js'), rendered.rendered_source, 'utf8');
       await setStage('render', 'success');
@@ -1356,7 +1359,7 @@ export async function resumeNodePipeline(options: NodeResumeOptions, context: Ru
     await setStage('postprocess', 'success');
 
     await setStage('render', 'running');
-    const template = await readFile(path.join(projectRoot, 'templates', 'vmess_node.js'), 'utf8');
+    const template = await readFile(resolveWorkerTemplatePath(projectRoot), 'utf8');
     const rendered = await renderMainDataWithBackend({ template, links: postprocessed.links }, { cwd: projectRoot, env });
     await writeFile(path.join(artifactDir, 'vmess_node.js'), rendered.rendered_source, 'utf8');
     await setStage('render', 'success');
