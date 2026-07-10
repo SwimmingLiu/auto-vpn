@@ -196,7 +196,7 @@ export function buildNodeVendorInstallArgs(vendorDir) {
 
 export function buildAutoVpnCliProductionInstallArgs(runtimeRoot) {
   return [
-    'install',
+    'ci',
     '--omit=dev',
     '--ignore-scripts',
     '--prefix',
@@ -474,6 +474,7 @@ export function stageAutoVpnCliRuntime(projectRoot, options = {}) {
     fs.cpSync(path.join(paths.sourceRoot, entry), path.join(paths.runtimeRoot, entry), { recursive: true });
   }
   fs.copyFileSync(path.join(paths.sourceRoot, 'package.json'), path.join(paths.runtimeRoot, 'package.json'));
+  fs.copyFileSync(path.join(paths.sourceRoot, 'package-lock.json'), path.join(paths.runtimeRoot, 'package-lock.json'));
 
   logPackageStage('Installing packaged AutoVPN CLI production dependencies');
   run('npm', buildAutoVpnCliProductionInstallArgs(paths.runtimeRoot), {
@@ -610,14 +611,34 @@ export function removeLegacyRuntimeArtifacts(projectRoot) {
   fs.rmSync(legacyVendorDir, { recursive: true, force: true });
 }
 
+export function cleanGeneratedRuntimeArtifacts(projectRoot, options = {}) {
+  const { bundlePlaywrightBrowser = shouldBundlePlaywrightBrowserRuntime() } = options;
+  const { runtimeDir, bundledSeedPath } = resolveRuntimePaths(projectRoot);
+  const generatedDirs = [
+    resolveAutoVpnCliRuntimePaths(projectRoot).runtimeRoot,
+    resolveNodeVendorRuntimePaths(projectRoot).vendorDir,
+    resolveShareWorkerPaths(projectRoot).runtimeDir
+  ];
+  if (!bundlePlaywrightBrowser) {
+    generatedDirs.push(resolvePlaywrightBrowserRuntimePaths(projectRoot).browserDir);
+  }
+  for (const generatedDir of generatedDirs) {
+    fs.rmSync(generatedDir, { recursive: true, force: true });
+  }
+  fs.rmSync(bundledSeedPath, { force: true });
+  removeLegacyRuntimeArtifacts(projectRoot);
+  fs.mkdirSync(runtimeDir, { recursive: true });
+}
+
 export function runPackaging(projectRoot) {
   const { runtimeDir } = resolveRuntimePaths(projectRoot);
   const platforms = buildPackagePlatformList();
   const archs = buildPackageArchList();
+  const bundlePlaywrightBrowser = shouldBundlePlaywrightBrowserRuntime();
   logPackageStage(`Packaging platforms=${platforms.join(',')} archs=${archs.join(',')}`);
   cleanElectronOutputDir(projectRoot);
   fs.mkdirSync(runtimeDir, { recursive: true });
-  removeLegacyRuntimeArtifacts(projectRoot);
+  cleanGeneratedRuntimeArtifacts(projectRoot, { bundlePlaywrightBrowser });
 
   if (stageBundledProfileForPackaging(projectRoot)) {
     logPackageStage('Bundling sanitized runtime profile from default profile');
@@ -627,7 +648,7 @@ export function runPackaging(projectRoot) {
   stageShareWorkerRuntime(projectRoot);
   stageAutoVpnCliRuntime(projectRoot);
   stageNodeVendorRuntime(projectRoot);
-  if (shouldBundlePlaywrightBrowserRuntime()) {
+  if (bundlePlaywrightBrowser) {
     stagePlaywrightBrowserRuntime(projectRoot);
   } else {
     logPackageStage('Skipping bundled Playwright browser runtime');

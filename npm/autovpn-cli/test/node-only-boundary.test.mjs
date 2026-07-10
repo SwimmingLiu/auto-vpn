@@ -6,6 +6,9 @@ import { fileURLToPath } from 'node:url';
 
 const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const repoRoot = path.resolve(cliRoot, '..', '..');
+const electronRuntimeFiles = fs.readdirSync(path.join(repoRoot, 'electron'), { withFileTypes: true })
+  .filter((entry) => entry.isFile() && /\.(?:c?js|mjs)$/.test(entry.name))
+  .map((entry) => path.join(repoRoot, 'electron', entry.name));
 const activeRoots = [
   path.join(repoRoot, 'electron', 'lib'),
   path.join(repoRoot, 'electron', 'build'),
@@ -18,6 +21,7 @@ const activeRoots = [
 const manifests = [
   path.join(repoRoot, 'package.json'),
   path.join(cliRoot, 'package.json'),
+  ...electronRuntimeFiles,
   path.join(repoRoot, '.github', 'workflows', 'headless-cli.yml'),
   path.join(repoRoot, '.github', 'workflows', 'release-electron.yml'),
   path.join(repoRoot, 'README.md'),
@@ -81,4 +85,8 @@ test('active runtime and package surfaces are Node-only', () => {
     }
   }
   assert.deepEqual(violations, []);
+  assert.deepEqual(
+    electronRuntimeFiles.map((file) => path.basename(file)).sort(),
+    ['ipc.js', 'main.js', 'paths.js', 'preload.cjs', 'window-config.js']
+  );
 });

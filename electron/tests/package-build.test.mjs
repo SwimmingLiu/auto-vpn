@@ -49,6 +49,10 @@ test('stageAutoVpnCliRuntime builds, copies, and installs the production CLI', (
     fs.writeFileSync(filePath, relativePath, 'utf-8');
   }
   fs.writeFileSync(path.join(sourceRoot, 'package.json'), JSON.stringify({ name: '@swimmingliu/autovpn' }), 'utf-8');
+  fs.writeFileSync(path.join(sourceRoot, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3 }), 'utf-8');
+  const staleFile = path.join(projectRoot, 'electron', 'runtime', 'autovpn-cli', 'node_modules', 'stale.txt');
+  fs.mkdirSync(path.dirname(staleFile), { recursive: true });
+  fs.writeFileSync(staleFile, 'stale', 'utf-8');
   const calls = [];
 
   const staged = packageBuild.stageAutoVpnCliRuntime(projectRoot, {
@@ -57,6 +61,18 @@ test('stageAutoVpnCliRuntime builds, copies, and installs the production CLI', (
 
   assert.equal(fs.readFileSync(staged.runtimeEntry, 'utf-8'), 'bin/autovpn.mjs');
   assert.equal(fs.existsSync(path.join(staged.runtimeRoot, 'dist', 'cli', 'main.js')), true);
+  assert.equal(fs.existsSync(staleFile), false);
+  assert.deepEqual(
+    JSON.parse(fs.readFileSync(path.join(staged.runtimeRoot, 'package-lock.json'), 'utf-8')),
+    { lockfileVersion: 3 }
+  );
+  assert.deepEqual(packageBuild.buildAutoVpnCliProductionInstallArgs(staged.runtimeRoot), [
+    'ci',
+    '--omit=dev',
+    '--ignore-scripts',
+    '--prefix',
+    staged.runtimeRoot
+  ]);
   assert.deepEqual(calls.map(({ command, args }) => ({ command, args })), [
     { command: 'npm', args: ['run', 'build', '--prefix', sourceRoot] },
     { command: 'npm', args: packageBuild.buildAutoVpnCliProductionInstallArgs(staged.runtimeRoot) }
@@ -73,6 +89,30 @@ test('removeLegacyRuntimeArtifacts deletes stale vendor content before packaging
   packageBuild.removeLegacyRuntimeArtifacts(projectRoot);
 
   assert.equal(fs.existsSync(vendorRoot), false);
+});
+
+test('cleanGeneratedRuntimeArtifacts removes stale generated dirs but preserves seed and share source', () => {
+  assert.equal(typeof packageBuild.cleanGeneratedRuntimeArtifacts, 'function');
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vpn-clean-runtime-'));
+  const runtimeRoot = path.join(projectRoot, 'electron', 'runtime');
+  const seedPath = path.join(runtimeRoot, 'default-profile.toml');
+  const shareSource = path.join(projectRoot, 'templates', 'share-worker', 'vpn.js');
+  for (const generatedDir of ['autovpn-cli', 'node-vendor', 'playwright-browsers', 'share-worker']) {
+    fs.mkdirSync(path.join(runtimeRoot, generatedDir), { recursive: true });
+    fs.writeFileSync(path.join(runtimeRoot, generatedDir, 'stale.txt'), 'stale', 'utf-8');
+  }
+  fs.mkdirSync(path.dirname(seedPath), { recursive: true });
+  fs.writeFileSync(seedPath, 'seed', 'utf-8');
+  fs.mkdirSync(path.dirname(shareSource), { recursive: true });
+  fs.writeFileSync(shareSource, 'source', 'utf-8');
+
+  packageBuild.cleanGeneratedRuntimeArtifacts(projectRoot, { bundlePlaywrightBrowser: false });
+
+  for (const generatedDir of ['autovpn-cli', 'node-vendor', 'playwright-browsers', 'share-worker']) {
+    assert.equal(fs.existsSync(path.join(runtimeRoot, generatedDir)), false);
+  }
+  assert.equal(fs.readFileSync(seedPath, 'utf-8'), 'seed');
+  assert.equal(fs.readFileSync(shareSource, 'utf-8'), 'source');
 });
 
 test('Electron package inputs contain only Node runtime manifests and staged CLI content', () => {
@@ -105,6 +145,7 @@ test('staged packaged CLI executes version and profile commands', () => {
     fs.cpSync(path.join(sourceCliRoot, entry), path.join(testSourceRoot, entry), { recursive: true });
   }
   fs.copyFileSync(path.join(sourceCliRoot, 'package.json'), path.join(testSourceRoot, 'package.json'));
+  fs.copyFileSync(path.join(sourceCliRoot, 'package-lock.json'), path.join(testSourceRoot, 'package-lock.json'));
   const staged = packageBuild.stageAutoVpnCliRuntime(projectRoot, { run: () => {} });
   fs.cpSync(path.join(sourceCliRoot, 'node_modules'), path.join(staged.runtimeRoot, 'node_modules'), { recursive: true });
 

@@ -397,12 +397,26 @@ jobs:
           npm pack --json --pack-destination ../../dist
         shell: bash
 
+      - name: Verify and smoke CLI artifact
+        run: |
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          NPM_CLI_VERSION="$(node -p "require('./npm/autovpn-cli/package.json').version")"
+          if [ "${NPM_CLI_VERSION}" != "${PKG_VERSION}" ]; then
+            echo "CLI artifact version mismatch: package.json=${PKG_VERSION} npm/autovpn-cli=${NPM_CLI_VERSION}"
+            exit 1
+          fi
+          test -f "dist/swimmingliu-autovpn-${PKG_VERSION}.tgz"
+          npm exec --yes --package="./dist/swimmingliu-autovpn-${PKG_VERSION}.tgz" -- autovpn --version | grep -Fx "autovpn ${PKG_VERSION}"
+          npm exec --yes --package="./dist/swimmingliu-autovpn-${PKG_VERSION}.tgz" -- autovpn --help >/dev/null
+        shell: bash
+
       - name: Publish npm CLI package
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           PACKAGE_NAME="$(node -p "require('./npm/autovpn-cli/package.json').name")"
           PACKAGE_VERSION="$(node -p "require('./npm/autovpn-cli/package.json').version")"
+          PACKAGE_TARBALL="dist/swimmingliu-autovpn-${PACKAGE_VERSION}.tgz"
           if npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version --registry=https://registry.npmjs.org >/dev/null 2>&1; then
             echo "${PACKAGE_NAME}@${PACKAGE_VERSION} is already published; skipping npm publish."
             exit 0
@@ -413,7 +427,7 @@ jobs:
             echo "Publishing ${PACKAGE_NAME}@${PACKAGE_VERSION} with npm trusted publishing/OIDC."
           fi
           for attempt in 1 2 3; do
-            if (cd npm/autovpn-cli && npm publish --access public --provenance --registry=https://registry.npmjs.org); then
+            if npm publish "${PACKAGE_TARBALL}" --access public --provenance --registry=https://registry.npmjs.org; then
               exit 0
             fi
             if AUTOVPN_CI_RETRIES=3 AUTOVPN_CI_RETRY_BASE_SECONDS=10 \
@@ -431,26 +445,13 @@ jobs:
           done
         shell: bash
 
-      - name: Verify CLI artifacts exist
-        run: |
-          PKG_VERSION="$(node -p "require('./package.json').version")"
-          test -f "dist/swimmingliu-autovpn-${PKG_VERSION}.tgz"
-        shell: bash
-
       - name: Upload CLI release assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          release_files=()
-          while IFS= read -r release_file; do
-            release_files+=("${release_file}")
-          done < <(
-            find dist -maxdepth 1 -type f -name '*.tgz' -print
-          )
-          if [ "${#release_files[@]}" -eq 0 ]; then
-            echo "No CLI release assets found."
-            exit 1
-          fi
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          release_files=("dist/swimmingliu-autovpn-${PKG_VERSION}.tgz")
+          test -f "${release_files[0]}"
           existing_assets="$(gh release view "${RELEASE_TAG_NAME}" --repo "${GITHUB_REPOSITORY}" --json assets --jq '.assets[].name')"
           for release_file in "${release_files[@]}"; do
             asset_name="$(basename "${release_file}")"

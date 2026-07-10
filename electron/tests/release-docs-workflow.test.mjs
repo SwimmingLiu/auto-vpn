@@ -116,6 +116,7 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
   const workflow = readProjectFile('.github', 'workflows', 'release-electron.yml');
   const testJob = extractWorkflowSegment(workflow, '  test:', '  package-electron:');
   const packageJob = extractWorkflowSegment(workflow, '  package-electron:', '  package-cli:');
+  const packageCliJob = extractWorkflowSegment(workflow, '  package-cli:', '  publish-release-notes:');
   const packageInstallAndBuild = extractWorkflowSegment(
     packageJob,
     '      - name: Install dependencies\n        run: |\n          bash scripts/ci/retry-command.sh "npm ci"',
@@ -220,7 +221,7 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
     'npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version --registry=https://registry.npmjs.org',
     'Publishing ${PACKAGE_NAME}@${PACKAGE_VERSION} with NPM_TOKEN.',
     'Publishing ${PACKAGE_NAME}@${PACKAGE_VERSION} with npm trusted publishing/OIDC.',
-    'npm publish --access public --provenance --registry=https://registry.npmjs.org',
+    'npm publish "${PACKAGE_TARBALL}" --access public --provenance --registry=https://registry.npmjs.org',
     'verify npm publication visibility',
     'is visible after a failed publish response; treating publish as complete.',
     'upload ${asset_name}',
@@ -249,6 +250,18 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
   assert.doesNotMatch(packageInstallAndBuild, /Install Playwright browser runtime/);
   assert.doesNotMatch(packageInstallAndBuild, /PLAYWRIGHT_BROWSERS_PATH: electron\/runtime\/playwright-browsers/);
   assert.doesNotMatch(packageInstallAndBuild, /npx playwright install chromium-headless-shell/);
+  const verifyIndex = packageCliJob.indexOf('      - name: Verify and smoke CLI artifact');
+  const publishIndex = packageCliJob.indexOf('      - name: Publish npm CLI package');
+  const uploadIndex = packageCliJob.indexOf('      - name: Upload CLI release assets');
+  assert.ok(verifyIndex >= 0, 'package CLI job should verify its tarball');
+  assert.ok(verifyIndex < publishIndex, 'tarball verification should happen before npm publish');
+  assert.ok(publishIndex < uploadIndex, 'npm publish should happen before GitHub asset upload');
+  assert.match(
+    packageCliJob,
+    /npm exec --yes --package="\.\/dist\/swimmingliu-autovpn-\$\{PKG_VERSION\}\.tgz" -- autovpn --version/
+  );
+  assert.doesNotMatch(packageCliJob, /npx -y "\.\/dist\/.*\.tgz"/);
+  assert.doesNotMatch(packageCliJob, /cd npm\/autovpn-cli && npm publish/);
 });
 
 test('active CI and release workflows are Node-only and publish only npm and Electron assets', () => {
