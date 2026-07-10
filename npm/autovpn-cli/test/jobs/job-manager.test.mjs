@@ -109,7 +109,8 @@ test('default run --detach spawns the Node CLI worker', async () => {
     },
     spawn: fakeSpawn(spawns, 6789),
     now: () => '2026-06-28T00:01:00+00:00',
-    jobId: () => '20260628-000100-node-worker'
+    jobId: () => '20260628-000100-node-worker',
+    jobToken: () => 'a'.repeat(64)
   });
 
   const payload = JSON.parse(io.stdout);
@@ -121,7 +122,7 @@ test('default run --detach spawns the Node CLI worker', async () => {
   assert.equal(spawns[0].command, process.execPath);
   assert.match(spawns[0].args[0], /bin[\\/]autovpn\.mjs$/);
   assert.deepEqual(spawns[0].args.slice(1), [
-    'run', '--project-root', payload.project_root, '--output', 'jsonl', '--event-log', payload.event_log, '--human-log', payload.human_log, '--skip-deploy', '--skip-verify'
+    'run', '--project-root', payload.project_root, '--output', 'jsonl', '--internal-job-token', 'a'.repeat(64), '--event-log', payload.event_log, '--human-log', payload.human_log, '--skip-deploy', '--skip-verify'
   ]);
 });
 
@@ -256,24 +257,50 @@ test('process metadata guard distinguishes AutoVPN workers from unrelated Node p
   const projectRoot = await createProject();
   const entry = path.join(projectRoot, 'autovpn.mjs');
   const wrongEntry = path.join(projectRoot, 'other.mjs');
-  const command = [process.execPath, entry, 'run', '--project-root', projectRoot, '--output', 'jsonl'];
+  const token = 'b'.repeat(64);
+  const command = [process.execPath, entry, 'run', '--project-root', projectRoot, '--output', 'jsonl', '--internal-job-token', token];
   const actual = Buffer.from(`${command.join('\0')}\0`, 'utf8');
 
   assert.equal(cmdlineMatchesJob(actual, [process.execPath, wrongEntry, ...command.slice(2)]), false);
   assert.equal(cmdlineMatchesJob(actual, [process.execPath, entry, 'resume', ...command.slice(3)]), false);
-  assert.equal(cmdlineMatchesJob(actual, [process.execPath, 'run', '--project-root', projectRoot]), false);
+  assert.equal(cmdlineMatchesJob(actual, command.slice(0, -2)), false);
+  assert.equal(cmdlineMatchesJob(actual, [...command.slice(0, -1), 'c'.repeat(64)]), false);
   assert.equal(cmdlineMatchesJob(actual, command), true);
 });
 
-test('production metadata guard reads exact NUL-separated worker argv', async (t) => {
-  if (!existsSync('/proc')) {
-    t.skip('production process metadata guard is Linux /proc based');
+test('darwin and Windows process readers require the saved worker token and identity', async () => {
+  const projectRoot = await createProject();
+  const entry = path.join(projectRoot, 'autovpn.mjs');
+  const token = 'd'.repeat(64);
+  const command = [process.execPath, entry, 'run', '--project-root', projectRoot, '--internal-job-token', token];
+  const rendered = command.join(' ');
+  const readers = [
+    { platform: 'darwin', executable: 'ps' },
+    { platform: 'win32', executable: 'powershell.exe' }
+  ];
+
+  for (const reader of readers) {
+    const calls = [];
+    const spawnSync = (executable, args) => {
+      calls.push([executable, args]);
+      return { status: 0, stdout: rendered };
+    };
+    assert.equal(processMatchesJob(2468, command, { platform: reader.platform, spawnSync }), true);
+    assert.equal(calls[0][0], reader.executable);
+    assert.equal(processMatchesJob(2468, [...command.slice(0, -1), 'e'.repeat(64)], { platform: reader.platform, spawnSync }), false);
+    assert.equal(processMatchesJob(2468, [process.execPath, path.join(projectRoot, 'other.mjs'), ...command.slice(2)], { platform: reader.platform, spawnSync }), false);
+  }
+});
+
+test('production metadata guard recognizes a live worker on the host platform', async (t) => {
+  if (!['linux', 'darwin'].includes(process.platform)) {
+    t.skip('live process command reader integration runs on Linux and macOS');
     return;
   }
   const projectRoot = await createProject();
   const entry = path.join(projectRoot, 'autovpn.mjs');
   await writeFile(entry, 'setInterval(() => {}, 1000);\n', 'utf8');
-  const command = [process.execPath, entry, 'run', '--project-root', projectRoot, '--output', 'jsonl'];
+  const command = [process.execPath, entry, 'run', '--project-root', projectRoot, '--output', 'jsonl', '--internal-job-token', 'f'.repeat(64)];
   const child = spawn(command[0], command.slice(1), { stdio: 'ignore' });
   t.after(() => child.kill('SIGKILL'));
   await new Promise((resolve, reject) => {

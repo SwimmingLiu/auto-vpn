@@ -11,6 +11,11 @@ export interface StopProcessOptions {
   platform?: NodeJS.Platform;
 }
 
+export interface ProcessMatchOptions {
+  platform?: NodeJS.Platform;
+  spawnSync?: typeof defaultSpawnSync;
+}
+
 function resolvedArg(value: string): string {
   if (!path.isAbsolute(value)) {
     return value;
@@ -22,19 +27,61 @@ function resolvedArg(value: string): string {
   }
 }
 
+function jobIdentity(command: string[]): { entry: string; projectRoot: string; token: string; executable: string } | undefined {
+  const expected = command.map(String);
+  const tokenIndex = expected.indexOf('--internal-job-token');
+  const projectRootIndex = expected.indexOf('--project-root');
+  const token = expected[tokenIndex + 1] ?? '';
+  if (
+    expected.length < 7
+    || path.basename(expected[1] ?? '') !== 'autovpn.mjs'
+    || projectRootIndex < 3
+    || !expected[projectRootIndex + 1]
+    || tokenIndex < 3
+    || !/^[a-f0-9]{64}$/i.test(token)
+  ) {
+    return undefined;
+  }
+  return {
+    executable: resolvedArg(expected[0]),
+    entry: resolvedArg(expected[1]),
+    projectRoot: resolvedArg(expected[projectRootIndex + 1]),
+    token: token.toLowerCase()
+  };
+}
+
+function escaped(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function commandTextMatchesJob(commandLine: string, command: string[]): boolean {
+  const identity = jobIdentity(command);
+  if (!identity || !commandLine.trim()) {
+    return false;
+  }
+  const tokenPattern = new RegExp(`(?:^|[\\s"'])${escaped(identity.token)}(?:$|[\\s"'])`, 'i');
+  const normalized = commandLine.replaceAll('\\', '/');
+  const projectRootIndex = command.indexOf('--project-root');
+  const containsPath = (value: string) => [value, resolvedArg(value)]
+    .map((candidate) => candidate.replaceAll('\\', '/'))
+    .some((candidate) => normalized.includes(candidate));
+  return tokenPattern.test(commandLine)
+    && containsPath(command[1])
+    && containsPath(command[projectRootIndex + 1])
+    && containsPath(command[0]);
+}
+
 export function cmdlineMatchesJob(cmdline: Buffer, command: string[]): boolean {
   const actual = cmdline.toString('utf8').split('\0').filter((value) => value.length > 0);
   const expected = command.map(String);
-  if (actual.length !== expected.length || expected.length < 5) {
+  const identity = jobIdentity(expected);
+  if (!identity || actual.length !== expected.length) {
     return false;
   }
   if (path.basename(expected[1]) !== 'autovpn.mjs' || path.basename(actual[1]) !== 'autovpn.mjs') {
     return false;
   }
-  const projectRootIndex = expected.findIndex((value) => value === '--project-root');
-  if (projectRootIndex < 3 || !expected[projectRootIndex + 1]) {
-    return false;
-  }
+  const projectRootIndex = expected.indexOf('--project-root');
   return expected.every((value, index) => {
     if (index <= 1 || index === projectRootIndex + 1) {
       return resolvedArg(actual[index]) === resolvedArg(value);
@@ -43,18 +90,35 @@ export function cmdlineMatchesJob(cmdline: Buffer, command: string[]): boolean {
   });
 }
 
-export function processMatchesJob(pid: number, command: string[]): boolean {
+export function processMatchesJob(pid: number, command: string[], options: ProcessMatchOptions = {}): boolean {
+  const platform = options.platform ?? process.platform;
+  if (!jobIdentity(command)) {
+    return false;
+  }
   const cmdlinePath = path.join('/proc', String(pid), 'cmdline');
-  if (!fs.existsSync(cmdlinePath)) {
-    // Without an argv-bearing process API, fail closed instead of risking a
-    // recycled PID on macOS or Windows. Callers can inject a platform matcher.
+  if (platform === 'linux') {
+    if (!fs.existsSync(cmdlinePath)) {
+      return false;
+    }
+    try {
+      return cmdlineMatchesJob(fs.readFileSync(cmdlinePath), command);
+    } catch {
+      return false;
+    }
+  }
+  const spawnSync = options.spawnSync ?? defaultSpawnSync;
+  const lookup = platform === 'win32'
+    ? spawnSync('powershell.exe', [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      `(Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}").CommandLine`
+    ], { encoding: 'utf8', windowsHide: true })
+    : spawnSync('ps', ['-ww', '-p', String(pid), '-o', 'command='], { encoding: 'utf8' });
+  if (lookup.status !== 0 || typeof lookup.stdout !== 'string') {
     return false;
   }
-  try {
-    return cmdlineMatchesJob(fs.readFileSync(cmdlinePath), command);
-  } catch {
-    return false;
-  }
+  return commandTextMatchesJob(lookup.stdout, command);
 }
 
 function defaultIsAlive(pid: number): boolean {

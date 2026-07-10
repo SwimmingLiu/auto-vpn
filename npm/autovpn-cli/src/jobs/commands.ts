@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { spawn as defaultSpawn, ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
@@ -19,6 +20,7 @@ export interface JobCommandOptions extends JobStoreOptions {
   env?: NodeJS.ProcessEnv;
   spawn?: SpawnLike;
   processMatchesJob?: (pid: number, command: string[]) => boolean;
+  jobToken?: () => string;
 }
 
 export interface DetachedRunCommand {
@@ -57,6 +59,14 @@ async function resolveDetachedWorker(_env: NodeJS.ProcessEnv, _options: JobComma
 
 function pushFlag(argv: string[], enabled: boolean | undefined, flag: string): void {
   if (enabled) argv.push(flag);
+}
+
+function createJobToken(options: JobCommandOptions): string {
+  const token = options.jobToken?.() ?? randomBytes(32).toString('hex');
+  if (!/^[a-f0-9]{64}$/i.test(token)) {
+    throw new Error('internal job token must be 64 hexadecimal characters');
+  }
+  return token.toLowerCase();
 }
 
 function spawnDetached(command: string, args: string[], job: JobRecord, options: JobCommandOptions): ChildProcess {
@@ -122,6 +132,7 @@ export async function startDetachedRun(command: DetachedRunCommand, options: Job
       output_format: outputFormat
     }
   });
+  runArgs.push('--internal-job-token', createJobToken(options));
   runArgs.push('--event-log', String(job.event_log), '--human-log', String(job.human_log));
   pushFlag(runArgs, command.resumeLatest, '--resume-latest');
   pushFlag(runArgs, command.skipDeploy, '--skip-deploy');
@@ -159,6 +170,8 @@ export async function startDetachedResume(command: DetachedResumeCommand, option
     command.sessionDir,
     '--output',
     outputFormat,
+    '--internal-job-token',
+    createJobToken(options),
     '--event-log',
     String(job.event_log),
     '--human-log',
@@ -193,6 +206,8 @@ export async function startDetachedRetry(command: DetachedRetryCommand, options:
     command.stage,
     '--output',
     outputFormat,
+    '--internal-job-token',
+    createJobToken(options),
     '--event-log',
     String(job.event_log),
     '--human-log',

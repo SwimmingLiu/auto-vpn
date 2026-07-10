@@ -33,6 +33,7 @@ export interface CliShellOptions {
   spawn?: JobRuntimeOptions['spawn'];
   now?: JobRuntimeOptions['now'];
   jobId?: JobRuntimeOptions['jobId'];
+  jobToken?: JobRuntimeOptions['jobToken'];
   sleep?: JobRuntimeOptions['sleep'];
   createServer?: CreateServer;
   serveExitAfterStart?: boolean;
@@ -277,6 +278,7 @@ export async function runCliShell(argv: string[], options: CliShellOptions = {})
       spawn: options.spawn,
       now: options.now,
       jobId: options.jobId,
+      jobToken: options.jobToken,
       sleep: options.sleep
     });
     if (nativeResult !== undefined) {

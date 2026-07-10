@@ -604,6 +604,7 @@ test('Node backend allows detached run through the Node job manager', async () =
     },
     now: () => '2026-07-01T00:00:00+00:00',
     jobId: () => '20260701-000000-node-detached',
+    jobToken: () => '1'.repeat(64),
     runForwarder: async () => 99,
     createBackend: () => ({
       kind: 'node',
@@ -624,7 +625,9 @@ test('Node backend allows detached run through the Node job manager', async () =
   assert.equal(executeCliCalled, false);
   assert.equal(spawns[0].command, process.execPath);
   assert.match(spawns[0].args[0], /bin[\\/]autovpn\.mjs$/);
-  assert.deepEqual(spawns[0].args.slice(1, 8), ['run', '--project-root', '/repo', '--output', 'jsonl', '--event-log', payload.event_log]);
+  assert.deepEqual(spawns[0].args.slice(1, 10), [
+    'run', '--project-root', '/repo', '--output', 'jsonl', '--internal-job-token', '1'.repeat(64), '--event-log', payload.event_log
+  ]);
 });
 
 test('Node backend allows detached retry through the Node job manager', async () => {
