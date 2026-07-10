@@ -10,7 +10,8 @@ const activeRoots = [
   path.join(repoRoot, 'src'),
   path.join(repoRoot, 'scripts'),
   path.join(cliRoot, 'src'),
-  path.join(cliRoot, 'lib')
+  path.join(cliRoot, 'lib'),
+  path.join(cliRoot, 'bin')
 ];
 const manifests = [
   path.join(repoRoot, 'package.json'),
@@ -27,6 +28,12 @@ const forbidden = [
   /PYTHON_[A-Z_]*HELPER/,
   /python-backend/,
   /install-python-cli/,
+  /AUTOVPN_PYTHON_CLI/,
+  /AUTOVPN_NO_PYTHON/,
+  /AUTOVPN_CLI_SHELL/,
+  /AUTOVPN_(?:PIPELINE|STAGE|DOCTOR|PROFILE|ARTIFACTS|JOBS)_[A-Z0-9_]*BACKEND/,
+  /\bpython(?:Command|Bin|Cli|Backend|Helper|Runtime|Vendor)[A-Z0-9_]*\b/i,
+  /(?:spawn|execFile|execFileSync|spawnSync)[\s\S]{0,120}\bpython(?:3(?:\.\d+)?)?\b/i,
   /\b(?:pytest|pipx?|wheel|PyPI)\b/i,
   /pyproject\.toml/
 ];

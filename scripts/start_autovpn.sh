@@ -82,6 +82,14 @@ if [[ ! -f "$autovpn_bin" ]]; then
 fi
 
 export PATH="$HOME/.local/bin:$repo_root/node_modules/.bin:$PATH"
+if ((proxy)); then
+  proxy_url="${proxy_url:-${VPN_AUTOMATION_UPSTREAM_PROXY:-http://127.0.0.1:7897}}"
+  export VPN_AUTOMATION_USE_UPSTREAM_PROXY=1
+  export VPN_AUTOMATION_UPSTREAM_PROXY="$proxy_url"
+  export HTTP_PROXY="$proxy_url"
+  export HTTPS_PROXY="$proxy_url"
+  export ALL_PROXY="$proxy_url"
+fi
 cd "$repo_root"
 
 run_dir="$logs_root/$run_id"
@@ -133,12 +141,6 @@ if ((!deploy)); then
   run_cmd+=(--skip-deploy --skip-verify)
 elif ((!verify)); then
   run_cmd+=(--skip-verify)
-fi
-if ((proxy)); then
-  run_cmd+=(--proxy)
-  if [[ -n "$proxy_url" ]]; then
-    run_cmd+=("$proxy_url")
-  fi
 fi
 run_cmd+=(--output jsonl)
 
