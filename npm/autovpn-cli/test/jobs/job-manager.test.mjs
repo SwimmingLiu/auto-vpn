@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { existsSync } from 'node:fs';
 import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -10,7 +11,7 @@ import test from 'node:test';
 import { runCliShell } from '../../dist/cli/main.js';
 import { createJobStore } from '../../dist/jobs/store.js';
 import { startDetachedRun, stopManagedJob } from '../../dist/jobs/commands.js';
-import { terminateProcessGroup } from '../../dist/jobs/process.js';
+import { cmdlineMatchesJob, processMatchesJob, terminateProcessGroup } from '../../dist/jobs/process.js';
 
 function createIo() {
   return {
@@ -251,56 +252,37 @@ test('Node job manager stop refuses mismatched process metadata', async () => {
   );
 });
 
-test('Node job manager stop uses the production process metadata guard', async (t) => {
-  if (!existsSync(path.join('/proc', String(process.pid), 'cmdline'))) {
-    t.skip('production process metadata guard is Linux /proc based');
-    return;
-  }
+test('process metadata guard distinguishes AutoVPN workers from unrelated Node processes', async () => {
   const projectRoot = await createProject();
-  const store = createJobStore(projectRoot, { now: () => '2026-06-28T00:00:00+00:00', jobId: () => 'production-mismatch-job' });
-  const job = store.createRunningJob({
-    kind: 'run',
-    command: ['/definitely-not-autovpn-worker', 'run'],
-    pid: process.pid,
-    options: { output_format: 'jsonl' }
-  });
+  const entry = path.join(projectRoot, 'autovpn.mjs');
+  const wrongEntry = path.join(projectRoot, 'other.mjs');
+  const command = [process.execPath, entry, 'run', '--project-root', projectRoot, '--output', 'jsonl'];
+  const actual = Buffer.from(`${command.join('\0')}\0`, 'utf8');
 
-  await assert.rejects(
-    () => stopManagedJob(projectRoot, job.job_id, {
-      isAlive: () => true,
-      signalProcess: () => {
-        throw new Error('mismatched production process should not be signaled');
-      }
-    }),
-    /command does not match AutoVPN job/
-  );
+  assert.equal(cmdlineMatchesJob(actual, [process.execPath, wrongEntry, ...command.slice(2)]), false);
+  assert.equal(cmdlineMatchesJob(actual, [process.execPath, entry, 'resume', ...command.slice(3)]), false);
+  assert.equal(cmdlineMatchesJob(actual, [process.execPath, 'run', '--project-root', projectRoot]), false);
+  assert.equal(cmdlineMatchesJob(actual, command), true);
 });
 
-test('Node job manager stop accepts matching production process metadata', async (t) => {
-  if (!existsSync(path.join('/proc', String(process.pid), 'cmdline'))) {
+test('production metadata guard reads exact NUL-separated worker argv', async (t) => {
+  if (!existsSync('/proc')) {
     t.skip('production process metadata guard is Linux /proc based');
     return;
   }
   const projectRoot = await createProject();
-  const store = createJobStore(projectRoot, { now: () => '2026-06-28T00:00:00+00:00', jobId: () => 'production-match-job' });
-  const job = store.createRunningJob({
-    kind: 'run',
-    command: [process.execPath, '--test'],
-    pid: process.pid,
-    options: { output_format: 'jsonl' }
-  });
-  const signals = [];
-
-  const stopped = await stopManagedJob(projectRoot, job.job_id, {
-    timeoutMs: 0,
-    isAlive: () => true,
-    signalProcess: (target, signal) => {
-      signals.push([target, signal]);
-    }
+  const entry = path.join(projectRoot, 'autovpn.mjs');
+  await writeFile(entry, 'setInterval(() => {}, 1000);\n', 'utf8');
+  const command = [process.execPath, entry, 'run', '--project-root', projectRoot, '--output', 'jsonl'];
+  const child = spawn(command[0], command.slice(1), { stdio: 'ignore' });
+  t.after(() => child.kill('SIGKILL'));
+  await new Promise((resolve, reject) => {
+    child.once('spawn', resolve);
+    child.once('error', reject);
   });
 
-  assert.equal(stopped.status, 'stopped');
-  assert.equal(signals.length > 0, true);
+  assert.equal(processMatchesJob(child.pid, [command[0], path.join(projectRoot, 'wrong.mjs'), ...command.slice(2)]), false);
+  assert.equal(processMatchesJob(child.pid, command), true);
 });
 
 test('Windows process termination uses taskkill process tree mode', async () => {

@@ -11,18 +11,47 @@ export interface StopProcessOptions {
   platform?: NodeJS.Platform;
 }
 
+function resolvedArg(value: string): string {
+  if (!path.isAbsolute(value)) {
+    return value;
+  }
+  try {
+    return fs.realpathSync(value);
+  } catch {
+    return path.resolve(value);
+  }
+}
+
+export function cmdlineMatchesJob(cmdline: Buffer, command: string[]): boolean {
+  const actual = cmdline.toString('utf8').split('\0').filter((value) => value.length > 0);
+  const expected = command.map(String);
+  if (actual.length !== expected.length || expected.length < 5) {
+    return false;
+  }
+  if (path.basename(expected[1]) !== 'autovpn.mjs' || path.basename(actual[1]) !== 'autovpn.mjs') {
+    return false;
+  }
+  const projectRootIndex = expected.findIndex((value) => value === '--project-root');
+  if (projectRootIndex < 3 || !expected[projectRootIndex + 1]) {
+    return false;
+  }
+  return expected.every((value, index) => {
+    if (index <= 1 || index === projectRootIndex + 1) {
+      return resolvedArg(actual[index]) === resolvedArg(value);
+    }
+    return actual[index] === value;
+  });
+}
+
 export function processMatchesJob(pid: number, command: string[]): boolean {
   const cmdlinePath = path.join('/proc', String(pid), 'cmdline');
   if (!fs.existsSync(cmdlinePath)) {
-    return true;
+    // Without an argv-bearing process API, fail closed instead of risking a
+    // recycled PID on macOS or Windows. Callers can inject a platform matcher.
+    return false;
   }
   try {
-    const cmdline = fs.readFileSync(cmdlinePath).toString('utf8').replaceAll('\0', ' ');
-    const markers: string[] = [];
-    if (command.length > 0) {
-      markers.push(path.basename(String(command[0])));
-    }
-    return markers.some((marker) => marker.length > 0 && cmdline.includes(marker));
+    return cmdlineMatchesJob(fs.readFileSync(cmdlinePath), command);
   } catch {
     return false;
   }
