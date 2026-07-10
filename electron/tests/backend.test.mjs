@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -45,6 +46,24 @@ test('buildBackendInvocation runs the npm Node CLI with jsonl output in developm
     '--output',
     'jsonl'
   ]);
+});
+
+test('resolved Node CLI is runnable from a clean Electron checkout', () => {
+  const result = spawnSync(process.execPath, [backend.resolveNodeCliEntry(process.cwd()), '--version'], {
+    cwd: process.cwd(),
+    encoding: 'utf-8'
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /^autovpn \d+\.\d+\.\d+\n$/);
+});
+
+test('Electron development and test scripts build the Node CLI first', () => {
+  const packageJson = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf-8'));
+
+  assert.equal(packageJson.scripts['preelectron:dev'], 'npm run build:autovpn-cli');
+  assert.equal(packageJson.scripts['pretest:electron'], 'npm run build:autovpn-cli');
+  assert.equal(packageJson.scripts['build:autovpn-cli'], 'npm run build --prefix npm/autovpn-cli');
 });
 
 test('buildBackendInvocation uses the packaged Electron executable as Node', () => {
