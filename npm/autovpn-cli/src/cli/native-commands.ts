@@ -16,6 +16,7 @@ export interface JobRuntimeOptions {
   spawn?: (command: string, args: string[], options?: Record<string, unknown>) => ChildProcess;
   now?: () => string;
   jobId?: () => string;
+  jobToken?: () => string;
   sleep?: (ms: number) => Promise<void>;
 }
 
@@ -70,6 +71,7 @@ function jobOptions(context: NativeContext): JobRuntimeOptions & { env: NodeJS.P
     spawn: context.spawn,
     now: context.now,
     jobId: context.jobId,
+    jobToken: context.jobToken,
     sleep: context.sleep
   };
 }

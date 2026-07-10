@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { EventEmitter } from 'node:events';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
@@ -10,13 +9,12 @@ import {
   decorateNodeName,
   postprocessLinksWithBackend,
   runPostprocess,
-  selectLinksByCountryLimit,
-  selectPipelineStageBackend
+  selectLinksByCountryLimit
 } from '../../dist/pipeline/postprocess.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '../../../..');
-const fixtureDir = path.join(repoRoot, 'tests', 'fixtures', 'node-migration', 'pipeline', 'postprocess');
+const fixtureDir = path.join(repoRoot, 'npm', 'autovpn-cli', 'test', 'fixtures', 'node-migration', 'pipeline', 'postprocess');
 
 const sampleLink = 'vmess://eyJ2IjoiMiIsInBzIjoiVVMgb2xkLW5hbWUiLCJhZGQiOiIxLjEuMS4xIiwicG9ydCI6IjQ0MyIsImlkIjoiNDE4MDQ4YWYtYTI5My00Yjk5LTliMGMtOThjYTM1ODBkZDI0IiwiYWlkIjoiMCIsInNjeSI6Im5vbmUiLCJuZXQiOiJ3cyIsInR5cGUiOiJkdGxzIiwiaG9zdCI6Ind3dy5leGFtcGxlLmNvbSIsInBhdGgiOiIvcGF0aC9kZW1vIiwidGxzIjoidGxzIiwic25pIjoid3d3LmV4YW1wbGUuY29tIn0=';
 
@@ -47,73 +45,22 @@ test('selectLinksByCountryLimit excludes configured countries and applies per-co
   }), ['vmess://1', 'vmess://4']);
 });
 
-test('postprocess defaults match Python FilterConfig when filters are omitted', async () => {
+test('postprocess uses default filters when filters are omitted', async () => {
   const payload = { ranked_links: [{ link: sampleLink, country_code: 'CN' }] };
 
   assert.deepEqual(runPostprocess(payload), { links: [] });
-
-  const spawns = [];
-  const result = await postprocessLinksWithBackend(payload, {
-    env: { AUTOVPN_STAGE_BACKEND_POSTPROCESS: 'python' },
-    resolvePythonCli: () => ({ command: '/opt/autovpn/.venv/bin/autovpn', args: [] }),
-    spawn: (command, args, options) => {
-      spawns.push({ command, args, options });
-      const child = new EventEmitter();
-      child.stdout = new EventEmitter();
-      child.stderr = new EventEmitter();
-      child.stdin = {
-        write(chunk) {
-          this.input = String(chunk);
-        },
-        end() {
-          const helperInput = JSON.parse(this.input);
-          assert.deepEqual(helperInput.filters, { excluded_country_codes: ['CN'], per_country_limit: {} });
-          child.stdout.emit('data', `${JSON.stringify({ links: [] })}\n`);
-          child.emit('close', 0, null);
-        }
-      };
-      return child;
-    }
-  });
-
-  assert.deepEqual(result, { links: [] });
-  assert.equal(spawns.length, 0);
+  assert.deepEqual(await postprocessLinksWithBackend(payload), { links: [] });
 });
 
-test('postprocess keeps Python filter defaults for explicit empty and partial filters', async () => {
+test('postprocess keeps filter defaults for explicit empty and partial filters', async () => {
   const cnOnly = { ranked_links: [{ link: sampleLink, country_code: 'CN' }], filters: {} };
   const partial = { ranked_links: [{ link: sampleLink, country_code: 'CN' }], filters: { per_country_limit: { US: 1 } } };
 
   assert.deepEqual(runPostprocess(cnOnly), { links: [] });
   assert.deepEqual(runPostprocess(partial), { links: [] });
 
-  const spawns = [];
-  async function runFallback(input) {
-    return postprocessLinksWithBackend(input, {
-      env: { AUTOVPN_STAGE_BACKEND_POSTPROCESS: 'python' },
-      resolvePythonCli: () => ({ command: '/opt/autovpn/.venv/bin/autovpn', args: [] }),
-      spawn: (command, args, options) => {
-        spawns.push({ command, args, options });
-        const child = new EventEmitter();
-        child.stdout = new EventEmitter();
-        child.stderr = new EventEmitter();
-        child.stdin = {
-          write(chunk) {
-            this.input = String(chunk);
-          },
-          end() {
-            child.stdout.emit('data', `${JSON.stringify({ links: [] })}\n`);
-            child.emit('close', 0, null);
-          }
-        };
-        return child;
-      }
-    });
-  }
-
-  assert.deepEqual(await runFallback(cnOnly), { links: [] });
-  assert.deepEqual(await runFallback(partial), { links: [] });
-  assert.equal(spawns.length, 0);
+  assert.deepEqual(await postprocessLinksWithBackend(cnOnly), { links: [] });
+  assert.deepEqual(await postprocessLinksWithBackend(partial), { links: [] });
 });
 
 test('postprocess fixture output matches Python golden output', async () => {
@@ -123,53 +70,8 @@ test('postprocess fixture output matches Python golden output', async () => {
   assert.deepEqual(runPostprocess(input).links, expected.links);
 });
 
-test('postprocess backend selection always uses the Node engine', async () => {
-  assert.equal(selectPipelineStageBackend('postprocess', {}), 'node');
-  assert.equal(selectPipelineStageBackend('postprocess', { AUTOVPN_PIPELINE_BACKEND: ' HYBRID ' }), 'node');
-  assert.equal(selectPipelineStageBackend('postprocess', { AUTOVPN_PIPELINE_BACKEND: ' PYTHON ' }), 'node');
-  assert.equal(selectPipelineStageBackend('postprocess', { AUTOVPN_STAGE_BACKEND_POSTPROCESS: ' python ' }), 'node');
-  assert.equal(selectPipelineStageBackend('postprocess', { AUTOVPN_PIPELINE_BACKEND: 'python', AUTOVPN_STAGE_BACKEND_POSTPROCESS: '' }), 'node');
-
+test('postprocess backend API runs the Node implementation', async () => {
   const payload = { ranked_links: [{ link: sampleLink, country_code: 'US' }], filters: {} };
-  const pythonCalls = [];
-  const fallback = async (input) => {
-    pythonCalls.push(input);
-    return { links: ['python-result'] };
-  };
-
-  assert.deepEqual((await postprocessLinksWithBackend(payload, { env: {}, pythonPostprocess: fallback })).links.length, 1);
-  assert.deepEqual(await postprocessLinksWithBackend(payload, {
-    env: { AUTOVPN_STAGE_BACKEND_POSTPROCESS: 'python' },
-    pythonPostprocess: fallback
-  }).then((result) => result.links.length), 1);
-  assert.deepEqual(pythonCalls, []);
-});
-
-test('postprocess ignores legacy Python rollback env without spawning Python', async () => {
-  const payload = { ranked_links: [{ link: sampleLink, country_code: 'US' }], filters: {} };
-  const spawns = [];
-  const result = await postprocessLinksWithBackend(payload, {
-    env: { AUTOVPN_STAGE_BACKEND_POSTPROCESS: 'python' },
-    resolvePythonCli: () => ({ command: '/opt/autovpn/.venv/bin/autovpn', args: [] }),
-    spawn: (command, args, options) => {
-      spawns.push({ command, args, options });
-      const child = new EventEmitter();
-      child.stdout = new EventEmitter();
-      child.stderr = new EventEmitter();
-      child.stdin = {
-        write(chunk) {
-          this.input = String(chunk);
-        },
-        end() {
-          const helperInput = JSON.parse(this.input);
-          child.stdout.emit('data', `${JSON.stringify({ links: [helperInput.ranked_links[0].link] })}\n`);
-          child.emit('close', 0, null);
-        }
-      };
-      return child;
-    }
-  });
-
+  const result = await postprocessLinksWithBackend(payload);
   assert.equal(result.links.length, 1);
-  assert.equal(spawns.length, 0);
 });

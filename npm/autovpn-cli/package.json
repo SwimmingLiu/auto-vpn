@@ -14,16 +14,15 @@
   "files": [
     "bin/",
     "dist/",
-    "lib/",
     "README.md"
   ],
   "publishConfig": {
     "access": "public"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json && node scripts/copy-web-assets.mjs",
+    "build": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json && node scripts/copy-web-assets.mjs",
     "prepack": "npm run build",
-    "test": "npm run build && node --test test/*.test.mjs test/doctor/*.test.mjs test/parity/*.test.mjs test/jobs/*.test.mjs test/pipeline/*.test.mjs test/runtime/*.test.mjs test/server/*.test.mjs"
+    "test": "npm run build && node --test test/*.test.mjs test/doctor/*.test.mjs test/jobs/*.test.mjs test/pipeline/*.test.mjs test/runtime/*.test.mjs test/server/*.test.mjs"
   },
   "engines": {
     "node": ">=22.5.0"

@@ -1,5 +1,8 @@
 # AutoVPN Node-first Command Inventory
 
+> Historical pre-migration inventory. Do not use its commands as current
+> operating instructions; use `node-first-contract.md`.
+
 Source files inspected:
 
 - `src/vpn_automation/cli.py`

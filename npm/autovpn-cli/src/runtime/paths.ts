@@ -6,8 +6,16 @@ export function resolveRuntimeRoot(candidate: string): string {
   const resolved = fs.existsSync(absolute) ? fs.realpathSync(absolute) : absolute;
   let current = fs.existsSync(resolved) && fs.statSync(resolved).isFile() ? path.dirname(resolved) : resolved;
   while (true) {
-    if (fs.existsSync(path.join(current, 'pyproject.toml'))) {
-      return current;
+    const packagePath = path.join(current, 'package.json');
+    if (fs.existsSync(packagePath)) {
+      try {
+        const manifest = JSON.parse(fs.readFileSync(packagePath, 'utf8')) as { name?: unknown };
+        if (manifest.name === 'vpn-subscription-automation') {
+          return current;
+        }
+      } catch {
+        // Continue walking when an unrelated package manifest is invalid.
+      }
     }
     const parent = path.dirname(current);
     if (parent === current) {

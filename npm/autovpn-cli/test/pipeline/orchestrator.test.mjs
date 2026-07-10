@@ -9,7 +9,7 @@ import { resumeNodePipeline, retryNodePipelineStage, runNodePipeline } from '../
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '../../../..');
-const fixtureDir = path.join(repoRoot, 'tests', 'fixtures', 'node-migration', 'pipeline', 'orchestrator');
+const fixtureDir = path.join(repoRoot, 'npm', 'autovpn-cli', 'test', 'fixtures', 'node-migration', 'pipeline', 'orchestrator');
 
 function vmessLink(name, address) {
   return `vmess://${Buffer.from(JSON.stringify({
@@ -31,6 +31,21 @@ function vmessLink(name, address) {
 
 function vmessName(link) {
   return JSON.parse(Buffer.from(link.replace(/^vmess:\/\//, ''), 'base64url').toString('utf8')).ps;
+}
+
+function streamingBody(byteLength) {
+  let sent = false;
+  return {
+    getReader: () => ({
+      read: async () => {
+        if (sent) return { done: true, value: undefined };
+        sent = true;
+        return { done: false, value: new Uint8Array(byteLength) };
+      },
+      cancel: async () => {},
+      releaseLock: () => {}
+    })
+  };
 }
 
 async function makeProject() {
@@ -97,6 +112,55 @@ test('runNodePipeline emits compatible events and writes non-deploy artifacts', 
   assert.equal(JSON.parse(await readFile(path.join(artifactDir, 'pipeline_report.json'), 'utf8')).run_status, 'success');
 });
 
+test('runNodePipeline fails availability before postprocess when speed-qualified links are unavailable', async () => {
+  const projectRoot = await makeProject();
+  const events = [];
+  const firstLink = vmessLink('first', 'one.example');
+  let postprocessReached = false;
+
+  await assert.rejects(() => runNodePipeline({
+    projectRoot,
+    skipDeploy: true,
+    skipVerify: true,
+    output: 'jsonl'
+  }, {
+    env: {
+      VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'),
+      VPN_AUTOMATION_PROFILE_PATH: path.join(projectRoot, 'state', 'profile.toml')
+    },
+    now: () => new Date('2026-06-29T01:02:03Z'),
+    emit: (event) => events.push(event),
+    stages: {
+      extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink] }),
+      speedtestProbe: async (links) => links.map((link) => ({ link, reachable: true, latency_ms: 20, error: '' })),
+      speedtestLink: async (link) => ({ link, reachable: true, average_download_mb_s: 3, latency_ms: 20, error: '' }),
+      availability: async (results) => results.map((speedResult) => ({ ...speedResult, all_passed: false, provider_results: {} })),
+      countryLookup: () => {
+        postprocessReached = true;
+        return 'US';
+      },
+      obfuscate: async () => {
+        postprocessReached = true;
+        throw new Error('obfuscate must not run');
+      },
+      deploy: async () => {
+        postprocessReached = true;
+        throw new Error('deploy must not run');
+      }
+    }
+  }), /No links passed availability/);
+
+  const artifactDir = events.find((event) => event.type === 'run_started').artifact_dir;
+  const report = JSON.parse(await readFile(path.join(artifactDir, 'pipeline_report.json'), 'utf8'));
+  assert.equal(postprocessReached, false);
+  assert.equal(report.stage_status.availability, 'failed');
+  assert.equal(report.stage_status.postprocess, 'pending');
+  assert.equal(report.run_status, 'failed');
+  assert.equal(report.error, 'Error: No links passed availability');
+  assert.deepEqual(events.slice(-2).map((event) => event.type), ['summary', 'run_failed']);
+  assert.equal(events.at(-1).error, 'Error: No links passed availability');
+});
+
 test('runNodePipeline renders with the npm template when the project has no template', async () => {
   const projectRoot = await makeProject();
   await rm(path.join(projectRoot, 'templates', 'vmess_node.js'));
@@ -156,11 +220,11 @@ test('runNodePipeline blocks deploy when final node count is below the configure
   }), /final node count 2 is below deploy minimum 10/);
 });
 
-test('runNodePipeline streams extracted links into speedtest before all sources finish', async () => {
+test('runNodePipeline globally probes and ranks streamed links before bounded downloads', async () => {
   const projectRoot = await makeProject();
   const profilePath = path.join(projectRoot, 'state', 'profile.toml');
   await writeFile(profilePath, [
-    await readFile(profilePath, 'utf8'),
+    (await readFile(profilePath, 'utf8')).replace('max_download_candidates = 0', 'max_download_candidates = 2'),
     '',
     '[sources.slow_fixture]',
     'url = "https://fixture.example/slow"',
@@ -176,8 +240,11 @@ test('runNodePipeline streams extracted links into speedtest before all sources 
   const firstLink = vmessLink('first', 'one.example');
   const duplicateFirstLink = vmessLink('duplicate-first', 'one.example');
   const secondLink = vmessLink('second', 'two.example');
-  let slowSourceFinished = false;
-  const calls = [];
+  const thirdLink = vmessLink('third', 'three.example');
+  const probed = [];
+  const downloaded = [];
+  const availabilityCalls = [];
+  const events = [];
 
   const result = await runNodePipeline({
     projectRoot,
@@ -190,33 +257,130 @@ test('runNodePipeline streams extracted links into speedtest before all sources 
       VPN_AUTOMATION_PROFILE_PATH: profilePath
     },
     now: () => new Date('2026-06-29T01:02:03Z'),
+    emit: (event) => events.push(event),
     stages: {
       extract: async ({ source_name }, stream) => {
         if (source_name === 'fixture') {
           await stream?.onLinks?.([firstLink, duplicateFirstLink]);
           return { source_name, requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink, duplicateFirstLink] };
         }
-        await new Promise((resolve) => setTimeout(resolve, 60));
-        slowSourceFinished = true;
-        await stream?.onLinks?.([secondLink]);
-        return { source_name, requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [secondLink] };
+        await stream?.onLinks?.([secondLink, thirdLink]);
+        return { source_name, requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [secondLink, thirdLink] };
       },
       speedtest: async () => {
         throw new Error('batch speedtest must not run when streaming is available');
       },
-      speedtestLink: async (link) => {
-        calls.push({ stage: 'speedtest', name: vmessName(link), slowSourceFinished });
-        return { link, reachable: true, average_download_mb_s: 3, latency_ms: 20, error: '' };
+      speedtestProbe: async (links) => {
+        probed.push(...links);
+        return links.map((link) => ({
+          link,
+          reachable: true,
+          latency_ms: link === firstLink ? 30 : link === secondLink ? 10 : 20,
+          error: ''
+        }));
       },
-      availability: async (results) => results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} })),
+      speedtestLink: async (link) => {
+        downloaded.push(link);
+        return link === thirdLink
+          ? { link, reachable: false, average_download_mb_s: 0, latency_ms: 0, error: 'all downloads failed' }
+          : { link, reachable: true, average_download_mb_s: 3, latency_ms: 0, error: '' };
+      },
+      availability: async (results) => {
+        availabilityCalls.push(...results.map((result) => result.link));
+        return results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} }));
+      },
       countryLookup: () => 'US',
       obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { main_module: '_worker.js', modules: [] } })
     }
   });
 
   assert.equal(result.run_status, 'success');
-  assert.deepEqual(calls.map((call) => call.name), ['first', 'second']);
-  assert.equal(calls[0].slowSourceFinished, false);
+  assert.deepEqual(probed.map(vmessName), ['first', 'second', 'third']);
+  assert.deepEqual(downloaded.map(vmessName), ['second', 'third']);
+  assert.deepEqual(availabilityCalls.map(vmessName), ['second']);
+  assert.equal(downloaded.includes(firstLink), false);
+  const selected = events.find((event) => event.type === 'speedtest_selected');
+  assert.deepEqual({ reachable_count: selected.reachable_count, candidate_count: selected.candidate_count }, {
+    reachable_count: 3,
+    candidate_count: 2
+  });
+  assert.equal(events.filter((event) => event.type === 'speedtest_probe_result').length, 3);
+});
+
+test('runNodePipeline keeps unlimited candidates associated across events and artifacts', async () => {
+  const projectRoot = await makeProject();
+  const links = [
+    vmessLink('first', 'one.example'),
+    vmessLink('second', 'two.example'),
+    vmessLink('third', 'three.example')
+  ];
+  const events = [];
+  const result = await runNodePipeline({ projectRoot, skipDeploy: true, skipVerify: true, output: 'jsonl' }, {
+    env: {
+      VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'),
+      VPN_AUTOMATION_PROFILE_PATH: path.join(projectRoot, 'state', 'profile.toml')
+    },
+    now: () => new Date('2026-06-29T01:02:03Z'),
+    emit: (event) => events.push(event),
+    stages: {
+      extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links }),
+      speedtestProbe: async (input) => input.map((link, index) => ({ link, reachable: true, latency_ms: [30, 10, 20][index], error: '' })),
+      speedtestLink: async (link) => ({ link, reachable: true, average_download_mb_s: 3, latency_ms: 0, error: '' }),
+      availability: async (results) => results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} })),
+      countryLookup: () => 'US',
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
+    }
+  });
+
+  const ranked = [links[1], links[2], links[0]];
+  const selected = events.find((event) => event.type === 'speedtest_selected');
+  const resultEvents = events.filter((event) => event.type === 'speedtest_result');
+  const report = JSON.parse(await readFile(path.join(result.artifact_dir, 'vpn_node_speedtest_report.json'), 'utf8'));
+  assert.equal(selected.candidate_count, 3);
+  assert.deepEqual(resultEvents.map((event) => event.link), ranked);
+  assert.deepEqual(report.map((entry) => entry.link), ranked);
+  assert.deepEqual((await readFile(path.join(result.artifact_dir, 'vpn_node_speedtest.txt'), 'utf8')).trim().split(/\n/), ranked);
+  assert.equal(events.at(-1).type, 'summary');
+  assert.equal(events.some((event) => event.type === 'run_failed'), false);
+});
+
+test('runNodePipeline drains sibling speedtest workers before terminal failure events', async () => {
+  const projectRoot = await makeProject();
+  const profilePath = path.join(projectRoot, 'state', 'profile.toml');
+  await writeFile(profilePath, (await readFile(profilePath, 'utf8')).replace('concurrency = 1', 'concurrency = 2'), 'utf8');
+  const firstLink = vmessLink('first', 'one.example');
+  const secondLink = vmessLink('second', 'two.example');
+  const events = [];
+  let delayedResourceClosed = false;
+
+  await assert.rejects(() => runNodePipeline({ projectRoot, skipDeploy: true, skipVerify: true, output: 'jsonl' }, {
+    env: {
+      VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'),
+      VPN_AUTOMATION_PROFILE_PATH: profilePath
+    },
+    now: () => new Date('2026-06-29T01:02:03Z'),
+    emit: (event) => events.push(event),
+    stages: {
+      extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink, secondLink] }),
+      speedtestProbe: async (links) => links.map((link, index) => ({ link, reachable: true, latency_ms: 10 + index, error: '' })),
+      speedtestLink: async (link) => {
+        if (link === firstLink) {
+          await new Promise((resolve) => setTimeout(resolve, 5));
+          throw new Error('first candidate failed');
+        }
+        try {
+          await new Promise((resolve) => setTimeout(resolve, 40));
+          return { link, reachable: true, average_download_mb_s: 3, latency_ms: 0, error: '' };
+        } finally {
+          delayedResourceClosed = true;
+        }
+      }
+    }
+  }), /first candidate failed/);
+
+  assert.equal(delayedResourceClosed, true);
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  assert.equal(events.at(-1).type, 'run_failed');
 });
 
 test('runNodePipeline forwards native speedtest progress events to the job log', async () => {
@@ -235,7 +399,7 @@ test('runNodePipeline forwards native speedtest progress events to the job log',
       return { ok: true, status: 204, arrayBuffer: async () => new ArrayBuffer(0) };
     }
     if (String(url) === 'https://speed.example/10mb') {
-      return { ok: true, status: 200, arrayBuffer: async () => new Uint8Array(5_000_000).buffer };
+      return { ok: true, status: 200, body: streamingBody(5_000_000) };
     }
     throw new Error(`unexpected fetch URL ${url}`);
   };
@@ -270,18 +434,14 @@ test('runNodePipeline forwards native speedtest progress events to the job log',
   assert.ok(events.some((event) => event.type === 'speedtest_result' && event.link === firstLink));
 });
 
-test('runNodePipeline persists streamed availability results before all speedtests finish', async () => {
+test('runNodePipeline starts availability only after selected speedtests finish', async () => {
   const projectRoot = await makeProject();
-  const events = [];
   const firstLink = vmessLink('first', 'one.example');
   const secondLink = vmessLink('second', 'two.example');
-  let releaseSecondSpeedtest;
-  let firstAvailabilityEvent;
-  const firstAvailabilitySeen = new Promise((resolve) => {
-    firstAvailabilityEvent = resolve;
-  });
+  let selectedSpeedtestsFinished = 0;
+  let availabilityObservedCompleted = 0;
 
-  const runPromise = runNodePipeline({
+  await runNodePipeline({
     projectRoot,
     skipDeploy: true,
     skipVerify: true,
@@ -292,12 +452,6 @@ test('runNodePipeline persists streamed availability results before all speedtes
       VPN_AUTOMATION_PROFILE_PATH: path.join(projectRoot, 'state', 'profile.toml')
     },
     now: () => new Date('2026-06-29T01:02:03Z'),
-    emit: (event) => {
-      events.push(event);
-      if (event.type === 'availability_link_result' && event.link === firstLink) {
-        firstAvailabilityEvent(event);
-      }
-    },
     stages: {
       extract: async () => ({
         source_name: 'fixture',
@@ -306,27 +460,23 @@ test('runNodePipeline persists streamed availability results before all speedtes
         failed_iterations: 0,
         links: [firstLink, secondLink]
       }),
+      speedtestProbe: async (links) => links.map((link, index) => ({ link, reachable: true, latency_ms: 10 + index, error: '' })),
       speedtestLink: async (link) => {
-        if (link === secondLink) {
-          await new Promise((resolve) => {
-            releaseSecondSpeedtest = resolve;
-          });
-        }
+        await new Promise((resolve) => setTimeout(resolve, link === firstLink ? 5 : 10));
+        selectedSpeedtestsFinished += 1;
         return { link, reachable: true, average_download_mb_s: 3, latency_ms: 20, error: '' };
       },
-      availability: async (results) => results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} })),
+      availability: async (results) => {
+        availabilityObservedCompleted = selectedSpeedtestsFinished;
+        return results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} }));
+      },
       countryLookup: () => 'US',
       obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
     }
   });
 
-  await firstAvailabilitySeen;
-  const artifactDir = events.find((event) => event.type === 'run_started').artifact_dir;
-  assert.deepEqual((await readFile(path.join(artifactDir, 'vpn_node_availability.txt'), 'utf8')).trim().split(/\n/), [firstLink]);
-  assert.deepEqual(JSON.parse(await readFile(path.join(artifactDir, 'vpn_node_availability_report.json'), 'utf8')).map((result) => result.link), [firstLink]);
-
-  releaseSecondSpeedtest();
-  await runPromise;
+  assert.equal(selectedSpeedtestsFinished, 2);
+  assert.equal(availabilityObservedCompleted, 2);
 });
 
 test('runNodePipeline fails fast when no links pass speedtest', async () => {
@@ -1030,6 +1180,66 @@ test('retryNodePipelineStage passes only speedtest winners into availability whe
   assert.deepEqual(availabilityInputs, [[firstLink]]);
 });
 
+test('retryNodePipelineStage emits one final probe event per retried node', async () => {
+  const projectRoot = await makeProject();
+  const firstLink = vmessLink('first', 'one.example');
+  const secondLink = vmessLink('second', 'two.example');
+  const runtimeRoot = path.join(projectRoot, '.runtime');
+  const profilePath = path.join(projectRoot, 'state', 'profile.toml');
+  const env = {
+    VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot,
+    VPN_AUTOMATION_PROFILE_PATH: profilePath,
+    AUTOVPN_SPEEDTEST_RUNTIME: 'direct'
+  };
+  await writeFile(profilePath, (await readFile(profilePath, 'utf8')).replace('min_download_mb_s = 1', 'min_download_mb_s = 0.5'), 'utf8');
+  const source = await runNodePipeline({
+    projectRoot,
+    skipDeploy: true,
+    skipVerify: true,
+    output: 'jsonl'
+  }, {
+    env,
+    now: () => new Date('2026-06-29T01:02:03Z'),
+    stages: {
+      extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink, secondLink] }),
+      speedtest: async (links) => links.map((link) => ({ link, reachable: true, average_download_mb_s: 3, latency_ms: 20, error: '' })),
+      availability: async (results) => results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} })),
+      countryLookup: () => 'US',
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
+    }
+  });
+  const events = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => String(url).includes('generate_204')
+    ? { ok: true, status: 204, arrayBuffer: async () => new ArrayBuffer(0) }
+    : { ok: true, status: 200, body: streamingBody(5_000_000) };
+  try {
+    await retryNodePipelineStage({
+      projectRoot,
+      artifactDir: source.artifact_dir,
+      stage: 'speedtest',
+      output: 'jsonl'
+    }, {
+      env,
+      now: () => new Date('2026-06-29T01:02:04Z'),
+      emit: (event) => events.push(event),
+      stages: {
+        availability: async (results) => results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} })),
+        countryLookup: () => 'US',
+        obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } }),
+        deploy: async () => ({ returncode: 0, stdout: '', stderr: '', attempts: [] }),
+        verify: async () => ({ pages_domain_ok: true, secret_ok: true, subscription_ok: true })
+      }
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  const probeEvents = events.filter((event) => event.type === 'speedtest_probe_result');
+  assert.equal(probeEvents.length, 2);
+  assert.deepEqual(probeEvents.map((event) => event.link), [firstLink, secondLink]);
+});
+
 test('retryNodePipelineStage postprocesses only availability winners', async () => {
   const projectRoot = await makeProject();
   const firstLink = vmessLink('first', 'one.example');
@@ -1206,7 +1416,7 @@ test('resumeNodePipeline continues pipeline sessions in the original artifact', 
     stages: {
       extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink, secondLink] }),
       speedtest: async (links) => links.map((link, index) => ({ link, reachable: true, average_download_mb_s: index === 0 ? 2 : 5, latency_ms: 20, error: '' })),
-      availability: async () => [],
+      availability: async (results) => results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} })),
       countryLookup: () => 'US',
       obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
     }
@@ -1276,7 +1486,7 @@ test('resumeNodePipeline emits failed summary when restored speedtest results ar
     stages: {
       extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink] }),
       speedtest: async (links) => links.map((link) => ({ link, reachable: true, average_download_mb_s: 3, latency_ms: 20, error: '' })),
-      availability: async () => [],
+      availability: async (results) => results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} })),
       countryLookup: () => 'US',
       obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
     }
@@ -1348,7 +1558,7 @@ test('resumeNodePipeline restores Python-compatible speedtest events when report
     stages: {
       extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink, secondLink] }),
       speedtest: async (links) => links.map((link, index) => ({ link, reachable: true, average_download_mb_s: index === 0 ? 2 : 5, latency_ms: 20, error: '' })),
-      availability: async () => [],
+      availability: async (results) => results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} })),
       countryLookup: () => 'US',
       obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
     }
@@ -1413,7 +1623,7 @@ test('resumeNodePipeline resumes speedtest sessions from partial event logs', as
     stages: {
       extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink, secondLink, thirdLink] }),
       speedtest: async (links) => links.map((link) => ({ link, reachable: true, average_download_mb_s: 1, latency_ms: 20, error: '' })),
-      availability: async () => [],
+      availability: async (results) => results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} })),
       countryLookup: () => 'US',
       obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
     }
@@ -1494,7 +1704,7 @@ test('resumeNodePipeline reads speedtest resume state from session log when outp
     stages: {
       extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink, secondLink] }),
       speedtest: async (links) => links.map((link) => ({ link, reachable: true, average_download_mb_s: 1, latency_ms: 20, error: '' })),
-      availability: async () => [],
+      availability: async (results) => results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} })),
       countryLookup: () => 'US',
       obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
     }
@@ -1563,7 +1773,7 @@ test('resumeNodePipeline rejects explicit direct runtime for native speedtest re
     stages: {
       extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink] }),
       speedtest: async (links) => links.map((link) => ({ link, reachable: true, average_download_mb_s: 1, latency_ms: 20, error: '' })),
-      availability: async () => [],
+      availability: async (results) => results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} })),
       countryLookup: () => 'US',
       obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
     }
@@ -1608,7 +1818,7 @@ test('resumeNodePipeline rejects partial speedtest stage injection with explicit
     stages: {
       extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink] }),
       speedtest: async (links) => links.map((link) => ({ link, reachable: true, average_download_mb_s: 1, latency_ms: 20, error: '' })),
-      availability: async () => [],
+      availability: async (results) => results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} })),
       countryLookup: () => 'US',
       obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
     }
@@ -1657,7 +1867,7 @@ test('resumeNodePipeline emits concurrent speedtest results as each link complet
     stages: {
       extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink, secondLink] }),
       speedtest: async (links) => links.map((link) => ({ link, reachable: true, average_download_mb_s: 1, latency_ms: 20, error: '' })),
-      availability: async () => [],
+      availability: async (results) => results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} })),
       countryLookup: () => 'US',
       obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
     }
@@ -1736,7 +1946,7 @@ test('resumeNodePipeline marks speedtest failed when resumed results do not pass
     stages: {
       extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink] }),
       speedtest: async (links) => links.map((link) => ({ link, reachable: true, average_download_mb_s: 1, latency_ms: 20, error: '' })),
-      availability: async () => [],
+      availability: async (results) => results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} })),
       countryLookup: () => 'US',
       obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
     }

@@ -11,14 +11,17 @@
   "main": "electron/main.js",
   "type": "module",
   "scripts": {
+    "build:autovpn-cli": "npm run build --prefix npm/autovpn-cli",
+    "preelectron:dev": "npm run build:autovpn-cli",
     "electron:dev": "electron .",
+    "pretest:electron": "npm run build:autovpn-cli",
     "test:electron": "node --test --test-concurrency=1 electron/tests/*.test.mjs",
-    "test:all": "./scripts/run_pytest.sh tests -v && npm run test:electron",
+    "test:all": "npm test --prefix npm/autovpn-cli && npm run test:electron",
     "package:electron": "node electron/build/package.mjs"
   },
   "devDependencies": {
-    "electron": "^37.2.0",
-    "electron-builder": "^26.0.12"
+    "electron": "37.10.3",
+    "electron-builder": "26.8.1"
   },
   "build": {
     "appId": "com.swimmingliu.vpnautomation",
@@ -26,9 +29,7 @@
     "files": [
       "electron/**/*",
       "!electron/tests/**/*",
-      "src/**/*",
-      "templates/**/*",
-      "pyproject.toml"
+      "templates/**/*"
     ],
     "directories": {
       "output": "dist-electron"
@@ -79,7 +80,8 @@
     }
   },
   "dependencies": {
-    "playwright": "^1.59.1",
-    "qrcode": "^1.5.4"
+    "@iarna/toml": "2.2.5",
+    "playwright": "1.59.1",
+    "qrcode": "1.5.4"
   }
 }

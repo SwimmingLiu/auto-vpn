@@ -1,16 +1,14 @@
 import assert from 'node:assert/strict';
-import { EventEmitter } from 'node:events';
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
-import os from 'node:os';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { MAIN_DATA_PLACEHOLDER, renderMainDataWithBackend, replaceMainData, selectPipelineStageBackend } from '../../dist/pipeline/render.js';
+import { MAIN_DATA_PLACEHOLDER, renderMainDataWithBackend, replaceMainData } from '../../dist/pipeline/render.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '../../../..');
-const fixtureDir = path.join(repoRoot, 'tests', 'fixtures', 'node-migration', 'pipeline', 'render');
+const fixtureDir = path.join(repoRoot, 'npm', 'autovpn-cli', 'test', 'fixtures', 'node-migration', 'pipeline', 'render');
 
 test('replaceMainData replaces exactly one placeholder with newline-joined links', () => {
   const template = `const MainData = \`${MAIN_DATA_PLACEHOLDER}\`;\nconst footer = 'keep';`;
@@ -36,84 +34,7 @@ test('render fixture output matches Python golden output', async () => {
   assert.equal(replaceMainData(input.template, input.links), expected);
 });
 
-test('render backend selection always uses the Node engine', async () => {
-  assert.equal(selectPipelineStageBackend('render', {}), 'node');
-  assert.equal(selectPipelineStageBackend('render', { AUTOVPN_PIPELINE_BACKEND: ' HYBRID ' }), 'node');
-  assert.equal(selectPipelineStageBackend('render', { AUTOVPN_PIPELINE_BACKEND: ' PYTHON ' }), 'node');
-  assert.equal(selectPipelineStageBackend('render', { AUTOVPN_STAGE_BACKEND_RENDER: ' python ' }), 'node');
-  assert.equal(selectPipelineStageBackend('render', { AUTOVPN_PIPELINE_BACKEND: 'python', AUTOVPN_STAGE_BACKEND_RENDER: '' }), 'node');
-
-  const pythonCalls = [];
-  const fallback = async (input) => {
-    pythonCalls.push(input);
-    return { rendered_source: 'python-result' };
-  };
-
+test('render backend API runs the Node implementation', async () => {
   const input = { template: `${MAIN_DATA_PLACEHOLDER}`, links: ['vmess://a'] };
-  assert.deepEqual(await renderMainDataWithBackend(input, { env: {}, pythonRender: fallback }), { rendered_source: 'vmess://a' });
-  assert.deepEqual(await renderMainDataWithBackend(input, {
-    env: { AUTOVPN_STAGE_BACKEND_RENDER: 'python' },
-    pythonRender: fallback
-  }), { rendered_source: 'vmess://a' });
-  assert.deepEqual(pythonCalls, []);
-});
-
-test('render ignores legacy Python rollback env without spawning Python', async () => {
-  const spawns = [];
-  const input = { template: `const MainData = \`${MAIN_DATA_PLACEHOLDER}\`;`, links: ['vmess://a'] };
-  const result = await renderMainDataWithBackend(input, {
-    env: { AUTOVPN_STAGE_BACKEND_RENDER: 'python' },
-    resolvePythonCli: () => ({ command: '/opt/autovpn/.venv/bin/autovpn', args: [] }),
-    spawn: (command, args, options) => {
-      spawns.push({ command, args, options });
-      const child = new EventEmitter();
-      child.stdout = new EventEmitter();
-      child.stderr = new EventEmitter();
-      child.stdin = {
-        write(chunk) {
-          this.input = String(chunk);
-        },
-        end() {
-          const helperInput = JSON.parse(this.input);
-          child.stdout.emit('data', `${JSON.stringify({ rendered_source: helperInput.template.replace(MAIN_DATA_PLACEHOLDER, helperInput.links.join('\\n')) })}\n`);
-          child.emit('close', 0, null);
-        }
-      };
-      return child;
-    }
-  });
-
-  assert.deepEqual(result, { rendered_source: 'const MainData = `vmess://a`;' });
-  assert.equal(spawns.length, 0);
-});
-
-test('render ignores legacy Python rollback env and does not merge dotenv for a Python spawn', async () => {
-  const projectRoot = await mkdtemp(path.join(os.tmpdir(), 'autovpn-render-env-'));
-  await mkdir(projectRoot, { recursive: true });
-  await writeFile(path.join(projectRoot, '.env'), 'EXTRA_FROM_DOTENV=1\nPATH=/from-dotenv\n', 'utf8');
-  const spawns = [];
-  const input = { template: `const MainData = \`${MAIN_DATA_PLACEHOLDER}\`;`, links: ['vmess://a'] };
-  await renderMainDataWithBackend(input, {
-    cwd: projectRoot,
-    env: { AUTOVPN_STAGE_BACKEND_RENDER: 'python', PATH: '/explicit-path' },
-    resolvePythonCli: () => ({ command: '/opt/autovpn/.venv/bin/autovpn', args: [] }),
-    spawn: (command, args, options) => {
-      spawns.push({ command, args, options });
-      const child = new EventEmitter();
-      child.stdout = new EventEmitter();
-      child.stderr = new EventEmitter();
-      child.stdin = {
-        write(chunk) {
-          this.input = String(chunk);
-        },
-        end() {
-          child.stdout.emit('data', '{"rendered_source":"ok"}\n');
-          child.emit('close', 0, null);
-        }
-      };
-      return child;
-    }
-  });
-
-  assert.equal(spawns.length, 0);
+  assert.deepEqual(await renderMainDataWithBackend(input), { rendered_source: 'vmess://a' });
 });

@@ -2,15 +2,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import TOML from '@iarna/toml';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const RUNTIME_PYTHON_DEPENDENCIES = [
-  'cryptography>=45.0.0,<47',
-  'python-dotenv>=1.0.1',
-  'requests>=2.32.0',
-  'tomlkit>=0.13.2'
-];
 const RUNTIME_NODE_DEPENDENCIES = [
   'playwright@1.59.1'
 ];
@@ -39,42 +34,61 @@ export function resolveRuntimePaths(projectRoot) {
   };
 }
 
+export const BUNDLED_PROFILE_SENSITIVE_SOURCE_KEYS = Object.freeze(['url', 'key']);
+export const BUNDLED_PROFILE_SENSITIVE_DEPLOY_KEYS = Object.freeze([
+  'subscription_url',
+  'verify_subscription_url',
+  'secret_query',
+  'account_id',
+  'cloudflare_api_token',
+  'cloudflare_global_key',
+  'cloudflare_email',
+  'pages_secret_admin'
+]);
+
 export function sanitizeBundledProfileToml(payload) {
   const normalizedPayload = payload.replaceAll('VPN Subscription Automation', 'AutoVPN');
-  const availabilityBlock = `[availability_targets]
-[availability_targets.gemini]
-url = "https://gemini.google.com"
-enabled = true
-
-[availability_targets.chatgpt_ios]
-url = "https://ios.chat.openai.com/"
-enabled = true
-
-[availability_targets.chatgpt_web]
-url = "https://api.openai.com/compliance/cookie_requirements"
-enabled = true
-
-[availability_targets.claude]
-url = "https://claude.ai/cdn-cgi/trace"
-enabled = true`;
-  const availabilityStart = normalizedPayload.indexOf('[availability_targets]');
-  if (availabilityStart === -1) {
-    return `${normalizedPayload.trimEnd()}\n\n${availabilityBlock}\n`;
+  const profile = TOML.parse(normalizedPayload);
+  for (const source of Object.values(profile.sources ?? {})) {
+    if (!source || typeof source !== 'object' || Array.isArray(source)) {
+      continue;
+    }
+    for (const key of BUNDLED_PROFILE_SENSITIVE_SOURCE_KEYS) {
+      if (Object.prototype.hasOwnProperty.call(source, key)) {
+        source[key] = '';
+      }
+    }
   }
-
-  const afterAvailability = normalizedPayload.slice(availabilityStart + '[availability_targets]'.length);
-  const nextTopLevelMatch = afterAvailability.match(/\n\[[^\].\n]+]/);
-  if (nextTopLevelMatch?.index === undefined) {
-    return `${normalizedPayload.slice(0, availabilityStart).trimEnd()}\n\n${availabilityBlock}\n`;
+  if (profile.deploy && typeof profile.deploy === 'object' && !Array.isArray(profile.deploy)) {
+    for (const key of BUNDLED_PROFILE_SENSITIVE_DEPLOY_KEYS) {
+      if (Object.prototype.hasOwnProperty.call(profile.deploy, key)) {
+        profile.deploy[key] = '';
+      }
+    }
   }
-
-  const availabilityEnd = availabilityStart + '[availability_targets]'.length + nextTopLevelMatch.index;
-  return `${normalizedPayload.slice(0, availabilityStart).trimEnd()}\n\n${availabilityBlock}\n\n${normalizedPayload.slice(availabilityEnd).trimStart()}`;
+  profile.availability_targets = {
+    gemini: { url: 'https://gemini.google.com', enabled: true },
+    chatgpt_ios: { url: 'https://ios.chat.openai.com/', enabled: true },
+    chatgpt_web: { url: 'https://api.openai.com/compliance/cookie_requirements', enabled: true },
+    claude: { url: 'https://claude.ai/cdn-cgi/trace', enabled: true }
+  };
+  const comment = normalizedPayload.includes('# AutoVPN runtime profile') ? '# AutoVPN runtime profile\n' : '';
+  return `${comment}${TOML.stringify(profile)}`;
 }
 
 function stageBundledProfile(sourcePath, bundledSeedPath) {
   const payload = fs.readFileSync(sourcePath, 'utf8');
   fs.writeFileSync(bundledSeedPath, sanitizeBundledProfileToml(payload), 'utf8');
+}
+
+export function stageBundledProfileForPackaging(projectRoot) {
+  const { runtimeDir, defaultSeedPath, bundledSeedPath } = resolveRuntimePaths(projectRoot);
+  fs.mkdirSync(runtimeDir, { recursive: true });
+  if (!fs.existsSync(defaultSeedPath)) {
+    return undefined;
+  }
+  stageBundledProfile(defaultSeedPath, bundledSeedPath);
+  return bundledSeedPath;
 }
 
 export function resolveShareWorkerPaths(projectRoot) {
@@ -93,15 +107,19 @@ export function resolveShareWorkerPaths(projectRoot) {
   };
 }
 
-export function resolvePythonVendorRuntimePaths(projectRoot) {
-  return {
-    vendorDir: path.join(projectRoot, 'electron', 'runtime', 'python-vendor')
-  };
-}
-
 export function resolveNodeVendorRuntimePaths(projectRoot) {
   return {
     vendorDir: path.join(projectRoot, 'electron', 'runtime', 'node-vendor')
+  };
+}
+
+export function resolveAutoVpnCliRuntimePaths(projectRoot) {
+  const sourceRoot = path.join(projectRoot, 'npm', 'autovpn-cli');
+  const runtimeRoot = path.join(projectRoot, 'electron', 'runtime', 'autovpn-cli');
+  return {
+    sourceRoot,
+    runtimeRoot,
+    runtimeEntry: path.join(runtimeRoot, 'bin', 'autovpn.mjs')
   };
 }
 
@@ -165,90 +183,6 @@ export function shouldBundlePlaywrightBrowserRuntime(env = process.env) {
   return ['1', 'true', 'yes', 'on'].includes(value);
 }
 
-function canRunCommand(command) {
-  const result = spawnSync(command, ['-c', 'pass'], { stdio: 'ignore' });
-  return !result.error && result.status === 0;
-}
-
-export function selectRunnablePythonCandidate(candidates, canRun = canRunCommand) {
-  for (const candidate of candidates) {
-    if (candidate.startsWith('/') && !fs.existsSync(candidate)) {
-      continue;
-    }
-    if (!candidate.startsWith('/') && !canRun(candidate)) {
-      continue;
-    }
-    return candidate;
-  }
-  throw new Error(`No Python runtime found in candidates: ${candidates.join(', ')}`);
-}
-
-function selectPythonForVendorInstall(projectRoot) {
-  const candidates = [
-    path.join(projectRoot, '.venv', 'bin', 'python'),
-    path.join(projectRoot, '.venv', 'bin', 'python3'),
-    '/opt/homebrew/bin/python3.14',
-    '/opt/homebrew/bin/python3.12',
-    '/usr/local/bin/python3.14',
-    '/usr/local/bin/python3.12',
-    'python3.12',
-    'python3',
-    'python'
-  ];
-
-  return selectRunnablePythonCandidate(candidates);
-}
-
-function resolvePythonVendorPlatformTag(platform, arch) {
-  const normalizedPlatform = normalizePackagePlatform(platform);
-  const normalizedArch = normalizePackageArch(arch);
-  if (normalizedPlatform === 'mac') {
-    if (normalizedArch === 'x64') return 'macosx_10_13_x86_64';
-    if (normalizedArch === 'arm64') return 'macosx_11_0_arm64';
-  }
-  if (normalizedPlatform === 'linux') {
-    if (normalizedArch === 'x64') return 'manylinux2014_x86_64';
-    if (normalizedArch === 'arm64') return 'manylinux2014_aarch64';
-  }
-  if (normalizedPlatform === 'win') {
-    if (normalizedArch === 'x64') return 'win_amd64';
-    if (normalizedArch === 'arm64') return 'win_arm64';
-  }
-  throw new Error(`Unsupported Python vendor target: ${platform}-${arch}`);
-}
-
-export function buildPythonVendorInstallArgs(vendorDir, target = {}) {
-  const platform = target.platform ?? buildPackagePlatformList()[0];
-  const arch = target.arch ?? buildPackageArchList()[0];
-  const platformTag = resolvePythonVendorPlatformTag(platform, arch);
-  const args = [
-    '-m',
-    'pip',
-    'install',
-    '--disable-pip-version-check',
-    '--only-binary',
-    ':all:',
-    '--target',
-    vendorDir
-  ];
-  if (platformTag) {
-    args.push(
-      '--platform',
-      platformTag,
-      '--implementation',
-      'cp',
-      '--python-version',
-      '3.12',
-      '--abi',
-      'cp312'
-    );
-  }
-  args.push(
-    ...RUNTIME_PYTHON_DEPENDENCIES
-  );
-  return args;
-}
-
 export function buildNodeVendorInstallArgs(vendorDir) {
   return [
     'install',
@@ -257,6 +191,16 @@ export function buildNodeVendorInstallArgs(vendorDir) {
     '--prefix',
     vendorDir,
     ...RUNTIME_NODE_DEPENDENCIES
+  ];
+}
+
+export function buildAutoVpnCliProductionInstallArgs(runtimeRoot) {
+  return [
+    'ci',
+    '--omit=dev',
+    '--ignore-scripts',
+    '--prefix',
+    runtimeRoot
   ];
 }
 
@@ -508,24 +452,36 @@ export function stageShareWorkerRuntime(projectRoot) {
   return runtimePath;
 }
 
-export function stagePythonVendorRuntime(projectRoot, target = {}) {
-  const { vendorDir } = resolvePythonVendorRuntimePaths(projectRoot);
-  logPackageStage('Installing Python runtime wheels');
-  ensureCleanDir(vendorDir);
-  runOrThrow(
-    selectPythonForVendorInstall(projectRoot),
-    buildPythonVendorInstallArgs(vendorDir, target),
-    { cwd: projectRoot, timeout: 300000 }
-  );
-  return vendorDir;
-}
-
 export function stageNodeVendorRuntime(projectRoot) {
   const { vendorDir } = resolveNodeVendorRuntimePaths(projectRoot);
   logPackageStage('Installing Node runtime dependencies');
   ensureCleanDir(vendorDir);
   runOrThrow('npm', buildNodeVendorInstallArgs(vendorDir), { cwd: projectRoot, timeout: 300000 });
   return vendorDir;
+}
+
+export function stageAutoVpnCliRuntime(projectRoot, options = {}) {
+  const { run = runOrThrow } = options;
+  const paths = resolveAutoVpnCliRuntimePaths(projectRoot);
+  logPackageStage('Building packaged AutoVPN CLI');
+  run('npm', ['run', 'build', '--prefix', paths.sourceRoot], {
+    cwd: projectRoot,
+    timeout: 300000
+  });
+
+  ensureCleanDir(paths.runtimeRoot);
+  for (const entry of ['bin', 'dist']) {
+    fs.cpSync(path.join(paths.sourceRoot, entry), path.join(paths.runtimeRoot, entry), { recursive: true });
+  }
+  fs.copyFileSync(path.join(paths.sourceRoot, 'package.json'), path.join(paths.runtimeRoot, 'package.json'));
+  fs.copyFileSync(path.join(paths.sourceRoot, 'package-lock.json'), path.join(paths.runtimeRoot, 'package-lock.json'));
+
+  logPackageStage('Installing packaged AutoVPN CLI production dependencies');
+  run('npm', buildAutoVpnCliProductionInstallArgs(paths.runtimeRoot), {
+    cwd: projectRoot,
+    timeout: 300000
+  });
+  return paths;
 }
 
 export function stagePlaywrightBrowserRuntime(projectRoot, options = {}) {
@@ -645,30 +601,54 @@ export function cleanElectronOutputDir(projectRoot) {
   fs.rmSync(path.join(projectRoot, 'dist-electron'), { recursive: true, force: true });
 }
 
+export function removeLegacyRuntimeArtifacts(projectRoot) {
+  const legacyVendorDir = path.join(
+    projectRoot,
+    'electron',
+    'runtime',
+    ['python', 'vendor'].join('-')
+  );
+  fs.rmSync(legacyVendorDir, { recursive: true, force: true });
+}
+
+export function cleanGeneratedRuntimeArtifacts(projectRoot, options = {}) {
+  const { bundlePlaywrightBrowser = shouldBundlePlaywrightBrowserRuntime() } = options;
+  const { runtimeDir, bundledSeedPath } = resolveRuntimePaths(projectRoot);
+  const generatedDirs = [
+    resolveAutoVpnCliRuntimePaths(projectRoot).runtimeRoot,
+    resolveNodeVendorRuntimePaths(projectRoot).vendorDir,
+    resolveShareWorkerPaths(projectRoot).runtimeDir
+  ];
+  if (!bundlePlaywrightBrowser) {
+    generatedDirs.push(resolvePlaywrightBrowserRuntimePaths(projectRoot).browserDir);
+  }
+  for (const generatedDir of generatedDirs) {
+    fs.rmSync(generatedDir, { recursive: true, force: true });
+  }
+  fs.rmSync(bundledSeedPath, { force: true });
+  removeLegacyRuntimeArtifacts(projectRoot);
+  fs.mkdirSync(runtimeDir, { recursive: true });
+}
+
 export function runPackaging(projectRoot) {
-  const { runtimeDir, defaultSeedPath, bundledSeedPath, liveProfilePath } = resolveRuntimePaths(projectRoot);
+  const { runtimeDir } = resolveRuntimePaths(projectRoot);
   const platforms = buildPackagePlatformList();
   const archs = buildPackageArchList();
+  const bundlePlaywrightBrowser = shouldBundlePlaywrightBrowserRuntime();
   logPackageStage(`Packaging platforms=${platforms.join(',')} archs=${archs.join(',')}`);
   cleanElectronOutputDir(projectRoot);
   fs.mkdirSync(runtimeDir, { recursive: true });
+  cleanGeneratedRuntimeArtifacts(projectRoot, { bundlePlaywrightBrowser });
 
-  if (fs.existsSync(liveProfilePath)) {
-    logPackageStage('Bundling runtime profile from live profile');
-    stageBundledProfile(liveProfilePath, bundledSeedPath);
-  } else if (fs.existsSync(defaultSeedPath)) {
-    logPackageStage('Bundling runtime profile from default profile');
-    stageBundledProfile(defaultSeedPath, bundledSeedPath);
+  if (stageBundledProfileForPackaging(projectRoot)) {
+    logPackageStage('Bundling sanitized runtime profile from default profile');
   }
 
   logPackageStage('Staging share worker runtime');
   stageShareWorkerRuntime(projectRoot);
-  stagePythonVendorRuntime(projectRoot, {
-    platform: platforms[0],
-    arch: archs[0]
-  });
+  stageAutoVpnCliRuntime(projectRoot);
   stageNodeVendorRuntime(projectRoot);
-  if (shouldBundlePlaywrightBrowserRuntime()) {
+  if (bundlePlaywrightBrowser) {
     stagePlaywrightBrowserRuntime(projectRoot);
   } else {
     logPackageStage('Skipping bundled Playwright browser runtime');

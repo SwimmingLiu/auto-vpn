@@ -1,5 +1,8 @@
 # Release and CI Plan
 
+> Historical migration record. Use `node-first-migration-sop.md` and the current
+> workflow files for release operations.
+
 ## Decision
 
 Treat the npm wrapper as a third release artifact family:

@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import * as packageBuild from '../build/package.mjs';
 import {
   buildSvgIconRenderHtml,
   buildPackageArchList,
@@ -14,21 +16,151 @@ import {
   isPlaywrightBrowserRuntimeReady,
   resolveNodeVendorRuntimePaths,
   resolvePlaywrightBrowserRuntimePaths,
-  buildPythonVendorInstallArgs,
   cleanElectronOutputDir,
   resolveIconPaths,
   resolveLiveProfilePath,
-  resolvePythonVendorRuntimePaths,
   sanitizeBundledProfileToml,
+  stageBundledProfileForPackaging,
   resolveShareWorkerPaths,
   buildCommandSpawnOptions,
   runOrThrow,
   retryOperation,
-  selectRunnablePythonCandidate,
   shouldBundlePlaywrightBrowserRuntime,
   stagePlaywrightBrowserRuntime,
   stageShareWorkerRuntime
 } from '../build/package.mjs';
+
+test('resolveAutoVpnCliRuntimePaths stages the packaged CLI under electron runtime', () => {
+  assert.equal(typeof packageBuild.resolveAutoVpnCliRuntimePaths, 'function');
+  const paths = packageBuild.resolveAutoVpnCliRuntimePaths('/tmp/project');
+
+  assert.equal(paths.sourceRoot, '/tmp/project/npm/autovpn-cli');
+  assert.equal(paths.runtimeRoot, '/tmp/project/electron/runtime/autovpn-cli');
+  assert.equal(paths.runtimeEntry, '/tmp/project/electron/runtime/autovpn-cli/bin/autovpn.mjs');
+});
+
+test('stageAutoVpnCliRuntime builds, copies, and installs the production CLI', () => {
+  assert.equal(typeof packageBuild.stageAutoVpnCliRuntime, 'function');
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vpn-staged-cli-'));
+  const sourceRoot = path.join(projectRoot, 'npm', 'autovpn-cli');
+  for (const relativePath of ['bin/autovpn.mjs', 'dist/cli/main.js']) {
+    const filePath = path.join(sourceRoot, relativePath);
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, relativePath, 'utf-8');
+  }
+  fs.writeFileSync(path.join(sourceRoot, 'package.json'), JSON.stringify({ name: '@swimmingliu/autovpn' }), 'utf-8');
+  fs.writeFileSync(path.join(sourceRoot, 'package-lock.json'), JSON.stringify({ lockfileVersion: 3 }), 'utf-8');
+  const staleFile = path.join(projectRoot, 'electron', 'runtime', 'autovpn-cli', 'node_modules', 'stale.txt');
+  fs.mkdirSync(path.dirname(staleFile), { recursive: true });
+  fs.writeFileSync(staleFile, 'stale', 'utf-8');
+  const calls = [];
+
+  const staged = packageBuild.stageAutoVpnCliRuntime(projectRoot, {
+    run: (command, args, options) => calls.push({ command, args, options })
+  });
+
+  assert.equal(fs.readFileSync(staged.runtimeEntry, 'utf-8'), 'bin/autovpn.mjs');
+  assert.equal(fs.existsSync(path.join(staged.runtimeRoot, 'dist', 'cli', 'main.js')), true);
+  assert.equal(fs.existsSync(staleFile), false);
+  assert.deepEqual(
+    JSON.parse(fs.readFileSync(path.join(staged.runtimeRoot, 'package-lock.json'), 'utf-8')),
+    { lockfileVersion: 3 }
+  );
+  assert.deepEqual(packageBuild.buildAutoVpnCliProductionInstallArgs(staged.runtimeRoot), [
+    'ci',
+    '--omit=dev',
+    '--ignore-scripts',
+    '--prefix',
+    staged.runtimeRoot
+  ]);
+  assert.deepEqual(calls.map(({ command, args }) => ({ command, args })), [
+    { command: 'npm', args: ['run', 'build', '--prefix', sourceRoot] },
+    { command: 'npm', args: packageBuild.buildAutoVpnCliProductionInstallArgs(staged.runtimeRoot) }
+  ]);
+});
+
+test('removeLegacyRuntimeArtifacts deletes stale vendor content before packaging', () => {
+  assert.equal(typeof packageBuild.removeLegacyRuntimeArtifacts, 'function');
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vpn-stale-python-runtime-'));
+  const vendorRoot = path.join(projectRoot, 'electron', 'runtime', 'python-vendor');
+  fs.mkdirSync(vendorRoot, { recursive: true });
+  fs.writeFileSync(path.join(vendorRoot, 'dependency.py'), 'stale', 'utf-8');
+
+  packageBuild.removeLegacyRuntimeArtifacts(projectRoot);
+
+  assert.equal(fs.existsSync(vendorRoot), false);
+});
+
+test('cleanGeneratedRuntimeArtifacts removes stale generated dirs but preserves seed and share source', () => {
+  assert.equal(typeof packageBuild.cleanGeneratedRuntimeArtifacts, 'function');
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vpn-clean-runtime-'));
+  const runtimeRoot = path.join(projectRoot, 'electron', 'runtime');
+  const seedPath = path.join(runtimeRoot, 'default-profile.toml');
+  const shareSource = path.join(projectRoot, 'templates', 'share-worker', 'vpn.js');
+  for (const generatedDir of ['autovpn-cli', 'node-vendor', 'playwright-browsers', 'share-worker']) {
+    fs.mkdirSync(path.join(runtimeRoot, generatedDir), { recursive: true });
+    fs.writeFileSync(path.join(runtimeRoot, generatedDir, 'stale.txt'), 'stale', 'utf-8');
+  }
+  fs.mkdirSync(path.dirname(seedPath), { recursive: true });
+  fs.writeFileSync(seedPath, 'seed', 'utf-8');
+  fs.mkdirSync(path.dirname(shareSource), { recursive: true });
+  fs.writeFileSync(shareSource, 'source', 'utf-8');
+
+  packageBuild.cleanGeneratedRuntimeArtifacts(projectRoot, { bundlePlaywrightBrowser: false });
+
+  for (const generatedDir of ['autovpn-cli', 'node-vendor', 'playwright-browsers', 'share-worker']) {
+    assert.equal(fs.existsSync(path.join(runtimeRoot, generatedDir)), false);
+  }
+  assert.equal(fs.readFileSync(seedPath, 'utf-8'), 'seed');
+  assert.equal(fs.readFileSync(shareSource, 'utf-8'), 'source');
+});
+
+test('Electron package inputs contain only Node runtime manifests and staged CLI content', () => {
+  const packageJson = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf-8'));
+  const packageInputs = packageJson.build.files;
+  const packageSource = fs.readFileSync(path.join(process.cwd(), 'electron', 'build', 'package.mjs'), 'utf-8');
+
+  assert.ok(packageInputs.includes('electron/**/*'));
+  assert.ok(packageInputs.includes('templates/**/*'));
+  assert.equal(packageInputs.some((entry) => /(^|\/)src(\/|$)/.test(entry)), false);
+  assert.equal(packageInputs.some((entry) => /pyproject\.toml|python-vendor/i.test(entry)), false);
+  assert.doesNotMatch(packageSource, /RUNTIME_PYTHON_DEPENDENCIES|stagePythonVendorRuntime|buildPythonVendorInstallArgs/);
+  assert.match(packageSource, /removeLegacyRuntimeArtifacts\(projectRoot\)/);
+});
+
+test('staged packaged CLI executes version and profile commands', () => {
+  assert.equal(typeof packageBuild.stageAutoVpnCliRuntime, 'function');
+  const sourceProjectRoot = process.cwd();
+  const sourceCliRoot = path.join(sourceProjectRoot, 'npm', 'autovpn-cli');
+  if (!fs.existsSync(path.join(sourceCliRoot, 'dist', 'cli', 'main.js'))) {
+    const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+    const build = spawnSync(npmCommand, ['run', 'build', '--prefix', sourceCliRoot], { encoding: 'utf-8' });
+    assert.equal(build.status, 0, build.stderr || build.stdout);
+  }
+
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vpn-packaged-cli-smoke-'));
+  const testSourceRoot = path.join(projectRoot, 'npm', 'autovpn-cli');
+  fs.mkdirSync(testSourceRoot, { recursive: true });
+  for (const entry of ['bin', 'dist']) {
+    fs.cpSync(path.join(sourceCliRoot, entry), path.join(testSourceRoot, entry), { recursive: true });
+  }
+  fs.copyFileSync(path.join(sourceCliRoot, 'package.json'), path.join(testSourceRoot, 'package.json'));
+  fs.copyFileSync(path.join(sourceCliRoot, 'package-lock.json'), path.join(testSourceRoot, 'package-lock.json'));
+  const staged = packageBuild.stageAutoVpnCliRuntime(projectRoot, { run: () => {} });
+  fs.cpSync(path.join(sourceCliRoot, 'node_modules'), path.join(staged.runtimeRoot, 'node_modules'), { recursive: true });
+
+  const version = spawnSync(process.execPath, [staged.runtimeEntry, '--version'], { encoding: 'utf-8' });
+  assert.equal(version.status, 0, version.stderr || version.stdout);
+  assert.match(version.stdout, /^autovpn \d+\.\d+\.\d+\n$/);
+
+  const runtimeRoot = path.join(projectRoot, 'state');
+  const profile = spawnSync(process.execPath, [staged.runtimeEntry, 'profile', 'show', '--project-root', projectRoot], {
+    encoding: 'utf-8',
+    env: { ...process.env, VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot }
+  });
+  assert.equal(profile.status, 0, profile.stderr || profile.stdout);
+  assert.equal(JSON.parse(profile.stdout).paths.profile_path, path.join(runtimeRoot, 'profile.toml'));
+});
 
 test('resolveLiveProfilePath prefers the repo-anchor state file for worktrees', () => {
   const projectRoot = '/Users/demo/vpn-subscription-automation/.worktrees/feature-a';
@@ -102,6 +234,61 @@ project_name = "sub-links-auto"
   assert.match(sanitized, /\[availability_targets\.chatgpt_ios\]/);
   assert.match(sanitized, /\[deploy\]/);
   assert.match(sanitized, /project_name = "sub-links-auto"/);
+});
+
+test('sanitizeBundledProfileToml blanks source and deploy credentials', () => {
+  const sanitized = sanitizeBundledProfileToml(`[sources.fixture]
+url = "PRIVATE_VALUE_1"
+key = "PRIVATE_VALUE_2"
+enabled = true
+
+[deploy]
+project_name = "structural-default"
+subscription_url = "PRIVATE_VALUE_3"
+verify_subscription_url = "PRIVATE_VALUE_4"
+secret_query = "PRIVATE_VALUE_5"
+account_id = "PRIVATE_VALUE_6"
+cloudflare_api_token = "PRIVATE_VALUE_7"
+cloudflare_global_key = "PRIVATE_VALUE_8"
+cloudflare_email = "PRIVATE_VALUE_9"
+pages_secret_admin = "PRIVATE_VALUE_10"
+cloudflare_auth_mode = "api_token"
+`);
+
+  assert.doesNotMatch(sanitized, /PRIVATE_VALUE_/);
+  assert.match(sanitized, /\[sources\.fixture\]\nurl = ""\nkey = ""\nenabled = true/);
+  assert.match(sanitized, /project_name = "structural-default"/);
+  assert.match(sanitized, /cloudflare_auth_mode = "api_token"/);
+  assert.equal((sanitized.match(/= ""/g) ?? []).length, 10);
+});
+
+test('sanitizeBundledProfileToml structurally blanks multiline and inline credentials', () => {
+  const sanitized = sanitizeBundledProfileToml(`[sources]
+fixture = { url = "PRIVATE_VALUE_1", key = "PRIVATE_VALUE_2", enabled = true }
+
+[deploy]
+cloudflare_api_token = """PRIVATE_VALUE_3"""
+pages_secret_admin = "PRIVATE_VALUE_4"
+cloudflare_auth_mode = "api_token"
+`);
+
+  assert.doesNotMatch(sanitized, /PRIVATE_VALUE_/);
+  assert.match(sanitized, /cloudflare_auth_mode/);
+});
+
+test('packaging profile staging always uses the sanitized default seed', () => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vpn-packaged-profile-'));
+  const runtimeDir = path.join(projectRoot, 'electron', 'runtime');
+  fs.mkdirSync(runtimeDir, { recursive: true });
+  fs.mkdirSync(path.join(projectRoot, 'state'), { recursive: true });
+  fs.writeFileSync(path.join(runtimeDir, 'default-profile.toml'), '[sources.fixture]\nurl = "PRIVATE_VALUE_2"\nkey = "PRIVATE_VALUE_3"\n\n[deploy]\nproject_name = "default-seed"\nsecret_query = "PRIVATE_VALUE_4"\npages_secret_admin = "PRIVATE_VALUE_5"\n', 'utf8');
+  fs.writeFileSync(path.join(projectRoot, 'state', 'profile.toml'), '[deploy]\nproject_name = "live-state"\nsecret_query = "PRIVATE_VALUE_1"\n', 'utf8');
+
+  const bundledPath = stageBundledProfileForPackaging(projectRoot);
+  const bundled = fs.readFileSync(bundledPath, 'utf8');
+
+  assert.match(bundled, /project_name = "default-seed"/);
+  assert.doesNotMatch(bundled, /live-state|PRIVATE_VALUE_/);
 });
 
 test('buildSvgIconRenderHtml renders the app icon on a transparent canvas', () => {
@@ -237,66 +424,6 @@ test('buildElectronBuilderArgs only emits architecture flags supported by every 
   );
 });
 
-test('buildPythonVendorInstallArgs installs target-platform Python 3.12 wheels into vendor dir', () => {
-  assert.deepEqual(buildPythonVendorInstallArgs('/tmp/vendor', {
-    platform: 'linux',
-    arch: 'x64'
-  }), [
-    '-m',
-    'pip',
-    'install',
-    '--disable-pip-version-check',
-    '--only-binary',
-    ':all:',
-    '--target',
-    '/tmp/vendor',
-    '--platform',
-    'manylinux2014_x86_64',
-    '--implementation',
-    'cp',
-    '--python-version',
-    '3.12',
-    '--abi',
-    'cp312',
-    'cryptography>=45.0.0,<47',
-    'python-dotenv>=1.0.1',
-    'requests>=2.32.0',
-    'tomlkit>=0.13.2'
-  ]);
-
-  assert.deepEqual(buildPythonVendorInstallArgs('/tmp/vendor', {
-    platform: 'win',
-    arch: 'arm64'
-  }), [
-    '-m',
-    'pip',
-    'install',
-    '--disable-pip-version-check',
-    '--only-binary',
-    ':all:',
-    '--target',
-    '/tmp/vendor',
-    '--platform',
-    'win_arm64',
-    '--implementation',
-    'cp',
-    '--python-version',
-    '3.12',
-    '--abi',
-    'cp312',
-    'cryptography>=45.0.0,<47',
-    'python-dotenv>=1.0.1',
-    'requests>=2.32.0',
-    'tomlkit>=0.13.2'
-  ]);
-});
-
-test('resolvePythonVendorRuntimePaths stores packaged dependencies under electron runtime', () => {
-  assert.deepEqual(resolvePythonVendorRuntimePaths('/tmp/project'), {
-    vendorDir: '/tmp/project/electron/runtime/python-vendor'
-  });
-});
-
 test('resolveNodeVendorRuntimePaths stores packaged browser probe dependencies under electron runtime', () => {
   assert.deepEqual(resolveNodeVendorRuntimePaths('/tmp/project'), {
     vendorDir: '/tmp/project/electron/runtime/node-vendor'
@@ -398,29 +525,14 @@ test('buildPlaywrightBrowserInstallArgs installs only the Chromium headless shel
   ]);
 });
 
-test('selectRunnablePythonCandidate skips missing commands on PATH', () => {
-  assert.equal(
-    selectRunnablePythonCandidate(['python3.12', 'python3'], (candidate) => candidate === 'python3'),
-    'python3'
-  );
-});
-
-test('selectRunnablePythonCandidate can fall back to the Windows setup-python command', () => {
-  assert.equal(
-    selectRunnablePythonCandidate(['python3.12', 'python3', 'python'], (candidate) => candidate === 'python'),
-    'python'
-  );
-});
-
-test('buildCommandSpawnOptions avoids a Windows shell for Python pip arguments', () => {
-  assert.equal(buildCommandSpawnOptions('python', {}, 'win32').shell, false);
-  assert.equal(buildCommandSpawnOptions('/opt/homebrew/bin/python3.12', {}, 'darwin').shell, false);
+test('buildCommandSpawnOptions uses a Windows shell for npm commands only', () => {
+  assert.equal(buildCommandSpawnOptions('node', {}, 'win32').shell, false);
   assert.equal(buildCommandSpawnOptions('npm', {}, 'win32').shell, true);
   assert.equal(buildCommandSpawnOptions('npx', {}, 'win32').shell, true);
 });
 
 test('buildCommandSpawnOptions streams package command output by default', () => {
-  assert.equal(buildCommandSpawnOptions('python').stdio, 'inherit');
+  assert.equal(buildCommandSpawnOptions('node').stdio, 'inherit');
   assert.equal(buildCommandSpawnOptions('npm').stdio, 'inherit');
 });
 

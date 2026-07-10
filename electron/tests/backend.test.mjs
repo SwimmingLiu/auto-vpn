@@ -1,19 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import * as backend from '../lib/backend.js';
 import { mergeLatestArtifactPreview, parseVmessLinkForPreview, previewArtifactDirectory } from '../lib/artifact-preview.js';
 import {
   buildBackendEnv,
   buildBackendInvocation,
-  buildPythonCandidates,
   parseBackendEventLine,
-  resolveBackendPython,
   resolveBundledChromiumPath,
   resolvePlaywrightBrowsersPath,
-  resolvePythonVendorPath
 } from '../lib/backend.js';
 import { migrateLegacyPackagedProfile } from '../lib/profile-migration.js';
 import {
@@ -25,6 +24,20 @@ import {
   resolveStateProfilePath
 } from '../paths.js';
 
+function ensureNodeCliBuilt(projectRoot) {
+  const cliRoot = path.join(projectRoot, 'npm', 'autovpn-cli');
+  const compiledEntry = path.join(cliRoot, 'dist', 'cli', 'main.js');
+  if (fs.existsSync(compiledEntry)) {
+    return;
+  }
+
+  const result = spawnSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'build', '--prefix', cliRoot], {
+    cwd: projectRoot,
+    encoding: 'utf-8'
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+}
+
 test('qrcode package is available for real subscription QR images', async () => {
   const QRCode = await import('qrcode');
   const dataUrl = await QRCode.default.toDataURL('https://example.invalid/subscription');
@@ -32,56 +45,134 @@ test('qrcode package is available for real subscription QR images', async () => 
   assert.match(dataUrl, /^data:image\/png;base64,/);
 });
 
-test('buildBackendInvocation returns python module command', () => {
-  const invocation = buildBackendInvocation('/repo', 'run');
-  assert.deepEqual(invocation.commands, resolveBackendPython('/repo'));
-  assert.deepEqual(invocation.args, ['-m', 'vpn_automation.backend', 'run', '--project-root', '/repo']);
+test('buildBackendInvocation runs the npm Node CLI with jsonl output in development', () => {
+  const invocation = buildBackendInvocation('/repo', 'run', [], {
+    nodeExecutable: '/usr/local/bin/node'
+  });
+
+  assert.equal(backend.resolveNodeCliEntry?.('/repo'), '/repo/npm/autovpn-cli/bin/autovpn.mjs');
+  assert.equal(invocation.command, '/usr/local/bin/node');
+  assert.deepEqual(invocation.args, [
+    '/repo/npm/autovpn-cli/bin/autovpn.mjs',
+    'run',
+    '--project-root',
+    '/repo',
+    '--output',
+    'jsonl'
+  ]);
 });
 
-test('buildBackendInvocation appends extra args for retry-stage style commands', () => {
+test('resolved Node CLI is runnable from a clean Electron checkout', () => {
+  const projectRoot = process.cwd();
+  ensureNodeCliBuilt(projectRoot);
+  const result = spawnSync(process.execPath, [backend.resolveNodeCliEntry(projectRoot), '--version'], {
+    cwd: projectRoot,
+    encoding: 'utf-8'
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /^autovpn \d+\.\d+\.\d+\n$/);
+});
+
+test('Electron development and test scripts build the Node CLI first', () => {
+  const packageJson = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf-8'));
+
+  assert.equal(packageJson.scripts['preelectron:dev'], 'npm run build:autovpn-cli');
+  assert.equal(packageJson.scripts['pretest:electron'], 'npm run build:autovpn-cli');
+  assert.equal(packageJson.scripts['build:autovpn-cli'], 'npm run build --prefix npm/autovpn-cli');
+});
+
+test('buildBackendInvocation uses the packaged Electron executable as Node', () => {
+  const invocation = buildBackendInvocation('/Applications/AutoVPN.app/Contents/Resources/app.asar', 'run', [], {
+    isPackaged: true,
+    electronExecutable: '/Applications/AutoVPN.app/Contents/MacOS/AutoVPN'
+  });
+
+  assert.equal(invocation.command, '/Applications/AutoVPN.app/Contents/MacOS/AutoVPN');
+  assert.equal(
+    invocation.args[0],
+    '/Applications/AutoVPN.app/Contents/Resources/app.asar/electron/runtime/autovpn-cli/bin/autovpn.mjs'
+  );
+  assert.equal(invocation.runAsNode, true);
+});
+
+test('buildBackendInvocation runs direct Electron development launches as Node', () => {
+  const invocation = buildBackendInvocation('/repo', 'profile', [], {
+    env: {},
+    isElectron: true,
+    electronExecutable: '/Applications/Electron.app/Contents/MacOS/Electron'
+  });
+
+  assert.equal(invocation.command, '/Applications/Electron.app/Contents/MacOS/Electron');
+  assert.equal(invocation.runAsNode, true);
+});
+
+test('buildBackendInvocation prefers a confirmed development Node executable', () => {
+  const invocation = buildBackendInvocation('/repo', 'profile', [], {
+    env: { npm_node_execpath: '/opt/node/bin/node' },
+    isElectron: true,
+    electronExecutable: '/Applications/Electron.app/Contents/MacOS/Electron'
+  });
+
+  assert.equal(invocation.command, '/opt/node/bin/node');
+  assert.equal(invocation.runAsNode, false);
+});
+
+test('buildBackendInvocation maps legacy internal commands to public CLI commands', () => {
+  const cases = [
+    ['profile', ['profile', 'show']],
+    ['profile-save', ['profile', 'save']],
+    ['artifact-latest', ['artifacts', 'latest']],
+    ['artifact-list', ['artifacts', 'list']]
+  ];
+
+  for (const [command, expected] of cases) {
+    const invocation = buildBackendInvocation('/repo', command, [], { nodeExecutable: 'node' });
+    assert.deepEqual(invocation.args.slice(1, 1 + expected.length), expected);
+    assert.equal(invocation.args.includes('--output'), false);
+  }
+});
+
+test('buildBackendInvocation appends extra args and jsonl output for retry-stage', () => {
   const invocation = buildBackendInvocation('/repo', 'retry-stage', [
     '--artifact-dir',
     '/repo/artifacts/20260427-081718',
     '--stage',
     'deploy'
-  ]);
+  ], { nodeExecutable: 'node' });
 
-  assert.deepEqual(invocation.commands, resolveBackendPython('/repo'));
   assert.deepEqual(invocation.args, [
-    '-m',
-    'vpn_automation.backend',
+    '/repo/npm/autovpn-cli/bin/autovpn.mjs',
     'retry-stage',
     '--project-root',
     '/repo',
     '--artifact-dir',
     '/repo/artifacts/20260427-081718',
     '--stage',
-    'deploy'
+    'deploy',
+    '--output',
+    'jsonl'
   ]);
 });
 
-test('buildPythonCandidates prefers project venv and Python 3.12 before Python 3.14 fallbacks', () => {
-  const candidates = buildPythonCandidates('/repo');
+test('buildBackendEnv sets Electron run-as-node only for packaged invocations', () => {
+  const previous = process.env.ELECTRON_RUN_AS_NODE;
+  try {
+    process.env.ELECTRON_RUN_AS_NODE = 'inherited';
+    const developmentEnv = buildBackendEnv('/repo', '/profile.toml', '/bundled.toml');
+    const packagedEnv = buildBackendEnv('/repo', '/profile.toml', '/bundled.toml', '', { runAsNode: true });
 
-  assert.equal(candidates[0], '/repo/.venv/bin/python');
-  assert.equal(candidates[1], '/repo/.venv/bin/python3');
-  assert.ok(candidates.indexOf('/opt/homebrew/bin/python3.12') < candidates.indexOf('/opt/homebrew/bin/python3.14'));
-  assert.ok(candidates.indexOf('/usr/local/bin/python3.12') < candidates.indexOf('/usr/local/bin/python3.14'));
-  assert.ok(candidates.indexOf('/opt/homebrew/bin/python3.12') < candidates.indexOf('python3'));
-});
-
-test('buildBackendEnv exposes bundled python vendor packages to packaged app backend', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vpn-python-vendor-'));
-  const projectRoot = path.join(root, 'app');
-  const vendorPath = path.join(projectRoot, 'electron', 'runtime', 'python-vendor');
-  fs.mkdirSync(vendorPath, { recursive: true });
-
-  const env = buildBackendEnv(projectRoot, '/profile.toml', '/bundled.toml');
-
-  assert.equal(resolvePythonVendorPath(projectRoot), vendorPath);
-  assert.equal(env.PYTHONPATH, [path.join(projectRoot, 'src'), vendorPath].join(path.delimiter));
-  assert.equal(env.VPN_AUTOMATION_PROFILE_PATH, '/profile.toml');
-  assert.equal(env.VPN_AUTOMATION_BUNDLED_PROFILE_PATH, '/bundled.toml');
+    assert.equal(developmentEnv.ELECTRON_RUN_AS_NODE, undefined);
+    assert.equal(packagedEnv.ELECTRON_RUN_AS_NODE, '1');
+    assert.equal(developmentEnv.VPN_AUTOMATION_PROFILE_PATH, '/profile.toml');
+    assert.equal(developmentEnv.VPN_AUTOMATION_BUNDLED_PROFILE_PATH, '/bundled.toml');
+  } finally {
+    if (previous === undefined) {
+      delete process.env.ELECTRON_RUN_AS_NODE;
+    } else {
+      process.env.ELECTRON_RUN_AS_NODE = previous;
+    }
+  }
 });
 
 test('parseBackendEventLine decodes backend json line', () => {
@@ -90,11 +181,40 @@ test('parseBackendEventLine decodes backend json line', () => {
   assert.equal(event.message, 'hello');
 });
 
+test('createNdjsonDecoder buffers fragments and parses multiple events per chunk', () => {
+  assert.equal(typeof backend.createNdjsonDecoder, 'function');
+  const events = [];
+  const decoder = backend.createNdjsonDecoder((event) => events.push(event));
+
+  decoder.push('{"type":"stage"');
+  decoder.push(',"stage":"extract","status":"running"}\n');
+  decoder.push('{"type":"log","message":"first"}\n{"type":"log","message":"second"}\n');
+  decoder.flush();
+
+  assert.deepEqual(events, [
+    { type: 'stage', stage: 'extract', status: 'running' },
+    { type: 'log', message: 'first' },
+    { type: 'log', message: 'second' }
+  ]);
+});
+
+test('createNdjsonDecoder flushes a final unterminated event on close', () => {
+  assert.equal(typeof backend.createNdjsonDecoder, 'function');
+  const events = [];
+  const decoder = backend.createNdjsonDecoder((event) => events.push(event));
+
+  decoder.push('{"type":"log","message":"tail"}');
+  assert.deepEqual(events, []);
+  decoder.flush();
+
+  assert.deepEqual(events, [{ type: 'log', message: 'tail' }]);
+});
+
 test('findProjectRoot climbs out of packaged output to repo root', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vpn-electron-root-'));
   const projectRoot = path.join(root, 'vpn-subscription-automation');
-  fs.mkdirSync(path.join(projectRoot, 'src', 'vpn_automation'), { recursive: true });
-  fs.writeFileSync(path.join(projectRoot, 'pyproject.toml'), '', 'utf-8');
+  fs.mkdirSync(path.join(projectRoot, 'electron'), { recursive: true });
+  fs.writeFileSync(path.join(projectRoot, 'package.json'), '{"name":"vpn-subscription-automation"}', 'utf-8');
 
   const execPath = path.join(
     projectRoot,
@@ -208,10 +328,13 @@ test('resolveRuntimeArtifactsPath defaults to the user runtime artifacts directo
   );
 });
 
-test('buildBackendEnv exposes packaged runtime artifacts path to Python backend', () => {
+test('buildBackendEnv exposes runtime paths without Python environment selectors', () => {
   const env = buildBackendEnv('/repo', '/profile.toml', '/bundled.toml', '/runtime/artifacts');
 
   assert.equal(env.VPN_AUTOMATION_ARTIFACTS_ROOT, '/runtime/artifacts');
+  assert.equal(Object.hasOwn(env, 'PYTHONPATH'), false);
+  assert.equal(Object.hasOwn(env, 'AUTOVPN_PYTHON_CLI'), false);
+  assert.equal(Object.hasOwn(env, 'AUTOVPN_NO_PYTHON'), false);
 });
 
 test('buildBackendEnv points Playwright at bundled Chromium headless shell when packaged browser exists', () => {
@@ -239,19 +362,6 @@ test('buildBackendEnv points Playwright at bundled Chromium headless shell when 
 
 test('resolveBundledProfilePath points at the packaged runtime seed file', () => {
   assert.equal(resolveBundledProfilePath('/repo'), '/repo/electron/runtime/bundled-profile.toml');
-});
-
-test('resolveBackendPython prefers a project virtualenv when present', () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vpn-python-root-'));
-  const venvPython = path.join(root, '.venv', 'bin', 'python');
-
-  fs.mkdirSync(path.dirname(venvPython), { recursive: true });
-  fs.writeFileSync(venvPython, '', 'utf-8');
-
-  const candidates = resolveBackendPython(root);
-  assert.equal(candidates[0], venvPython);
-  assert.ok(candidates.includes('python3.12'));
-  assert.ok(candidates.includes('python3'));
 });
 
 test('parseVmessLinkForPreview decodes node fields for results page', () => {

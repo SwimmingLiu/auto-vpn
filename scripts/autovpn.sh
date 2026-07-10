@@ -2,11 +2,11 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-autovpn_bin="$repo_root/.venv/bin/autovpn"
+autovpn_bin="$repo_root/npm/autovpn-cli/bin/autovpn.mjs"
 
-if [[ ! -x "$autovpn_bin" ]]; then
+if [[ ! -f "$autovpn_bin" ]]; then
   printf 'autovpn local CLI not found: %s\n' "$autovpn_bin" >&2
-  printf 'Create the local environment first, then run this script again.\n' >&2
+  printf 'Install dependencies and build the npm CLI first.\n' >&2
   exit 127
 fi
 
@@ -34,4 +34,4 @@ if ((${#args[@]} > 0)) && ((has_project_root == 0)); then
   esac
 fi
 
-exec "$autovpn_bin" "${args[@]}"
+exec node "$autovpn_bin" "${args[@]}"

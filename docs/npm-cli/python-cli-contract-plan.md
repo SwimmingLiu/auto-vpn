@@ -1,4 +1,7 @@
-# Python CLI Contract Plan
+# Legacy CLI Contract Plan
+
+> Historical migration record. It is not part of the active runtime or release
+> workflow.
 
 ## Decision
 

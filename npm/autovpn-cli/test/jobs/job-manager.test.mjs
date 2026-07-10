@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { existsSync } from 'node:fs';
 import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -10,7 +11,7 @@ import test from 'node:test';
 import { runCliShell } from '../../dist/cli/main.js';
 import { createJobStore } from '../../dist/jobs/store.js';
 import { startDetachedRun, stopManagedJob } from '../../dist/jobs/commands.js';
-import { terminateProcessGroup } from '../../dist/jobs/process.js';
+import { cmdlineMatchesJob, processMatchesJob, terminateProcessGroup } from '../../dist/jobs/process.js';
 
 function createIo() {
   return {
@@ -87,35 +88,6 @@ test('Node job store creates Python-compatible job metadata and index', async ()
   assert.deepEqual(indexPayload.jobs.map((item) => item.job_id), ['20260628-000000-node01']);
 });
 
-test('AUTOVPN_BACKEND=python run --detach --json is rejected before spawning a worker', async () => {
-  const projectRoot = await createProject();
-  const spawns = [];
-  const io = createIo();
-
-  const code = await runCliShell(['run', '--project-root', projectRoot, '--skip-deploy', '--skip-verify', '--detach', '--json'], {
-    cwd: projectRoot,
-    packageVersion: '1.3.0',
-    env: runtimeEnv({ AUTOVPN_BACKEND: 'python', AUTOVPN_PYTHON_CLI: '/venv/bin/autovpn' }),
-    io,
-    createBackend: () => ({
-      executeCli: async () => {
-        throw new Error('detached run should not be forwarded to Python CLI job manager');
-      }
-    }),
-    runForwarder: async () => {
-      throw new Error('detached run should not use direct forwarder');
-    },
-    spawn: fakeSpawn(spawns, 5678),
-    now: () => '2026-06-28T00:00:00+00:00',
-    jobId: () => '20260628-000000-node02'
-  });
-
-  assert.equal(code, 2);
-  assert.equal(io.stdout, '');
-  assert.match(io.stderr, /Python backend is no longer supported/);
-  assert.equal(spawns.length, 0);
-});
-
 test('default run --detach spawns the Node CLI worker', async () => {
   const projectRoot = await createProject();
   const spawns = [];
@@ -137,7 +109,8 @@ test('default run --detach spawns the Node CLI worker', async () => {
     },
     spawn: fakeSpawn(spawns, 6789),
     now: () => '2026-06-28T00:01:00+00:00',
-    jobId: () => '20260628-000100-node-worker'
+    jobId: () => '20260628-000100-node-worker',
+    jobToken: () => 'a'.repeat(64)
   });
 
   const payload = JSON.parse(io.stdout);
@@ -149,7 +122,7 @@ test('default run --detach spawns the Node CLI worker', async () => {
   assert.equal(spawns[0].command, process.execPath);
   assert.match(spawns[0].args[0], /bin[\\/]autovpn\.mjs$/);
   assert.deepEqual(spawns[0].args.slice(1), [
-    'run', '--project-root', payload.project_root, '--output', 'jsonl', '--event-log', payload.event_log, '--human-log', payload.human_log, '--skip-deploy', '--skip-verify'
+    'run', '--project-root', payload.project_root, '--output', 'jsonl', '--internal-job-token', 'a'.repeat(64), '--event-log', payload.event_log, '--human-log', payload.human_log, '--skip-deploy', '--skip-verify'
   ]);
 });
 
@@ -280,56 +253,63 @@ test('Node job manager stop refuses mismatched process metadata', async () => {
   );
 });
 
-test('Node job manager stop uses the production process metadata guard', async (t) => {
-  if (!existsSync(path.join('/proc', String(process.pid), 'cmdline'))) {
-    t.skip('production process metadata guard is Linux /proc based');
-    return;
-  }
+test('process metadata guard distinguishes AutoVPN workers from unrelated Node processes', async () => {
   const projectRoot = await createProject();
-  const store = createJobStore(projectRoot, { now: () => '2026-06-28T00:00:00+00:00', jobId: () => 'production-mismatch-job' });
-  const job = store.createRunningJob({
-    kind: 'run',
-    command: ['/definitely-not-autovpn-worker', 'run'],
-    pid: process.pid,
-    options: { output_format: 'jsonl' }
-  });
+  const entry = path.join(projectRoot, 'autovpn.mjs');
+  const wrongEntry = path.join(projectRoot, 'other.mjs');
+  const token = 'b'.repeat(64);
+  const command = [process.execPath, entry, 'run', '--project-root', projectRoot, '--output', 'jsonl', '--internal-job-token', token];
+  const actual = Buffer.from(`${command.join('\0')}\0`, 'utf8');
 
-  await assert.rejects(
-    () => stopManagedJob(projectRoot, job.job_id, {
-      isAlive: () => true,
-      signalProcess: () => {
-        throw new Error('mismatched production process should not be signaled');
-      }
-    }),
-    /command does not match AutoVPN job/
-  );
+  assert.equal(cmdlineMatchesJob(actual, [process.execPath, wrongEntry, ...command.slice(2)]), false);
+  assert.equal(cmdlineMatchesJob(actual, [process.execPath, entry, 'resume', ...command.slice(3)]), false);
+  assert.equal(cmdlineMatchesJob(actual, command.slice(0, -2)), false);
+  assert.equal(cmdlineMatchesJob(actual, [...command.slice(0, -1), 'c'.repeat(64)]), false);
+  assert.equal(cmdlineMatchesJob(actual, command), true);
 });
 
-test('Node job manager stop accepts matching production process metadata', async (t) => {
-  if (!existsSync(path.join('/proc', String(process.pid), 'cmdline'))) {
-    t.skip('production process metadata guard is Linux /proc based');
+test('darwin and Windows process readers require the saved worker token and identity', async () => {
+  const projectRoot = await createProject();
+  const entry = path.join(projectRoot, 'autovpn.mjs');
+  const token = 'd'.repeat(64);
+  const command = [process.execPath, entry, 'run', '--project-root', projectRoot, '--internal-job-token', token];
+  const rendered = command.join(' ');
+  const readers = [
+    { platform: 'darwin', executable: 'ps' },
+    { platform: 'win32', executable: 'powershell.exe' }
+  ];
+
+  for (const reader of readers) {
+    const calls = [];
+    const spawnSync = (executable, args) => {
+      calls.push([executable, args]);
+      return { status: 0, stdout: rendered };
+    };
+    assert.equal(processMatchesJob(2468, command, { platform: reader.platform, spawnSync }), true);
+    assert.equal(calls[0][0], reader.executable);
+    assert.equal(processMatchesJob(2468, [...command.slice(0, -1), 'e'.repeat(64)], { platform: reader.platform, spawnSync }), false);
+    assert.equal(processMatchesJob(2468, [process.execPath, path.join(projectRoot, 'other.mjs'), ...command.slice(2)], { platform: reader.platform, spawnSync }), false);
+  }
+});
+
+test('production metadata guard recognizes a live worker on the host platform', async (t) => {
+  if (!['linux', 'darwin'].includes(process.platform)) {
+    t.skip('live process command reader integration runs on Linux and macOS');
     return;
   }
   const projectRoot = await createProject();
-  const store = createJobStore(projectRoot, { now: () => '2026-06-28T00:00:00+00:00', jobId: () => 'production-match-job' });
-  const job = store.createRunningJob({
-    kind: 'run',
-    command: [process.execPath, '--test'],
-    pid: process.pid,
-    options: { output_format: 'jsonl' }
-  });
-  const signals = [];
-
-  const stopped = await stopManagedJob(projectRoot, job.job_id, {
-    timeoutMs: 0,
-    isAlive: () => true,
-    signalProcess: (target, signal) => {
-      signals.push([target, signal]);
-    }
+  const entry = path.join(projectRoot, 'autovpn.mjs');
+  await writeFile(entry, 'setInterval(() => {}, 1000);\n', 'utf8');
+  const command = [process.execPath, entry, 'run', '--project-root', projectRoot, '--output', 'jsonl', '--internal-job-token', 'f'.repeat(64)];
+  const child = spawn(command[0], command.slice(1), { stdio: 'ignore' });
+  t.after(() => child.kill('SIGKILL'));
+  await new Promise((resolve, reject) => {
+    child.once('spawn', resolve);
+    child.once('error', reject);
   });
 
-  assert.equal(stopped.status, 'stopped');
-  assert.equal(signals.length > 0, true);
+  assert.equal(processMatchesJob(child.pid, [command[0], path.join(projectRoot, 'wrong.mjs'), ...command.slice(2)]), false);
+  assert.equal(processMatchesJob(child.pid, command), true);
 });
 
 test('Windows process termination uses taskkill process tree mode', async () => {
@@ -371,50 +351,6 @@ test('top-level stop refuses to choose when multiple jobs are active', async () 
 
   assert.equal(code, 1);
   assert.match(io.stderr, /multiple active jobs/);
-});
-
-test('AUTOVPN_BACKEND=python jobs resume and retry detached are rejected before dispatch', async () => {
-  const projectRoot = await createProject();
-  const sessionDir = path.join(jobsRoot(), 'source-job');
-  await mkdir(sessionDir, { recursive: true });
-  await writeFile(path.join(sessionDir, 'session.json'), '{}\n', 'utf8');
-  const store = createJobStore(projectRoot, { now: () => '2026-06-28T00:00:00+00:00', jobId: () => 'source-job' });
-  store.createRunningJob({
-    kind: 'run',
-    command: ['/venv/bin/autovpn', 'run'],
-    pid: 1111,
-    options: { session_dir: sessionDir, output_format: 'jsonl' }
-  });
-  const artifactDir = path.join(projectRoot, 'artifacts', '20260628-000000');
-  await mkdir(artifactDir, { recursive: true });
-  const spawns = [];
-
-  const resume = await runCliShell(['jobs', 'resume', 'source-job', '--project-root', projectRoot, '--detach', '--json'], {
-    cwd: projectRoot,
-    packageVersion: '1.3.0',
-    env: runtimeEnv({ AUTOVPN_BACKEND: 'python', AUTOVPN_PYTHON_CLI: '/venv/bin/autovpn' }),
-    io: createIo(),
-    createBackend: () => ({ executeCli: async () => 99 }),
-    spawn: fakeSpawn(spawns, 2222),
-    now: () => '2026-06-28T00:00:01+00:00',
-    jobId: () => 'resume-job'
-  });
-  const retryIo = createIo();
-  const retry = await runCliShell(['jobs', 'retry', '--project-root', projectRoot, '--artifact-dir', artifactDir, '--stage', 'deploy', '--detach', '--json'], {
-    cwd: projectRoot,
-    packageVersion: '1.3.0',
-    env: runtimeEnv({ AUTOVPN_BACKEND: 'python', AUTOVPN_PYTHON_CLI: '/venv/bin/autovpn' }),
-    io: retryIo,
-    createBackend: () => ({ executeCli: async () => 99 }),
-    spawn: fakeSpawn(spawns, 3333),
-    now: () => '2026-06-28T00:00:02+00:00',
-    jobId: () => 'retry-job'
-  });
-
-  assert.equal(resume, 2);
-  assert.equal(retry, 2);
-  assert.equal(spawns.length, 0);
-  assert.match(retryIo.stderr, /Python backend is no longer supported/);
 });
 
 test('default jobs resume and retry detached spawn Node CLI workers', async () => {
@@ -607,27 +543,6 @@ test('logs --follow is handled by Node for completed jobs', async () => {
   assert.equal(code, 0);
   assert.equal(io.stdout, 'two\nthree\n');
   assert.deepEqual(backendCalls, []);
-});
-
-test('Phase 5 owned job commands ignore Python jobs backend override', async () => {
-  const projectRoot = await createProject();
-  const spawns = [];
-  const io = createIo();
-
-  const code = await runCliShell(['run', '--project-root', projectRoot, '--detach', '--json'], {
-    cwd: projectRoot,
-    packageVersion: '1.3.0',
-    env: { AUTOVPN_PYTHON_CLI: '/venv/bin/autovpn', AUTOVPN_JOBS_BACKEND: 'python' },
-    io,
-    createBackend: () => ({ executeCli: async () => 99 }),
-    spawn: fakeSpawn(spawns, 5555),
-    now: () => '2026-06-28T00:00:00+00:00',
-    jobId: () => 'override-job'
-  });
-
-  assert.equal(code, 0);
-  assert.equal(JSON.parse(io.stdout).job_id, 'override-job');
-  assert.equal(spawns.length, 1);
 });
 
 test('logs --follow writes new chunks before the job finishes', async () => {

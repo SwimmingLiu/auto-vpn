@@ -1,5 +1,8 @@
 # AutoVPN npm CLI Wrapper SOP
 
+> Historical migration record. This is not an active installation, runtime, CI,
+> or release procedure. Use `node-first-migration-sop.md` for current work.
+
 ## Purpose
 
 This SOP defines the implementation route for adding a Node.js npm wrapper to AutoVPN while keeping the Python `autovpn` CLI as the single source of business logic.

@@ -17,11 +17,11 @@ Cloudflare Pages.
 | Layer | Stack |
 | --- | --- |
 | Desktop | Electron 37 |
-| CLI / server | Node.js `>=22.5.0`, Python 3.12 fallback |
-| Backend | Node-first v3 pipeline, Python compatibility backend |
+| CLI / server | Node.js `>=22.5.0` |
+| Backend | Node v3 pipeline |
 | Runtime state | `$HOME/.auto-vpn/profile.toml`, SQLite checkpoints |
 | Automation | Mihomo, Playwright, Cloudflare Wrangler |
-| Tests | pytest, node:test, Playwright-backed renderer checks |
+| Tests | node:test, Playwright-backed renderer checks |
 
 ## Installation
 
@@ -82,9 +82,6 @@ npm install -g \
   "https://github.com/SwimmingLiu/auto-vpn/releases/download/v${AUTOVPN_VERSION}/swimmingliu-autovpn-${AUTOVPN_VERSION}.tgz"
 ```
 
-The npm CLI now runs the pipeline through the Node.js engine. Legacy Python
-backend selectors such as `AUTOVPN_BACKEND=python` and per-stage Python
-rollback flags are rejected or ignored instead of spawning a Python runtime.
 Set `AUTOVPN_NO_INSTALL=1` in locked-down CI to prevent managed npm tool
 installation.
 
@@ -94,17 +91,6 @@ before a run, and runtime stages use the managed executables instead of relying
 on a source checkout's `node_modules`. AutoVPN does not silently install
 unmanaged OS-level dependencies such as Node.js, npm, or Mihomo; install those
 explicitly and rerun `autovpn doctor`.
-
-The historical Python package remains in the repository for compatibility
-tests and migration fixtures, but it is no longer the runtime engine for the
-npm CLI:
-
-```bash
-python3.12 -m pip install --user pipx
-python3.12 -m pipx ensurepath
-pipx install https://github.com/SwimmingLiu/auto-vpn/releases/download/v<version>/vpn_subscription_automation-<version>-py3-none-any.whl
-python -m venv .venv
-```
 
 Runtime flags can be set per command:
 
@@ -118,10 +104,8 @@ AUTOVPN_NO_INSTALL=1 autovpn doctor --project-root /opt/autovpn --output json
 ```text
 autovpn/
 ├── electron/          # Electron app, runtime, packaging
-├── npm/autovpn-cli/   # Node-first CLI package
-├── src/               # Python compatibility backend
+├── npm/autovpn-cli/   # Node CLI package
 ├── templates/         # Cloudflare worker templates
-├── tests/             # Python tests
 ├── electron/tests/    # Electron and renderer tests
 ├── scripts/           # Run, monitor, package, release helpers
 ├── docs/              # Headless, Agent, and implementation docs

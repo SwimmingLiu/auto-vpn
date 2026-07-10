@@ -1,8 +1,5 @@
-import path from 'node:path';
-import { spawn as defaultSpawn, ChildProcess } from 'node:child_process';
 import net from 'node:net';
 import tls from 'node:tls';
-import { mergeProjectEnv } from '../runtime/env.js';
 import {
   openMihomoRuntime as defaultOpenMihomoRuntime,
   probeMihomoProxyDelay as defaultProbeMihomoProxyDelay,
@@ -10,9 +7,6 @@ import {
   OpenMihomoRuntimeOptions
 } from './proxy-runtime.js';
 
-export type PipelineStageBackend = 'node' | 'python';
-
-type SpawnLike = (command: string, args: string[], options?: Record<string, unknown>) => ChildProcess;
 type FetchLike = (url: string, init?: Record<string, unknown>) => Promise<{
   ok?: boolean;
   status?: number;
@@ -20,10 +14,7 @@ type FetchLike = (url: string, init?: Record<string, unknown>) => Promise<{
   arrayBuffer?: () => Promise<ArrayBuffer>;
 }>;
 
-interface ResolvedPythonCli {
-  command: string;
-  args: string[];
-}
+const PROBE_MAX_ATTEMPTS = 2;
 
 export interface SpeedTestConfigInput {
   min_download_mb_s: number;
@@ -60,38 +51,16 @@ export interface SpeedTestInput {
 export interface SpeedTestBackendOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
-  spawn?: SpawnLike;
   fetch?: FetchLike;
   now?: () => number;
-  resolvePythonCli?: () => ResolvedPythonCli | Promise<ResolvedPythonCli>;
   openMihomoRuntime?: (link: string, options: OpenMihomoRuntimeOptions) => Promise<Pick<MihomoRuntime, 'controllerUrl' | 'proxyName' | 'proxies' | 'close'>>;
   probeMihomoProxyDelay?: (controllerUrl: string, proxyName: string, probeUrl: string, timeoutSeconds: number) => Promise<number>;
   downloadUrlViaHttpProxy?: (url: string, proxyUrl: string, maxBytes: number, timeoutSeconds: number) => Promise<number>;
   probeLinks?: (links: string[], config: Required<SpeedTestConfigInput>, options: { runtime_path: string }) => ProbeResult[] | Promise<ProbeResult[]>;
   testLink?: (link: string, config: Required<SpeedTestConfigInput>, options: { runtime_path: string }) => SpeedTestResult | Promise<SpeedTestResult>;
-  pythonSpeedtest?: (input: SpeedTestInput) => SpeedTestResult[] | Promise<SpeedTestResult[]>;
   progressCallback?: (message: string) => void;
   eventCallback?: (eventType: string, payload: Record<string, unknown>) => void;
 }
-
-const PYTHON_SPEEDTEST_HELPER = `
-import json
-import sys
-from vpn_automation.config.models import SpeedTestConfig
-from vpn_automation.pipeline.speedtest import speedtest_links
-
-payload = json.load(sys.stdin)
-output = [
-    item.__dict__
-    for item in speedtest_links(
-        payload.get("links", []),
-        SpeedTestConfig(**payload["config"]),
-        runtime_path=payload.get("runtime_path", ""),
-    )
-]
-json.dump(output, sys.stdout, ensure_ascii=False)
-sys.stdout.write("\\n")
-`;
 
 export function aggregateSpeedMeasurements(values: number[]): number {
   if (values.length === 0) {
@@ -176,9 +145,26 @@ function defaultNow(): number {
 
 async function fetchWithTimeout(fetchImpl: FetchLike, url: string, timeoutMs: number): Promise<Awaited<ReturnType<FetchLike>>> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let internallyTimedOut = false;
+  const timer = setTimeout(() => {
+    internallyTimedOut = true;
+    controller.abort();
+  }, timeoutMs);
   try {
-    return await fetchImpl(url, { signal: controller.signal });
+    const response = await fetchImpl(url, { signal: controller.signal });
+    if (internallyTimedOut) {
+      const error = new Error(`request timed out after ${timeoutMs}ms`) as Error & { code?: string };
+      error.code = 'AUTOVPN_INTERNAL_TIMEOUT';
+      throw error;
+    }
+    return response;
+  } catch (error) {
+    if (internallyTimedOut && !(error instanceof Error && (error as Error & { code?: string }).code === 'AUTOVPN_INTERNAL_TIMEOUT')) {
+      const timeoutError = new Error(`request timed out after ${timeoutMs}ms`, { cause: error }) as Error & { code?: string };
+      timeoutError.code = 'AUTOVPN_INTERNAL_TIMEOUT';
+      throw timeoutError;
+    }
+    throw error;
   } finally {
     clearTimeout(timer);
   }
@@ -204,6 +190,7 @@ async function readResponseBytes(response: Awaited<ReturnType<FetchLike>>, maxBy
   if (response.body?.getReader) {
     const reader = response.body.getReader();
     let timedOut = false;
+    let reachedCap = false;
     try {
       return await withBodyTimeout(async () => {
         let total = 0;
@@ -213,6 +200,9 @@ async function readResponseBytes(response: Awaited<ReturnType<FetchLike>>, maxBy
             break;
           }
           total += Math.min(value.byteLength, maxBytes - total);
+          if (total >= maxBytes) {
+            reachedCap = true;
+          }
         }
         return total;
       }, timeoutMs);
@@ -220,16 +210,13 @@ async function readResponseBytes(response: Awaited<ReturnType<FetchLike>>, maxBy
       timedOut = error instanceof Error && error.message.includes('response body timed out');
       throw error;
     } finally {
-      if (timedOut) {
+      if (timedOut || reachedCap) {
         await reader.cancel().catch(() => {});
       }
       reader.releaseLock();
     }
   }
-  if (response.arrayBuffer) {
-    return await withBodyTimeout(async () => Math.min((await response.arrayBuffer!()).byteLength, maxBytes), timeoutMs);
-  }
-  return 0;
+  throw new Error('streaming response body required for bounded speed test downloads');
 }
 
 function requireOkResponse(response: Awaited<ReturnType<FetchLike>>, allowedStatuses: Set<number>): void {
@@ -237,6 +224,37 @@ function requireOkResponse(response: Awaited<ReturnType<FetchLike>>, allowedStat
   if (response.ok === false || !allowedStatuses.has(status)) {
     throw new Error(`unexpected status ${status}`);
   }
+}
+
+function isTransientProbeError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  const code = typeof error === 'object' && error !== null && 'code' in error
+    ? String((error as { code?: unknown }).code ?? '')
+    : '';
+  const statusMatch = /(?:unexpected status|failed with status)\s+(\d{3})\b/i.exec(message);
+  if (statusMatch) {
+    const status = Number(statusMatch[1]);
+    return status >= 500 && status <= 599;
+  }
+  if (['AUTOVPN_INTERNAL_TIMEOUT', 'ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ECONNREFUSED', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT'].includes(code.toUpperCase())) {
+    return true;
+  }
+  return error instanceof TypeError && message.trim().toLowerCase() === 'fetch failed';
+}
+
+async function retryTransientProbe<T>(operation: () => Promise<T>): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= PROBE_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      lastError = error;
+      if (attempt >= PROBE_MAX_ATTEMPTS || !isTransientProbeError(error)) {
+        throw error;
+      }
+    }
+  }
+  throw lastError;
 }
 
 function socketConnect(host: string, port: number, timeoutMs: number): Promise<net.Socket> {
@@ -446,12 +464,14 @@ async function probeLinksDirect(
   const now = options.now ?? defaultNow;
   const timeoutMs = Math.max(1, Number(config.timeout_seconds)) * 1000;
   return mapWithConcurrency(links, config.concurrency, async (link) => {
-    const started = now();
     try {
-      const response = await fetchWithTimeout(fetchImpl, config.probe_url, timeoutMs);
-      const elapsed = Math.max(now() - started, 1);
-      requireOkResponse(response, new Set([200, 204]));
-      return { link, reachable: true, latency_ms: Math.max(Math.round(elapsed), 1), error: '' };
+      return await retryTransientProbe(async () => {
+        const started = now();
+        const response = await fetchWithTimeout(fetchImpl, config.probe_url, timeoutMs);
+        const elapsed = Math.max(now() - started, 1);
+        requireOkResponse(response, new Set([200, 204]));
+        return { link, reachable: true, latency_ms: Math.max(Math.round(elapsed), 1), error: '' };
+      });
     } catch (error) {
       return { link, reachable: false, latency_ms: 0, error: error instanceof Error ? error.message : String(error) };
     }
@@ -467,19 +487,23 @@ async function probeLinksMihomo(
   const openRuntime = options.openMihomoRuntime ?? defaultOpenMihomoRuntime;
   const probeDelay = options.probeMihomoProxyDelay ?? defaultProbeMihomoProxyDelay;
   return mapWithConcurrency(links, config.concurrency, async (link) => {
-    let runtime: Pick<MihomoRuntime, 'controllerUrl' | 'proxyName' | 'close'> | undefined;
     try {
-      runtime = await openRuntime(link, {
-        runtimePath,
-        startupWaitSeconds: config.startup_wait_seconds,
-        env: options.env
+      return await retryTransientProbe(async () => {
+        let runtime: Pick<MihomoRuntime, 'controllerUrl' | 'proxyName' | 'close'> | undefined;
+        try {
+          runtime = await openRuntime(link, {
+            runtimePath,
+            startupWaitSeconds: config.startup_wait_seconds,
+            env: options.env
+          });
+          const latencyMs = await probeDelay(runtime.controllerUrl, runtime.proxyName, config.probe_url, config.timeout_seconds);
+          return { link, reachable: true, latency_ms: latencyMs, error: '' };
+        } finally {
+          await runtime?.close();
+        }
       });
-      const latencyMs = await probeDelay(runtime.controllerUrl, runtime.proxyName, config.probe_url, config.timeout_seconds);
-      return { link, reachable: true, latency_ms: latencyMs, error: '' };
     } catch (error) {
       return { link, reachable: false, latency_ms: 0, error: error instanceof Error ? error.message : String(error) };
-    } finally {
-      await runtime?.close();
     }
   });
 }
@@ -612,6 +636,17 @@ async function speedtestInNode(input: SpeedTestInput, options: SpeedTestBackendO
   });
 
   const probes = await probeLinks(input.links, config, { runtime_path: runtimePath });
+  for (let index = 0; index < probes.length; index += 1) {
+    const probe = probes[index];
+    emitEvent(options.eventCallback, 'speedtest_probe_result', {
+      completed: index + 1,
+      total: input.links.length,
+      link: probe.link,
+      reachable: probe.reachable,
+      latency_ms: probe.latency_ms,
+      error: probe.error ?? ''
+    });
+  }
   const candidateLinks = selectSpeedtestCandidates(probes, config.max_download_candidates);
   const probeByLink = new Map(probes.map((probe) => [probe.link, probe]));
   const candidateSet = new Set(candidateLinks);
@@ -655,67 +690,7 @@ async function speedtestInNode(input: SpeedTestInput, options: SpeedTestBackendO
   return results;
 }
 
-export function selectPipelineStageBackend(stage: string, env: NodeJS.ProcessEnv = process.env): PipelineStageBackend {
-  void stage;
-  void env;
-  return 'node';
-}
-
-async function defaultResolvePythonCli(env: NodeJS.ProcessEnv): Promise<ResolvedPythonCli> {
-  // @ts-expect-error Phase 1 runner remains plain ESM JavaScript.
-  const runner = await import('../../lib/runner.mjs');
-  return runner.resolveOrInstallPythonCli({ env });
-}
-
-function pythonCommandFor(resolved: ResolvedPythonCli): string {
-  const command = resolved.command;
-  const name = path.basename(command).toLowerCase();
-  if (['autovpn', 'autovpn.exe'].includes(name)) {
-    const executable = process.platform === 'win32' ? 'python.exe' : 'python';
-    return path.join(path.dirname(command), executable);
-  }
-  return process.platform === 'win32' ? 'python.exe' : 'python3';
-}
-
-async function speedtestWithPython(input: SpeedTestInput, options: SpeedTestBackendOptions): Promise<SpeedTestResult[]> {
-  const env = mergeProjectEnv(options.cwd ?? process.cwd(), options.env ?? process.env);
-  const resolved = options.resolvePythonCli ? await options.resolvePythonCli() : await defaultResolvePythonCli(env);
-  const child = (options.spawn ?? defaultSpawn)(pythonCommandFor(resolved), ['-c', PYTHON_SPEEDTEST_HELPER], {
-    cwd: options.cwd ?? process.cwd(),
-    env,
-    stdio: ['pipe', 'pipe', 'pipe']
-  });
-  let stdout = '';
-  let stderr = '';
-  child.stdout?.on('data', (chunk) => {
-    stdout += String(chunk);
-  });
-  child.stderr?.on('data', (chunk) => {
-    stderr += String(chunk);
-  });
-  const completion = new Promise<SpeedTestResult[]>((resolve, reject) => {
-    child.on('error', reject);
-    child.on('close', (code) => {
-      if (code !== 0) {
-        reject(new Error(`Python speedtest backend failed with exit code ${code}: ${stderr.trim()}`));
-        return;
-      }
-      try {
-        resolve(JSON.parse(stdout) as SpeedTestResult[]);
-      } catch (error) {
-        reject(new Error(`Python speedtest backend returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`));
-      }
-    });
-  });
-  child.stdin?.write(JSON.stringify(input));
-  child.stdin?.end();
-  return completion;
-}
-
 export async function speedtestLinksWithBackend(input: SpeedTestInput, options: SpeedTestBackendOptions = {}): Promise<SpeedTestResult[]> {
-  if (selectPipelineStageBackend('speedtest', options.env ?? process.env) === 'python') {
-    return options.pythonSpeedtest ? options.pythonSpeedtest(input) : speedtestWithPython(input, options);
-  }
   return speedtestInNode(input, options);
 }
 

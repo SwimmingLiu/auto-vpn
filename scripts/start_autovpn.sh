@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-autovpn_bin="$repo_root/.venv/bin/autovpn"
+autovpn_bin="$repo_root/npm/autovpn-cli/bin/autovpn.mjs"
 deploy=1
 verify=1
 proxy=0
@@ -75,13 +75,21 @@ while (($# > 0)); do
   esac
 done
 
-if [[ ! -x "$autovpn_bin" ]]; then
+if [[ ! -f "$autovpn_bin" ]]; then
   printf 'autovpn local CLI not found: %s\n' "$autovpn_bin" >&2
-  printf 'Create the local environment first, then run this script again.\n' >&2
+  printf 'Install dependencies and build the npm CLI first.\n' >&2
   exit 127
 fi
 
 export PATH="$HOME/.local/bin:$repo_root/node_modules/.bin:$PATH"
+if ((proxy)); then
+  proxy_url="${proxy_url:-${VPN_AUTOMATION_UPSTREAM_PROXY:-http://127.0.0.1:7897}}"
+  export VPN_AUTOMATION_USE_UPSTREAM_PROXY=1
+  export VPN_AUTOMATION_UPSTREAM_PROXY="$proxy_url"
+  export HTTP_PROXY="$proxy_url"
+  export HTTPS_PROXY="$proxy_url"
+  export ALL_PROXY="$proxy_url"
+fi
 cd "$repo_root"
 
 run_dir="$logs_root/$run_id"
@@ -108,14 +116,14 @@ printf 'Mode: %s\n' "$([[ "$deploy" -eq 1 ]] && printf 'deploy' || printf 'local
 printf 'Project root: %s\n\n' "$repo_root" | tee -a "$summary_log"
 
 printf '[1/4] Running normal preflight...\n'
-if ! run_and_log "$doctor_log" "$autovpn_bin" doctor --project-root "$repo_root" --output json; then
+if ! run_and_log "$doctor_log" node "$autovpn_bin" doctor --project-root "$repo_root" --output json; then
   printf 'Normal preflight failed. See: %s\n' "$doctor_log" >&2
   exit 1
 fi
 
 if ((deploy)); then
   printf '\n[2/4] Running strict deploy preflight...\n'
-  if ! run_and_log "$deploy_doctor_log" "$autovpn_bin" doctor --project-root "$repo_root" --deploy --strict --output json; then
+  if ! run_and_log "$deploy_doctor_log" node "$autovpn_bin" doctor --project-root "$repo_root" --deploy --strict --output json; then
     printf 'Deploy preflight failed. See: %s\n' "$deploy_doctor_log" >&2
     printf 'Tip: run with --local to generate locally without Cloudflare deployment.\n' >&2
     exit 1
@@ -125,20 +133,14 @@ else
 fi
 
 printf '\n[3/4] Capturing safe profile and job summaries...\n'
-run_and_log "$profile_log" "$autovpn_bin" profile summary --project-root "$repo_root" --json
-run_and_log "$jobs_log" "$autovpn_bin" jobs list --project-root "$repo_root" --json
+run_and_log "$profile_log" node "$autovpn_bin" profile summary --project-root "$repo_root" --json
+run_and_log "$jobs_log" node "$autovpn_bin" jobs list --project-root "$repo_root" --json
 
-run_cmd=("$autovpn_bin" run --project-root "$repo_root")
+run_cmd=(node "$autovpn_bin" run --project-root "$repo_root")
 if ((!deploy)); then
   run_cmd+=(--skip-deploy --skip-verify)
 elif ((!verify)); then
   run_cmd+=(--skip-verify)
-fi
-if ((proxy)); then
-  run_cmd+=(--proxy)
-  if [[ -n "$proxy_url" ]]; then
-    run_cmd+=("$proxy_url")
-  fi
 fi
 run_cmd+=(--output jsonl)
 

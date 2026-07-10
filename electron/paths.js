@@ -7,10 +7,15 @@ const currentFile = fileURLToPath(import.meta.url);
 const currentDir = path.dirname(currentFile);
 
 function isProjectRoot(candidate) {
-  return (
-    fs.existsSync(path.join(candidate, 'pyproject.toml')) &&
-    fs.existsSync(path.join(candidate, 'src', 'vpn_automation'))
-  );
+  const manifestPath = path.join(candidate, 'package.json');
+  if (!fs.existsSync(manifestPath) || !fs.existsSync(path.join(candidate, 'electron'))) {
+    return false;
+  }
+  try {
+    return JSON.parse(fs.readFileSync(manifestPath, 'utf8')).name === 'vpn-subscription-automation';
+  } catch {
+    return false;
+  }
 }
 
 export function findProjectRoot(startPath) {

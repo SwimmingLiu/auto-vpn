@@ -56,26 +56,6 @@ test('prints Node-native version without invoking Python backend', async () => {
   assert.deepEqual(forwarded, []);
 });
 
-test('AUTOVPN_CLI_SHELL=python is rejected because the CLI is Node-only', async () => {
-  const io = createIo();
-  const forwarded = [];
-
-  const code = await runCliShell(['--version'], {
-    packageVersion: '1.3.0',
-    env: { AUTOVPN_CLI_SHELL: 'python' },
-    io,
-    runForwarder: async (argv) => {
-      forwarded.push(argv);
-      return 5;
-    }
-  });
-
-  assert.equal(code, 2);
-  assert.equal(io.stdout, '');
-  assert.match(io.stderr, /Python backend is no longer supported/);
-  assert.deepEqual(forwarded, []);
-});
-
 test('rejects unknown top-level commands before invoking Python backend', async () => {
   const io = createIo();
   const forwarded = [];
@@ -152,14 +132,14 @@ test('validates jobs subcommands when parent options precede the subcommand', as
   assert.deepEqual(forwarded, []);
 });
 
-test('AUTOVPN_BACKEND=python is rejected before business command forwarding', async () => {
+test('unknown backend values are rejected before business command execution', async () => {
   const io = createIo();
   const forwarded = [];
   const rawRoot = path.join(process.cwd(), '.', 'nested', '..');
 
   const code = await runCliShell(['run', '--project-root', rawRoot, '--output', 'jsonl'], {
     packageVersion: '1.3.0',
-    env: { AUTOVPN_BACKEND: 'python' },
+    env: { AUTOVPN_BACKEND: 'unsupported' },
     io,
     runForwarder: async (argv) => {
       forwarded.push(argv);
@@ -167,9 +147,9 @@ test('AUTOVPN_BACKEND=python is rejected before business command forwarding', as
     }
   });
 
-  assert.equal(code, 2);
+  assert.equal(code, 1);
   assert.equal(io.stdout, '');
-  assert.match(io.stderr, /Python backend is no longer supported/);
+  assert.match(io.stderr, /Unsupported AUTOVPN_BACKEND/);
   assert.deepEqual(forwarded, []);
 });
 

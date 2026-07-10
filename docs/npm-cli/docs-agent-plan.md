@@ -1,5 +1,8 @@
 # Documentation and Agent Experience Plan
 
+> Historical migration record. Use `docs/headless-agent/` for current Agent
+> operating instructions.
+
 ## Decision
 
 Document three separate user paths:

@@ -1,15 +1,14 @@
 import assert from 'node:assert/strict';
-import { EventEmitter } from 'node:events';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { buildWorkerArtifacts, buildWorkerArtifactsWithBackend, fragmentLiteral, selectPipelineStageBackend, stableIdentifierPrefix } from '../../dist/pipeline/obfuscate.js';
+import { buildWorkerArtifacts, buildWorkerArtifactsWithBackend, fragmentLiteral, stableIdentifierPrefix } from '../../dist/pipeline/obfuscate.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '../../../..');
-const fixtureDir = path.join(repoRoot, 'tests', 'fixtures', 'node-migration', 'pipeline', 'obfuscate');
+const fixtureDir = path.join(repoRoot, 'npm', 'autovpn-cli', 'test', 'fixtures', 'node-migration', 'pipeline', 'obfuscate');
 
 const renderedSource = `const SUBSCRIPTION_PAYLOAD = \`payload\`;
 const secretToken = url.searchParams.get("serect_key");
@@ -69,55 +68,9 @@ test('obfuscate fixture output matches Python golden output', async () => {
   assert.deepEqual(buildWorkerArtifacts(input.rendered_source, input.config, input.secret_query), expected);
 });
 
-test('obfuscate backend selection always uses the Node engine', async () => {
-  assert.equal(selectPipelineStageBackend('obfuscate', {}), 'node');
-  assert.equal(selectPipelineStageBackend('obfuscate', { AUTOVPN_PIPELINE_BACKEND: ' HYBRID ' }), 'node');
-  assert.equal(selectPipelineStageBackend('obfuscate', { AUTOVPN_PIPELINE_BACKEND: ' PYTHON ' }), 'node');
-  assert.equal(selectPipelineStageBackend('obfuscate', { AUTOVPN_STAGE_BACKEND_OBFUSCATE: ' python ' }), 'node');
-  assert.equal(selectPipelineStageBackend('obfuscate', { AUTOVPN_PIPELINE_BACKEND: 'python', AUTOVPN_STAGE_BACKEND_OBFUSCATE: '' }), 'node');
-
-  const pythonCalls = [];
-  const fallback = async (input) => {
-    pythonCalls.push(input);
-    return { transformed_source: 'python-result', modules: {}, manifest: {} };
-  };
+test('obfuscate backend API runs the Node implementation', async () => {
   const input = { rendered_source: renderedSource, config: {}, secret_query: 'serect_key=swimmingliu' };
-
-  assert.match((await buildWorkerArtifactsWithBackend(input, { env: {}, pythonObfuscate: fallback })).transformed_source, /SUBSCRIPTION_PAYLOAD/);
-  const legacyEnvResult = await buildWorkerArtifactsWithBackend(input, {
-    env: { AUTOVPN_STAGE_BACKEND_OBFUSCATE: 'python' },
-    pythonObfuscate: fallback
-  });
-  assert.match(legacyEnvResult.transformed_source, /SUBSCRIPTION_PAYLOAD/);
-  assert.ok(Object.keys(legacyEnvResult.modules).length > 0);
-  assert.deepEqual(pythonCalls, []);
-});
-
-test('obfuscate ignores legacy Python rollback env without spawning Python', async () => {
-  const spawns = [];
-  const input = { rendered_source: renderedSource, config: {}, secret_query: 'serect_key=swimmingliu' };
-  const result = await buildWorkerArtifactsWithBackend(input, {
-    env: { AUTOVPN_STAGE_BACKEND_OBFUSCATE: 'python' },
-    resolvePythonCli: () => ({ command: '/opt/autovpn/.venv/bin/autovpn', args: [] }),
-    spawn: (command, args, options) => {
-      spawns.push({ command, args, options });
-      const child = new EventEmitter();
-      child.stdout = new EventEmitter();
-      child.stderr = new EventEmitter();
-      child.stdin = {
-        write(chunk) {
-          this.input = String(chunk);
-        },
-        end() {
-          const helperInput = JSON.parse(this.input);
-          child.stdout.emit('data', `${JSON.stringify({ transformed_source: helperInput.rendered_source, modules: {}, manifest: {} })}\n`);
-          child.emit('close', 0, null);
-        }
-      };
-      return child;
-    }
-  });
-
+  const result = await buildWorkerArtifactsWithBackend(input);
   assert.match(result.transformed_source, /SUBSCRIPTION_PAYLOAD/);
-  assert.equal(spawns.length, 0);
+  assert.ok(Object.keys(result.modules).length > 0);
 });

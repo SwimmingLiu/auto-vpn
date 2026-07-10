@@ -86,6 +86,10 @@ export function validateCommand(argv: string[]): void {
   if (!TOP_LEVEL_COMMANDS.has(command)) {
     throw new CliUsageError(`unknown command: ${command}`);
   }
+  const internalJobToken = readOptionValue(argv, '--internal-job-token');
+  if (internalJobToken !== undefined && !/^[a-f0-9]{64}$/i.test(internalJobToken)) {
+    throw new CliUsageError('invalid internal job token');
+  }
 
   if (command === 'doctor') {
     validateChoice('doctor', '--output', readOptionValue(argv, '--output'), ['human', 'json']);

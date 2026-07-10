@@ -1,35 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-export function buildPythonCandidates(projectRoot) {
-  return [
-    path.join(projectRoot, '.venv', 'bin', 'python'),
-    path.join(projectRoot, '.venv', 'bin', 'python3'),
-    '/opt/homebrew/bin/python3.12',
-    '/opt/homebrew/bin/python3.14',
-    '/usr/local/bin/python3.12',
-    '/usr/local/bin/python3.14',
-    'python3.12',
-    'python3',
-    'python'
-  ];
-}
-
-export function resolveBackendPython(projectRoot) {
-  const candidates = buildPythonCandidates(projectRoot);
-
-  return candidates.filter((candidate, index) => {
-    if (candidate.startsWith('/')) {
-      return fs.existsSync(candidate);
-    }
-    return candidates.indexOf(candidate) === index;
-  });
-}
-
-export function resolvePythonVendorPath(projectRoot) {
-  return path.join(projectRoot, 'electron', 'runtime', 'python-vendor');
-}
-
 export function resolveNodeVendorPath(projectRoot) {
   return path.join(projectRoot, 'electron', 'runtime', 'node-vendor', 'node_modules');
 }
@@ -83,20 +54,15 @@ export function buildBackendEnv(
   projectRoot,
   runtimeProfilePath = '',
   bundledProfilePath = '',
-  runtimeArtifactsPath = ''
+  runtimeArtifactsPath = '',
+  options = {}
 ) {
-  const pythonPaths = [path.join(projectRoot, 'src')];
-  const vendorPath = resolvePythonVendorPath(projectRoot);
-  if (fs.existsSync(vendorPath)) {
-    pythonPaths.push(vendorPath);
-  }
   const nodeVendorPath = resolveNodeVendorPath(projectRoot);
   const playwrightBrowsersPath = resolvePlaywrightBrowsersPath(projectRoot);
   const bundledChromiumPath = resolveBundledChromiumPath(projectRoot);
 
-  return {
+  const env = {
     ...process.env,
-    PYTHONPATH: pythonPaths.join(path.delimiter),
     VPN_AUTOMATION_PROFILE_PATH: runtimeProfilePath,
     VPN_AUTOMATION_BUNDLED_PROFILE_PATH: bundledProfilePath,
     VPN_AUTOMATION_ARTIFACTS_ROOT: runtimeArtifactsPath,
@@ -104,12 +70,63 @@ export function buildBackendEnv(
     PLAYWRIGHT_BROWSERS_PATH: fs.existsSync(playwrightBrowsersPath) ? playwrightBrowsersPath : '',
     PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH: fs.existsSync(bundledChromiumPath) ? bundledChromiumPath : ''
   };
+
+  for (const key of Object.keys(env)) {
+    if (/^PYTHON/i.test(key) || /^AUTOVPN_.*(?:PYTHON|BACKEND)/i.test(key)) {
+      delete env[key];
+    }
+  }
+
+  if (options.runAsNode) {
+    env.ELECTRON_RUN_AS_NODE = '1';
+  } else {
+    delete env.ELECTRON_RUN_AS_NODE;
+  }
+  return env;
 }
 
-export function buildBackendInvocation(projectRoot, command, extraArgs = []) {
+export function resolveNodeCliEntry(projectRoot, options = {}) {
+  const relativeRoot = options.isPackaged
+    ? path.join('electron', 'runtime', 'autovpn-cli')
+    : path.join('npm', 'autovpn-cli');
+  return path.join(projectRoot, relativeRoot, 'bin', 'autovpn.mjs');
+}
+
+const BACKEND_COMMANDS = new Map([
+  ['profile', ['profile', 'show']],
+  ['profile-save', ['profile', 'save']],
+  ['artifact-latest', ['artifacts', 'latest']],
+  ['artifact-list', ['artifacts', 'list']],
+  ['run', ['run']],
+  ['retry-stage', ['retry-stage']]
+]);
+
+export function buildBackendInvocation(projectRoot, command, extraArgs = [], options = {}) {
+  const mappedCommand = BACKEND_COMMANDS.get(command);
+  if (!mappedCommand) {
+    throw new Error(`Unsupported Electron backend command: ${command}`);
+  }
+  const isPackaged = Boolean(options.isPackaged);
+  const env = options.env ?? process.env;
+  const confirmedNodeExecutable = options.nodeExecutable || env.npm_node_execpath || '';
+  const isElectron = options.isElectron ?? Boolean(process.versions.electron);
+  const electronExecutable = options.electronExecutable || process.execPath;
+  const runAsNode = isPackaged || (isElectron && !confirmedNodeExecutable);
+  const args = [
+    resolveNodeCliEntry(projectRoot, { isPackaged }),
+    ...mappedCommand,
+    '--project-root',
+    projectRoot,
+    ...extraArgs
+  ];
+  if (command === 'run' || command === 'retry-stage') {
+    args.push('--output', 'jsonl');
+  }
+
   return {
-    commands: resolveBackendPython(projectRoot),
-    args: ['-m', 'vpn_automation.backend', command, '--project-root', projectRoot, ...extraArgs]
+    command: runAsNode ? electronExecutable : (confirmedNodeExecutable || process.execPath),
+    args,
+    runAsNode
   };
 }
 
@@ -127,4 +144,32 @@ export function parseBackendEventLine(line) {
       message: trimmed
     };
   }
+}
+
+export function createNdjsonDecoder(onEvent) {
+  let buffered = '';
+
+  function decodeLine(line) {
+    const event = parseBackendEventLine(line);
+    if (event) {
+      onEvent(event);
+    }
+  }
+
+  return {
+    push(chunk) {
+      buffered += String(chunk ?? '');
+      const lines = buffered.split(/\r?\n/);
+      buffered = lines.pop() ?? '';
+      for (const line of lines) {
+        decodeLine(line);
+      }
+    },
+    flush() {
+      if (buffered) {
+        decodeLine(buffered);
+        buffered = '';
+      }
+    }
+  };
 }

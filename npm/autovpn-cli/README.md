@@ -1,6 +1,7 @@
 # AutoVPN CLI
 
-Node-first npm CLI for AutoVPN headless and Agent workflows.
+Node.js npm CLI for AutoVPN headless and Agent workflows. Node.js `>=22.5.0`
+is required.
 
 ## Usage
 
@@ -53,78 +54,30 @@ terminator for internet-facing deployments.
 
 ## Runtime Shape
 
-The CLI is currently Node-first with explicit Python rollback:
+The CLI owns command parsing, profiles, artifacts, detached jobs, pipeline
+execution, Cloudflare deployment, verification, and the server Web UI.
 
-- Node.js handles `--help`, `--version`, argument validation, `doctor --output json`, `profile summary --json`, `artifacts latest/list/preview`, `status --json`, `logs`, read-only `jobs` commands, and detached job management.
-- Node is the default backend for pipeline actions. Detached run/resume/retry workers spawn the Node CLI worker.
-- Plain Cloudflare Pages deploy, primary blocked-project fallback, share-project `SUB` sync, share-project fallback, custom-domain binding, custom-domain DNS upsert, and verify are Node-native. Python backend and stage fallback remain available for rollback.
-
-Node-orchestrated foreground run:
+Foreground run:
 
 ```bash
 autovpn run --project-root . --output jsonl
 ```
 
-Current Node backend notes:
+Runtime notes:
 
 - Detached job management runs in Node for `run --detach`, `jobs resume --detach`, and `jobs retry --detach`; detached run/resume/retry workers also use the Node CLI worker.
 - Non-detached `retry-stage` runs through the Node backend for retryable artifact stages from `speedtest` through `verify`; non-detached `resume pipeline`, `resume speedtest`, and `run --resume-latest` continue existing sessions through the Node backend.
 - Add `--skip-deploy --skip-verify` when you want an offline Node pipeline check.
 - Plain Node foreground deploy/verify runs use Node for Wrangler deploy, primary blocked-project fallback, share-project sync/fallback, custom-domain binding, custom-domain DNS upsert, and verify.
-- Deploy and verify can be rolled back with `AUTOVPN_STAGE_BACKEND_DEPLOY=python` and `AUTOVPN_STAGE_BACKEND_VERIFY=python`.
-- `AUTOVPN_NO_PYTHON=1` disables implicit Python backend resolution and default Python runtime stage fallback. Use it as a v3 readiness gate. Empty offline runs now complete in Node. Speedtest and availability use the per-node Mihomo runtime by default so candidate measurements and provider checks traverse each candidate node. Set `AUTOVPN_SPEEDTEST_RUNTIME=direct` or `AUTOVPN_AVAILABILITY_RUNTIME=direct` only for direct-host diagnostic checks.
+- Empty offline runs complete without requiring an external language runtime. Speedtest and availability use the per-node Mihomo runtime by default so candidate measurements and provider checks traverse each candidate node. Set `AUTOVPN_SPEEDTEST_RUNTIME=direct` or `AUTOVPN_AVAILABILITY_RUNTIME=direct` only for direct-host diagnostic checks.
 - Project `.env` is loaded before resolving profile and artifact paths. Explicit process environment values still win over `.env`.
 - `autovpn serve` is Node-native and exposes the browser UI plus `/api/health`,
   `/api/state`, `/api/runs`, `/api/runs/current/stop`, and `/api/events`.
 
-Fallback flags for migrated commands:
-
-```bash
-AUTOVPN_CLI_SHELL=python autovpn <args>
-AUTOVPN_BACKEND=python autovpn run --project-root . --output jsonl
-AUTOVPN_DOCTOR_BACKEND=python autovpn doctor --output json
-AUTOVPN_PROFILE_BACKEND=python autovpn profile summary --json
-AUTOVPN_ARTIFACTS_BACKEND=python autovpn artifacts latest
-```
-
-Job state, logs, stop, detached run, detached resume, and detached retry commands are Node-owned in v3 and intentionally ignore the old `AUTOVPN_JOBS_BACKEND` rollback flag.
-
-## Python Backend Resolution
-
-When a command still needs Python, the wrapper resolves the backend in this order:
-
-1. `AUTOVPN_PYTHON_CLI`
-2. PATH `autovpn`, accepted only when `autovpn --version` matches this npm package version
-3. wrapper-managed Python virtual environment under `AUTOVPN_CACHE_DIR` or the user cache
-
-For Python-backed commands, the wrapper forwards argv, stdin, stdout, stderr, and exit code.
-
 ## Environment
 
-- `AUTOVPN_CACHE_DIR`
-- `AUTOVPN_WHEEL_URL`
-- `AUTOVPN_PYTHON_PACKAGE`
-- `AUTOVPN_PIP_INDEX_URL`
-- `AUTOVPN_PIP_EXTRA_INDEX_URL`
 - `AUTOVPN_NO_INSTALL`
 - `AUTOVPN_FORCE_INSTALL`
-- `AUTOVPN_ALLOW_VERSION_MISMATCH`
-- `AUTOVPN_PYTHON_CLI`
-- `AUTOVPN_CLI_SHELL`
-- `AUTOVPN_BACKEND`
-- `AUTOVPN_PIPELINE_BACKEND`
-- `AUTOVPN_STAGE_BACKEND_EXTRACT`
-- `AUTOVPN_STAGE_BACKEND_DEDUPE`
-- `AUTOVPN_STAGE_BACKEND_SPEEDTEST`
-- `AUTOVPN_STAGE_BACKEND_AVAILABILITY`
-- `AUTOVPN_STAGE_BACKEND_POSTPROCESS`
-- `AUTOVPN_STAGE_BACKEND_RENDER`
-- `AUTOVPN_STAGE_BACKEND_OBFUSCATE`
-- `AUTOVPN_STAGE_BACKEND_DEPLOY`
-- `AUTOVPN_STAGE_BACKEND_VERIFY`
-- `AUTOVPN_DOCTOR_BACKEND`
-- `AUTOVPN_PROFILE_BACKEND`
-- `AUTOVPN_ARTIFACTS_BACKEND`
 - `AUTOVPN_SERVER_HOST`
 - `AUTOVPN_SERVER_PORT`
 - `AUTOVPN_SERVER_TOKEN`

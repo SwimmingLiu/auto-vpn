@@ -7,9 +7,6 @@ export interface SelectBackendOptions extends NodeBackendOptions {
 
 export function selectBackend(options: SelectBackendOptions = {}): AutoVpnBackend {
   const backend = String(options.env?.AUTOVPN_BACKEND ?? '').trim().toLowerCase();
-  if (backend === 'python') {
-    throw new Error('AUTOVPN_BACKEND=python is no longer supported; AutoVPN now runs on the NodeJS engine');
-  }
   if (backend && backend !== 'node') {
     throw new Error(`Unsupported AUTOVPN_BACKEND: ${backend}`);
   }

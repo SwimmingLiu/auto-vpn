@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import http from 'node:http';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -27,6 +28,146 @@ const REMOVED_NAV = [
   '#navMonitor',
   '#navAbout'
 ];
+
+test('renderer updates live global dedupe counts from canonical extract fingerprints and resets them for a new run', async () => {
+  const server = await startStaticServer(path.join(__dirname, '..', 'renderer'));
+  let browser;
+  try {
+    const canonicalFields = {
+      add: '203.0.113.10',
+      port: '443',
+      id: '12345678-1234-1234-1234-123456789abc',
+      net: 'ws',
+      host: 'edge.example.com',
+      path: '/vpn',
+      tls: 'tls',
+      sni: 'edge.example.com'
+    };
+    const firstLink = vmessLink({ ...canonicalFields, ps: 'Leiting display name' });
+    const duplicateLink = vmessLink({ ...canonicalFields, ps: 'Heidong display name' });
+    const duplicateFingerprint = canonicalVmessFingerprint(canonicalFields);
+    const nextFingerprint = canonicalVmessFingerprint({ ...canonicalFields, path: '/next-run' });
+
+    assert.notEqual(firstLink, duplicateLink);
+    assert.equal(canonicalVmessFingerprintFromLink(firstLink), duplicateFingerprint);
+    assert.equal(canonicalVmessFingerprintFromLink(duplicateLink), duplicateFingerprint);
+
+    browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1280, height: 820 } });
+    await page.addInitScript(() => {
+      window.__runCalls = 0;
+      window.__extractEvents = [];
+      window.vpnAutomation = {
+        loadProfile: async () => ({
+          sources: {
+            leiting: { url: 'https://leiting.example/api', key: 'demo', enabled: true, max_iterations: 1 },
+            heidong: { url: 'https://heidong.example/api', key: 'demo', enabled: true, max_iterations: 1 }
+          },
+          speed_test: { min_download_mb_s: 1, timeout_seconds: 20, concurrency: 3 },
+          availability_targets: {},
+          deploy: { cloudflare_api_token: 'test-token' },
+          paths: { project_root: '/tmp/autovpn', artifacts_root: '/tmp/autovpn/artifacts' }
+        }),
+        saveProfile: async () => ({ ok: true }),
+        latestArtifact: async () => ({ ok: false, artifact_dir: '' }),
+        artifactList: async () => ({ ok: true, items: [] }),
+        runPipeline: async () => {
+          window.__runCalls += 1;
+          return { ok: true, pid: 1 };
+        },
+        generateQr: async () => ({ ok: true, dataUrl: 'data:image/mock;base64,dedupe' }),
+        onPipelineEvent: (callback) => {
+          window.__emitPipelineEvent = (event) => {
+            window.__extractEvents.push(structuredClone(event));
+            callback(event);
+          };
+          return () => {};
+        }
+      };
+    });
+
+    await page.goto(`${server.origin}/index.html`);
+    await page.waitForSelector('#dashboardOverview');
+    await page.waitForFunction(() => typeof window.__emitPipelineEvent === 'function');
+    await page.locator('#navRuns').click();
+    await page.locator('#runsWorkspace [data-run-action="start"]').click();
+    await page.waitForFunction(() => window.__runCalls === 1);
+    await page.evaluate((fingerprint) => {
+      window.__emitPipelineEvent({
+        type: 'extract_iteration',
+        source_name: 'leiting',
+        iteration: 1,
+        requested_iterations: 1,
+        new_items: 1,
+        extracted_links: 1,
+        total_links: 1,
+        deduped_links: 1,
+        new_item_fingerprints: [fingerprint]
+      });
+      window.__emitPipelineEvent({
+        type: 'extract_iteration',
+        source_name: 'heidong',
+        iteration: 1,
+        requested_iterations: 1,
+        new_items: 1,
+        extracted_links: 1,
+        total_links: 1,
+        deduped_links: 1,
+        new_item_fingerprints: [fingerprint]
+      });
+    }, duplicateFingerprint);
+
+    await page.locator('#navDashboard').click();
+    const rawMetric = await page.locator('[data-metric-key="raw_links"]').innerText();
+    const dedupedMetric = await page.locator('[data-metric-key="deduped_links"]').innerText();
+    assert.match(rawMetric, /^\s*原始节点\s+2\b/);
+    assert.match(rawMetric, /雷霆 1/);
+    assert.match(rawMetric, /黑洞 1/);
+    assert.match(dedupedMetric, /^\s*去重节点\s+1\b/);
+    assert.match(dedupedMetric, /雷霆 1/);
+    assert.match(dedupedMetric, /黑洞 1/);
+
+    await page.locator('#navLogs').click();
+    const eventAndLogText = await page.evaluate(() => JSON.stringify({
+      events: window.__extractEvents,
+      logs: document.querySelector('#logsWorkspace')?.innerText ?? ''
+    }));
+    assert.doesNotMatch(eventAndLogText, /vmess:\/\//);
+    assert.doesNotMatch(eventAndLogText, new RegExp(firstLink.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.doesNotMatch(eventAndLogText, new RegExp(duplicateLink.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    for (const secret of Object.values(canonicalFields)) {
+      assert.doesNotMatch(eventAndLogText, new RegExp(String(secret).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    }
+    assert.deepEqual(
+      await page.evaluate(() => Object.keys(window.__extractEvents[0]).sort()),
+      ['deduped_links', 'extracted_links', 'iteration', 'new_item_fingerprints', 'new_items', 'requested_iterations', 'source_name', 'total_links', 'type'].sort()
+    );
+
+    await page.evaluate(() => window.__emitPipelineEvent({ type: 'finished', ok: true, code: 0 }));
+    await page.locator('#navRuns').click();
+    await page.locator('#runsWorkspace [data-run-action="start"]').click();
+    await page.waitForFunction(() => window.__runCalls === 2);
+    await page.evaluate((fingerprint) => {
+      window.__emitPipelineEvent({
+        type: 'extract_iteration',
+        source_name: 'leiting',
+        iteration: 1,
+        requested_iterations: 1,
+        new_items: 1,
+        extracted_links: 1,
+        total_links: 1,
+        deduped_links: 1,
+        new_item_fingerprints: [fingerprint]
+      });
+    }, nextFingerprint);
+    await page.locator('#navDashboard').click();
+    assert.match(await page.locator('[data-metric-key="raw_links"]').innerText(), /^\s*原始节点\s+1\b/);
+    assert.match(await page.locator('[data-metric-key="deduped_links"]').innerText(), /^\s*去重节点\s+1\b/);
+  } finally {
+    await browser?.close();
+    await server.close();
+  }
+});
 
 test('renderer hydrates the latest artifact on startup when backend has results', async () => {
   const server = await startStaticServer(path.join(__dirname, '..', 'renderer'));
@@ -781,6 +922,29 @@ async function startStaticServer(rootDir) {
     origin: `http://127.0.0.1:${port}`,
     close: () => new Promise((resolve) => server.close(resolve))
   };
+}
+
+function vmessLink(payload) {
+  return `vmess://${Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url')}`;
+}
+
+function canonicalVmessFingerprint(payload) {
+  const canonical = JSON.stringify([
+    payload.add ?? '',
+    payload.port ?? '',
+    payload.id ?? '',
+    payload.net ?? '',
+    payload.host ?? '',
+    payload.path ?? '',
+    payload.tls ?? '',
+    payload.sni ?? ''
+  ].map((value) => String(value)));
+  return crypto.createHash('sha256').update(canonical).digest('hex');
+}
+
+function canonicalVmessFingerprintFromLink(link) {
+  const payload = JSON.parse(Buffer.from(link.replace(/^vmess:\/\//, ''), 'base64url').toString('utf8'));
+  return canonicalVmessFingerprint(payload);
 }
 
 function contentType(filePath) {
