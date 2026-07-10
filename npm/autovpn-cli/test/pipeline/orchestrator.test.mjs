@@ -195,6 +195,7 @@ test('runNodePipeline blocks deploy when final node count is below the configure
   await setDeployMinFinalLinks(projectRoot, 10);
   const firstLink = vmessLink('first', 'one.example');
   const secondLink = vmessLink('second', 'two.example');
+  const events = [];
 
   await assert.rejects(() => runNodePipeline({
     projectRoot,
@@ -207,6 +208,7 @@ test('runNodePipeline blocks deploy when final node count is below the configure
       VPN_AUTOMATION_PROFILE_PATH: path.join(projectRoot, 'state', 'profile.toml')
     },
     now: () => new Date('2026-06-29T01:02:03Z'),
+    emit: (event) => events.push(event),
     stages: {
       extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink, secondLink] }),
       speedtest: async (links) => links.map((link) => ({ link, reachable: true, average_download_mb_s: 3, latency_ms: 20, error: '' })),
@@ -218,6 +220,11 @@ test('runNodePipeline blocks deploy when final node count is below the configure
       }
     }
   }), /final node count 2 is below deploy minimum 10/);
+
+  const summary = events.find((event) => event.type === 'summary');
+  assert.equal(summary.stage_status.speedtest, 'success');
+  assert.equal(summary.stage_status.availability, 'success');
+  assert.equal(summary.stage_status.deploy, 'failed');
 });
 
 test('runNodePipeline globally probes and ranks streamed links before bounded downloads', async () => {
@@ -374,13 +381,18 @@ test('runNodePipeline drains sibling speedtest workers before terminal failure e
         } finally {
           delayedResourceClosed = true;
         }
-      }
+      },
+      availability: async (results) => results.map((result) => ({ ...result, all_passed: true, provider_results: {} }))
     }
   }), /first candidate failed/);
 
   assert.equal(delayedResourceClosed, true);
-  await new Promise((resolve) => setTimeout(resolve, 60));
   assert.equal(events.at(-1).type, 'run_failed');
+  const summary = events.at(-2);
+  assert.equal(summary.type, 'summary');
+  assert.equal(summary.stage_status.speedtest, 'failed');
+  assert.equal(summary.stage_status.availability, 'failed');
+  assert.equal(Object.values(summary.stage_status).includes('running'), false);
 });
 
 test('runNodePipeline forwards native speedtest progress events to the job log', async () => {
@@ -434,14 +446,19 @@ test('runNodePipeline forwards native speedtest progress events to the job log',
   assert.ok(events.some((event) => event.type === 'speedtest_result' && event.link === firstLink));
 });
 
-test('runNodePipeline starts availability only after selected speedtests finish', async () => {
+test('runNodePipeline streams passing speedtests into availability before remaining downloads finish', async () => {
   const projectRoot = await makeProject();
   const firstLink = vmessLink('first', 'one.example');
   const secondLink = vmessLink('second', 'two.example');
   let selectedSpeedtestsFinished = 0;
-  let availabilityObservedCompleted = 0;
+  let releaseSecondSpeedtest;
+  let firstAvailabilitySeen;
+  const availabilityStarted = new Promise((resolve) => {
+    firstAvailabilitySeen = resolve;
+  });
+  const events = [];
 
-  await runNodePipeline({
+  const runPromise = runNodePipeline({
     projectRoot,
     skipDeploy: true,
     skipVerify: true,
@@ -452,6 +469,7 @@ test('runNodePipeline starts availability only after selected speedtests finish'
       VPN_AUTOMATION_PROFILE_PATH: path.join(projectRoot, 'state', 'profile.toml')
     },
     now: () => new Date('2026-06-29T01:02:03Z'),
+    emit: (event) => events.push(event),
     stages: {
       extract: async () => ({
         source_name: 'fixture',
@@ -462,12 +480,16 @@ test('runNodePipeline starts availability only after selected speedtests finish'
       }),
       speedtestProbe: async (links) => links.map((link, index) => ({ link, reachable: true, latency_ms: 10 + index, error: '' })),
       speedtestLink: async (link) => {
-        await new Promise((resolve) => setTimeout(resolve, link === firstLink ? 5 : 10));
+        if (link === secondLink) {
+          await new Promise((resolve) => {
+            releaseSecondSpeedtest = resolve;
+          });
+        }
         selectedSpeedtestsFinished += 1;
         return { link, reachable: true, average_download_mb_s: 3, latency_ms: 20, error: '' };
       },
       availability: async (results) => {
-        availabilityObservedCompleted = selectedSpeedtestsFinished;
+        if (results.some((result) => result.link === firstLink)) firstAvailabilitySeen();
         return results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} }));
       },
       countryLookup: () => 'US',
@@ -475,8 +497,51 @@ test('runNodePipeline starts availability only after selected speedtests finish'
     }
   });
 
+  const overlapped = await Promise.race([
+    availabilityStarted.then(() => true),
+    new Promise((resolve) => setTimeout(() => resolve(false), 100))
+  ]);
+  releaseSecondSpeedtest?.();
+  const result = await runPromise;
+
+  assert.equal(overlapped, true);
   assert.equal(selectedSpeedtestsFinished, 2);
-  assert.equal(availabilityObservedCompleted, 2);
+  assert.equal(events.filter((event) => event.type === 'availability_link_result').length, 2);
+  const availabilityRunning = events.findIndex((event) => event.type === 'stage' && event.stage === 'availability' && event.status === 'running');
+  const speedtestSuccess = events.findIndex((event) => event.type === 'stage' && event.stage === 'speedtest' && event.status === 'success');
+  assert.ok(availabilityRunning > -1 && availabilityRunning < speedtestSuccess);
+  assert.deepEqual(
+    JSON.parse(await readFile(path.join(result.artifact_dir, 'vpn_node_availability_report.json'), 'utf8')).map((entry) => vmessName(entry.link)),
+    ['first', 'second']
+  );
+});
+
+test('runNodePipeline does not claim speedtest or availability are running during extraction', async () => {
+  const projectRoot = await makeProject();
+  const firstLink = vmessLink('first', 'one.example');
+  const events = [];
+
+  await runNodePipeline({ projectRoot, skipDeploy: true, skipVerify: true, output: 'jsonl' }, {
+    env: {
+      VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'),
+      VPN_AUTOMATION_PROFILE_PATH: path.join(projectRoot, 'state', 'profile.toml')
+    },
+    emit: (event) => events.push(event),
+    stages: {
+      extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink] }),
+      speedtestProbe: async (links) => links.map((link) => ({ link, reachable: true, latency_ms: 10, error: '' })),
+      speedtestLink: async (link) => ({ link, reachable: true, average_download_mb_s: 3, latency_ms: 10, error: '' }),
+      availability: async (results) => results.map((result) => ({ ...result, all_passed: true, provider_results: {} })),
+      countryLookup: () => 'US',
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
+    }
+  });
+
+  const extractSuccess = events.findIndex((event) => event.type === 'stage' && event.stage === 'extract' && event.status === 'success');
+  const speedtestRunning = events.findIndex((event) => event.type === 'stage' && event.stage === 'speedtest' && event.status === 'running');
+  const availabilityRunning = events.findIndex((event) => event.type === 'stage' && event.stage === 'availability' && event.status === 'running');
+  assert.ok(extractSuccess > -1 && speedtestRunning > extractSuccess);
+  assert.ok(availabilityRunning > speedtestRunning);
 });
 
 test('runNodePipeline fails fast when no links pass speedtest', async () => {
