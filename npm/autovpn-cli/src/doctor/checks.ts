@@ -6,6 +6,7 @@ import { parse } from '@iarna/toml';
 
 import { profileSummary } from '../config/profile.js';
 import { resolveArtifactsRoot, resolveProfilePath } from '../runtime/paths.js';
+import { resolveShareWorkerTemplatePath, resolveWorkerTemplatePath } from '../runtime/templates.js';
 import {
   normalizeManagedToolCommandForSpawn,
   resolveManagedNpmTool,
@@ -272,6 +273,18 @@ export async function runDoctor(
   const configuredSources = sourceValues.filter((source) => source.enabled && source.url === 'set' && source.key === 'set');
   const nodeToolChecks = await checkNodeTools(projectRoot, env, options);
   const cloudflareChecks = await checkCloudflare(summary, deploy, env, projectRoot, options);
+  let workerTemplatePath = '';
+  let shareWorkerTemplatePath = '';
+  try {
+    workerTemplatePath = resolveWorkerTemplatePath(projectRoot);
+  } catch {
+    workerTemplatePath = '';
+  }
+  try {
+    shareWorkerTemplatePath = resolveShareWorkerTemplatePath(projectRoot, env);
+  } catch {
+    shareWorkerTemplatePath = '';
+  }
   const checks: DoctorCheck[] = [
     check('node_version', 'pass', `Node ${process.versions.node}`, { required: '>=20' }),
     check('project_root', 'pass', 'Project root resolved', { path: projectRoot }),
@@ -289,15 +302,15 @@ export async function runDoctor(
     ),
     check(
       'worker_template',
-      fs.existsSync(path.join(projectRoot, 'templates', 'vmess_node.js')) ? 'pass' : 'fail',
-      fs.existsSync(path.join(projectRoot, 'templates', 'vmess_node.js')) ? 'Worker template exists' : 'Worker template is missing',
-      { path: path.join(projectRoot, 'templates', 'vmess_node.js') }
+      workerTemplatePath ? 'pass' : 'fail',
+      workerTemplatePath ? 'Worker template exists' : 'Worker template is missing',
+      { path: workerTemplatePath || path.join(projectRoot, 'templates', 'vmess_node.js') }
     ),
     check(
       'share_worker_template',
-      fs.existsSync(path.join(projectRoot, 'templates', 'share-worker', 'vpn.js')) ? 'pass' : 'warn',
-      fs.existsSync(path.join(projectRoot, 'templates', 'share-worker', 'vpn.js')) ? 'Share worker template exists' : 'Share worker template is missing',
-      { path: path.join(projectRoot, 'templates', 'share-worker', 'vpn.js') }
+      shareWorkerTemplatePath ? 'pass' : 'warn',
+      shareWorkerTemplatePath ? 'Share worker template exists' : 'Share worker template is missing',
+      { path: shareWorkerTemplatePath || path.join(projectRoot, 'templates', 'share-worker', 'vpn.js') }
     ),
     configuredSources.length
       ? check('sources', 'pass', 'At least one enabled source is configured', { configured_count: configuredSources.length })

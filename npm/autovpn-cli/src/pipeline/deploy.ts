@@ -1,7 +1,8 @@
 import path from 'node:path';
 import { spawn as defaultSpawn, ChildProcess } from 'node:child_process';
-import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { mergeProjectEnv } from '../runtime/env.js';
+import { resolveShareWorkerTemplatePath } from '../runtime/templates.js';
 import {
   normalizeManagedToolCommandForSpawn,
   resolveManagedNpmTool,
@@ -121,6 +122,7 @@ sys.stdout.write("\\n")
 `;
 
 const PAGES_PRODUCTION_BRANCH = 'main';
+const CLOUDFLARE_API_MAX_ATTEMPTS = 3;
 const FALLBACK_SUFFIX_PATTERN = /^(?<prefix>.+)-(?<suffix>\d+)$/;
 const CLOUDFLARE_API_BASE_URL = 'https://api.cloudflare.com/client/v4';
 const NETWORK_ERROR_MARKERS = [
@@ -471,54 +473,12 @@ function buildShareProjectUpdatePayload(
   };
 }
 
-async function fileExists(candidate: string): Promise<boolean> {
-  try {
-    await access(candidate);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function expandHomePath(candidate: string): string {
-  if (candidate === '~') {
-    return process.env.HOME || candidate;
-  }
-  if (candidate.startsWith('~/')) {
-    return process.env.HOME ? path.join(process.env.HOME, candidate.slice(2)) : candidate;
-  }
-  return candidate;
-}
-
-async function resolveShareProjectWorkerSourcePath(projectRoot: string, env: NodeJS.ProcessEnv): Promise<string> {
-  const candidates = [
-    clean(env.VPN_AUTOMATION_SHARE_WORKER_PATH),
-    path.join(projectRoot, 'electron', 'runtime', 'share-worker', 'vpn.js'),
-    path.join(projectRoot, 'templates', 'share-worker', 'vpn.js'),
-    path.join(path.dirname(projectRoot), 'cloudflarevpn', 'edgetunnel', 'vpn.js')
-  ].filter(Boolean).map((candidate) => path.resolve(expandHomePath(candidate)));
-  const seen = new Set<string>();
-  const uniqueCandidates = candidates.filter((candidate) => {
-    if (seen.has(candidate)) {
-      return false;
-    }
-    seen.add(candidate);
-    return true;
-  });
-  for (const candidate of uniqueCandidates) {
-    if (await fileExists(candidate)) {
-      return candidate;
-    }
-  }
-  throw new Error(`share worker source not found; tried: ${uniqueCandidates.join(', ')}`);
-}
-
 function buildShareProjectBundleDir(projectRoot: string): string {
   return path.join(projectRoot, 'electron', 'runtime', 'share-worker', 'share_pages_bundle');
 }
 
 async function stageShareProjectWorkerBundle(projectRoot: string, env: NodeJS.ProcessEnv): Promise<{ sourcePath: string; bundleDir: string; workerEntry: string }> {
-  const sourcePath = await resolveShareProjectWorkerSourcePath(projectRoot, env);
+  const sourcePath = resolveShareWorkerTemplatePath(projectRoot, env);
   const bundleDir = buildShareProjectBundleDir(projectRoot);
   const workerEntry = path.join(bundleDir, '_worker.js');
   await mkdir(bundleDir, { recursive: true });
@@ -649,12 +609,28 @@ export class CloudflareHttpClient implements CloudflareDeployClient {
     this.fetchImpl = options.fetch ?? fetch;
   }
 
+  private async fetchWithTransientRetries(input: string, options: RequestInit, timeoutMs: number): Promise<Response> {
+    for (let attempt = 1; attempt <= CLOUDFLARE_API_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        return await this.fetchImpl(input, {
+          ...options,
+          signal: options.signal ?? AbortSignal.timeout(timeoutMs)
+        });
+      } catch (error) {
+        const retryable = error instanceof TypeError && !options.signal?.aborted;
+        if (!retryable || attempt === CLOUDFLARE_API_MAX_ATTEMPTS) {
+          throw error;
+        }
+      }
+    }
+    throw new Error('Cloudflare request failed');
+  }
+
   private async apiRequest(pathname: string, options: RequestInit = {}): Promise<unknown> {
-    const response = await this.fetchImpl(`${CLOUDFLARE_API_BASE_URL}${pathname}`, {
+    const response = await this.fetchWithTransientRetries(`${CLOUDFLARE_API_BASE_URL}${pathname}`, {
       ...options,
-      headers: { ...this.headers, ...(options.headers as Record<string, string> | undefined) },
-      signal: options.signal ?? AbortSignal.timeout(20_000)
-    });
+      headers: { ...this.headers, ...(options.headers as Record<string, string> | undefined) }
+    }, 20_000);
     if (!response.ok) {
       const body = await responseBodyText(response);
       throw new Error(`Cloudflare API request failed (${response.status}): ${body || response.statusText}`);
@@ -828,10 +804,7 @@ export class CloudflareHttpClient implements CloudflareDeployClient {
   }
 
   async verifyUrl(url: string, expectedFragment = ''): Promise<boolean> {
-    const response = await this.fetchImpl(url, {
-      method: 'GET',
-      signal: AbortSignal.timeout(30_000)
-    });
+    const response = await this.fetchWithTransientRetries(url, { method: 'GET' }, 30_000);
     if (!response.ok) {
       const body = await responseBodyText(response);
       throw new Error(`URL verification failed (${response.status}): ${body || response.statusText}`);

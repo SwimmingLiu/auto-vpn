@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -95,6 +95,35 @@ test('runNodePipeline emits compatible events and writes non-deploy artifacts', 
   const decoratedNames = (await readFile(path.join(artifactDir, 'vpn_node_emoji.txt'), 'utf8')).trim().split(/\n/).map(vmessName);
   assert.deepEqual(decoratedNames, ['\u{1F1FA}\u{1F1F8} US first', '\u{1F1FA}\u{1F1F8} US second']);
   assert.equal(JSON.parse(await readFile(path.join(artifactDir, 'pipeline_report.json'), 'utf8')).run_status, 'success');
+});
+
+test('runNodePipeline renders with the npm template when the project has no template', async () => {
+  const projectRoot = await makeProject();
+  await rm(path.join(projectRoot, 'templates', 'vmess_node.js'));
+  const firstLink = vmessLink('first', 'one.example');
+
+  const result = await runNodePipeline({
+    projectRoot,
+    skipDeploy: true,
+    skipVerify: true,
+    output: 'jsonl'
+  }, {
+    env: {
+      VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'),
+      VPN_AUTOMATION_PROFILE_PATH: path.join(projectRoot, 'state', 'profile.toml')
+    },
+    now: () => new Date('2026-06-29T01:02:03Z'),
+    stages: {
+      extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink] }),
+      speedtest: async (links) => links.map((link) => ({ link, reachable: true, average_download_mb_s: 3, latency_ms: 20, error: '' })),
+      availability: async (results) => results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} })),
+      countryLookup: () => 'US',
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
+    }
+  });
+
+  assert.equal(result.run_status, 'success');
+  assert.equal(result.stage_status.render, 'success');
 });
 
 test('runNodePipeline blocks deploy when final node count is below the configured minimum', async () => {
@@ -999,6 +1028,59 @@ test('retryNodePipelineStage passes only speedtest winners into availability whe
   });
 
   assert.deepEqual(availabilityInputs, [[firstLink]]);
+});
+
+test('retryNodePipelineStage postprocesses only availability winners', async () => {
+  const projectRoot = await makeProject();
+  const firstLink = vmessLink('first', 'one.example');
+  const secondLink = vmessLink('second', 'two.example');
+  const runtimeRoot = path.join(projectRoot, '.runtime');
+  const profilePath = path.join(projectRoot, 'state', 'profile.toml');
+  const env = {
+    VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot,
+    VPN_AUTOMATION_PROFILE_PATH: profilePath
+  };
+  const source = await runNodePipeline({
+    projectRoot,
+    skipDeploy: true,
+    skipVerify: true,
+    output: 'jsonl'
+  }, {
+    env,
+    now: () => new Date('2026-06-29T01:02:03Z'),
+    stages: {
+      extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink, secondLink] }),
+      speedtest: async (links) => links.map((link) => ({ link, reachable: true, average_download_mb_s: 3, latency_ms: 20, error: '' })),
+      availability: async (results) => results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} })),
+      countryLookup: () => 'US',
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
+    }
+  });
+  const postprocessInputs = [];
+
+  const retry = await retryNodePipelineStage({
+    projectRoot,
+    artifactDir: source.artifact_dir,
+    stage: 'availability',
+    output: 'jsonl'
+  }, {
+    env,
+    now: () => new Date('2026-06-29T01:02:04Z'),
+    stages: {
+      availability: async (results) => results.map((speedResult, index) => ({ ...speedResult, all_passed: index === 0, provider_results: {} })),
+      countryLookup: (link) => {
+        postprocessInputs.push(link);
+        return 'US';
+      },
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } }),
+      deploy: async () => ({ returncode: 0, stdout: '', stderr: '', attempts: [] }),
+      verify: async () => ({ pages_domain_ok: true, secret_ok: true, subscription_ok: true })
+    }
+  });
+
+  assert.deepEqual(postprocessInputs, [firstLink]);
+  assert.equal(retry.counts.availability_links, 1);
+  assert.equal(retry.counts.final_links, 1);
 });
 
 test('retryNodePipelineStage rejects and emits run_failed when retry stage has no winners', async () => {

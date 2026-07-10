@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { chmod, mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -78,6 +78,25 @@ test('Node doctor resolves managed JavaScript tools without installing missing t
   assert.deepEqual(safeRunCalls.at(-1), ['/managed/bin/wrangler', 'pages', 'deploy', '--help']);
   assert.equal(checks.javascript_obfuscator.status, 'pass');
   assert.equal(checks.wrangler.status, 'pass');
+});
+
+test('Node doctor accepts the Worker template shipped in the npm package', async () => {
+  const { root, runtimeRoot } = await makeProjectRoot();
+  await rm(path.join(root, 'templates'), { recursive: true });
+
+  const result = await runDoctor(root, [], {
+    HOME: process.env.HOME,
+    PATH: process.env.PATH,
+    VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot
+  }, {
+    safeRun: () => ({ ok: true, message: 'ok' })
+  });
+  const checks = Object.fromEntries(result.payload.checks.map((item) => [item.name, item]));
+
+  assert.equal(checks.worker_template.status, 'pass');
+  assert.match(checks.worker_template.details.path, /npm\/autovpn-cli\/dist\/templates\/vmess_node\.js$/);
+  assert.equal(checks.share_worker_template.status, 'pass');
+  assert.match(checks.share_worker_template.details.path, /npm\/autovpn-cli\/dist\/templates\/share-worker\/vpn\.js$/);
 });
 
 test('Node doctor does not require npx when node and npm are present', async () => {
