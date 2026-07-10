@@ -58,23 +58,64 @@ enabled = true
 url = "https://claude.ai/cdn-cgi/trace"
 enabled = true`;
   const availabilityStart = normalizedPayload.indexOf('[availability_targets]');
+  let withAvailability;
   if (availabilityStart === -1) {
-    return `${normalizedPayload.trimEnd()}\n\n${availabilityBlock}\n`;
+    withAvailability = `${normalizedPayload.trimEnd()}\n\n${availabilityBlock}\n`;
+  } else {
+    const afterAvailability = normalizedPayload.slice(availabilityStart + '[availability_targets]'.length);
+    const nextTopLevelMatch = afterAvailability.match(/\n\[[^\].\n]+]/);
+    if (nextTopLevelMatch?.index === undefined) {
+      withAvailability = `${normalizedPayload.slice(0, availabilityStart).trimEnd()}\n\n${availabilityBlock}\n`;
+    } else {
+      const availabilityEnd = availabilityStart + '[availability_targets]'.length + nextTopLevelMatch.index;
+      withAvailability = `${normalizedPayload.slice(0, availabilityStart).trimEnd()}\n\n${availabilityBlock}\n\n${normalizedPayload.slice(availabilityEnd).trimStart()}`;
+    }
   }
 
-  const afterAvailability = normalizedPayload.slice(availabilityStart + '[availability_targets]'.length);
-  const nextTopLevelMatch = afterAvailability.match(/\n\[[^\].\n]+]/);
-  if (nextTopLevelMatch?.index === undefined) {
-    return `${normalizedPayload.slice(0, availabilityStart).trimEnd()}\n\n${availabilityBlock}\n`;
-  }
-
-  const availabilityEnd = availabilityStart + '[availability_targets]'.length + nextTopLevelMatch.index;
-  return `${normalizedPayload.slice(0, availabilityStart).trimEnd()}\n\n${availabilityBlock}\n\n${normalizedPayload.slice(availabilityEnd).trimStart()}`;
+  const deploySecretKeys = new Set([
+    'subscription_url',
+    'verify_subscription_url',
+    'secret_query',
+    'account_id',
+    'cloudflare_api_token',
+    'cloudflare_global_key',
+    'cloudflare_email',
+    'pages_secret_admin'
+  ]);
+  let section = '';
+  return withAvailability.split(/\r?\n/).map((line) => {
+    const sectionMatch = /^\s*\[([^\]]+)]\s*$/.exec(line);
+    if (sectionMatch) {
+      section = sectionMatch[1];
+      return line;
+    }
+    const fieldMatch = /^(\s*)([A-Za-z0-9_]+)(\s*=\s*).*$/.exec(line);
+    if (!fieldMatch) {
+      return line;
+    }
+    const key = fieldMatch[2];
+    const sourceCredential = section.startsWith('sources.') && ['url', 'key'].includes(key);
+    const deployCredential = section === 'deploy' && deploySecretKeys.has(key);
+    if (!sourceCredential && !deployCredential) {
+      return line;
+    }
+    return `${fieldMatch[1]}${key}${fieldMatch[3]}""`;
+  }).join('\n');
 }
 
 function stageBundledProfile(sourcePath, bundledSeedPath) {
   const payload = fs.readFileSync(sourcePath, 'utf8');
   fs.writeFileSync(bundledSeedPath, sanitizeBundledProfileToml(payload), 'utf8');
+}
+
+export function stageBundledProfileForPackaging(projectRoot) {
+  const { runtimeDir, defaultSeedPath, bundledSeedPath } = resolveRuntimePaths(projectRoot);
+  fs.mkdirSync(runtimeDir, { recursive: true });
+  if (!fs.existsSync(defaultSeedPath)) {
+    return undefined;
+  }
+  stageBundledProfile(defaultSeedPath, bundledSeedPath);
+  return bundledSeedPath;
 }
 
 export function resolveShareWorkerPaths(projectRoot) {
@@ -689,19 +730,15 @@ export function cleanElectronOutputDir(projectRoot) {
 }
 
 export function runPackaging(projectRoot) {
-  const { runtimeDir, defaultSeedPath, bundledSeedPath, liveProfilePath } = resolveRuntimePaths(projectRoot);
+  const { runtimeDir } = resolveRuntimePaths(projectRoot);
   const platforms = buildPackagePlatformList();
   const archs = buildPackageArchList();
   logPackageStage(`Packaging platforms=${platforms.join(',')} archs=${archs.join(',')}`);
   cleanElectronOutputDir(projectRoot);
   fs.mkdirSync(runtimeDir, { recursive: true });
 
-  if (fs.existsSync(liveProfilePath)) {
-    logPackageStage('Bundling runtime profile from live profile');
-    stageBundledProfile(liveProfilePath, bundledSeedPath);
-  } else if (fs.existsSync(defaultSeedPath)) {
-    logPackageStage('Bundling runtime profile from default profile');
-    stageBundledProfile(defaultSeedPath, bundledSeedPath);
+  if (stageBundledProfileForPackaging(projectRoot)) {
+    logPackageStage('Bundling sanitized runtime profile from default profile');
   }
 
   logPackageStage('Staging share worker runtime');

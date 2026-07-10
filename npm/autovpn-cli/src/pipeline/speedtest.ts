@@ -655,6 +655,17 @@ async function speedtestInNode(input: SpeedTestInput, options: SpeedTestBackendO
   });
 
   const probes = await probeLinks(input.links, config, { runtime_path: runtimePath });
+  for (let index = 0; index < probes.length; index += 1) {
+    const probe = probes[index];
+    emitEvent(options.eventCallback, 'speedtest_probe_result', {
+      completed: index + 1,
+      total: input.links.length,
+      link: probe.link,
+      reachable: probe.reachable,
+      latency_ms: probe.latency_ms,
+      error: probe.error ?? ''
+    });
+  }
   const candidateLinks = selectSpeedtestCandidates(probes, config.max_download_candidates);
   const probeByLink = new Map(probes.map((probe) => [probe.link, probe]));
   const candidateSet = new Set(candidateLinks);

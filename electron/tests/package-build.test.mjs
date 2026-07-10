@@ -22,6 +22,7 @@ import {
   resolveLiveProfilePath,
   resolvePythonVendorRuntimePaths,
   sanitizeBundledProfileToml,
+  stageBundledProfileForPackaging,
   resolveShareWorkerPaths,
   buildCommandSpawnOptions,
   runOrThrow,
@@ -171,6 +172,47 @@ project_name = "sub-links-auto"
   assert.match(sanitized, /\[availability_targets\.chatgpt_ios\]/);
   assert.match(sanitized, /\[deploy\]/);
   assert.match(sanitized, /project_name = "sub-links-auto"/);
+});
+
+test('sanitizeBundledProfileToml blanks source and deploy credentials', () => {
+  const sanitized = sanitizeBundledProfileToml(`[sources.fixture]
+url = "PRIVATE_VALUE_1"
+key = "PRIVATE_VALUE_2"
+enabled = true
+
+[deploy]
+project_name = "structural-default"
+subscription_url = "PRIVATE_VALUE_3"
+verify_subscription_url = "PRIVATE_VALUE_4"
+secret_query = "PRIVATE_VALUE_5"
+account_id = "PRIVATE_VALUE_6"
+cloudflare_api_token = "PRIVATE_VALUE_7"
+cloudflare_global_key = "PRIVATE_VALUE_8"
+cloudflare_email = "PRIVATE_VALUE_9"
+pages_secret_admin = "PRIVATE_VALUE_10"
+cloudflare_auth_mode = "api_token"
+`);
+
+  assert.doesNotMatch(sanitized, /PRIVATE_VALUE_/);
+  assert.match(sanitized, /\[sources\.fixture\]\nurl = ""\nkey = ""\nenabled = true/);
+  assert.match(sanitized, /project_name = "structural-default"/);
+  assert.match(sanitized, /cloudflare_auth_mode = "api_token"/);
+  assert.equal((sanitized.match(/= ""/g) ?? []).length, 10);
+});
+
+test('packaging profile staging always uses the sanitized default seed', () => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'vpn-packaged-profile-'));
+  const runtimeDir = path.join(projectRoot, 'electron', 'runtime');
+  fs.mkdirSync(runtimeDir, { recursive: true });
+  fs.mkdirSync(path.join(projectRoot, 'state'), { recursive: true });
+  fs.writeFileSync(path.join(runtimeDir, 'default-profile.toml'), '[deploy]\nproject_name = "default-seed"\nsecret_query = ""\n', 'utf8');
+  fs.writeFileSync(path.join(projectRoot, 'state', 'profile.toml'), '[deploy]\nproject_name = "live-state"\nsecret_query = "PRIVATE_VALUE_1"\n', 'utf8');
+
+  const bundledPath = stageBundledProfileForPackaging(projectRoot);
+  const bundled = fs.readFileSync(bundledPath, 'utf8');
+
+  assert.match(bundled, /project_name = "default-seed"/);
+  assert.doesNotMatch(bundled, /live-state|PRIVATE_VALUE_/);
 });
 
 test('buildSvgIconRenderHtml renders the app icon on a transparent canvas', () => {

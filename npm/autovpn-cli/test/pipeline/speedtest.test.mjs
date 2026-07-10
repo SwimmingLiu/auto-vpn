@@ -288,8 +288,21 @@ test('Node speedtest backend preserves order semantics, emits progress and event
   assert.deepEqual(results.map((result) => result.link), ['vmess://c', 'vmess://b', 'vmess://d']);
   assert.equal(progress[0], '[speedtest] runtime_core=mihomo probe_url=https://www.gstatic.com/generate_204');
   assert.match(progress.at(-1), /\[speedtest\] 2\/2 reachable=true speed=1.7MB\/s/);
-  assert.deepEqual(events.map((event) => event.type), ['speedtest_runtime', 'speedtest_selected', 'speedtest_result', 'speedtest_result']);
-  assert.equal(events[1].candidate_count, 2);
+  assert.deepEqual(events.map((event) => event.type), [
+    'speedtest_runtime',
+    'speedtest_probe_result',
+    'speedtest_probe_result',
+    'speedtest_probe_result',
+    'speedtest_probe_result',
+    'speedtest_selected',
+    'speedtest_result',
+    'speedtest_result'
+  ]);
+  assert.equal(events[5].candidate_count, 2);
+  assert.deepEqual(
+    events.filter((event) => event.type === 'speedtest_probe_result').map((event) => event.link),
+    input.links
+  );
 });
 
 test('Node speedtest backend runs full download candidates with configured concurrency', async () => {

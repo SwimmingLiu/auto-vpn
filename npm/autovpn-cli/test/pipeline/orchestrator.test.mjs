@@ -1040,6 +1040,66 @@ test('retryNodePipelineStage passes only speedtest winners into availability whe
   assert.deepEqual(availabilityInputs, [[firstLink]]);
 });
 
+test('retryNodePipelineStage emits one final probe event per retried node', async () => {
+  const projectRoot = await makeProject();
+  const firstLink = vmessLink('first', 'one.example');
+  const secondLink = vmessLink('second', 'two.example');
+  const runtimeRoot = path.join(projectRoot, '.runtime');
+  const profilePath = path.join(projectRoot, 'state', 'profile.toml');
+  const env = {
+    VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot,
+    VPN_AUTOMATION_PROFILE_PATH: profilePath,
+    AUTOVPN_SPEEDTEST_RUNTIME: 'direct'
+  };
+  await writeFile(profilePath, (await readFile(profilePath, 'utf8')).replace('min_download_mb_s = 1', 'min_download_mb_s = 0.5'), 'utf8');
+  const source = await runNodePipeline({
+    projectRoot,
+    skipDeploy: true,
+    skipVerify: true,
+    output: 'jsonl'
+  }, {
+    env,
+    now: () => new Date('2026-06-29T01:02:03Z'),
+    stages: {
+      extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink, secondLink] }),
+      speedtest: async (links) => links.map((link) => ({ link, reachable: true, average_download_mb_s: 3, latency_ms: 20, error: '' })),
+      availability: async (results) => results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} })),
+      countryLookup: () => 'US',
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
+    }
+  });
+  const events = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => String(url).includes('generate_204')
+    ? { ok: true, status: 204, arrayBuffer: async () => new ArrayBuffer(0) }
+    : { ok: true, status: 200, arrayBuffer: async () => new Uint8Array(5_000_000).buffer };
+  try {
+    await retryNodePipelineStage({
+      projectRoot,
+      artifactDir: source.artifact_dir,
+      stage: 'speedtest',
+      output: 'jsonl'
+    }, {
+      env,
+      now: () => new Date('2026-06-29T01:02:04Z'),
+      emit: (event) => events.push(event),
+      stages: {
+        availability: async (results) => results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} })),
+        countryLookup: () => 'US',
+        obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } }),
+        deploy: async () => ({ returncode: 0, stdout: '', stderr: '', attempts: [] }),
+        verify: async () => ({ pages_domain_ok: true, secret_ok: true, subscription_ok: true })
+      }
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  const probeEvents = events.filter((event) => event.type === 'speedtest_probe_result');
+  assert.equal(probeEvents.length, 2);
+  assert.deepEqual(probeEvents.map((event) => event.link), [firstLink, secondLink]);
+});
+
 test('retryNodePipelineStage postprocesses only availability winners', async () => {
   const projectRoot = await makeProject();
   const firstLink = vmessLink('first', 'one.example');
