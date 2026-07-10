@@ -455,7 +455,8 @@ export async function downloadUrlViaHttpProxy(
 async function probeLinksDirect(
   links: string[],
   config: Required<SpeedTestConfigInput>,
-  options: SpeedTestBackendOptions
+  options: SpeedTestBackendOptions,
+  onComplete?: (result: ProbeResult, completed: number) => void
 ): Promise<ProbeResult[]> {
   const fetchImpl = options.fetch ?? globalThis.fetch?.bind(globalThis);
   if (!fetchImpl) {
@@ -475,14 +476,15 @@ async function probeLinksDirect(
     } catch (error) {
       return { link, reachable: false, latency_ms: 0, error: error instanceof Error ? error.message : String(error) };
     }
-  });
+  }, (result, _index, completed) => onComplete?.(result, completed));
 }
 
 async function probeLinksMihomo(
   links: string[],
   config: Required<SpeedTestConfigInput>,
   runtimePath: string,
-  options: SpeedTestBackendOptions
+  options: SpeedTestBackendOptions,
+  onComplete?: (result: ProbeResult, completed: number) => void
 ): Promise<ProbeResult[]> {
   const openRuntime = options.openMihomoRuntime ?? defaultOpenMihomoRuntime;
   const probeDelay = options.probeMihomoProxyDelay ?? defaultProbeMihomoProxyDelay;
@@ -505,7 +507,7 @@ async function probeLinksMihomo(
     } catch (error) {
       return { link, reachable: false, latency_ms: 0, error: error instanceof Error ? error.message : String(error) };
     }
-  });
+  }, (result, _index, completed) => onComplete?.(result, completed));
 }
 
 async function testLinkDirect(
@@ -699,12 +701,25 @@ export async function probeSpeedtestLinksInNode(input: SpeedTestInput, options: 
   const runtimePath = input.runtime_path ?? '';
   const requestedRuntime = String((options.env ?? process.env).AUTOVPN_SPEEDTEST_RUNTIME ?? '').trim().toLowerCase();
   const useMihomoRuntime = requestedRuntime !== 'direct';
-  const probeLinks = options.probeLinks ?? ((links: string[]) => (
-    useMihomoRuntime
-      ? probeLinksMihomo(links, config, runtimePath, options)
-      : probeLinksDirect(links, config, options)
-  ));
-  return probeLinks(input.links, config, { runtime_path: runtimePath });
+  const emitProbe = (result: ProbeResult, completed: number): void => {
+    options.progressCallback?.(`[speedtest:probe] ${completed}/${input.links.length} reachable=${result.reachable} latency=${result.latency_ms}ms`);
+    emitEvent(options.eventCallback, 'speedtest_probe_result', {
+      completed,
+      total: input.links.length,
+      link: result.link,
+      reachable: result.reachable,
+      latency_ms: result.latency_ms,
+      error: result.error ?? ''
+    });
+  };
+  if (options.probeLinks) {
+    const results = await options.probeLinks(input.links, config, { runtime_path: runtimePath });
+    results.forEach((result, index) => emitProbe(result, index + 1));
+    return results;
+  }
+  return useMihomoRuntime
+    ? probeLinksMihomo(input.links, config, runtimePath, options, emitProbe)
+    : probeLinksDirect(input.links, config, options, emitProbe);
 }
 
 export async function testSpeedtestLinkInNode(input: { link: string; config: SpeedTestConfigInput; runtime_path?: string }, options: SpeedTestBackendOptions = {}): Promise<SpeedTestResult> {
