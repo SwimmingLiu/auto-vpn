@@ -24,6 +24,20 @@ import {
   resolveStateProfilePath
 } from '../paths.js';
 
+function ensureNodeCliBuilt(projectRoot) {
+  const cliRoot = path.join(projectRoot, 'npm', 'autovpn-cli');
+  const compiledEntry = path.join(cliRoot, 'dist', 'cli', 'main.js');
+  if (fs.existsSync(compiledEntry)) {
+    return;
+  }
+
+  const result = spawnSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'build', '--prefix', cliRoot], {
+    cwd: projectRoot,
+    encoding: 'utf-8'
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+}
+
 test('qrcode package is available for real subscription QR images', async () => {
   const QRCode = await import('qrcode');
   const dataUrl = await QRCode.default.toDataURL('https://example.invalid/subscription');
@@ -49,8 +63,10 @@ test('buildBackendInvocation runs the npm Node CLI with jsonl output in developm
 });
 
 test('resolved Node CLI is runnable from a clean Electron checkout', () => {
-  const result = spawnSync(process.execPath, [backend.resolveNodeCliEntry(process.cwd()), '--version'], {
-    cwd: process.cwd(),
+  const projectRoot = process.cwd();
+  ensureNodeCliBuilt(projectRoot);
+  const result = spawnSync(process.execPath, [backend.resolveNodeCliEntry(projectRoot), '--version'], {
+    cwd: projectRoot,
     encoding: 'utf-8'
   });
 
