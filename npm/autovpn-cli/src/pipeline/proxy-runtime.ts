@@ -360,6 +360,13 @@ export async function openMihomoRuntime(link: string, options: OpenMihomoRuntime
     child.off('error', onStartupError);
     child.on('error', () => {});
     await close();
+    if (
+      error instanceof Error
+      && error.name !== 'AbortError'
+      && /^proxy port \d+ did not open in time$/.test(error.message)
+    ) {
+      (error as Error & { code?: string }).code = 'AUTOVPN_INTERNAL_TIMEOUT';
+    }
     throw error;
   }
 

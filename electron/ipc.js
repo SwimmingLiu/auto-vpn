@@ -7,7 +7,8 @@ import QRCode from 'qrcode';
 
 import { mergeLatestArtifactPreview, previewArtifactDirectory } from './lib/artifact-preview.js';
 import { buildBackendEnv, buildBackendInvocation, createNdjsonDecoder } from './lib/backend.js';
-import { signalProcessTree } from './lib/process-lifecycle.js';
+import { requestProcessTreeStop } from './lib/process-lifecycle.js';
+import { attachPipelineChildFinalizer } from './lib/pipeline-child-finalizer.js';
 import { resolveStateProfilePath } from './paths.js';
 
 const IPC_CHANNELS = [
@@ -67,21 +68,13 @@ export function registerIpcHandlers({
 
     stopRequested = true;
     const child = activePipelineChild;
-    const signaled = signalProcessTree(child, 'SIGTERM');
-
-    if (!signaled) {
-      return { ok: false, requested: true };
-    }
-
     clearStopTimer();
-    stopTimer = setTimeout(() => {
-      if (activePipelineChild === child) {
-        signalProcessTree(child, 'SIGKILL');
-      }
-    }, 4000);
-    stopTimer.unref?.();
+    const stop = requestProcessTreeStop(child, {
+      isChildActive: () => activePipelineChild === child
+    });
+    stopTimer = stop.timer;
 
-    return { ok: true, requested: true };
+    return { ok: stop.signaled, requested: true };
   }
 
   ipcMain.handle('profile:load', async () => {
@@ -173,31 +166,12 @@ export function registerIpcHandlers({
       }
     });
 
-    child.on('error', (error) => {
-      clearStopTimer();
-      activePipelineChild = null;
-      emit({
-        type: 'finished',
-        ok: false,
-        code: null,
-        signal: null,
-        stopped: stopRequested,
-        error: error.message
-      });
-    });
-
-    child.on('close', (code, signal) => {
-      decoder.flush();
-      clearStopTimer();
-      activePipelineChild = null;
-      const stopped = stopRequested || signal === 'SIGTERM' || signal === 'SIGKILL';
-      emit({
-        type: 'finished',
-        ok: code === 0 && !stopped,
-        code,
-        signal,
-        stopped
-      });
+    attachPipelineChildFinalizer(child, {
+      decoder,
+      clearStopTimer,
+      releaseActiveChild: () => { activePipelineChild = null; },
+      isStopRequested: () => stopRequested,
+      emit
     });
 
     child.unref();
@@ -301,31 +275,12 @@ export function registerIpcHandlers({
       }
     });
 
-    child.on('error', (error) => {
-      clearStopTimer();
-      activePipelineChild = null;
-      emit({
-        type: 'finished',
-        ok: false,
-        code: null,
-        signal: null,
-        stopped: stopRequested,
-        error: error.message
-      });
-    });
-
-    child.on('close', (code, signal) => {
-      decoder.flush();
-      clearStopTimer();
-      activePipelineChild = null;
-      const stopped = stopRequested || signal === 'SIGTERM' || signal === 'SIGKILL';
-      emit({
-        type: 'finished',
-        ok: code === 0 && !stopped,
-        code,
-        signal,
-        stopped
-      });
+    attachPipelineChildFinalizer(child, {
+      decoder,
+      clearStopTimer,
+      releaseActiveChild: () => { activePipelineChild = null; },
+      isStopRequested: () => stopRequested,
+      emit
     });
 
     child.unref();

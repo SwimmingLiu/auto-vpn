@@ -226,6 +226,77 @@ test('Node Mihomo probe retries an unexpected 5xx controller response', async ()
   assert.deepEqual(results, [{ link: 'vmess://mihomo-retry', reachable: true, latency_ms: 24, error: '' }]);
 });
 
+test('Node Mihomo probe retries an actual startup timeout and then succeeds', async () => {
+  let attempts = 0;
+  const results = await probeSpeedtestLinksInNode({
+    links: ['vmess://mihomo-startup-timeout'],
+    config: { min_download_mb_s: 1, timeout_seconds: 1, concurrency: 1, probe_url: 'https://probe.example/204' },
+    runtime_path: '/opt/mihomo'
+  }, {
+    env: {},
+    openMihomoRuntime: async () => {
+      attempts += 1;
+      if (attempts === 1) {
+        const error = new Error('proxy port 42123 did not open in time');
+        error.code = 'AUTOVPN_INTERNAL_TIMEOUT';
+        throw error;
+      }
+      return {
+        controllerUrl: 'http://127.0.0.1:9090',
+        proxyName: 'runtime-node',
+        proxies: { http: 'http://127.0.0.1:8080', https: 'http://127.0.0.1:8080' },
+        close: async () => {}
+      };
+    },
+    probeMihomoProxyDelay: async () => 18
+  });
+
+  assert.equal(attempts, 2);
+  assert.equal(results[0].reachable, true);
+});
+
+test('Node Mihomo probe exhausts bounded retries for startup timeouts', async () => {
+  let attempts = 0;
+  const results = await probeSpeedtestLinksInNode({
+    links: ['vmess://mihomo-startup-timeout'],
+    config: { min_download_mb_s: 1, timeout_seconds: 1, concurrency: 1, probe_url: 'https://probe.example/204' },
+    runtime_path: '/opt/mihomo'
+  }, {
+    env: {},
+    openMihomoRuntime: async () => {
+      attempts += 1;
+      const error = new Error('proxy port 42123 did not open in time');
+      error.code = 'AUTOVPN_INTERNAL_TIMEOUT';
+      throw error;
+    }
+  });
+
+  assert.equal(attempts, 2);
+  assert.equal(results[0].reachable, false);
+  assert.equal(results[0].error, 'proxy port 42123 did not open in time');
+});
+
+for (const [name, makeError] of [
+  ['malformed config', () => new Error('malformed vmess configuration')],
+  ['caller abort', () => Object.assign(new Error('The operation was aborted by the caller'), { name: 'AbortError' })]
+]) {
+  test(`Node Mihomo probe does not retry ${name}`, async () => {
+    let attempts = 0;
+    await probeSpeedtestLinksInNode({
+      links: [`vmess://${name}`],
+      config: { min_download_mb_s: 1, timeout_seconds: 1, concurrency: 1, probe_url: 'https://probe.example/204' },
+      runtime_path: '/opt/mihomo'
+    }, {
+      env: {},
+      openMihomoRuntime: async () => {
+        attempts += 1;
+        throw makeError();
+      }
+    });
+    assert.equal(attempts, 1);
+  });
+}
+
 test('Node direct download uses an alternate URL after the primary fails', async () => {
   const calls = [];
   const timeline = [0, 1000, 2000, 3000];

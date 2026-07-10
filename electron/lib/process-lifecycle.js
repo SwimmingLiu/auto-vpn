@@ -50,3 +50,30 @@ export function signalProcessTree(
     throw error;
   }
 }
+
+export function requestProcessTreeStop(
+  child,
+  {
+    platform = process.platform,
+    killProcess = process.kill,
+    runTaskkill = runWindowsTaskkill,
+    setTimeoutFn = setTimeout,
+    isChildActive = () => true,
+    forceDelayMs = 4000
+  } = {}
+) {
+  const signalOptions = { platform, killProcess, runTaskkill };
+  const signaled = signalProcessTree(child, 'SIGTERM', signalOptions);
+  let timer = null;
+
+  if (signaled || platform === 'win32') {
+    timer = setTimeoutFn(() => {
+      if (isChildActive()) {
+        signalProcessTree(child, 'SIGKILL', signalOptions);
+      }
+    }, forceDelayMs);
+    timer?.unref?.();
+  }
+
+  return { signaled, timer };
+}

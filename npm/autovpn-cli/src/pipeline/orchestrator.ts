@@ -742,6 +742,10 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
     summary.counts.availability_links = availableLinks.length;
     await writeLines(artifactDir, 'vpn_node_availability.txt', availableLinks);
     await writeJson(artifactDir, 'vpn_node_availability_report.json', availabilityResults);
+    if (passedSpeedLinks.length > 0 && availableLinks.length === 0) {
+      await setStage('availability', 'failed');
+      throw new Error('No links passed availability');
+    }
     await setStage('availability', 'success', !useStreamingStages);
 
     await setStage('postprocess', 'running');

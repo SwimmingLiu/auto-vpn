@@ -253,6 +253,38 @@ test('Node proxy runtime rejects spawn errors instead of leaving them unhandled'
   }), /spawn ENOENT/);
 });
 
+test('Node proxy runtime tags its startup port timeout for bounded transient retries', async () => {
+  const link = vmessLink({
+    add: 'edge.example.com',
+    port: '443',
+    id: '11111111-2222-3333-4444-555555555555'
+  });
+
+  await assert.rejects(() => openMihomoRuntime(link, {
+    runtimePath: '/opt/bin/mihomo',
+    mixedPort: 10009,
+    controllerPort: 10010,
+    spawn: () => {
+      const child = new EventEmitter();
+      child.exitCode = null;
+      child.kill = (signal) => {
+        child.exitCode = 0;
+        child.emit('close', 0, signal);
+        return true;
+      };
+      return child;
+    },
+    waitForPort: async (port) => {
+      throw new Error(`proxy port ${port} did not open in time`);
+    },
+    selectProxy: async () => {}
+  }), (error) => {
+    assert.equal(error.message, 'proxy port 10009 did not open in time');
+    assert.equal(error.code, 'AUTOVPN_INTERNAL_TIMEOUT');
+    return true;
+  });
+});
+
 test('Node proxy runtime allocates local ports when callers do not provide them', async () => {
   const link = vmessLink({
     add: 'edge.example.com',
