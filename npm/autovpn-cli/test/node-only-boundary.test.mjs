@@ -11,7 +11,8 @@ const activeRoots = [
   path.join(repoRoot, 'scripts'),
   path.join(cliRoot, 'src'),
   path.join(cliRoot, 'lib'),
-  path.join(cliRoot, 'bin')
+  path.join(cliRoot, 'bin'),
+  path.join(cliRoot, 'scripts')
 ];
 const manifests = [
   path.join(repoRoot, 'package.json'),
