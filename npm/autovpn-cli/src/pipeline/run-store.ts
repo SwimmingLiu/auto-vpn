@@ -181,6 +181,7 @@ export class RunStore {
       ON CONFLICT(run_id, source) DO UPDATE SET
         processed=excluded.processed, total=excluded.total, status=excluded.status, error=excluded.error
       WHERE excluded.processed >= source_progress.processed
+        AND excluded.total >= source_progress.total
         AND source_progress.status NOT IN ('success','failed','cancelled','skipped')`)
       .run(this.currentRunId(), source, progress.processed, progress.total, progress.status, redactText(progress.error ?? ''));
   }

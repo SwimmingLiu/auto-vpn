@@ -197,11 +197,14 @@ test('rejects invalid and stale source progress updates', async () => {
     ctx.store.initializeRun();
     assert.throws(() => ctx.store.recordSourceProgress('source', { processed: -1, total: 2, status: 'running' }), /processed/);
     assert.throws(() => ctx.store.recordSourceProgress('source', { processed: 3, total: 2, status: 'running' }), /processed/);
-    ctx.store.recordSourceProgress('source', { processed: 2, total: 4, status: 'running' });
-    ctx.store.recordSourceProgress('source', { processed: 1, total: 4, status: 'running' });
-    ctx.store.recordSourceProgress('source', { processed: 4, total: 4, status: 'success' });
+    ctx.store.recordSourceProgress('source', { processed: 2, total: 10, status: 'running' });
+    ctx.store.recordSourceProgress('source', { processed: 2, total: 3, status: 'running' });
     ctx.store.recordSourceProgress('source', { processed: 3, total: 4, status: 'running' });
-    assert.deepEqual(ctx.store.sourceProgress(), [{ source: 'source', processed: 4, total: 4, status: 'success', error: '' }]);
+    assert.deepEqual(ctx.store.sourceProgress(), [{ source: 'source', processed: 2, total: 10, status: 'running', error: '' }]);
+    ctx.store.recordSourceProgress('source', { processed: 1, total: 10, status: 'running' });
+    ctx.store.recordSourceProgress('source', { processed: 10, total: 10, status: 'success' });
+    ctx.store.recordSourceProgress('source', { processed: 9, total: 10, status: 'running' });
+    assert.deepEqual(ctx.store.sourceProgress(), [{ source: 'source', processed: 10, total: 10, status: 'success', error: '' }]);
   } finally {
     await ctx.cleanup();
   }
