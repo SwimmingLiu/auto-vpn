@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { RunStore } from '../pipeline/run-store.js';
+import { RunStore, readRunStatus } from '../pipeline/run-store.js';
 import { randomBytes } from 'node:crypto';
 import { spawn as defaultSpawn, ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -88,18 +88,36 @@ function spawnDetached(command: string, args: string[], job: JobRecord, options:
   }
 }
 
-function markArtifactStopped(job: JobRecord): void {
+function markArtifactStopped(job: JobRecord): string | undefined {
   const artifactDir = String(job.artifact_dir ?? '');
   if (!artifactDir) {
-    return;
+    return undefined;
   }
   const reportPath = path.join(artifactDir, 'pipeline_report.json');
   const dbPath = path.join(artifactDir, 'run.db');
+  let authoritativeStatus: string | undefined;
   if (fs.existsSync(dbPath)) {
-    const runStore = RunStore.open(dbPath);
-    try { runStore.stopForResume('Stopped by user'); } finally { runStore.close(); }
+    let runStore: RunStore | undefined;
+    try {
+      runStore = RunStore.open(dbPath);
+      if (!runStore.stopForResume('Stopped by user')) authoritativeStatus = readRunStatus(dbPath);
+    } catch {
+      // The compatibility report remains the fallback when SQLite is corrupt or locked.
+    } finally {
+      try { runStore?.close(); } catch { /* best effort */ }
+    }
   }
-  if (!fs.existsSync(reportPath)) return;
+  if (authoritativeStatus) {
+    if (fs.existsSync(reportPath)) {
+      try {
+        const report = JSON.parse(fs.readFileSync(reportPath, 'utf8')) as Record<string, unknown>;
+        report.run_status = authoritativeStatus;
+        fs.writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
+      } catch { /* SQLite remains authoritative */ }
+    }
+    return authoritativeStatus;
+  }
+  if (!fs.existsSync(reportPath)) return 'stopped';
   try {
     const report = JSON.parse(fs.readFileSync(reportPath, 'utf8')) as Record<string, any>;
     const stageStatus = { ...((report.stage_status ?? {}) as Record<string, unknown>) };
@@ -115,6 +133,7 @@ function markArtifactStopped(job: JobRecord): void {
   } catch {
     // Best-effort cleanup so stopping a job never fails because its report is corrupt.
   }
+  return 'stopped';
 }
 
 export async function startDetachedRun(command: DetachedRunCommand, options: JobCommandOptions = {}): Promise<JobRecord> {
@@ -236,10 +255,10 @@ export async function stopManagedJob(projectRoot: string, jobId: string, options
     throw new Error(`refusing to stop pid ${pid}: command does not match AutoVPN job`);
   }
   await terminateProcessGroup(pid, options);
-  markArtifactStopped(job);
-  job.status = 'stopped';
+  const artifactStatus = markArtifactStopped(job);
+  job.status = artifactStatus === 'success' || artifactStatus === 'failed' ? artifactStatus : 'stopped';
   job.finished_at = options.now?.() ?? new Date().toISOString().replace(/\.\d{3}Z$/, '+00:00');
-  job.exit_code = 1;
+  job.exit_code = job.status === 'success' ? 0 : 1;
   job.signal = 'SIGTERM';
   return store.writeJob(job);
 }

@@ -1419,6 +1419,7 @@ export async function resumeNodePipeline(options: NodeResumeOptions, context: Ru
       if (passed) await availabilityPool.submit(result);
       }
     });
+    try {
     for (const link of runStore.speedLinksNeedingWork()) {
       await speedPool.submit(link);
     }
@@ -1428,29 +1429,51 @@ export async function resumeNodePipeline(options: NodeResumeOptions, context: Ru
     const extractionIncomplete = runStore.incompleteSourceProgress().length > 0
       || (runStore.sourceProgress().length > 0 && !['success', 'skipped'].includes(latestStages.extract ?? summary.stage_status.extract));
     if (extractionIncomplete) {
+      await setStage('extract', 'running');
       for (const [sourceName, source] of enabledSources(profile)) {
         if (progressBySource.get(sourceName)?.status === 'success') continue;
-        runStore.recordSourceProgress(sourceName, { processed: 0, total: 0, status: 'running' });
+        const previousProgress = progressBySource.get(sourceName);
+        runStore.recordSourceProgress(sourceName, { processed: previousProgress?.processed ?? 0, total: previousProgress?.total ?? 0, status: 'running' });
+        const replayCounts = new Map<string, number>();
+        for (const link of runStore.rawLinksForSource(sourceName)) replayCounts.set(link, (replayCounts.get(link) ?? 0) + 1);
         const streamed = new Set<string>();
         const onLinks = async (links: string[]) => {
           for (const link of links) {
             streamed.add(link);
+            const replayCount = replayCounts.get(link) ?? 0;
+            if (replayCount > 0) {
+              replayCounts.set(link, replayCount - 1);
+              continue;
+            }
             const recorded = runStore.recordExtractedNode(sourceName, link);
             if (recorded.inserted) await speedPool.submit(link);
           }
         };
-        const result = context.stages?.extract
-          ? await context.stages.extract({ source_name: sourceName, source }, { onLinks })
-          : await fetchSourceLinksWithBackend({ source_name: sourceName, source }, { cwd: projectRoot, env: runtimeStageEnv, linksCallback: onLinks });
-        await onLinks(result.links.filter((link) => !streamed.has(link)));
-        runStore.recordSourceProgress(sourceName, { processed: result.requested_iterations, total: result.requested_iterations, status: 'success' });
-        summary.source_counts[sourceName] = { raw_links: result.links.length, successful_iterations: result.successful_iterations, failed_iterations: result.failed_iterations };
+        try {
+          const result = context.stages?.extract
+            ? await context.stages.extract({ source_name: sourceName, source }, { onLinks })
+            : await fetchSourceLinksWithBackend({ source_name: sourceName, source }, { cwd: projectRoot, env: runtimeStageEnv, linksCallback: onLinks });
+          await onLinks(result.links.filter((link) => !streamed.has(link)));
+          runStore.recordSourceProgress(sourceName, { processed: result.requested_iterations, total: result.requested_iterations, status: 'success' });
+          summary.source_counts[sourceName] = { raw_links: result.links.length, successful_iterations: result.successful_iterations, failed_iterations: result.failed_iterations };
+        } catch (error) {
+          runStore.recordSourceProgress(sourceName, { processed: previousProgress?.processed ?? 0, total: previousProgress?.total ?? 0, status: 'failed', error: errorMessage(error) });
+          await setStage('extract', 'failed');
+          throw error;
+        }
       }
+      await setStage('extract', 'success');
     }
     speedPool.close();
     await speedPool.drain();
     availabilityPool.close();
     await availabilityPool.drain();
+    } catch (error) {
+      speedPool.abort(error);
+      availabilityPool.abort(error);
+      await Promise.allSettled([speedPool.drain(), availabilityPool.drain()]);
+      throw error;
+    }
     summary.counts.raw_links = runStore.counts().raw;
     summary.counts.deduped_links = runStore.counts().deduped;
     await writeLines(artifactDir, 'vpn_node_raw.txt', runStore.rawLinks());

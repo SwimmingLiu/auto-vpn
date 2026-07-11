@@ -160,6 +160,23 @@ test('stopForResume atomically stops run and active stages while resetting inter
   }
 });
 
+test('stopForResume loses a stop-completion race without overwriting terminal state', async () => {
+  const ctx = await fixture();
+  try {
+    ctx.store.initializeRun();
+    const link = vmessLink('complete');
+    ctx.store.recordExtractedNode('source', link);
+    ctx.store.markSpeedRunning(link);
+    ctx.store.setRunStatus('success');
+
+    assert.equal(ctx.store.stopForResume(), false);
+    assert.equal(readRunStatus(ctx.dbPath), 'success');
+    assert.equal(ctx.store.speedResults()[0].status, 'running');
+  } finally {
+    await ctx.cleanup();
+  }
+});
+
 test('reopenSourcesForResume makes failed source progress writable and preserves counters', async () => {
   const ctx = await fixture();
   try {
@@ -192,6 +209,9 @@ test('migrates pre-stopped status constraints before stopping an existing run', 
     store.stopForResume();
     assert.equal(readRunStatus(dbPath), 'stopped');
     assert.equal(readLatestStageStatuses(dbPath).extract, 'stopped');
+    const migrated = new DatabaseSync(dbPath);
+    assert.deepEqual(migrated.prepare('PRAGMA foreign_key_check').all(), []);
+    migrated.close();
   } finally {
     store.close();
     await rm(root, { recursive: true, force: true });

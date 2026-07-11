@@ -8,7 +8,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 
 import { resumeNodePipeline, retryNodePipelineStage, runNodePipeline, validateSpeedResumeProbeBatch } from '../../dist/pipeline/orchestrator.js';
-import { RunStore, readLatestStageStatuses } from '../../dist/pipeline/run-store.js';
+import { RunStore, readLatestStageStatuses, readRunStatus } from '../../dist/pipeline/run-store.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '../../../..');
@@ -2291,7 +2291,7 @@ test('resumeNodePipeline resets interrupted sqlite nodes and schedules only inco
   });
 
   assert.equal(resumed.run_status, 'success');
-  assert.ok(resumed.counts.raw_links >= 3);
+  assert.equal(resumed.counts.raw_links, 3);
   assert.equal(resumed.counts.deduped_links, 3);
   assert.deepEqual(extractCalls, ['leiting']);
   assert.deepEqual(speedCalls.sort(), [interrupted, extractedAfterResume].sort());
@@ -2328,6 +2328,61 @@ test('resumeNodePipeline resets interrupted sqlite nodes and schedules only inco
     }
   });
   assert.equal(repeatedExtract, false);
+});
+
+test('resumeNodePipeline persists extract failure truth in sqlite and report', async () => {
+  const projectRoot = await makeProject();
+  const artifactDir = path.join(projectRoot, 'artifacts', 'extract-failure');
+  const sessionDir = path.join(projectRoot, 'sessions', 'extract-failure');
+  await mkdir(artifactDir, { recursive: true });
+  await mkdir(sessionDir, { recursive: true });
+  const link = vmessLink('existing', 'existing.example');
+  const store = RunStore.open(path.join(artifactDir, 'run.db'));
+  store.initializeRun('running');
+  store.recordExtractedNode('leiting', link);
+  store.recordSpeedResult({ link, reachable: true, average_download_mb_s: 3, latency_ms: 10, error: '' }, true);
+  store.markAvailabilityRunning(link);
+  store.recordSourceProgress('leiting', { processed: 0, total: 1, status: 'failed', error: 'interrupted' });
+  for (const source of ['heidong', 'mifeng', 'xuanfeng-area', 'xuanfeng-all-area']) store.recordSourceProgress(source, { processed: 1, total: 1, status: 'success' });
+  store.setStageStatus('extract', 'running');
+  store.stopForResume();
+  store.close();
+  await writeFile(path.join(artifactDir, 'pipeline_report.json'), JSON.stringify({ run_status: 'stopped', stage_status: { extract: 'stopped' } }));
+  await writeFile(path.join(sessionDir, 'session.json'), JSON.stringify({ artifact_dir: artifactDir }));
+
+  let releaseAvailability;
+  let availabilityStartedResolve;
+  const availabilityStarted = new Promise((resolve) => { availabilityStartedResolve = resolve; });
+  const availabilityBlocked = new Promise((resolve) => { releaseAvailability = resolve; });
+  const events = [];
+  let settled = false;
+  const resumePromise = resumeNodePipeline({ projectRoot, mode: 'pipeline', session: sessionDir, skipDeploy: true }, {
+    emit: (event) => events.push(event),
+    stages: {
+      extract: async () => { throw new Error('extract exploded token=SECRET'); },
+      availability: async (results) => {
+        availabilityStartedResolve();
+        await availabilityBlocked;
+        return results.map((result) => ({ ...result, all_passed: true, provider_results: {} }));
+      }
+    }
+  }).finally(() => { settled = true; });
+  await availabilityStarted;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false);
+  releaseAvailability();
+  await assert.rejects(() => resumePromise, /extract exploded/);
+  assert.equal(events.at(-1).type, 'run_failed');
+
+  const report = JSON.parse(await readFile(path.join(artifactDir, 'pipeline_report.json'), 'utf8'));
+  assert.equal(report.run_status, 'failed');
+  assert.equal(report.stage_status.extract, 'failed');
+  const failedStore = RunStore.open(path.join(artifactDir, 'run.db'));
+  assert.equal(readRunStatus(path.join(artifactDir, 'run.db')), 'failed');
+  assert.equal(readLatestStageStatuses(path.join(artifactDir, 'run.db')).extract, 'failed');
+  assert.equal(failedStore.incompleteSourceProgress()[0].status, 'failed');
+  assert.doesNotMatch(failedStore.incompleteSourceProgress()[0].error, /SECRET/);
+  failedStore.close();
 });
 
 test('resumeNodePipeline speedtest mode restores terminal sqlite results without repeating them', async () => {
