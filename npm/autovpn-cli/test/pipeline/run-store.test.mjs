@@ -29,8 +29,10 @@ test('creates the run-local WAL schema and remains compatible with current reade
   const ctx = await fixture();
   try {
     const runId = ctx.store.initializeRun('running');
+    assert.equal(ctx.store.busyTimeout(), 5000);
     ctx.store.setStageStatus('extract', 'running');
     ctx.store.setStageStatus('extract', 'success');
+    ctx.store.setRunStatus('success');
 
     const db = new DatabaseSync(ctx.dbPath);
     try {
@@ -40,7 +42,7 @@ test('creates the run-local WAL schema and remains compatible with current reade
       for (const table of ['runs', 'stage_events', 'source_progress', 'raw_observations', 'pipeline_nodes']) {
         assert.ok(tables.includes(table), `missing ${table}`);
       }
-      assert.deepEqual({ ...db.prepare('SELECT status FROM runs ORDER BY run_id DESC LIMIT 1').get() }, { status: 'running' });
+      assert.deepEqual({ ...db.prepare('SELECT status FROM runs ORDER BY run_id DESC LIMIT 1').get() }, { status: 'success' });
       assert.deepEqual(db.prepare('SELECT stage_name,status FROM stage_events ORDER BY rowid ASC').all().map((row) => ({ ...row })), [
         { stage_name: 'extract', status: 'running' },
         { stage_name: 'extract', status: 'success' }
@@ -87,13 +89,13 @@ test('roundtrips speed and availability results and redacts errors before persis
     ctx.store.recordExtractedNode('source', link);
     ctx.store.markSpeedRunning(link);
     ctx.store.recordProbe({ link, reachable: false, latency_ms: 0, error: 'token=SECRET vmess://abcdef' });
-    ctx.store.recordSpeedResult({ link, reachable: true, average_download_mb_s: 2.5, latency_ms: 42, error: '' });
+    ctx.store.recordSpeedResult({ link, reachable: true, average_download_mb_s: 2.5, latency_ms: 42, error: '' }, true);
     ctx.store.markAvailabilityRunning(link);
     const providers = { subscription: { provider: 'subscription', passed: true, reason: 'ok', status_code: 200, final_url: 'https://example.test', matched_phrase: '' } };
     ctx.store.recordAvailabilityResult({ link, all_passed: true, provider_results: providers, error: '' });
 
-    assert.deepEqual(ctx.store.speedResults(), [{ link, reachable: true, average_download_mb_s: 2.5, latency_ms: 42, error: '', status: 'success' }]);
-    assert.deepEqual(ctx.store.availabilityResults(), [{ link, all_passed: true, provider_results: providers, error: '', status: 'success' }]);
+    assert.deepEqual(ctx.store.speedResults(), [{ link, reachable: true, average_download_mb_s: 2.5, latency_ms: 42, error: '', status: 'speed_passed' }]);
+    assert.deepEqual(ctx.store.availabilityResults(), [{ link, all_passed: true, provider_results: providers, error: '', status: 'availability_passed' }]);
     assert.equal(ctx.store.probeResults()[0].error, 'token=<redacted> vmess://<redacted>');
     assert.deepEqual(ctx.store.counts(), { raw: 1, deduped: 1, probes: 1, speed: 1, availability: 1 });
   } finally {
@@ -111,7 +113,7 @@ test('keeps terminal states monotonic and transactionally resets interrupted wor
     ctx.store.recordExtractedNode('source', second);
 
     ctx.store.markSpeedRunning(first);
-    ctx.store.recordSpeedResult({ link: first, reachable: true, average_download_mb_s: 1, latency_ms: 10, error: '' });
+    ctx.store.recordSpeedResult({ link: first, reachable: true, average_download_mb_s: 1, latency_ms: 10, error: '' }, true);
     ctx.store.markSpeedRunning(first);
     ctx.store.markSpeedRunning(second);
     ctx.store.markAvailabilityRunning(first);
@@ -120,13 +122,45 @@ test('keeps terminal states monotonic and transactionally resets interrupted wor
     ctx.store = RunStore.open(ctx.dbPath);
     assert.deepEqual(ctx.store.resetInterruptedRunning(), { speed: [second], availability: [first] });
     assert.deepEqual(ctx.store.speedResults(), [
-      { link: first, reachable: true, average_download_mb_s: 1, latency_ms: 10, error: '', status: 'success' },
+      { link: first, reachable: true, average_download_mb_s: 1, latency_ms: 10, error: '', status: 'speed_passed' },
       { link: second, reachable: false, average_download_mb_s: 0, latency_ms: 0, error: '', status: 'pending' }
     ]);
     assert.deepEqual(ctx.store.availabilityResults(), [
       { link: first, all_passed: false, provider_results: {}, error: '', status: 'pending' }
     ]);
     assert.deepEqual(ctx.store.dedupedLinks(), [first, second]);
+  } finally {
+    await ctx.cleanup();
+  }
+});
+
+test('persists explicit speed and availability failure terminal states', async () => {
+  const ctx = await fixture();
+  try {
+    ctx.store.initializeRun();
+    const unreachable = vmessLink('unreachable', '3.3.3.3');
+    const belowThreshold = vmessLink('slow', '4.4.4.4');
+    ctx.store.recordExtractedNode('source', unreachable);
+    ctx.store.recordExtractedNode('source', belowThreshold);
+
+    ctx.store.markSpeedRunning(unreachable);
+    ctx.store.recordSpeedResult({ link: unreachable, reachable: false, average_download_mb_s: 0, latency_ms: 0, error: 'probe failed' }, false);
+    ctx.store.markSpeedRunning(belowThreshold);
+    ctx.store.recordSpeedResult({ link: belowThreshold, reachable: true, average_download_mb_s: 0.25, latency_ms: 80, error: '' }, false);
+    ctx.store.markAvailabilityRunning(belowThreshold);
+    ctx.store.recordAvailabilityResult({ link: belowThreshold, all_passed: false, provider_results: {}, error: 'token=SECRET' });
+
+    assert.deepEqual(ctx.store.speedResults().map(({ link, reachable, status }) => ({ link, reachable, status })), [
+      { link: unreachable, reachable: false, status: 'speed_failed' },
+      { link: belowThreshold, reachable: true, status: 'speed_failed' }
+    ]);
+    assert.deepEqual(ctx.store.availabilityResults(), [{
+      link: belowThreshold,
+      all_passed: false,
+      provider_results: {},
+      error: 'token=<redacted>',
+      status: 'availability_failed'
+    }]);
   } finally {
     await ctx.cleanup();
   }

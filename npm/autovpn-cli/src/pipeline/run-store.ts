@@ -38,7 +38,10 @@ export interface StoredAvailabilityResult extends AvailabilityStoreResult {
   status: string;
 }
 
-const TERMINAL_STATUSES = new Set(['success', 'failed', 'cancelled', 'skipped']);
+const TERMINAL_STATUSES = new Set([
+  'success', 'failed', 'cancelled', 'skipped',
+  'speed_passed', 'speed_failed', 'availability_passed', 'availability_failed'
+]);
 
 export class RunStore {
   private readonly statements = new Map<string, Statement>();
@@ -124,6 +127,10 @@ export class RunStore {
     this.db.close();
   }
 
+  busyTimeout(): number {
+    return Number((this.statement('PRAGMA busy_timeout').get() as { timeout: number }).timeout);
+  }
+
   initializeRun(status = 'running'): number {
     const result = this.statement('INSERT INTO runs(status) VALUES (?)').run(status);
     this.runId = Number(result.lastInsertRowid);
@@ -188,7 +195,7 @@ export class RunStore {
     const { runId, key } = this.nodeIdentity(link);
     this.statement(`INSERT INTO speed_results(run_id, canonical_key, status) VALUES (?, ?, 'running')
       ON CONFLICT(run_id, canonical_key) DO UPDATE SET status='running'
-      WHERE speed_results.status NOT IN ('success','failed','cancelled','skipped')`).run(runId, key);
+      WHERE speed_results.status NOT IN ('success','failed','speed_passed','speed_failed','cancelled','skipped')`).run(runId, key);
   }
 
   recordProbe(result: ProbeResult): void {
@@ -198,14 +205,14 @@ export class RunStore {
       .run(runId, key, Number(result.reachable), result.latency_ms, redactText(result.error ?? ''));
   }
 
-  recordSpeedResult(result: SpeedTestResult): void {
+  recordSpeedResult(result: SpeedTestResult, passed: boolean): void {
     const { runId, key } = this.nodeIdentity(result.link);
     this.statement(`INSERT INTO speed_results(run_id, canonical_key, status, reachable, average_download_mb_s, latency_ms, error)
-      VALUES (?, ?, 'success', ?, ?, ?, ?)
-      ON CONFLICT(run_id, canonical_key) DO UPDATE SET status='success', reachable=excluded.reachable,
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(run_id, canonical_key) DO UPDATE SET status=excluded.status, reachable=excluded.reachable,
         average_download_mb_s=excluded.average_download_mb_s, latency_ms=excluded.latency_ms, error=excluded.error
-      WHERE speed_results.status NOT IN ('success','failed','cancelled','skipped')`)
-      .run(runId, key, Number(result.reachable), result.average_download_mb_s, result.latency_ms, redactText(result.error ?? ''));
+      WHERE speed_results.status NOT IN ('speed_passed','speed_failed','cancelled','skipped')`)
+      .run(runId, key, passed ? 'speed_passed' : 'speed_failed', Number(result.reachable), result.average_download_mb_s, result.latency_ms, redactText(result.error ?? ''));
   }
 
   probeResults(): StoredProbeResult[] {
@@ -226,17 +233,19 @@ export class RunStore {
     const { runId, key } = this.nodeIdentity(link);
     this.statement(`INSERT INTO availability_results(run_id, canonical_key, status) VALUES (?, ?, 'running')
       ON CONFLICT(run_id, canonical_key) DO UPDATE SET status='running'
-      WHERE availability_results.status NOT IN ('success','failed','cancelled','skipped')`).run(runId, key);
+      WHERE availability_results.status NOT IN ('success','failed','availability_passed','availability_failed','cancelled','skipped')`).run(runId, key);
   }
 
   recordAvailabilityResult(result: AvailabilityStoreResult): void {
     const { runId, key } = this.nodeIdentity(result.link);
+    const error = redactText(result.error ?? '');
+    const status = result.all_passed && !error ? 'availability_passed' : 'availability_failed';
     this.statement(`INSERT INTO availability_results(run_id, canonical_key, status, all_passed, provider_results, error)
-      VALUES (?, ?, 'success', ?, ?, ?)
-      ON CONFLICT(run_id, canonical_key) DO UPDATE SET status='success', all_passed=excluded.all_passed,
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(run_id, canonical_key) DO UPDATE SET status=excluded.status, all_passed=excluded.all_passed,
         provider_results=excluded.provider_results, error=excluded.error
-      WHERE availability_results.status NOT IN ('success','failed','cancelled','skipped')`)
-      .run(runId, key, Number(result.all_passed), JSON.stringify(result.provider_results), redactText(result.error ?? ''));
+      WHERE availability_results.status NOT IN ('availability_passed','availability_failed','cancelled','skipped')`)
+      .run(runId, key, status, Number(result.all_passed), JSON.stringify(result.provider_results), error);
   }
 
   availabilityResults(): StoredAvailabilityResult[] {
