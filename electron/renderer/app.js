@@ -1368,8 +1368,14 @@ function updateExtractMetrics(event) {
   }
 
   const previous = state.sourceCounts[sourceName] ?? {};
-  const rawLinks = Number(event.total_links ?? previous.raw_links ?? 0);
-  const sourceDedupedLinks = Number(event.deduped_links ?? previous.deduped_links ?? rawLinks);
+  const rawLinks = Math.max(
+    Number(previous.raw_links ?? 0),
+    Number(event.total_links ?? 0)
+  );
+  const sourceDedupedLinks = Math.max(
+    Number(previous.deduped_links ?? 0),
+    Number(event.deduped_links ?? rawLinks)
+  );
   if (Array.isArray(event.new_item_fingerprints)) {
     for (const fingerprint of event.new_item_fingerprints) {
       if (fingerprint) {
