@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -173,6 +173,43 @@ test('safe status readers return undefined state for malformed databases', async
     await writeFile(dbPath, 'not sqlite');
     assert.equal(readRunStatus(dbPath), undefined);
     assert.deepEqual(readLatestStageStatuses(dbPath), {});
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('seedRetry preserves only terminal node inputs before the retry boundary', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'autovpn-run-retry-seed-'));
+  const sourceDir = path.join(root, 'source');
+  const speedDir = path.join(root, 'speed');
+  const availabilityDir = path.join(root, 'availability');
+  await mkdir(sourceDir, { recursive: true });
+  await mkdir(speedDir, { recursive: true });
+  await mkdir(availabilityDir, { recursive: true });
+  const first = vmessLink('first', '1.1.1.1');
+  const second = vmessLink('second', '2.2.2.2');
+  try {
+    const source = RunStore.open(path.join(sourceDir, 'run.db'));
+    source.initializeRun();
+    source.recordExtractedNode('source', first);
+    source.recordExtractedNode('source', second);
+    for (const link of [first, second]) {
+      source.recordProbe({ link, reachable: true, latency_ms: 10, error: '' });
+      source.recordSpeedResult({ link, reachable: true, average_download_mb_s: 2, latency_ms: 10, error: '' }, true);
+      source.recordAvailabilityResult({ link, all_passed: true, provider_results: {}, error: '' });
+    }
+    source.close();
+
+    let seeded = RunStore.seedRetry(sourceDir, speedDir, 'speedtest');
+    assert.deepEqual(seeded.dedupedLinks(), [first, second]);
+    assert.deepEqual(seeded.speedResults(), []);
+    assert.deepEqual(seeded.availabilityResults(), []);
+    seeded.close();
+
+    seeded = RunStore.seedRetry(sourceDir, availabilityDir, 'availability');
+    assert.deepEqual(seeded.speedResults().map(({ status }) => status), ['speed_passed', 'speed_passed']);
+    assert.deepEqual(seeded.availabilityResults(), []);
+    seeded.close();
   } finally {
     await rm(root, { recursive: true, force: true });
   }

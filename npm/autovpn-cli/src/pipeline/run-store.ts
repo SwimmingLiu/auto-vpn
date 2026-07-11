@@ -187,7 +187,13 @@ export class RunStore {
 
   static openOrImport(artifactDir: string): RunStore {
     const dbPath = path.join(artifactDir, 'run.db');
-    if (fs.existsSync(dbPath)) return RunStore.open(dbPath);
+    if (fs.existsSync(dbPath)) {
+      const store = RunStore.open(dbPath);
+      if (store.counts().deduped === 0 && readLegacyLines(path.join(artifactDir, 'vpn_node_deduped.txt')).length > 0) {
+        store.importLegacyArtifacts(artifactDir);
+      }
+      return store;
+    }
     const store = RunStore.open(dbPath);
     try {
       store.initializeRun('running');
@@ -197,6 +203,41 @@ export class RunStore {
       store.close();
       try { fs.rmSync(dbPath, { force: true }); } catch { /* preserve the original import error */ }
       throw error;
+    }
+  }
+
+  static seedRetry(sourceArtifactDir: string, destinationArtifactDir: string, boundary: string): RunStore {
+    const source = RunStore.openOrImport(sourceArtifactDir);
+    const destination = RunStore.open(path.join(destinationArtifactDir, 'run.db'));
+    try {
+      destination.initializeRun('running');
+      const runId = destination.currentRunId();
+      for (const link of source.rawLinks()) {
+        destination.statement('INSERT INTO raw_observations(run_id, source, link) VALUES (?, ?, ?)').run(runId, 'retry-seed', link);
+      }
+      source.dedupedLinks().forEach((link, index) => {
+        destination.statement('INSERT INTO pipeline_nodes(run_id, canonical_key, link, sequence) VALUES (?, ?, ?, ?)')
+          .run(runId, canonicalVmessKey(parseVmessLink(link)), link, index + 1);
+      });
+      const preserveSpeed = boundary !== 'speedtest';
+      const preserveAvailability = !['speedtest', 'availability'].includes(boundary);
+      if (preserveSpeed) {
+        for (const probe of source.probeResults()) destination.recordProbe(probe);
+        for (const result of source.speedResults().filter((row) => row.status === 'speed_passed' || row.status === 'speed_failed')) {
+          destination.recordSpeedResult(result, result.status === 'speed_passed');
+        }
+      }
+      if (preserveAvailability) {
+        for (const result of source.availabilityResults().filter((row) => row.status === 'availability_passed' || row.status === 'availability_failed')) {
+          destination.recordAvailabilityResult(result);
+        }
+      }
+      return destination;
+    } catch (error) {
+      destination.close();
+      throw error;
+    } finally {
+      source.close();
     }
   }
 
@@ -216,8 +257,14 @@ export class RunStore {
 
   setRunStatus(status: RunStatus, error = ''): void {
     const runId = this.currentRunId();
-    this.statement(`UPDATE runs SET status = ?, error = ? WHERE run_id = ?
-      AND status NOT IN ('success','failed','cancelled')`).run(status, redactText(error), runId);
+    try {
+      this.statement(`UPDATE runs SET status = ?, error = ? WHERE run_id = ?
+        AND status NOT IN ('success','failed','cancelled')`).run(status, redactText(error), runId);
+    } catch (failure) {
+      if (!(failure instanceof Error) || !/no such column: error/.test(failure.message)) throw failure;
+      this.statement(`UPDATE runs SET status = ? WHERE run_id = ?
+        AND status NOT IN ('success','failed','cancelled')`).run(status, runId);
+    }
   }
 
   setStageStatus(stageName: string, status: StageStatus, error = ''): void {

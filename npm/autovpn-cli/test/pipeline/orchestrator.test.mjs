@@ -1371,7 +1371,7 @@ test('retryNodePipelineStage passes only speedtest winners into availability whe
   });
   const availabilityInputs = [];
 
-  await retryNodePipelineStage({
+  const retry = await retryNodePipelineStage({
     projectRoot,
     artifactDir: source.artifact_dir,
     stage: 'speedtest',
@@ -1396,6 +1396,15 @@ test('retryNodePipelineStage passes only speedtest winners into availability whe
   });
 
   assert.deepEqual(availabilityInputs, [[firstLink]]);
+  const retryStore = RunStore.open(path.join(retry.artifact_dir, 'run.db'));
+  assert.deepEqual(retryStore.speedResults().map(({ link, status }) => ({ link, status })), [
+    { link: firstLink, status: 'speed_passed' },
+    { link: secondLink, status: 'speed_failed' }
+  ]);
+  assert.deepEqual(retryStore.availabilityResults().map(({ link, status }) => ({ link, status })), [
+    { link: firstLink, status: 'availability_passed' }
+  ]);
+  retryStore.close();
 });
 
 test('retryNodePipelineStage emits one final probe event per retried node', async () => {
@@ -2204,4 +2213,104 @@ test('resumeNodePipeline marks speedtest failed when resumed results do not pass
   assert.equal(report.run_status, 'failed');
   assert.equal(report.stage_status.speedtest, 'failed');
   assert.match(report.error, /minimum speed threshold 1MB\/s/);
+});
+
+test('resumeNodePipeline resets interrupted sqlite nodes and schedules only incomplete speed and availability work', async () => {
+  const projectRoot = await makeProject();
+  const artifactDir = path.join(projectRoot, 'artifacts', 'interrupted');
+  const sessionDir = path.join(projectRoot, 'sessions', 'interrupted');
+  await mkdir(artifactDir, { recursive: true });
+  await mkdir(sessionDir, { recursive: true });
+  const passed = vmessLink('passed', 'passed.example');
+  const interrupted = vmessLink('interrupted', 'interrupted.example');
+  const store = RunStore.open(path.join(artifactDir, 'run.db'));
+  store.initializeRun('running');
+  store.recordExtractedNode('source', passed);
+  store.recordExtractedNode('source', interrupted);
+  store.recordProbe({ link: passed, reachable: true, latency_ms: 10, error: '' });
+  store.recordSpeedResult({ link: passed, reachable: true, average_download_mb_s: 3, latency_ms: 10, error: '' }, true);
+  store.markAvailabilityRunning(passed);
+  store.markSpeedRunning(interrupted);
+  store.close();
+  await writeFile(path.join(artifactDir, 'vpn_node_raw.txt'), `${passed}\n${interrupted}\n`);
+  await writeFile(path.join(artifactDir, 'vpn_node_deduped.txt'), `${passed}\n${interrupted}\n`);
+  await writeFile(path.join(artifactDir, 'vpn_node_speedtest.txt'), `${passed}\n`);
+  await writeFile(path.join(artifactDir, 'vpn_node_speedtest_report.json'), JSON.stringify([
+    { link: passed, reachable: true, average_download_mb_s: 3, latency_ms: 10, error: '' }
+  ]));
+  await writeFile(path.join(artifactDir, 'pipeline_report.json'), JSON.stringify({ run_status: 'running', stage_status: {} }));
+  await writeFile(path.join(sessionDir, 'session.json'), JSON.stringify({ artifact_dir: artifactDir }));
+
+  const speedCalls = [];
+  const availabilityCalls = [];
+  const resumed = await resumeNodePipeline({ projectRoot, mode: 'pipeline', session: sessionDir, skipDeploy: true }, {
+    stages: {
+      speedtestProbe: async (links) => links.map((link) => ({ link, reachable: true, latency_ms: 15, error: '' })),
+      speedtestLink: async (link) => {
+        speedCalls.push(link);
+        return { link, reachable: true, average_download_mb_s: 2, latency_ms: 15, error: '' };
+      },
+      availability: async (results) => results.map((result) => {
+        availabilityCalls.push(result.link);
+        return { ...result, all_passed: true, provider_results: {} };
+      }),
+      countryLookup: () => 'US',
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { main_module: '_worker.js', modules: [] } })
+    }
+  });
+
+  assert.equal(resumed.run_status, 'success');
+  assert.deepEqual(speedCalls, [interrupted]);
+  assert.deepEqual(availabilityCalls.sort(), [interrupted, passed].sort());
+  const resumedStore = RunStore.open(path.join(artifactDir, 'run.db'));
+  assert.deepEqual(resumedStore.speedResults().map(({ link, status }) => ({ link, status })), [
+    { link: passed, status: 'speed_passed' },
+    { link: interrupted, status: 'speed_passed' }
+  ]);
+  assert.deepEqual(resumedStore.availabilityResults().map(({ link, status }) => ({ link, status })), [
+    { link: passed, status: 'availability_passed' },
+    { link: interrupted, status: 'availability_passed' }
+  ]);
+  resumedStore.close();
+  assert.equal(new Set((await readFile(path.join(artifactDir, 'vpn_node_availability.txt'), 'utf8')).trim().split(/\n/)).size, 2);
+});
+
+test('resumeNodePipeline speedtest mode restores terminal sqlite results without repeating them', async () => {
+  const projectRoot = await makeProject();
+  const artifactDir = path.join(projectRoot, 'artifacts', 'speed-interrupted');
+  const sessionDir = path.join(projectRoot, 'sessions', 'speed-interrupted');
+  await mkdir(artifactDir, { recursive: true });
+  await mkdir(sessionDir, { recursive: true });
+  const passed = vmessLink('passed', 'passed.example');
+  const interrupted = vmessLink('interrupted', 'interrupted.example');
+  const store = RunStore.open(path.join(artifactDir, 'run.db'));
+  store.initializeRun('running');
+  store.recordExtractedNode('source', passed);
+  store.recordExtractedNode('source', interrupted);
+  store.recordProbe({ link: passed, reachable: true, latency_ms: 10, error: '' });
+  store.recordSpeedResult({ link: passed, reachable: true, average_download_mb_s: 3, latency_ms: 10, error: '' }, true);
+  store.markSpeedRunning(interrupted);
+  store.close();
+  await writeFile(path.join(artifactDir, 'vpn_node_raw.txt'), `${passed}\n${interrupted}\n`);
+  await writeFile(path.join(artifactDir, 'vpn_node_deduped.txt'), `${passed}\n${interrupted}\n`);
+  await writeFile(path.join(artifactDir, 'pipeline_report.json'), JSON.stringify({ run_status: 'running', stage_status: {} }));
+  await writeFile(path.join(sessionDir, 'events.jsonl'), '');
+  await writeFile(path.join(sessionDir, 'session.json'), JSON.stringify({ artifact_dir: artifactDir, event_log: path.join(sessionDir, 'events.jsonl') }));
+  const fullCalls = [];
+  await resumeNodePipeline({ projectRoot, mode: 'speedtest', session: sessionDir }, {
+    stages: {
+      speedtestProbe: async (links) => links.map((link) => ({ link, reachable: true, latency_ms: 15, error: '' })),
+      speedtestLink: async (link) => {
+        fullCalls.push(link);
+        return { link, reachable: true, average_download_mb_s: 2, latency_ms: 15, error: '' };
+      }
+    }
+  });
+  assert.deepEqual(fullCalls, [interrupted]);
+  const resumed = RunStore.open(path.join(artifactDir, 'run.db'));
+  assert.deepEqual(resumed.speedResults().map(({ link, status }) => ({ link, status })), [
+    { link: passed, status: 'speed_passed' },
+    { link: interrupted, status: 'speed_passed' }
+  ]);
+  resumed.close();
 });
