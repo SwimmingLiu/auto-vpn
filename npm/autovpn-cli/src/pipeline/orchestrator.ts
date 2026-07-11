@@ -9,7 +9,7 @@ import { resolveArtifactsRoot, resolveProfilePath } from '../runtime/paths.js';
 import { redactText } from '../runtime/redaction.js';
 import { resolveWorkerTemplatePath } from '../runtime/templates.js';
 import { fetchSourceLinksWithBackend, ExtractedSourceResult, SourceConfigInput } from './extract.js';
-import { canonicalVmessKey, dedupeVmessLinksWithBackend, parseVmessLink } from './dedupe.js';
+import { canonicalVmessKey, parseVmessLink } from './dedupe.js';
 import {
   normalizeSpeedTestConfig,
   ProbeResult,
@@ -260,19 +260,6 @@ function defaultRuntimeStageEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return { ...env };
 }
 
-function orderPreservingUnique(values: string[]): string[] {
-  const seen = new Set<string>();
-  const result: string[] = [];
-  for (const value of values) {
-    if (seen.has(value)) {
-      continue;
-    }
-    seen.add(value);
-    result.push(value);
-  }
-  return result;
-}
-
 function defaultCountryFor(_link: string, _speedResult: SpeedTestResult, _availabilityResult: AvailabilityResultDict): string {
   return 'US';
 }
@@ -518,7 +505,8 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
     await writeReport();
   };
 
-  emit('run_started', {
+  try {
+    emit('run_started', {
     artifact_dir: artifactDir,
     skip_deploy: Boolean(options.skipDeploy),
     skip_verify: Boolean(options.skipVerify || options.skipDeploy),
@@ -637,6 +625,9 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
     }));
     if (!useStreamingStages) {
       rawLinks = extractResults.flatMap((result) => result.links);
+      for (const result of extractResults) {
+        for (const link of result.links) runStore.recordExtractedNode(result.source_name, link);
+      }
     } else {
       rawLinks = runStore.rawLinks();
       dedupedLinks = runStore.dedupedLinks();
@@ -644,19 +635,15 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
     if (sourcesToRun.length > 0 && rawLinks.length === 0 && extractResults.some((result) => result.requested_iterations > 0 || result.failed_iterations > 0)) {
       throw new Error('No links extracted from configured sources');
     }
-    summary.counts.raw_links = rawLinks.length;
+    summary.counts.raw_links = runStore.counts().raw;
     await writeLines(artifactDir, 'vpn_node_raw.txt', rawLinks);
     await setStage('extract', 'success');
 
     if (summary.stage_status.dedupe !== 'running') {
       await setStage('dedupe', 'running');
     }
-    dedupedLinks = useStreamingStages
-      ? dedupedLinks
-      : context.stages?.extract
-      ? orderPreservingUnique(rawLinks)
-      : await dedupeVmessLinksWithBackend(rawLinks, { cwd: projectRoot, env });
-    summary.counts.deduped_links = dedupedLinks.length;
+    dedupedLinks = runStore.dedupedLinks();
+    summary.counts.deduped_links = runStore.counts().deduped;
     await writeLines(artifactDir, 'vpn_node_deduped.txt', dedupedLinks);
     await setStage('dedupe', 'success', !useStreamingStages);
 
@@ -689,8 +676,12 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
       passedSpeedLinks = speedResults
         .filter((result) => result.reachable && result.average_download_mb_s >= Number(profile.speed_test?.min_download_mb_s ?? 0))
         .map((result) => result.link);
+      for (const result of speedResults) {
+        runStore.recordProbe({ link: result.link, reachable: result.reachable, latency_ms: result.latency_ms, error: result.error ?? '' });
+        runStore.recordSpeedResult(result, passedSpeedLinks.includes(result.link));
+      }
     }
-    summary.counts.speedtest_links = passedSpeedLinks.length;
+    summary.counts.speedtest_links = runStore.speedResults().filter((result) => result.status === 'speed_passed').length;
     await writeLines(artifactDir, 'vpn_node_speedtest.txt', passedSpeedLinks);
     await writeJson(artifactDir, 'vpn_node_speedtest_report.json', speedResults);
     if (dedupedLinks.length > 0 && passedSpeedLinks.length === 0) {
@@ -718,9 +709,12 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
         progressCallback: (message) => emit('log', { message }),
         eventCallback: (type, payload) => emit(type, payload)
       });
+    if (!useStreamingStages) {
+      for (const result of availabilityResults) runStore.recordAvailabilityResult(result);
+    }
     const availabilityByLinkForOrder = new Map(availabilityResults.map((result) => [result.link, result]));
     availableLinks = passedSpeedLinks.filter((link) => availabilityByLinkForOrder.get(link)?.all_passed);
-    summary.counts.availability_links = availableLinks.length;
+    summary.counts.availability_links = runStore.availabilityResults().filter((result) => result.status === 'availability_passed').length;
     await writeLines(artifactDir, 'vpn_node_availability.txt', availableLinks);
     await writeJson(artifactDir, 'vpn_node_availability_report.json', availabilityResults);
     if (passedSpeedLinks.length > 0 && availableLinks.length === 0) {
@@ -807,7 +801,6 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
     await writeReport();
     emit('summary', summary as unknown as Record<string, unknown>);
     emit('run_failed', { error: summary.error });
-    runStore.close();
     throw error;
   }
 
@@ -815,8 +808,10 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
   runStore.setRunStatus('success');
   await writeReport();
   emit('summary', summary as unknown as Record<string, unknown>);
-  runStore.close();
-  return summary;
+    return summary;
+  } finally {
+    runStore.close();
+  }
 }
 
 export async function retryNodePipelineStage(options: NodeRetryStageOptions, context: RunNodePipelineContext = {}): Promise<PipelineSummary> {

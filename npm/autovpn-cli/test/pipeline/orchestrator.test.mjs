@@ -6,6 +6,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { resumeNodePipeline, retryNodePipelineStage, runNodePipeline } from '../../dist/pipeline/orchestrator.js';
+import { RunStore } from '../../dist/pipeline/run-store.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '../../../..');
@@ -110,6 +111,38 @@ test('runNodePipeline emits compatible events and writes non-deploy artifacts', 
   const decoratedNames = (await readFile(path.join(artifactDir, 'vpn_node_emoji.txt'), 'utf8')).trim().split(/\n/).map(vmessName);
   assert.deepEqual(decoratedNames, ['\u{1F1FA}\u{1F1F8} US first', '\u{1F1FA}\u{1F1F8} US second']);
   assert.equal(JSON.parse(await readFile(path.join(artifactDir, 'pipeline_report.json'), 'utf8')).run_status, 'success');
+  const store = RunStore.open(path.join(artifactDir, 'run.db'));
+  try {
+    assert.deepEqual(store.counts(), { raw: 3, deduped: 2, probes: 2, speed: 2, availability: 2 });
+    assert.deepEqual(store.speedResults().map((entry) => entry.status), ['speed_passed', 'speed_passed']);
+    assert.deepEqual(store.availabilityResults().map((entry) => entry.status), ['availability_passed', 'availability_passed']);
+  } finally {
+    store.close();
+  }
+});
+
+test('runNodePipeline closes RunStore exactly once when event handling throws', async () => {
+  const projectRoot = await makeProject();
+  const originalClose = RunStore.prototype.close;
+  let closeCalls = 0;
+  RunStore.prototype.close = function close() {
+    closeCalls += 1;
+    return originalClose.call(this);
+  };
+  try {
+    await assert.rejects(() => runNodePipeline({ projectRoot, skipDeploy: true, skipVerify: true }, {
+      env: {
+        VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'),
+        VPN_AUTOMATION_PROFILE_PATH: path.join(projectRoot, 'state', 'profile.toml')
+      },
+      emit: (event) => {
+        if (event.type === 'run_started') throw new Error('event sink failed');
+      }
+    }), /event sink failed/);
+    assert.equal(closeCalls, 1);
+  } finally {
+    RunStore.prototype.close = originalClose;
+  }
 });
 
 test('runNodePipeline fails availability before postprocess when speed-qualified links are unavailable', async () => {
