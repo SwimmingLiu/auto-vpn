@@ -729,6 +729,9 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
     await writeLines(artifactDir, 'vpn_node_speedtest.txt', passedSpeedLinks);
     await writeJson(artifactDir, 'vpn_node_speedtest_report.json', speedResults);
     if (dedupedLinks.length > 0 && passedSpeedLinks.length === 0) {
+      if (!useStreamingStages && summary.stage_status.availability === 'pending') {
+        await setStage('availability', 'skipped', false);
+      }
       throw new Error(speedtestFailureMessage(speedResults, Number(profile.speed_test?.min_download_mb_s ?? 0)));
     }
     if (summary.stage_status.speedtest !== 'skipped') await setStage('speedtest', 'success');

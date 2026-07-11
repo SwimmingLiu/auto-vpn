@@ -714,6 +714,9 @@ test('runNodePipeline fails fast when no links pass speedtest', async () => {
   const report = JSON.parse(await readFile(path.join(events.at(-2).artifact_dir, 'pipeline_report.json'), 'utf8'));
   assert.equal(report.run_status, 'failed');
   assert.equal(report.stage_status.speedtest, 'failed');
+  assert.equal(report.stage_status.availability, 'skipped');
+  assert.ok(events.some((event) => event.type === 'stage' && event.stage === 'availability' && event.status === 'skipped'));
+  assert.equal(events.some((event) => event.type === 'stage' && event.stage === 'availability' && event.status === 'running'), false);
   assert.match(report.error, /No links passed speed test/);
 });
 
