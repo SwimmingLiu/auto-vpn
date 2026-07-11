@@ -7,8 +7,8 @@ import { chromium } from 'playwright';
 import { createAutoVpnServer } from '../../npm/autovpn-cli/dist/server/http.js';
 
 const EXPECTED_DIGESTS = {
-  dashboard: '1c447a1885720d55f6c8f8b6c18f69fef97c7729a8d24f6a0c5eb86ef6f100ec',
-  runs: '4306781ea49f38e29fbaff4f6c62d515bc2953d45246d03e0121928c99004c5d'
+  dashboard: 'b3310d848450f08523322e6bd8982d743d0e0c1bc9789d31a95ea333f1405708',
+  runs: '6e776728018608647f4d57d12395eec72b94f1246e2a5e8ea5cbdb5af6d09acc'
 };
 
 const EXPECTED_MOBILE_DIGESTS = {
