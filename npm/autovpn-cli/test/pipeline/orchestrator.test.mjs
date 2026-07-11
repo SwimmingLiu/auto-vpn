@@ -629,12 +629,20 @@ test('runNodePipeline streams passing speedtests into availability before remain
     }
   });
 
-  const overlapped = await Promise.race([
-    availabilityStarted.then(() => true),
-    new Promise((resolve) => setTimeout(() => resolve(false), 100))
+  const secondStarted = await Promise.race([
+    secondSpeedtestStarted.then(() => true),
+    new Promise((resolve) => setTimeout(() => resolve(false), 1_000))
   ]);
-  await secondSpeedtestStarted;
-  releaseSecondSpeedtest();
+  assert.equal(secondStarted, true);
+  let overlapped;
+  try {
+    overlapped = await Promise.race([
+      availabilityStarted.then(() => true),
+      new Promise((resolve) => setTimeout(() => resolve(false), 1_000))
+    ]);
+  } finally {
+    releaseSecondSpeedtest();
+  }
   const result = await runPromise;
 
   assert.equal(overlapped, true);
