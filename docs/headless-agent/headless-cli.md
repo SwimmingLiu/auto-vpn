@@ -30,7 +30,7 @@ or verify a Cloudflare deployment.
 
 Every run owns an `artifact_dir`; `artifact_dir/run.db` is the authoritative local SQLite record. It contains node identities, stage results, and resume checkpoints. Legacy `.txt` and `.json` files are compatibility exports and may lag an active run, so agents must read `run.db` or the CLI JSON/JSONL contract when making control decisions.
 
-For every unique node reported by an extract callback, pipeline mode immediately schedules dedupe, probe/full speed measurement, and availability checks. Extraction, dedupe, speedtest, and availability can consequently report `running` at the same time. Their totals grow as nodes are discovered; a larger total does not reset completed or passing counts.
+For every unique node reported by an extract callback, pipeline mode first schedules a reachability probe. Only reachable nodes receive the full speed measurement, and only nodes that pass the configured speed threshold proceed to availability checks. Extraction, dedupe, speedtest, and availability can consequently report `running` at the same time. Their totals grow as nodes are discovered; a larger total does not reset completed or passing counts.
 
 The worker queues use bounded concurrency and backpressure. When downstream measurements are slower than extraction, producers wait at the queue boundary rather than accumulating an unbounded backlog.
 

@@ -66,7 +66,7 @@ autovpn run --project-root . --output jsonl
 Runtime notes:
 
 - Each run writes `artifact_dir/run.db`. This SQLite database is the authoritative local record for run state, node identity, stage results, and resume checkpoints. The `.txt` and `.json` files in the artifact directory are compatibility exports; do not use them as the source of truth for an in-progress run.
-- Pipeline mode streams each newly discovered unique node from the extract callback directly through dedupe, probe/full speed measurement, and availability checks. These stages can be active at the same time, and their displayed totals can increase while extraction is still discovering nodes.
+- Pipeline mode sends each newly discovered unique node from the extract callback to a reachability probe. Only reachable nodes receive the full speed measurement, and only nodes that pass the configured speed threshold proceed to availability checks. Dedupe, probe/speedtest, and availability can be active while extraction is still running, so their displayed totals can increase during the run.
 - The streaming queues use bounded concurrency and backpressure. A slow speed or availability worker therefore limits queued work instead of allowing unbounded memory growth.
 - `resume pipeline`, `resume speedtest`, `run --resume-latest`, and `retry-stage` continue from the SQLite checkpoints. Existing legacy artifact directories can be imported on resume; subsequent state is recorded in `run.db` while compatibility exports remain available.
 - Pipeline mode does not apply the legacy global `max_download_candidates` ranking gate before availability. If that field remains in a profile, it only applies when the speed module is run independently in its legacy ranked-candidate mode.

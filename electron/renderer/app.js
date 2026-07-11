@@ -1187,7 +1187,7 @@ function handlePipelineEvent(event, options = {}) {
   }
 
   if (event.type === 'stage') {
-    state.stageStatus[event.stage] = event.status;
+    state.stageStatus[event.stage] = normalizeStageStatus(event.status);
     appendLog(`[stage] ${event.stage} ${event.status}`, {
       kind: 'stage',
       stage: event.stage,
@@ -1199,7 +1199,7 @@ function handlePipelineEvent(event, options = {}) {
   }
 
   if (event.type === 'summary') {
-    state.stageStatus = event.stage_status ?? {};
+    state.stageStatus = normalizeStageStatuses(event.stage_status);
     state.counts = normalizeCounts(event.counts ?? {});
     state.sourceCounts = normalizeSourceCounts(event.source_counts ?? state.sourceCounts);
     state.retryContext = event.retry_context ?? state.retryContext ?? {};
@@ -1332,10 +1332,36 @@ function handlePipelineEvent(event, options = {}) {
   }
 
   if (event.type === 'run_started') {
-    state.artifactDir = event.artifact_dir ?? '';
+    const nextArtifactDir = String(event.artifact_dir ?? '');
+    if (nextArtifactDir !== state.artifactDir) {
+      resetRunScopedProgress();
+      state.runState = 'running';
+      state.runResult = 'running';
+      state.runStartedAt = Date.now();
+    }
+    state.artifactDir = nextArtifactDir;
     touchUpdate();
     renderAll();
   }
+}
+
+function normalizeStageStatus(status) {
+  return status === 'skipped' ? '已跳过' : status;
+}
+
+function normalizeStageStatuses(stageStatuses = {}) {
+  return Object.fromEntries(
+    Object.entries(stageStatuses ?? {}).map(([stage, status]) => [stage, normalizeStageStatus(status)])
+  );
+}
+
+function resetRunScopedProgress() {
+  state.stageStatus = {};
+  state.counts = {};
+  state.sourceCounts = {};
+  state.extractDedupedFingerprints = new Set();
+  state.outputFiles = [];
+  state.nodeRows = [];
 }
 
 function normalizeCounts(counts) {
@@ -1368,13 +1394,15 @@ function updateExtractMetrics(event) {
   }
 
   const previous = state.sourceCounts[sourceName] ?? {};
-  const rawLinks = Math.max(
-    Number(previous.raw_links ?? 0),
-    Number(event.total_links ?? 0)
-  );
+  const previousRawLinks = validNonNegativeNumber(previous.raw_links) ?? 0;
+  const previousDedupedLinks = validNonNegativeNumber(previous.deduped_links) ?? 0;
+  const rawLinks = Math.max(previousRawLinks, validNonNegativeNumber(event.total_links) ?? previousRawLinks);
+  const eventDedupedLinks = event.deduped_links == null
+    ? rawLinks
+    : validNonNegativeNumber(event.deduped_links) ?? previousDedupedLinks;
   const sourceDedupedLinks = Math.max(
-    Number(previous.deduped_links ?? 0),
-    Number(event.deduped_links ?? rawLinks)
+    previousDedupedLinks,
+    eventDedupedLinks
   );
   if (Array.isArray(event.new_item_fingerprints)) {
     for (const fingerprint of event.new_item_fingerprints) {
@@ -1399,6 +1427,11 @@ function updateExtractMetrics(event) {
     state.counts.deduped_links = Object.values(state.sourceCounts)
       .reduce((total, item) => total + Number(item?.deduped_links ?? 0), 0);
   }
+}
+
+function validNonNegativeNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : null;
 }
 
 async function hydrateArtifactPreview() {
@@ -1436,7 +1469,7 @@ function hydrateArtifactState(result) {
     state.runResult = 'failed';
   }
   if (result.stage_status) {
-    state.stageStatus = result.stage_status;
+    state.stageStatus = normalizeStageStatuses(result.stage_status);
   }
 }
 
