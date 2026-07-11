@@ -579,6 +579,10 @@ test('runNodePipeline streams passing speedtests into availability before remain
   const secondLink = vmessLink('second', 'two.example');
   let selectedSpeedtestsFinished = 0;
   let releaseSecondSpeedtest;
+  let markSecondSpeedtestStarted;
+  const secondSpeedtestStarted = new Promise((resolve) => {
+    markSecondSpeedtestStarted = resolve;
+  });
   let firstAvailabilitySeen;
   const availabilityStarted = new Promise((resolve) => {
     firstAvailabilitySeen = resolve;
@@ -610,6 +614,7 @@ test('runNodePipeline streams passing speedtests into availability before remain
         if (link === secondLink) {
           await new Promise((resolve) => {
             releaseSecondSpeedtest = resolve;
+            markSecondSpeedtestStarted();
           });
         }
         selectedSpeedtestsFinished += 1;
@@ -628,7 +633,8 @@ test('runNodePipeline streams passing speedtests into availability before remain
     availabilityStarted.then(() => true),
     new Promise((resolve) => setTimeout(() => resolve(false), 100))
   ]);
-  releaseSecondSpeedtest?.();
+  await secondSpeedtestStarted;
+  releaseSecondSpeedtest();
   const result = await runPromise;
 
   assert.equal(overlapped, true);
