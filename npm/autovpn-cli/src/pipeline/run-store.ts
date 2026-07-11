@@ -314,6 +314,12 @@ export class RunStore {
     });
   }
 
+  resetSourceForRerun(source: string, total = 0): boolean {
+    if (!Number.isInteger(total) || total < 0) throw new RangeError('source rerun total must be a non-negative integer');
+    return this.transaction(() => Number(this.statement(`UPDATE source_progress SET processed=0, total=?, status='pending', error=''
+      WHERE run_id=? AND source=? AND status NOT IN ('success','skipped')`).run(total, this.currentRunId(), source).changes) > 0);
+  }
+
   stopForResume(error = 'Stopped by user'): boolean {
     const runId = this.currentRunId();
     return this.transaction(() => {

@@ -193,6 +193,22 @@ test('reopenSourcesForResume makes failed source progress writable and preserves
   }
 });
 
+test('resetSourceForRerun starts a new checkpoint generation with smaller totals', async () => {
+  const ctx = await fixture();
+  try {
+    ctx.store.initializeRun();
+    ctx.store.recordSourceProgress('failed-source', { processed: 2, total: 4, status: 'failed' });
+
+    ctx.store.resetSourceForRerun('failed-source', 1);
+    ctx.store.recordSourceProgress('failed-source', { processed: 0, total: 1, status: 'running' });
+    ctx.store.recordSourceProgress('failed-source', { processed: 1, total: 1, status: 'success' });
+
+    assert.deepEqual(ctx.store.sourceProgress(), [{ source: 'failed-source', processed: 1, total: 1, status: 'success', error: '' }]);
+  } finally {
+    await ctx.cleanup();
+  }
+});
+
 test('migrates pre-stopped status constraints before stopping an existing run', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'autovpn-run-store-old-stop-'));
   const dbPath = path.join(root, 'run.db');

@@ -2247,7 +2247,7 @@ test('resumeNodePipeline resets interrupted sqlite nodes and schedules only inco
   store.recordSpeedResult({ link: passed, reachable: true, average_download_mb_s: 3, latency_ms: 10, error: '' }, true);
   store.markAvailabilityRunning(passed);
   store.markSpeedRunning(interrupted);
-  store.recordSourceProgress('leiting', { processed: 0, total: 1, status: 'failed', error: 'interrupted' });
+  store.recordSourceProgress('leiting', { processed: 2, total: 4, status: 'failed', error: 'interrupted' });
   for (const source of ['heidong', 'mifeng', 'xuanfeng-area', 'xuanfeng-all-area']) {
     store.recordSourceProgress(source, { processed: 1, total: 1, status: 'success' });
   }
@@ -2310,6 +2310,7 @@ test('resumeNodePipeline resets interrupted sqlite nodes and schedules only inco
   resumedStore.close();
   const sourceStore = RunStore.open(path.join(artifactDir, 'run.db'));
   assert.deepEqual(sourceStore.incompleteSourceProgress(), []);
+  assert.deepEqual(sourceStore.sourceProgress().find((row) => row.source === 'leiting'), { source: 'leiting', processed: 1, total: 1, status: 'success', error: '' });
   sourceStore.close();
   const dbStages = readLatestStageStatuses(path.join(artifactDir, 'run.db'));
   assert.equal(Object.values(dbStages).includes('stopped'), false);

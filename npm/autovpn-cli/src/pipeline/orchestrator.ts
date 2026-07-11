@@ -1432,8 +1432,8 @@ export async function resumeNodePipeline(options: NodeResumeOptions, context: Ru
       await setStage('extract', 'running');
       for (const [sourceName, source] of enabledSources(profile)) {
         if (progressBySource.get(sourceName)?.status === 'success') continue;
-        const previousProgress = progressBySource.get(sourceName);
-        runStore.recordSourceProgress(sourceName, { processed: previousProgress?.processed ?? 0, total: previousProgress?.total ?? 0, status: 'running' });
+        runStore.resetSourceForRerun(sourceName);
+        runStore.recordSourceProgress(sourceName, { processed: 0, total: 0, status: 'running' });
         const replayCounts = new Map<string, number>();
         for (const link of runStore.rawLinksForSource(sourceName)) replayCounts.set(link, (replayCounts.get(link) ?? 0) + 1);
         const streamed = new Set<string>();
@@ -1457,7 +1457,7 @@ export async function resumeNodePipeline(options: NodeResumeOptions, context: Ru
           runStore.recordSourceProgress(sourceName, { processed: result.requested_iterations, total: result.requested_iterations, status: 'success' });
           summary.source_counts[sourceName] = { raw_links: result.links.length, successful_iterations: result.successful_iterations, failed_iterations: result.failed_iterations };
         } catch (error) {
-          runStore.recordSourceProgress(sourceName, { processed: previousProgress?.processed ?? 0, total: previousProgress?.total ?? 0, status: 'failed', error: errorMessage(error) });
+          runStore.recordSourceProgress(sourceName, { processed: 0, total: 0, status: 'failed', error: errorMessage(error) });
           await setStage('extract', 'failed');
           throw error;
         }
