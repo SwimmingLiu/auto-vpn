@@ -62,6 +62,10 @@ function parseProviderResults(value: unknown): Record<string, unknown> {
   }
 }
 
+function strictBoolean(value: unknown): boolean {
+  return value === true || value === 1;
+}
+
 function readLegacyLines(filePath: string): string[] {
   if (!fs.existsSync(filePath)) return [];
   return fs.readFileSync(filePath, 'utf8').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
@@ -178,6 +182,7 @@ export class RunStore {
         PRIMARY KEY (run_id, canonical_key)
       );
     `);
+    this.migrateSchema();
     const latest = this.db.prepare('SELECT run_id FROM runs ORDER BY run_id DESC LIMIT 1').get() as { run_id: number } | undefined;
     this.runId = latest?.run_id;
   }
@@ -190,10 +195,15 @@ export class RunStore {
     const dbPath = path.join(artifactDir, 'run.db');
     if (fs.existsSync(dbPath)) {
       const store = RunStore.open(dbPath);
-      if (store.counts().deduped === 0 && readLegacyLines(path.join(artifactDir, 'vpn_node_deduped.txt')).length > 0) {
-        store.importLegacyArtifacts(artifactDir);
+      try {
+        const hasLegacyLinks = readLegacyLines(path.join(artifactDir, 'vpn_node_raw.txt')).length > 0
+          || readLegacyLines(path.join(artifactDir, 'vpn_node_deduped.txt')).length > 0;
+        if (store.counts().deduped === 0 && hasLegacyLinks) store.importLegacyArtifacts(artifactDir);
+        return store;
+      } catch (error) {
+        store.close();
+        throw error;
       }
-      return store;
     }
     const store = RunStore.open(dbPath);
     try {
@@ -209,33 +219,41 @@ export class RunStore {
 
   static seedRetry(sourceArtifactDir: string, destinationArtifactDir: string, boundary: string): RunStore {
     const source = RunStore.openOrImport(sourceArtifactDir);
-    const destination = RunStore.open(path.join(destinationArtifactDir, 'run.db'));
+    const dbPath = path.join(destinationArtifactDir, 'run.db');
+    let destination: RunStore | undefined;
     try {
-      destination.initializeRun('running');
-      const runId = destination.currentRunId();
-      for (const link of source.rawLinks()) {
-        destination.statement('INSERT INTO raw_observations(run_id, source, link) VALUES (?, ?, ?)').run(runId, 'retry-seed', link);
-      }
-      source.dedupedLinks().forEach((link, index) => {
-        destination.statement('INSERT INTO pipeline_nodes(run_id, canonical_key, link, sequence) VALUES (?, ?, ?, ?)')
-          .run(runId, canonicalVmessKey(parseVmessLink(link)), link, index + 1);
+      destination = RunStore.open(dbPath);
+      destination.transaction(() => {
+        const inserted = destination!.statement('INSERT INTO runs(status) VALUES (?)').run('running');
+        destination!.runId = Number(inserted.lastInsertRowid);
+        const runId = destination!.currentRunId();
+        for (const link of source.rawLinks()) {
+          destination!.statement('INSERT INTO raw_observations(run_id, source, link) VALUES (?, ?, ?)').run(runId, 'retry-seed', link);
+        }
+        source.dedupedLinks().forEach((link, index) => {
+          destination!.statement('INSERT INTO pipeline_nodes(run_id, canonical_key, link, sequence) VALUES (?, ?, ?, ?)')
+            .run(runId, canonicalVmessKey(parseVmessLink(link)), link, index + 1);
+        });
+        const preserveSpeed = boundary !== 'speedtest';
+        const preserveAvailability = !['speedtest', 'availability'].includes(boundary);
+        if (preserveSpeed) {
+          for (const probe of source.probeResults()) destination!.recordProbe(probe);
+          for (const result of source.speedResults().filter((row) => row.status === 'speed_passed' || row.status === 'speed_failed')) {
+            destination!.recordSpeedResult(result, result.status === 'speed_passed');
+          }
+        }
+        if (preserveAvailability) {
+          for (const result of source.availabilityResults().filter((row) => row.status === 'availability_passed' || row.status === 'availability_failed')) {
+            destination!.recordAvailabilityResult(result);
+          }
+        }
       });
-      const preserveSpeed = boundary !== 'speedtest';
-      const preserveAvailability = !['speedtest', 'availability'].includes(boundary);
-      if (preserveSpeed) {
-        for (const probe of source.probeResults()) destination.recordProbe(probe);
-        for (const result of source.speedResults().filter((row) => row.status === 'speed_passed' || row.status === 'speed_failed')) {
-          destination.recordSpeedResult(result, result.status === 'speed_passed');
-        }
-      }
-      if (preserveAvailability) {
-        for (const result of source.availabilityResults().filter((row) => row.status === 'availability_passed' || row.status === 'availability_failed')) {
-          destination.recordAvailabilityResult(result);
-        }
-      }
       return destination;
     } catch (error) {
-      destination.close();
+      destination?.close();
+      for (const suffix of ['', '-wal', '-shm']) {
+        try { fs.rmSync(`${dbPath}${suffix}`, { force: true }); } catch { /* preserve seed failure */ }
+      }
       throw error;
     } finally {
       source.close();
@@ -268,6 +286,18 @@ export class RunStore {
       this.statement(`UPDATE runs SET status = ? WHERE run_id = ?
         AND status NOT IN ('success','failed','cancelled')`).run(status, runId);
     }
+  }
+
+  reopenForResume(): void {
+    const runId = this.currentRunId();
+    this.transaction(() => {
+      this.statement("UPDATE runs SET status='running', error='' WHERE run_id=? AND status IN ('failed','cancelled')").run(runId);
+      const failedStages = this.statement(`SELECT stage_name FROM stage_events e WHERE run_id=? AND status='failed'
+        AND rowid=(SELECT MAX(rowid) FROM stage_events x WHERE x.run_id=e.run_id AND x.stage_name=e.stage_name)`).all(runId) as Array<{ stage_name: string }>;
+      for (const row of failedStages) {
+        this.statement("INSERT INTO stage_events(run_id, stage_name, status, error) VALUES (?, ?, 'running', '')").run(runId, row.stage_name);
+      }
+    });
   }
 
   setStageStatus(stageName: string, status: StageStatus, error = ''): void {
@@ -390,13 +420,14 @@ export class RunStore {
   recordAvailabilityResult(result: AvailabilityStoreResult): void {
     const { runId, key } = this.nodeIdentity(result.link);
     const error = redactText(result.error ?? '');
-    const status = result.all_passed && !error ? 'availability_passed' : 'availability_failed';
+    const passed = strictBoolean(result.all_passed) && !error;
+    const status = passed ? 'availability_passed' : 'availability_failed';
     this.statement(`INSERT INTO availability_results(run_id, canonical_key, status, all_passed, provider_results, error)
       VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT(run_id, canonical_key) DO UPDATE SET status=excluded.status, all_passed=excluded.all_passed,
         provider_results=excluded.provider_results, error=excluded.error
       WHERE availability_results.status NOT IN ('availability_passed','availability_failed','cancelled','skipped')`)
-      .run(runId, key, status, Number(result.all_passed), JSON.stringify(result.provider_results), error);
+      .run(runId, key, status, Number(passed), JSON.stringify(result.provider_results), error);
   }
 
   availabilityResults(): StoredAvailabilityResult[] {
@@ -473,10 +504,11 @@ export class RunStore {
         const link = String(row.link ?? '');
         const key = canonicalVmessKey(parseVmessLink(link));
         if (!seen.has(key)) throw new Error('Legacy availability report references an unknown link');
-        const allPassed = Boolean(row.all_passed);
+        const error = redactText(String(row.error ?? ''));
+        const allPassed = strictBoolean(row.all_passed) && !error;
         this.statement(`INSERT INTO availability_results(run_id, canonical_key, status, all_passed, provider_results, error)
           VALUES (?, ?, ?, ?, ?, ?)`)
-          .run(runId, key, allPassed ? 'availability_passed' : 'availability_failed', Number(allPassed), JSON.stringify(row.provider_results ?? {}), redactText(String(row.error ?? '')));
+          .run(runId, key, allPassed ? 'availability_passed' : 'availability_failed', Number(allPassed), JSON.stringify(row.provider_results ?? {}), error);
       }
     });
   }
@@ -487,6 +519,24 @@ export class RunStore {
     const exists = this.statement('SELECT 1 AS found FROM pipeline_nodes WHERE run_id = ? AND canonical_key = ?').get(runId, key);
     if (!exists) throw new Error('unknown pipeline node');
     return { runId, key };
+  }
+
+  private migrateSchema(): void {
+    const columns = (table: string) => new Set((this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((row) => row.name));
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      if (!columns('runs').has('error')) this.db.exec("ALTER TABLE runs ADD COLUMN error TEXT NOT NULL DEFAULT ''");
+      const stageColumns = columns('stage_events');
+      if (!stageColumns.has('run_id')) {
+        this.db.exec('ALTER TABLE stage_events ADD COLUMN run_id INTEGER');
+        this.db.exec('UPDATE stage_events SET run_id=(SELECT run_id FROM runs ORDER BY run_id DESC LIMIT 1) WHERE run_id IS NULL');
+      }
+      if (!stageColumns.has('error')) this.db.exec("ALTER TABLE stage_events ADD COLUMN error TEXT NOT NULL DEFAULT ''");
+      this.db.exec('PRAGMA user_version=1; COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
   }
 
   private currentRunId(): number {

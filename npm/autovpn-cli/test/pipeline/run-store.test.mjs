@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -188,6 +189,59 @@ test('legacy import never promotes unreachable speed report rows to winners', as
   }
 });
 
+test('legacy availability classifier treats string false and non-empty errors as failures', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'autovpn-availability-import-'));
+  const first = vmessLink('first', '1.1.1.1');
+  const second = vmessLink('second', '2.2.2.2');
+  try {
+    await writeFile(path.join(root, 'vpn_node_raw.txt'), `${first}\n${second}\n`);
+    await writeFile(path.join(root, 'vpn_node_availability_report.json'), JSON.stringify([
+      { link: first, all_passed: 'false', provider_results: {}, error: '' },
+      { link: second, all_passed: true, provider_results: {}, error: 'provider failed' }
+    ]));
+    const store = RunStore.openOrImport(root);
+    assert.deepEqual(store.availabilityResults().map(({ status }) => status), ['availability_failed', 'availability_failed']);
+    store.close();
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('openOrImport migrates historical minimal schema and imports raw-only artifacts', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'autovpn-history-import-'));
+  const link = vmessLink('raw-only', '3.3.3.3');
+  const dbPath = path.join(root, 'run.db');
+  try {
+    await writeFile(path.join(root, 'vpn_node_raw.txt'), `${link}\n`);
+    const db = new DatabaseSync(dbPath);
+    db.exec("CREATE TABLE runs (run_id INTEGER PRIMARY KEY, status TEXT NOT NULL); CREATE TABLE stage_events (stage_name TEXT NOT NULL, status TEXT NOT NULL); INSERT INTO runs VALUES (1, 'failed');");
+    db.close();
+    const store = RunStore.openOrImport(root);
+    assert.deepEqual(store.rawLinks(), [link]);
+    assert.deepEqual(store.dedupedLinks(), [link]);
+    store.close();
+    const migrated = new DatabaseSync(dbPath);
+    assert.equal(migrated.prepare('PRAGMA user_version').get().user_version, 1);
+    assert.ok(migrated.prepare('PRAGMA table_info(runs)').all().some((row) => row.name === 'error'));
+    assert.ok(migrated.prepare('PRAGMA table_info(stage_events)').all().some((row) => row.name === 'run_id'));
+    migrated.close();
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('reopenForResume explicitly reopens failed run and failed stages', async () => {
+  const ctx = await fixture();
+  try {
+    ctx.store.initializeRun();
+    ctx.store.setStageStatus('speedtest', 'running');
+    ctx.store.setStageStatus('speedtest', 'failed');
+    ctx.store.setRunStatus('failed');
+    ctx.store.reopenForResume();
+    assert.equal(readRunStatus(ctx.dbPath), 'running');
+    ctx.store.setStageStatus('speedtest', 'success');
+    ctx.store.setRunStatus('success');
+    assert.equal(readRunStatus(ctx.dbPath), 'success');
+    assert.equal(readLatestStageStatuses(ctx.dbPath).speedtest, 'success');
+  } finally { await ctx.cleanup(); }
+});
+
 test('safe status readers return undefined state for malformed databases', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'autovpn-run-reader-'));
   const dbPath = path.join(root, 'run.db');
@@ -235,6 +289,44 @@ test('seedRetry preserves only terminal node inputs before the retry boundary', 
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test('openOrImport closes an existing store when compatibility import fails', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'autovpn-import-close-'));
+  const dbPath = path.join(root, 'run.db');
+  const initial = RunStore.open(dbPath);
+  initial.initializeRun();
+  initial.close();
+  await writeFile(path.join(root, 'vpn_node_raw.txt'), 'not-a-vmess-link\n');
+  const originalClose = RunStore.prototype.close;
+  let closes = 0;
+  RunStore.prototype.close = function close() { closes += 1; return originalClose.call(this); };
+  try {
+    assert.throws(() => RunStore.openOrImport(root));
+    assert.equal(closes, 1);
+  } finally {
+    RunStore.prototype.close = originalClose;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('seedRetry rolls back and removes destination database when seeding fails', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'autovpn-seed-rollback-'));
+  const sourceDir = path.join(root, 'source');
+  const destinationDir = path.join(root, 'destination');
+  await mkdir(sourceDir, { recursive: true });
+  await mkdir(destinationDir, { recursive: true });
+  const source = RunStore.open(path.join(sourceDir, 'run.db'));
+  source.initializeRun();
+  source.recordExtractedNode('source', vmessLink('node'));
+  source.close();
+  const db = new DatabaseSync(path.join(sourceDir, 'run.db'));
+  db.exec("UPDATE pipeline_nodes SET link='malformed'");
+  db.close();
+  try {
+    assert.throws(() => RunStore.seedRetry(sourceDir, destinationDir, 'availability'));
+    assert.equal(existsSync(path.join(destinationDir, 'run.db')), false);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test('persists explicit speed and availability failure terminal states', async () => {

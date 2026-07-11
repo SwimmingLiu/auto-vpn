@@ -347,6 +347,16 @@ function passedSpeedResults(allResults: SpeedTestResult[], passedLinks: string[]
     .sort((left, right) => right.average_download_mb_s - left.average_download_mb_s);
 }
 
+export function validateSpeedResumeProbeBatch(requestedLinks: string[], results: ProbeResult[]): void {
+  const requested = new Set(requestedLinks);
+  const seen = new Set<string>();
+  if (results.length !== requestedLinks.length) throw new Error('speedtest probe adapter must return exactly one result per requested link');
+  for (const result of results) {
+    if (!requested.has(result.link) || seen.has(result.link)) throw new Error('speedtest probe adapter returned duplicate, extra, or wrong link');
+    seen.add(result.link);
+  }
+}
+
 async function speedResultsFromEventLog(eventLog: string, passedLinks: string[]): Promise<SpeedTestResult[]> {
   if (!fs.existsSync(eventLog)) {
     return [];
@@ -979,7 +989,7 @@ export async function retryNodePipelineStage(options: NodeRetryStageOptions, con
           targets: profile.availability_targets as any
         }, { cwd: projectRoot, env: runtimeStageEnv });
       for (const result of availabilityResults) retryStore.recordAvailabilityResult(result);
-      const availableLinks = availabilityResults.filter((result) => result.all_passed).map((result) => result.link);
+      const availableLinks = retryStore.availabilityResults().filter((result) => result.status === 'availability_passed').map((result) => result.link);
       summary.counts.availability_links = availableLinks.length;
       await writeLines(retryArtifactDir, 'vpn_node_availability.txt', availableLinks);
       await writeJson(retryArtifactDir, 'vpn_node_availability_report.json', availabilityResults);
@@ -1141,6 +1151,7 @@ async function resumeNodeSpeedtest(options: NodeResumeOptions, context: RunNodeP
   const hadRunDb = fs.existsSync(path.join(artifactDir, 'run.db'));
   const runStore = RunStore.openOrImport(artifactDir);
   try {
+  runStore.reopenForResume();
   runStore.resetInterruptedRunning();
 
   const emit = (type: string, payload: Record<string, unknown> = {}) => {
@@ -1197,6 +1208,7 @@ async function resumeNodeSpeedtest(options: NodeResumeOptions, context: RunNodeP
       const probeResults = context.stages?.speedtestProbe
         ? await context.stages.speedtestProbe(remainingProbeLinks, profile.speed_test ?? {}, runtimePath)
         : await probeSpeedtestLinksInNode({ links: remainingProbeLinks, config: profile.speed_test as any, runtime_path: runtimePath }, { cwd: projectRoot, env });
+      validateSpeedResumeProbeBatch(remainingProbeLinks, probeResults);
       for (let index = 0; index < probeResults.length; index += 1) {
         const result = probeResults[index];
         probes.set(result.link, result);
@@ -1340,6 +1352,7 @@ export async function resumeNodePipeline(options: NodeResumeOptions, context: Ru
 
   const runStore = RunStore.openOrImport(artifactDir);
   try {
+  runStore.reopenForResume();
   const rawLinks = runStore.rawLinks();
   const dedupedLinks = runStore.dedupedLinks();
   await writeLines(artifactDir, 'vpn_node_raw.txt', rawLinks);
@@ -1404,8 +1417,9 @@ export async function resumeNodePipeline(options: NodeResumeOptions, context: Ru
       if (results.length !== 1 || results[0].link !== speedResult.link) throw new Error('availability adapter must return exactly one matching result');
       runStore.recordAvailabilityResult(results[0]);
     }
-    const availabilityResults = runStore.availabilityResults().map(({ status: _status, ...result }) => result as AvailabilityResultDict);
-    const availableLinks = availabilityResults.filter((result) => result.all_passed).map((result) => result.link);
+    const storedAvailabilityResults = runStore.availabilityResults();
+    const availabilityResults = storedAvailabilityResults.map(({ status: _status, ...result }) => result as AvailabilityResultDict);
+    const availableLinks = storedAvailabilityResults.filter((result) => result.status === 'availability_passed').map((result) => result.link);
     summary.counts.availability_links = availableLinks.length;
     await writeLines(artifactDir, 'vpn_node_availability.txt', availableLinks);
     await writeJson(artifactDir, 'vpn_node_availability_report.json', availabilityResults);

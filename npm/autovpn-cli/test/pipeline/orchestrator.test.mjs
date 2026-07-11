@@ -7,7 +7,7 @@ import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 
-import { resumeNodePipeline, retryNodePipelineStage, runNodePipeline } from '../../dist/pipeline/orchestrator.js';
+import { resumeNodePipeline, retryNodePipelineStage, runNodePipeline, validateSpeedResumeProbeBatch } from '../../dist/pipeline/orchestrator.js';
 import { RunStore, readLatestStageStatuses } from '../../dist/pipeline/run-store.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -35,6 +35,16 @@ function vmessLink(name, address) {
 function vmessName(link) {
   return JSON.parse(Buffer.from(link.replace(/^vmess:\/\//, ''), 'base64url').toString('utf8')).ps;
 }
+
+test('speed resume bulk probe requires exactly one matching result per requested link', () => {
+  const first = vmessLink('first', 'one.example');
+  const second = vmessLink('second', 'two.example');
+  const probe = (link) => ({ link, reachable: true, latency_ms: 10, error: '' });
+  assert.doesNotThrow(() => validateSpeedResumeProbeBatch([first, second], [probe(first), probe(second)]));
+  assert.throws(() => validateSpeedResumeProbeBatch([first, second], [probe(first)]), /exactly one/);
+  assert.throws(() => validateSpeedResumeProbeBatch([first, second], [probe(first), probe(first)]), /duplicate, extra, or wrong/);
+  assert.throws(() => validateSpeedResumeProbeBatch([first], [probe(second)]), /duplicate, extra, or wrong/);
+});
 
 function streamingBody(byteLength) {
   let sent = false;
