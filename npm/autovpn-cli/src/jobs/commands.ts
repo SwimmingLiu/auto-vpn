@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { RunStore } from '../pipeline/run-store.js';
 import { randomBytes } from 'node:crypto';
 import { spawn as defaultSpawn, ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -93,15 +94,18 @@ function markArtifactStopped(job: JobRecord): void {
     return;
   }
   const reportPath = path.join(artifactDir, 'pipeline_report.json');
-  if (!fs.existsSync(reportPath)) {
-    return;
+  const dbPath = path.join(artifactDir, 'run.db');
+  if (fs.existsSync(dbPath)) {
+    const runStore = RunStore.open(dbPath);
+    try { runStore.stopForResume('Stopped by user'); } finally { runStore.close(); }
   }
+  if (!fs.existsSync(reportPath)) return;
   try {
     const report = JSON.parse(fs.readFileSync(reportPath, 'utf8')) as Record<string, any>;
     const stageStatus = { ...((report.stage_status ?? {}) as Record<string, unknown>) };
     for (const [stage, status] of Object.entries(stageStatus)) {
       if (status === 'running') {
-        stageStatus[stage] = 'failed';
+        stageStatus[stage] = 'stopped';
       }
     }
     report.stage_status = stageStatus;

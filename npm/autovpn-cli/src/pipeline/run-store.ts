@@ -40,14 +40,14 @@ export interface StoredAvailabilityResult extends AvailabilityStoreResult {
   status: AvailabilityStatus;
 }
 
-export type RunStatus = 'pending' | 'running' | 'success' | 'failed' | 'cancelled';
-export type StageStatus = 'pending' | 'running' | 'success' | 'failed' | 'cancelled' | 'skipped';
+export type RunStatus = 'pending' | 'running' | 'success' | 'failed' | 'cancelled' | 'stopped';
+export type StageStatus = 'pending' | 'running' | 'success' | 'failed' | 'cancelled' | 'skipped' | 'stopped';
 export type SourceStatus = StageStatus;
 export type SpeedStatus = 'pending' | 'running' | 'speed_passed' | 'speed_failed' | 'cancelled' | 'skipped';
 export type AvailabilityStatus = 'pending' | 'running' | 'availability_passed' | 'availability_failed' | 'cancelled' | 'skipped';
 
 const TERMINAL_STATUSES = new Set([
-  'success', 'failed', 'cancelled', 'skipped',
+  'success', 'failed', 'cancelled', 'skipped', 'stopped',
   'speed_passed', 'speed_failed', 'availability_passed', 'availability_failed'
 ]);
 
@@ -121,13 +121,13 @@ export class RunStore {
       PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS runs (
         run_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        status TEXT NOT NULL CHECK (status IN ('pending','running','success','failed','cancelled')),
+        status TEXT NOT NULL CHECK (status IN ('pending','running','success','failed','cancelled','stopped')),
         error TEXT NOT NULL DEFAULT ''
       );
       CREATE TABLE IF NOT EXISTS stage_events (
         run_id INTEGER NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
         stage_name TEXT NOT NULL,
-        status TEXT NOT NULL CHECK (status IN ('pending','running','success','failed','cancelled','skipped')),
+        status TEXT NOT NULL CHECK (status IN ('pending','running','success','failed','cancelled','skipped','stopped')),
         error TEXT NOT NULL DEFAULT ''
       );
       CREATE TABLE IF NOT EXISTS source_progress (
@@ -291,12 +291,28 @@ export class RunStore {
   reopenForResume(): void {
     const runId = this.currentRunId();
     this.transaction(() => {
-      this.statement("UPDATE runs SET status='running', error='' WHERE run_id=? AND status IN ('failed','cancelled')").run(runId);
+      this.statement("UPDATE runs SET status='running', error='' WHERE run_id=? AND status IN ('failed','cancelled','stopped')").run(runId);
       const failedStages = this.statement(`SELECT stage_name FROM stage_events e WHERE run_id=? AND status='failed'
         AND rowid=(SELECT MAX(rowid) FROM stage_events x WHERE x.run_id=e.run_id AND x.stage_name=e.stage_name)`).all(runId) as Array<{ stage_name: string }>;
       for (const row of failedStages) {
         this.statement("INSERT INTO stage_events(run_id, stage_name, status, error) VALUES (?, ?, 'running', '')").run(runId, row.stage_name);
       }
+    });
+  }
+
+  stopForResume(error = 'Stopped by user'): void {
+    const runId = this.currentRunId();
+    this.transaction(() => {
+      this.statement("UPDATE runs SET status='stopped', error=? WHERE run_id=?").run(redactText(error), runId);
+      const activeStages = this.statement(`SELECT stage_name FROM stage_events e WHERE run_id=? AND status='running'
+        AND rowid=(SELECT MAX(rowid) FROM stage_events x WHERE x.run_id=e.run_id AND x.stage_name=e.stage_name)`).all(runId) as Array<{ stage_name: string }>;
+      for (const { stage_name } of activeStages) {
+        this.statement("INSERT INTO stage_events(run_id, stage_name, status, error) VALUES (?, ?, 'stopped', ?)")
+          .run(runId, stage_name, redactText(error));
+      }
+      this.statement("UPDATE speed_results SET status='pending', error='' WHERE run_id=? AND status='running'").run(runId);
+      this.statement("UPDATE availability_results SET status='pending', error='' WHERE run_id=? AND status='running'").run(runId);
+      this.statement("UPDATE source_progress SET status='pending', error='' WHERE run_id=? AND status='running'").run(runId);
     });
   }
 
@@ -339,6 +355,10 @@ export class RunStore {
     const rows = this.statement('SELECT source, processed, total, status, error FROM source_progress WHERE run_id = ? ORDER BY rowid')
       .all(this.currentRunId()) as Array<Record<string, unknown>>;
     return rows.map((row) => ({ source: String(row.source), processed: Number(row.processed), total: Number(row.total), status: String(row.status), error: String(row.error) }));
+  }
+
+  incompleteSourceProgress(): Array<{ source: string; processed: number; total: number; status: string; error: string }> {
+    return this.sourceProgress().filter((row) => !['success', 'skipped'].includes(row.status));
   }
 
   recordExtractedNode(source: string, link: string): { inserted: boolean; sequence: number } {
@@ -532,7 +552,20 @@ export class RunStore {
         this.db.exec('UPDATE stage_events SET run_id=(SELECT run_id FROM runs ORDER BY run_id DESC LIMIT 1) WHERE run_id IS NULL');
       }
       if (!stageColumns.has('error')) this.db.exec("ALTER TABLE stage_events ADD COLUMN error TEXT NOT NULL DEFAULT ''");
-      this.db.exec('PRAGMA user_version=1; COMMIT');
+      const schemaRows = this.db.prepare("SELECT name, sql FROM sqlite_schema WHERE type='table' AND name IN ('runs','stage_events')").all() as Array<{ name: string; sql: string }>;
+      const needsStoppedMigration = schemaRows.some((row) => !row.sql.includes("'stopped'"));
+      if (needsStoppedMigration) {
+        this.db.exec('PRAGMA writable_schema=ON');
+        for (const row of schemaRows) {
+          const sql = row.name === 'runs'
+            ? row.sql.replace("'cancelled'))", "'cancelled','stopped'))")
+            : row.sql.replace("'skipped'))", "'skipped','stopped'))");
+          this.db.prepare('UPDATE sqlite_schema SET sql=? WHERE type=\'table\' AND name=?').run(sql, row.name);
+        }
+        const version = Number((this.db.prepare('PRAGMA schema_version').get() as { schema_version: number }).schema_version);
+        this.db.exec(`PRAGMA schema_version=${version + 1}; PRAGMA writable_schema=OFF;`);
+      }
+      this.db.exec('PRAGMA user_version=2; COMMIT');
     } catch (error) {
       this.db.exec('ROLLBACK');
       throw error;

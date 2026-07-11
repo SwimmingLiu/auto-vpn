@@ -12,6 +12,7 @@ import { runCliShell } from '../../dist/cli/main.js';
 import { createJobStore } from '../../dist/jobs/store.js';
 import { startDetachedRun, stopManagedJob } from '../../dist/jobs/commands.js';
 import { cmdlineMatchesJob, processMatchesJob, terminateProcessGroup } from '../../dist/jobs/process.js';
+import { RunStore, readRunStatus } from '../../dist/pipeline/run-store.js';
 
 function createIo() {
   return {
@@ -210,6 +211,10 @@ test('Node job manager stop marks the active artifact stopped', async () => {
     stage_status: { extract: 'running', speedtest: 'pending' },
     error: ''
   }), 'utf8');
+  const runStore = RunStore.open(path.join(artifactDir, 'run.db'));
+  runStore.initializeRun('running');
+  runStore.setStageStatus('extract', 'running');
+  runStore.close();
   const store = createJobStore(projectRoot, { now: () => '2026-06-28T00:00:00+00:00', jobId: () => 'stop-artifact-job' });
   const job = store.createRunningJob({
     kind: 'run',
@@ -230,8 +235,9 @@ test('Node job manager stop marks the active artifact stopped', async () => {
 
   const report = JSON.parse(await readFile(path.join(artifactDir, 'pipeline_report.json'), 'utf8'));
   assert.equal(report.run_status, 'stopped');
-  assert.equal(report.stage_status.extract, 'failed');
+  assert.equal(report.stage_status.extract, 'stopped');
   assert.match(report.error, /Stopped by user/);
+  assert.equal(readRunStatus(path.join(artifactDir, 'run.db')), 'stopped');
 });
 
 test('Node job manager stop refuses mismatched process metadata', async () => {

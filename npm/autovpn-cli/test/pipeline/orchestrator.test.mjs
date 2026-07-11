@@ -2238,6 +2238,7 @@ test('resumeNodePipeline resets interrupted sqlite nodes and schedules only inco
   await mkdir(sessionDir, { recursive: true });
   const passed = vmessLink('passed', 'passed.example');
   const interrupted = vmessLink('interrupted', 'interrupted.example');
+  const extractedAfterResume = vmessLink('extracted-after-resume', 'new.example');
   const store = RunStore.open(path.join(artifactDir, 'run.db'));
   store.initializeRun('running');
   store.recordExtractedNode('source', passed);
@@ -2246,6 +2247,10 @@ test('resumeNodePipeline resets interrupted sqlite nodes and schedules only inco
   store.recordSpeedResult({ link: passed, reachable: true, average_download_mb_s: 3, latency_ms: 10, error: '' }, true);
   store.markAvailabilityRunning(passed);
   store.markSpeedRunning(interrupted);
+  store.recordSourceProgress('leiting', { processed: 0, total: 1, status: 'running' });
+  for (const source of ['heidong', 'mifeng', 'xuanfeng-area', 'xuanfeng-all-area']) {
+    store.recordSourceProgress(source, { processed: 1, total: 1, status: 'success' });
+  }
   store.close();
   await writeFile(path.join(artifactDir, 'vpn_node_raw.txt'), `${passed}\n`);
   await writeFile(path.join(artifactDir, 'vpn_node_deduped.txt'), `${passed}\n`);
@@ -2258,8 +2263,14 @@ test('resumeNodePipeline resets interrupted sqlite nodes and schedules only inco
 
   const speedCalls = [];
   const availabilityCalls = [];
+  const extractCalls = [];
   const resumed = await resumeNodePipeline({ projectRoot, mode: 'pipeline', session: sessionDir, skipDeploy: true }, {
     stages: {
+      extract: async ({ source_name }, stream) => {
+        extractCalls.push(source_name);
+        await stream.onLinks([extractedAfterResume]);
+        return { source_name, requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [extractedAfterResume] };
+      },
       speedtestProbe: async (links) => links.map((link) => ({ link, reachable: true, latency_ms: 15, error: '' })),
       speedtestLink: async (link) => {
         speedCalls.push(link);
@@ -2275,26 +2286,29 @@ test('resumeNodePipeline resets interrupted sqlite nodes and schedules only inco
   });
 
   assert.equal(resumed.run_status, 'success');
-  assert.equal(resumed.counts.raw_links, 2);
-  assert.equal(resumed.counts.deduped_links, 2);
-  assert.deepEqual(speedCalls, [interrupted]);
-  assert.deepEqual(availabilityCalls.sort(), [interrupted, passed].sort());
+  assert.ok(resumed.counts.raw_links >= 3);
+  assert.equal(resumed.counts.deduped_links, 3);
+  assert.deepEqual(extractCalls, ['leiting']);
+  assert.deepEqual(speedCalls.sort(), [interrupted, extractedAfterResume].sort());
+  assert.deepEqual(availabilityCalls.sort(), [interrupted, passed, extractedAfterResume].sort());
   const resumedStore = RunStore.open(path.join(artifactDir, 'run.db'));
   assert.deepEqual(resumedStore.speedResults().map(({ link, status }) => ({ link, status })), [
     { link: passed, status: 'speed_passed' },
-    { link: interrupted, status: 'speed_passed' }
+    { link: interrupted, status: 'speed_passed' },
+    { link: extractedAfterResume, status: 'speed_passed' }
   ]);
   assert.deepEqual(resumedStore.availabilityResults().map(({ link, status }) => ({ link, status })), [
     { link: passed, status: 'availability_passed' },
-    { link: interrupted, status: 'availability_passed' }
+    { link: interrupted, status: 'availability_passed' },
+    { link: extractedAfterResume, status: 'availability_passed' }
   ]);
   resumedStore.close();
   const dbStages = readLatestStageStatuses(path.join(artifactDir, 'run.db'));
   assert.equal(dbStages.speedtest, resumed.stage_status.speedtest);
   assert.equal(dbStages.availability, resumed.stage_status.availability);
-  assert.equal(new Set((await readFile(path.join(artifactDir, 'vpn_node_availability.txt'), 'utf8')).trim().split(/\n/)).size, 2);
-  assert.deepEqual((await readFile(path.join(artifactDir, 'vpn_node_raw.txt'), 'utf8')).trim().split(/\n/), [passed, interrupted]);
-  assert.deepEqual((await readFile(path.join(artifactDir, 'vpn_node_deduped.txt'), 'utf8')).trim().split(/\n/), [passed, interrupted]);
+  assert.equal(new Set((await readFile(path.join(artifactDir, 'vpn_node_availability.txt'), 'utf8')).trim().split(/\n/)).size, 3);
+  assert.deepEqual(new Set((await readFile(path.join(artifactDir, 'vpn_node_raw.txt'), 'utf8')).trim().split(/\n/)), new Set([passed, interrupted, extractedAfterResume]));
+  assert.deepEqual((await readFile(path.join(artifactDir, 'vpn_node_deduped.txt'), 'utf8')).trim().split(/\n/), [passed, interrupted, extractedAfterResume]);
 });
 
 test('resumeNodePipeline speedtest mode restores terminal sqlite results without repeating them', async () => {

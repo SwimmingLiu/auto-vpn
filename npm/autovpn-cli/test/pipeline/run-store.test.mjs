@@ -135,6 +135,49 @@ test('keeps terminal states monotonic and transactionally resets interrupted wor
   }
 });
 
+test('stopForResume atomically stops run and active stages while resetting interrupted nodes', async () => {
+  const ctx = await fixture();
+  try {
+    ctx.store.initializeRun();
+    const link = vmessLink('interrupted');
+    ctx.store.recordExtractedNode('source', link);
+    ctx.store.setStageStatus('extract', 'running');
+    ctx.store.markSpeedRunning(link);
+    ctx.store.markAvailabilityRunning(link);
+
+    ctx.store.stopForResume('token=SECRET');
+
+    assert.equal(readRunStatus(ctx.dbPath), 'stopped');
+    assert.equal(readLatestStageStatuses(ctx.dbPath).extract, 'stopped');
+    assert.equal(ctx.store.speedResults()[0].status, 'pending');
+    assert.equal(ctx.store.availabilityResults()[0].status, 'pending');
+  } finally {
+    await ctx.cleanup();
+  }
+});
+
+test('migrates pre-stopped status constraints before stopping an existing run', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'autovpn-run-store-old-stop-'));
+  const dbPath = path.join(root, 'run.db');
+  const db = new DatabaseSync(dbPath);
+  db.exec(`
+    CREATE TABLE runs (run_id INTEGER PRIMARY KEY AUTOINCREMENT, status TEXT NOT NULL CHECK (status IN ('pending','running','success','failed','cancelled')), error TEXT NOT NULL DEFAULT '');
+    CREATE TABLE stage_events (run_id INTEGER NOT NULL REFERENCES runs(run_id), stage_name TEXT NOT NULL, status TEXT NOT NULL CHECK (status IN ('pending','running','success','failed','cancelled','skipped')), error TEXT NOT NULL DEFAULT '');
+    INSERT INTO runs(status) VALUES ('running');
+    INSERT INTO stage_events(run_id,stage_name,status) VALUES (1,'extract','running');
+  `);
+  db.close();
+  const store = RunStore.open(dbPath);
+  try {
+    store.stopForResume();
+    assert.equal(readRunStatus(dbPath), 'stopped');
+    assert.equal(readLatestStageStatuses(dbPath).extract, 'stopped');
+  } finally {
+    store.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('openOrImport creates run.db from legacy artifacts in discovery order and is idempotent', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'autovpn-run-import-'));
   const first = vmessLink('first', '1.1.1.1');
@@ -219,7 +262,7 @@ test('openOrImport migrates historical minimal schema and imports raw-only artif
     assert.deepEqual(store.dedupedLinks(), [link]);
     store.close();
     const migrated = new DatabaseSync(dbPath);
-    assert.equal(migrated.prepare('PRAGMA user_version').get().user_version, 1);
+    assert.equal(migrated.prepare('PRAGMA user_version').get().user_version, 2);
     assert.ok(migrated.prepare('PRAGMA table_info(runs)').all().some((row) => row.name === 'error'));
     assert.ok(migrated.prepare('PRAGMA table_info(stage_events)').all().some((row) => row.name === 'run_id'));
     migrated.close();

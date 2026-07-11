@@ -25,7 +25,7 @@ import { renderMainDataWithBackend } from './render.js';
 import { buildWorkerArtifactsWithBackend, WorkerBuildArtifacts } from './obfuscate.js';
 import { deployPagesWithBackend, isVerifySuccess, verifyDeploymentWithBackend } from './deploy.js';
 import { safeDeployment } from '../runtime/redaction.js';
-import { RunStore } from './run-store.js';
+import { RunStore, readLatestStageStatuses } from './run-store.js';
 import { BoundedWorkerPool } from './streaming-coordinator.js';
 
 type StageName = 'doctor' | 'extract' | 'dedupe' | 'speedtest' | 'availability' | 'postprocess' | 'render' | 'obfuscate' | 'deploy' | 'verify';
@@ -637,6 +637,7 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
       emit('log', { message: `[speedtest] runtime_core=${requestedRuntime === 'direct' ? 'direct' : 'mihomo'} probe_url=${speedConfig.probe_url}` });
     }
     const extractResults: ExtractedSourceResult[] = await Promise.all(sourcesToRun.map(async ([sourceName, source]) => {
+      runStore.recordSourceProgress(sourceName, { processed: 0, total: 0, status: 'running' });
       const streamedLinks = new Set<string>();
       const stream = useStreamingStages
         ? {
@@ -648,14 +649,20 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
             }
           }
         : undefined;
-      const result = context.stages?.extract
-        ? await context.stages.extract({ source_name: sourceName, source }, stream)
-        : await fetchSourceLinksWithBackend({ source_name: sourceName, source }, {
-          cwd: projectRoot,
-          env: runtimeStageEnv,
-          eventCallback: (type, payload) => emit(type, payload),
-          linksCallback: stream?.onLinks
-        });
+      let result: ExtractedSourceResult;
+      try {
+        result = context.stages?.extract
+          ? await context.stages.extract({ source_name: sourceName, source }, stream)
+          : await fetchSourceLinksWithBackend({ source_name: sourceName, source }, {
+            cwd: projectRoot,
+            env: runtimeStageEnv,
+            eventCallback: (type, payload) => emit(type, payload),
+            linksCallback: stream?.onLinks
+          });
+      } catch (error) {
+        runStore.recordSourceProgress(sourceName, { processed: 0, total: 0, status: 'failed', error: errorMessage(error) });
+        throw error;
+      }
       if (useStreamingStages && stream) {
         const missingLinks = result.links.filter((link) => !streamedLinks.has(link));
         if (missingLinks.length > 0) {
@@ -667,6 +674,11 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
         successful_iterations: result.successful_iterations,
         failed_iterations: result.failed_iterations
       };
+      runStore.recordSourceProgress(sourceName, {
+        processed: result.requested_iterations,
+        total: result.requested_iterations,
+        status: 'success'
+      });
       return result;
     }));
     if (!useStreamingStages) {
@@ -1227,7 +1239,7 @@ async function resumeNodeSpeedtest(options: NodeResumeOptions, context: RunNodeP
     }
 
     const orderedProbes = dedupedLinks.map((link) => probes.get(link)).filter((result): result is ProbeResult => Boolean(result));
-    const candidateLinks = selectSpeedtestCandidates(orderedProbes, speedConfig.max_download_candidates);
+    const candidateLinks = orderedProbes.filter((probe) => probe.reachable).map((probe) => probe.link);
     const reachableCount = orderedProbes.filter((probe) => probe.reachable).length;
     emit('log', { message: `[speedtest] selected ${candidateLinks.length}/${reachableCount} reachable links for full download test` });
     emit('speedtest_selected', {
@@ -1367,7 +1379,26 @@ export async function resumeNodePipeline(options: NodeResumeOptions, context: Ru
     runStore.resetInterruptedRunning();
     const speedConfig = normalizeSpeedTestConfig(profile.speed_test as any);
     runStore.classifySpeedResults(speedConfig.min_download_mb_s);
-    for (const link of runStore.speedLinksNeedingWork()) {
+    const availabilityPool = new BoundedWorkerPool<SpeedTestResult>({
+      concurrency: speedConfig.concurrency,
+      capacity: speedConfig.concurrency * 2,
+      worker: async (speedResult) => {
+        runStore.markAvailabilityRunning(speedResult.link);
+        const results = context.stages?.availability
+          ? await context.stages.availability([speedResult], profile.speed_test ?? {}, runtimePath, profile.availability_targets)
+          : await checkLinkAvailabilityBatchWithBackend({ results: [speedResult], config: profile.speed_test ?? {}, runtime_path: runtimePath, targets: profile.availability_targets as any }, { cwd: projectRoot, env: runtimeStageEnv });
+        if (results.length !== 1 || results[0].link !== speedResult.link) throw new Error('availability adapter must return exactly one matching result');
+        runStore.recordAvailabilityResult(results[0]);
+      }
+    });
+    const availabilityWork = new Set(runStore.availabilityLinksNeedingWork());
+    for (const result of runStore.speedResults().filter((row) => row.status === 'speed_passed' && availabilityWork.has(row.link))) {
+      await availabilityPool.submit(result);
+    }
+    const speedPool = new BoundedWorkerPool<string>({
+      concurrency: speedConfig.concurrency,
+      capacity: speedConfig.concurrency * 2,
+      worker: async (link) => {
       runStore.markSpeedRunning(link);
       const probes = context.stages?.speedtestProbe
         ? await context.stages.speedtestProbe([link], profile.speed_test ?? {}, runtimePath)
@@ -1383,8 +1414,46 @@ export async function resumeNodePipeline(options: NodeResumeOptions, context: Ru
         if (result.link !== link) throw new Error('speedtest link adapter must return a matching result');
         if (result.latency_ms <= 0) result.latency_ms = probe.latency_ms;
       }
-      runStore.recordSpeedResult(result, result.reachable && result.average_download_mb_s >= speedConfig.min_download_mb_s);
+      const passed = result.reachable && result.average_download_mb_s >= speedConfig.min_download_mb_s;
+      runStore.recordSpeedResult(result, passed);
+      if (passed) await availabilityPool.submit(result);
+      }
+    });
+    for (const link of runStore.speedLinksNeedingWork()) {
+      await speedPool.submit(link);
     }
+    const latestStages = readLatestStageStatuses(path.join(artifactDir, 'run.db'));
+    const progressBySource = new Map(runStore.sourceProgress().map((row) => [row.source, row]));
+    const extractionIncomplete = runStore.incompleteSourceProgress().length > 0
+      || (runStore.sourceProgress().length > 0 && !['success', 'skipped'].includes(latestStages.extract ?? summary.stage_status.extract));
+    if (extractionIncomplete) {
+      for (const [sourceName, source] of enabledSources(profile)) {
+        if (progressBySource.get(sourceName)?.status === 'success') continue;
+        runStore.recordSourceProgress(sourceName, { processed: 0, total: 0, status: 'running' });
+        const streamed = new Set<string>();
+        const onLinks = async (links: string[]) => {
+          for (const link of links) {
+            streamed.add(link);
+            const recorded = runStore.recordExtractedNode(sourceName, link);
+            if (recorded.inserted) await speedPool.submit(link);
+          }
+        };
+        const result = context.stages?.extract
+          ? await context.stages.extract({ source_name: sourceName, source }, { onLinks })
+          : await fetchSourceLinksWithBackend({ source_name: sourceName, source }, { cwd: projectRoot, env: runtimeStageEnv, linksCallback: onLinks });
+        await onLinks(result.links.filter((link) => !streamed.has(link)));
+        runStore.recordSourceProgress(sourceName, { processed: result.requested_iterations, total: result.requested_iterations, status: 'success' });
+        summary.source_counts[sourceName] = { raw_links: result.links.length, successful_iterations: result.successful_iterations, failed_iterations: result.failed_iterations };
+      }
+    }
+    speedPool.close();
+    await speedPool.drain();
+    availabilityPool.close();
+    await availabilityPool.drain();
+    summary.counts.raw_links = runStore.counts().raw;
+    summary.counts.deduped_links = runStore.counts().deduped;
+    await writeLines(artifactDir, 'vpn_node_raw.txt', runStore.rawLinks());
+    await writeLines(artifactDir, 'vpn_node_deduped.txt', runStore.dedupedLinks());
     const storedPassedSpeedResults = runStore.speedResults().filter((result) => result.status === 'speed_passed');
     speedResults = storedPassedSpeedResults;
     await writeLines(artifactDir, 'vpn_node_speedtest.txt', speedResults.map((result) => result.link));
@@ -1408,15 +1477,6 @@ export async function resumeNodePipeline(options: NodeResumeOptions, context: Ru
     await writeReport();
 
     await setStage('availability', 'running');
-    const availabilityWork = new Set(runStore.availabilityLinksNeedingWork());
-    for (const speedResult of speedResults.filter((result) => availabilityWork.has(result.link))) {
-      runStore.markAvailabilityRunning(speedResult.link);
-      const results = context.stages?.availability
-        ? await context.stages.availability([speedResult], profile.speed_test ?? {}, runtimePath, profile.availability_targets)
-        : await checkLinkAvailabilityBatchWithBackend({ results: [speedResult], config: profile.speed_test ?? {}, runtime_path: runtimePath, targets: profile.availability_targets as any }, { cwd: projectRoot, env: runtimeStageEnv });
-      if (results.length !== 1 || results[0].link !== speedResult.link) throw new Error('availability adapter must return exactly one matching result');
-      runStore.recordAvailabilityResult(results[0]);
-    }
     const storedAvailabilityResults = runStore.availabilityResults();
     const availabilityResults = storedAvailabilityResults.map(({ status: _status, ...result }) => result as AvailabilityResultDict);
     const availableLinks = storedAvailabilityResults.filter((result) => result.status === 'availability_passed').map((result) => result.link);
