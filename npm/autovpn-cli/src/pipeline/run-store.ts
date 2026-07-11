@@ -108,6 +108,7 @@ export function readLatestStageStatuses(dbPath: string): Record<string, string> 
 export class RunStore {
   private readonly statements = new Map<string, Statement>();
   private runId: number | undefined;
+  private closed = false;
 
   private constructor(private readonly db: Database) {
     this.db.exec(`
@@ -242,6 +243,8 @@ export class RunStore {
   }
 
   close(): void {
+    if (this.closed) return;
+    this.closed = true;
     this.db.close();
   }
 
@@ -269,14 +272,23 @@ export class RunStore {
 
   setStageStatus(stageName: string, status: StageStatus, error = ''): void {
     const runId = this.currentRunId();
-    this.transaction(() => {
-      const latest = this.statement('SELECT status FROM stage_events WHERE run_id = ? AND stage_name = ? ORDER BY rowid DESC LIMIT 1')
-        .get(runId, stageName) as { status: string } | undefined;
+    try {
+      this.transaction(() => {
+        const latest = this.statement('SELECT status FROM stage_events WHERE run_id = ? AND stage_name = ? ORDER BY rowid DESC LIMIT 1')
+          .get(runId, stageName) as { status: string } | undefined;
+        if (!latest || !TERMINAL_STATUSES.has(latest.status)) {
+          this.statement('INSERT INTO stage_events(run_id, stage_name, status, error) VALUES (?, ?, ?, ?)')
+            .run(runId, stageName, status, redactText(error));
+        }
+      });
+    } catch (failure) {
+      if (!(failure instanceof Error) || !/no such column: run_id/.test(failure.message)) throw failure;
+      const latest = this.statement('SELECT status FROM stage_events WHERE stage_name = ? ORDER BY rowid DESC LIMIT 1')
+        .get(stageName) as { status: string } | undefined;
       if (!latest || !TERMINAL_STATUSES.has(latest.status)) {
-        this.statement('INSERT INTO stage_events(run_id, stage_name, status, error) VALUES (?, ?, ?, ?)')
-          .run(runId, stageName, status, redactText(error));
+        this.statement('INSERT INTO stage_events(stage_name, status) VALUES (?, ?)').run(stageName, status);
       }
-    });
+    }
   }
 
   recordSourceProgress(source: string, progress: SourceProgressInput): void {
@@ -361,6 +373,13 @@ export class RunStore {
     return rows.map((row) => ({ link: String(row.link), reachable: Boolean(row.reachable), average_download_mb_s: Number(row.average_download_mb_s), latency_ms: Number(row.latency_ms), error: String(row.error), status: String(row.status) as SpeedStatus }));
   }
 
+  speedLinksNeedingWork(): string[] {
+    return (this.statement(`SELECT n.link FROM pipeline_nodes n
+      LEFT JOIN speed_results s ON s.run_id=n.run_id AND s.canonical_key=n.canonical_key
+      WHERE n.run_id=? AND (s.status IS NULL OR s.status IN ('pending','running')) ORDER BY n.sequence`)
+      .all(this.currentRunId()) as Array<{ link: string }>).map((row) => row.link);
+  }
+
   markAvailabilityRunning(link: string): void {
     const { runId, key } = this.nodeIdentity(link);
     this.statement(`INSERT INTO availability_results(run_id, canonical_key, status) VALUES (?, ?, 'running')
@@ -387,6 +406,14 @@ export class RunStore {
     return rows.map((row) => ({ link: String(row.link), all_passed: Boolean(row.all_passed), provider_results: parseProviderResults(row.provider_results), error: String(row.error), status: String(row.status) as AvailabilityStatus }));
   }
 
+  availabilityLinksNeedingWork(): string[] {
+    return (this.statement(`SELECT n.link FROM pipeline_nodes n
+      JOIN speed_results s ON s.run_id=n.run_id AND s.canonical_key=n.canonical_key AND s.status='speed_passed'
+      LEFT JOIN availability_results a ON a.run_id=n.run_id AND a.canonical_key=n.canonical_key
+      WHERE n.run_id=? AND (a.status IS NULL OR a.status IN ('pending','running')) ORDER BY n.sequence`)
+      .all(this.currentRunId()) as Array<{ link: string }>).map((row) => row.link);
+  }
+
   counts(): { raw: number; deduped: number; probes: number; speed: number; availability: number } {
     const runId = this.currentRunId();
     const count = (table: string): number => Number((this.statement(`SELECT COUNT(*) AS count FROM ${table} WHERE run_id = ?`).get(runId) as { count: number }).count);
@@ -403,6 +430,14 @@ export class RunStore {
       this.statement("UPDATE availability_results SET status='pending' WHERE run_id=? AND status='running'").run(runId);
       return { speed, availability };
     });
+  }
+
+  classifySpeedResults(minDownloadMbS: number): void {
+    this.statement(`UPDATE speed_results SET status = CASE
+      WHEN reachable = 1 AND average_download_mb_s >= ? AND error = '' THEN 'speed_passed'
+      ELSE 'speed_failed' END
+      WHERE run_id = ? AND status IN ('speed_passed','speed_failed')`)
+      .run(minDownloadMbS, this.currentRunId());
   }
 
   private importLegacyArtifacts(artifactDir: string): void {
@@ -429,9 +464,10 @@ export class RunStore {
         const link = String(row.link ?? '');
         const key = canonicalVmessKey(parseVmessLink(link));
         if (!seen.has(key)) throw new Error('Legacy speed report references an unknown link');
+        const reachable = Boolean(row.reachable);
         this.statement(`INSERT INTO speed_results(run_id, canonical_key, status, reachable, average_download_mb_s, latency_ms, error)
-          VALUES (?, ?, 'speed_passed', ?, ?, ?, ?)`)
-          .run(runId, key, Number(Boolean(row.reachable)), Number(row.average_download_mb_s ?? 0), Number(row.latency_ms ?? 0), redactText(String(row.error ?? '')));
+          VALUES (?, ?, ?, ?, ?, ?, ?)`)
+          .run(runId, key, reachable && Number(row.average_download_mb_s ?? 0) > 0 ? 'speed_passed' : 'speed_failed', Number(reachable), Number(row.average_download_mb_s ?? 0), Number(row.latency_ms ?? 0), redactText(String(row.error ?? '')));
       }
       for (const row of availabilityRows) {
         const link = String(row.link ?? '');

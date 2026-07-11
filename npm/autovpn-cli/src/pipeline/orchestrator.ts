@@ -25,7 +25,7 @@ import { renderMainDataWithBackend } from './render.js';
 import { buildWorkerArtifactsWithBackend, WorkerBuildArtifacts } from './obfuscate.js';
 import { deployPagesWithBackend, isVerifySuccess, verifyDeploymentWithBackend } from './deploy.js';
 import { safeDeployment } from '../runtime/redaction.js';
-import { RunStore, readRunStatus } from './run-store.js';
+import { RunStore } from './run-store.js';
 import { BoundedWorkerPool } from './streaming-coordinator.js';
 
 type StageName = 'doctor' | 'extract' | 'dedupe' | 'speedtest' | 'availability' | 'postprocess' | 'render' | 'obfuscate' | 'deploy' | 'verify';
@@ -891,6 +891,7 @@ export async function retryNodePipelineStage(options: NodeRetryStageOptions, con
     String(profile.worker_build?.bundle_subdir ?? 'pages_bundle')
   );
   const retryStore = RunStore.seedRetry(sourceArtifactDir, retryArtifactDir, stage);
+  try {
 
   const emit = (type: string, payload: Record<string, unknown> = {}) => {
     const event = { type, ...payload } as AutoVpnEvent;
@@ -925,11 +926,11 @@ export async function retryNodePipelineStage(options: NodeRetryStageOptions, con
 
   try {
     if (stage === 'speedtest') {
-      const dedupedLinks = await readLines(path.join(sourceArtifactDir, 'vpn_node_deduped.txt'));
+      const dedupedLinks = retryStore.dedupedLinks();
       if (dedupedLinks.length === 0) {
         throw new Error('No deduped links available to retry speedtest');
       }
-      summary.counts.raw_links = (await readLines(path.join(sourceArtifactDir, 'vpn_node_raw.txt'))).length;
+      summary.counts.raw_links = retryStore.counts().raw;
       summary.counts.deduped_links = dedupedLinks.length;
       await setStage('speedtest', 'running');
       speedResults = context.stages?.speedtest
@@ -961,9 +962,7 @@ export async function retryNodePipelineStage(options: NodeRetryStageOptions, con
       speedResults = speedResults.filter((result) => passedSpeedLinks.includes(result.link));
       await setStage('speedtest', 'success');
     } else {
-      const passedSpeedLinks = new Set(await readLines(path.join(retryArtifactDir, 'vpn_node_speedtest.txt')));
-      speedResults = (await readJson<SpeedTestResult[]>(path.join(retryArtifactDir, 'vpn_node_speedtest_report.json'), []))
-        .filter((result) => passedSpeedLinks.has(result.link));
+      speedResults = retryStore.speedResults().filter((result) => result.status === 'speed_passed');
     }
 
     if (isStageAtOrAfter('availability', stage)) {
@@ -995,9 +994,9 @@ export async function retryNodePipelineStage(options: NodeRetryStageOptions, con
       availabilityResults = availabilityResults.filter((result) => availableLinkSet.has(result.link));
       await setStage('availability', 'success');
     } else if (isStageAtOrAfter(stage, 'postprocess')) {
-      const availableLinks = new Set(await readLines(path.join(retryArtifactDir, 'vpn_node_availability.txt')));
-      availabilityResults = (await readJson<AvailabilityResultDict[]>(path.join(retryArtifactDir, 'vpn_node_availability_report.json'), []))
-        .filter((result) => availableLinks.has(result.link));
+      availabilityResults = retryStore.availabilityResults()
+        .filter((result) => result.status === 'availability_passed')
+        .map(({ status: _status, ...result }) => result as AvailabilityResultDict);
     }
 
     if (isStageAtOrAfter('postprocess', stage)) {
@@ -1093,13 +1092,13 @@ export async function retryNodePipelineStage(options: NodeRetryStageOptions, con
     summary.error = errorMessage(error);
     if (activeStage && summary.stage_status[activeStage] === 'running') {
       summary.stage_status[activeStage] = 'failed';
+      retryStore.setStageStatus(activeStage, 'failed', summary.error);
       emit('stage', { stage: activeStage, status: 'failed' });
     }
     await writeReport();
     emit('summary', summary as unknown as Record<string, unknown>);
     emit('run_failed', { error: summary.error });
     retryStore.setRunStatus('failed', summary.error);
-    retryStore.close();
     throw error;
   }
 
@@ -1108,8 +1107,10 @@ export async function retryNodePipelineStage(options: NodeRetryStageOptions, con
   await writeReport();
   emit('summary', summary as unknown as Record<string, unknown>);
   retryStore.setRunStatus('success');
-  retryStore.close();
   return summary;
+  } finally {
+    retryStore.close();
+  }
 }
 
 async function resumeNodeSpeedtest(options: NodeResumeOptions, context: RunNodePipelineContext = {}): Promise<PipelineSummary> {
@@ -1138,8 +1139,8 @@ async function resumeNodeSpeedtest(options: NodeResumeOptions, context: RunNodeP
   const summary = pipelineSummaryFromReport(artifactDir, report);
   const runtimePath = path.join(artifactDir, 'runtime');
   const runStore = RunStore.openOrImport(artifactDir);
+  try {
   runStore.resetInterruptedRunning();
-  const sqliteAuthoritative = !['success', 'failed', 'cancelled'].includes(String(readRunStatus(path.join(artifactDir, 'run.db')) ?? ''));
 
   const emit = (type: string, payload: Record<string, unknown> = {}) => {
     const event = { type, ...payload } as AutoVpnEvent;
@@ -1151,11 +1152,12 @@ async function resumeNodeSpeedtest(options: NodeResumeOptions, context: RunNodeP
   const setStage = async (stageName: StageName, status: StageStatus) => {
     summary.stage_status[stageName] = status;
     emit('stage', { stage: stageName, status });
+    runStore.setStageStatus(stageName, status);
     await writeReport();
   };
 
-  const rawLinks = await readLines(path.join(artifactDir, 'vpn_node_raw.txt'));
-  const dedupedLinks = await readLines(path.join(artifactDir, 'vpn_node_deduped.txt'));
+  const rawLinks = runStore.rawLinks();
+  const dedupedLinks = runStore.dedupedLinks();
   summary.counts.raw_links = rawLinks.length;
   summary.counts.deduped_links = dedupedLinks.length;
   for (const baseStage of ['doctor', 'extract', 'dedupe'] as StageName[]) {
@@ -1165,10 +1167,8 @@ async function resumeNodeSpeedtest(options: NodeResumeOptions, context: RunNodeP
   }
 
   const { probes, fullResults } = await speedtestResumeStateFromEventLog(resumeEventLog);
-  if (sqliteAuthoritative) {
-    for (const probe of runStore.probeResults()) probes.set(probe.link, probe);
-    for (const result of runStore.speedResults().filter((row) => row.status === 'speed_passed' || row.status === 'speed_failed')) fullResults.set(result.link, result);
-  }
+  for (const probe of runStore.probeResults()) probes.set(probe.link, probe);
+  for (const result of runStore.speedResults().filter((row) => row.status === 'speed_passed' || row.status === 'speed_failed')) fullResults.set(result.link, result);
   emit('speedtest_resume_state', {
     resumed_probe_count: probes.size,
     resumed_full_count: fullResults.size,
@@ -1179,6 +1179,11 @@ async function resumeNodeSpeedtest(options: NodeResumeOptions, context: RunNodeP
   try {
     await setStage('speedtest', 'running');
     const speedConfig = normalizeSpeedTestConfig(profile.speed_test as any);
+    runStore.classifySpeedResults(speedConfig.min_download_mb_s);
+    for (const probe of probes.values()) runStore.recordProbe(probe);
+    for (const result of fullResults.values()) {
+      runStore.recordSpeedResult(result, result.reachable && result.average_download_mb_s >= speedConfig.min_download_mb_s);
+    }
     const requestedRuntime = String(env.AUTOVPN_SPEEDTEST_RUNTIME ?? '').trim().toLowerCase();
     const usingInjectedSpeedtestStages = Boolean(context.stages?.speedtestProbe && context.stages?.speedtestLink);
     if (requestedRuntime === 'direct' && !usingInjectedSpeedtestStages) {
@@ -1265,21 +1270,23 @@ async function resumeNodeSpeedtest(options: NodeResumeOptions, context: RunNodeP
     await writeReport();
     emit('summary', summary as unknown as Record<string, unknown>);
     runStore.setRunStatus('success');
-    runStore.close();
     return summary;
   } catch (error) {
     summary.run_status = 'failed';
     summary.error = errorMessage(error);
     if (summary.stage_status.speedtest === 'running') {
       summary.stage_status.speedtest = 'failed';
+      runStore.setStageStatus('speedtest', 'failed', summary.error);
       emit('stage', { stage: 'speedtest', status: 'failed' });
     }
     await writeReport();
     emit('summary', summary as unknown as Record<string, unknown>);
     emit('run_failed', { error: summary.error });
     runStore.setRunStatus('failed', summary.error);
-    runStore.close();
     throw error;
+  }
+  } finally {
+    runStore.close();
   }
 }
 
@@ -1324,13 +1331,14 @@ export async function resumeNodePipeline(options: NodeResumeOptions, context: Ru
     summary.stage_status[stageName] = status;
     activeStage = status === 'running' ? stageName : activeStage === stageName ? undefined : activeStage;
     emit('stage', { stage: stageName, status });
+    runStore.setStageStatus(stageName, status);
     await writeReport();
   };
 
   const rawLinks = await readLines(path.join(artifactDir, 'vpn_node_raw.txt'));
   const dedupedLinks = await readLines(path.join(artifactDir, 'vpn_node_deduped.txt'));
   const runStore = RunStore.openOrImport(artifactDir);
-  const sqliteAuthoritative = !['success', 'failed', 'cancelled'].includes(String(readRunStatus(path.join(artifactDir, 'run.db')) ?? ''));
+  try {
   let speedResults: SpeedTestResult[] = [];
   summary.counts.raw_links = rawLinks.length;
   summary.counts.deduped_links = dedupedLinks.length;
@@ -1339,28 +1347,27 @@ export async function resumeNodePipeline(options: NodeResumeOptions, context: Ru
   try {
     runStore.resetInterruptedRunning();
     const speedConfig = normalizeSpeedTestConfig(profile.speed_test as any);
-    for (const stored of (sqliteAuthoritative ? runStore.speedResults().filter((result) => result.status === 'pending') : [])) {
-      runStore.markSpeedRunning(stored.link);
+    runStore.classifySpeedResults(speedConfig.min_download_mb_s);
+    for (const link of runStore.speedLinksNeedingWork()) {
+      runStore.markSpeedRunning(link);
       const probes = context.stages?.speedtestProbe
-        ? await context.stages.speedtestProbe([stored.link], profile.speed_test ?? {}, runtimePath)
-        : await probeSpeedtestLinksInNode({ links: [stored.link], config: profile.speed_test as any, runtime_path: runtimePath }, { cwd: projectRoot, env: runtimeStageEnv });
-      if (probes.length !== 1 || probes[0].link !== stored.link) throw new Error('speedtest probe adapter must return exactly one matching result');
+        ? await context.stages.speedtestProbe([link], profile.speed_test ?? {}, runtimePath)
+        : await probeSpeedtestLinksInNode({ links: [link], config: profile.speed_test as any, runtime_path: runtimePath }, { cwd: projectRoot, env: runtimeStageEnv });
+      if (probes.length !== 1 || probes[0].link !== link) throw new Error('speedtest probe adapter must return exactly one matching result');
       const probe = probes[0];
       runStore.recordProbe(probe);
-      let result: SpeedTestResult = { link: stored.link, reachable: false, average_download_mb_s: 0, latency_ms: probe.latency_ms, error: probe.error ?? '' };
+      let result: SpeedTestResult = { link, reachable: false, average_download_mb_s: 0, latency_ms: probe.latency_ms, error: probe.error ?? '' };
       if (probe.reachable) {
         result = context.stages?.speedtestLink
-          ? await context.stages.speedtestLink(stored.link, profile.speed_test ?? {}, runtimePath)
-          : await testSpeedtestLinkInNode({ link: stored.link, config: profile.speed_test as any, runtime_path: runtimePath }, { cwd: projectRoot, env: runtimeStageEnv });
-        if (result.link !== stored.link) throw new Error('speedtest link adapter must return a matching result');
+          ? await context.stages.speedtestLink(link, profile.speed_test ?? {}, runtimePath)
+          : await testSpeedtestLinkInNode({ link, config: profile.speed_test as any, runtime_path: runtimePath }, { cwd: projectRoot, env: runtimeStageEnv });
+        if (result.link !== link) throw new Error('speedtest link adapter must return a matching result');
         if (result.latency_ms <= 0) result.latency_ms = probe.latency_ms;
       }
       runStore.recordSpeedResult(result, result.reachable && result.average_download_mb_s >= speedConfig.min_download_mb_s);
     }
     const storedPassedSpeedResults = runStore.speedResults().filter((result) => result.status === 'speed_passed');
-    speedResults = sqliteAuthoritative
-      ? storedPassedSpeedResults
-      : await restoreResumeSpeedResults(artifactDir, eventLog, await readLines(path.join(artifactDir, 'vpn_node_speedtest.txt')));
+    speedResults = storedPassedSpeedResults;
     await writeLines(artifactDir, 'vpn_node_speedtest.txt', speedResults.map((result) => result.link));
     await writeJson(artifactDir, 'vpn_node_speedtest_report.json', storedPassedSpeedResults.map(({ status: _status, ...result }) => result));
     summary.counts.speedtest_links = speedResults.length;
@@ -1372,6 +1379,7 @@ export async function resumeNodePipeline(options: NodeResumeOptions, context: Ru
       if (summary.stage_status[baseStage] === 'pending' || summary.stage_status[baseStage] === 'failed') {
         summary.stage_status[baseStage] = 'success';
       }
+      runStore.setStageStatus(baseStage, summary.stage_status[baseStage]);
     }
     emit('resume_pipeline_state', {
       speedtest_links: speedResults.length,
@@ -1381,8 +1389,8 @@ export async function resumeNodePipeline(options: NodeResumeOptions, context: Ru
     await writeReport();
 
     await setStage('availability', 'running');
-    const terminalAvailability = new Set((sqliteAuthoritative ? runStore.availabilityResults() : []).filter((result) => result.status !== 'pending' && result.status !== 'running').map((result) => result.link));
-    for (const speedResult of (sqliteAuthoritative ? speedResults.filter((result) => !terminalAvailability.has(result.link)) : [])) {
+    const availabilityWork = new Set(runStore.availabilityLinksNeedingWork());
+    for (const speedResult of speedResults.filter((result) => availabilityWork.has(result.link))) {
       runStore.markAvailabilityRunning(speedResult.link);
       const results = context.stages?.availability
         ? await context.stages.availability([speedResult], profile.speed_test ?? {}, runtimePath, profile.availability_targets)
@@ -1390,11 +1398,7 @@ export async function resumeNodePipeline(options: NodeResumeOptions, context: Ru
       if (results.length !== 1 || results[0].link !== speedResult.link) throw new Error('availability adapter must return exactly one matching result');
       runStore.recordAvailabilityResult(results[0]);
     }
-    const availabilityResults = sqliteAuthoritative
-      ? runStore.availabilityResults().map(({ status: _status, ...result }) => result as AvailabilityResultDict)
-      : await (context.stages?.availability
-        ? context.stages.availability(speedResults, profile.speed_test ?? {}, runtimePath, profile.availability_targets)
-        : checkLinkAvailabilityBatchWithBackend({ results: speedResults, config: profile.speed_test ?? {}, runtime_path: runtimePath, targets: profile.availability_targets as any }, { cwd: projectRoot, env: runtimeStageEnv }));
+    const availabilityResults = runStore.availabilityResults().map(({ status: _status, ...result }) => result as AvailabilityResultDict);
     const availableLinks = availabilityResults.filter((result) => result.all_passed).map((result) => result.link);
     summary.counts.availability_links = availableLinks.length;
     await writeLines(artifactDir, 'vpn_node_availability.txt', availableLinks);
@@ -1484,13 +1488,13 @@ export async function resumeNodePipeline(options: NodeResumeOptions, context: Ru
     summary.error = errorMessage(error);
     if (activeStage && summary.stage_status[activeStage] === 'running') {
       summary.stage_status[activeStage] = 'failed';
+      runStore.setStageStatus(activeStage, 'failed', summary.error);
       emit('stage', { stage: activeStage, status: 'failed' });
     }
     await writeReport();
     emit('summary', summary as unknown as Record<string, unknown>);
     emit('run_failed', { error: summary.error });
     runStore.setRunStatus('failed', summary.error);
-    runStore.close();
     throw error;
   }
 
@@ -1499,6 +1503,8 @@ export async function resumeNodePipeline(options: NodeResumeOptions, context: Ru
   await writeReport();
   emit('summary', summary as unknown as Record<string, unknown>);
   runStore.setRunStatus('success');
-  runStore.close();
   return summary;
+  } finally {
+    runStore.close();
+  }
 }

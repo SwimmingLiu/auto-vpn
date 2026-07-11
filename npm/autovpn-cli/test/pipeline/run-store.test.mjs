@@ -166,6 +166,28 @@ test('openOrImport creates run.db from legacy artifacts in discovery order and i
   }
 });
 
+test('legacy import never promotes unreachable speed report rows to winners', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'autovpn-run-import-failed-'));
+  const winner = vmessLink('winner', '1.1.1.1');
+  const unreachable = vmessLink('unreachable', '2.2.2.2');
+  try {
+    await writeFile(path.join(root, 'vpn_node_raw.txt'), `${winner}\n${unreachable}\n`);
+    await writeFile(path.join(root, 'vpn_node_deduped.txt'), `${winner}\n${unreachable}\n`);
+    await writeFile(path.join(root, 'vpn_node_speedtest_report.json'), JSON.stringify([
+      { link: winner, reachable: true, average_download_mb_s: 3, latency_ms: 20, error: '' },
+      { link: unreachable, reachable: false, average_download_mb_s: 9, latency_ms: 0, error: 'timeout' }
+    ]));
+    const store = RunStore.openOrImport(root);
+    assert.deepEqual(store.speedResults().map(({ link, status }) => ({ link, status })), [
+      { link: winner, status: 'speed_passed' },
+      { link: unreachable, status: 'speed_failed' }
+    ]);
+    store.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test('safe status readers return undefined state for malformed databases', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'autovpn-run-reader-'));
   const dbPath = path.join(root, 'run.db');

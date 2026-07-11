@@ -8,7 +8,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 
 import { resumeNodePipeline, retryNodePipelineStage, runNodePipeline } from '../../dist/pipeline/orchestrator.js';
-import { RunStore } from '../../dist/pipeline/run-store.js';
+import { RunStore, readLatestStageStatuses } from '../../dist/pipeline/run-store.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '../../../..');
@@ -1688,12 +1688,12 @@ test('resumeNodePipeline continues pipeline sessions in the original artifact', 
   assert.equal(events[0].speedtest_links, 2);
   assert.equal(events.at(-1).type, 'summary');
   assert.equal(JSON.parse(await readFile(path.join(source.artifact_dir, 'pipeline_report.json'), 'utf8')).run_status, 'success');
-  assert.deepEqual((await readFile(path.join(source.artifact_dir, 'vpn_node_emoji.txt'), 'utf8')).trim().split(/\n/).map(vmessName), ['\u{1F1FA}\u{1F1F8} US second', '\u{1F1FA}\u{1F1F8} US first']);
+  assert.deepEqual((await readFile(path.join(source.artifact_dir, 'vpn_node_emoji.txt'), 'utf8')).trim().split(/\n/).map(vmessName), ['\u{1F1FA}\u{1F1F8} US first', '\u{1F1FA}\u{1F1F8} US second']);
   assert.equal((await readFile(eventLog, 'utf8')).trim().split(/\n/).at(-1), JSON.stringify(events.at(-1)));
   assert.match(await readFile(humanLog, 'utf8'), /\[summary\] run_status=success/);
 });
 
-test('resumeNodePipeline emits failed summary when restored speedtest results are empty', async () => {
+test('resumeNodePipeline ignores stale empty compatibility artifacts when sqlite has terminal speed results', async () => {
   const projectRoot = await makeProject();
   const firstLink = vmessLink('first', 'one.example');
   const runtimeRoot = path.join(projectRoot, '.runtime');
@@ -1730,24 +1730,27 @@ test('resumeNodePipeline emits failed summary when restored speedtest results ar
   }), 'utf8');
   const events = [];
 
-  await assert.rejects(() => resumeNodePipeline({
+  const resumed = await resumeNodePipeline({
     projectRoot,
     mode: 'pipeline',
     session: sessionDir,
-    output: 'jsonl'
+    output: 'jsonl',
+    skipDeploy: true
   }, {
     env,
-    emit: (event) => events.push(event)
-  }), /No speedtest results available to continue pipeline/);
+    emit: (event) => events.push(event),
+    stages: {
+      countryLookup: () => 'US',
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
+    }
+  });
 
-  assert.equal(events.at(-2).type, 'summary');
-  assert.equal(events.at(-2).run_status, 'failed');
-  assert.equal(events.at(-1).type, 'run_failed');
-  assert.match(await readFile(humanLog, 'utf8'), /\[summary\] run_status=failed/);
+  assert.equal(resumed.run_status, 'success');
+  assert.equal(events.at(-1).type, 'summary');
+  assert.match(await readFile(humanLog, 'utf8'), /\[summary\] run_status=success/);
   const report = JSON.parse(await readFile(path.join(source.artifact_dir, 'pipeline_report.json'), 'utf8'));
-  assert.equal(report.run_status, 'failed');
-  assert.equal(report.stage_status.speedtest, 'failed');
-  assert.match(report.error, /No speedtest results available/);
+  assert.equal(report.run_status, 'success');
+  assert.equal(report.stage_status.speedtest, 'success');
 });
 
 test('resumeNodePipeline rejects sessions without an artifact directory', async () => {
@@ -1895,19 +1898,19 @@ test('resumeNodePipeline resumes speedtest sessions from partial event logs', as
     }
   });
 
-  assert.deepEqual(probed.map(vmessName), ['second', 'third']);
-  assert.deepEqual(tested.map(vmessName), ['second', 'third']);
+  assert.deepEqual(probed.map(vmessName), []);
+  assert.deepEqual(tested.map(vmessName), []);
   assert.equal(resumed.artifact_dir, source.artifact_dir);
   assert.equal(resumed.run_status, 'success');
   assert.equal(resumed.stage_status.speedtest, 'success');
   assert.equal(resumed.counts.speedtest_links, 3);
   assert.equal(events[0].type, 'speedtest_resume_state');
-  assert.equal(events[0].resumed_probe_count, 1);
-  assert.equal(events[0].resumed_full_count, 1);
+  assert.equal(events[0].resumed_probe_count, 3);
+  assert.equal(events[0].resumed_full_count, 3);
   assert.equal(events.at(-1).type, 'summary');
-  assert.deepEqual((await readFile(path.join(source.artifact_dir, 'vpn_node_speedtest.txt'), 'utf8')).trim().split(/\n/).map(vmessName), ['second', 'third', 'first']);
+  assert.deepEqual((await readFile(path.join(source.artifact_dir, 'vpn_node_speedtest.txt'), 'utf8')).trim().split(/\n/).map(vmessName), ['first', 'second', 'third']);
   const report = JSON.parse(await readFile(path.join(source.artifact_dir, 'vpn_node_speedtest_report.json'), 'utf8'));
-  assert.deepEqual(report.map((result) => vmessName(result.link)), ['second', 'third', 'first']);
+  assert.deepEqual(report.map((result) => vmessName(result.link)), ['first', 'second', 'third']);
   assert.match(await readFile(humanLog, 'utf8'), /\[summary\] run_status=success/);
 });
 
@@ -1975,8 +1978,8 @@ test('resumeNodePipeline reads speedtest resume state from session log when outp
     }
   });
 
-  assert.deepEqual(probed.map(vmessName), ['second']);
-  assert.deepEqual(tested.map(vmessName), ['second']);
+  assert.deepEqual(probed.map(vmessName), []);
+  assert.deepEqual(tested.map(vmessName), []);
   assert.match(await readFile(overrideEventLog, 'utf8'), /speedtest_resume_state/);
 });
 
@@ -2103,6 +2106,7 @@ test('resumeNodePipeline emits concurrent speedtest results as each link complet
   await writeFile(path.join(source.artifact_dir, 'vpn_node_speedtest.txt'), '', 'utf8');
   await writeFile(path.join(source.artifact_dir, 'vpn_node_speedtest_report.json'), '[]', 'utf8');
   const sessionDir = path.join(projectRoot, 'sessions', 'resume-speedtest-concurrent');
+  await rm(path.join(source.artifact_dir, 'run.db'), { force: true });
   const eventLog = path.join(sessionDir, 'events.jsonl');
   await mkdir(sessionDir, { recursive: true });
   await writeFile(eventLog, [
@@ -2182,6 +2186,7 @@ test('resumeNodePipeline marks speedtest failed when resumed results do not pass
   await writeFile(path.join(source.artifact_dir, 'vpn_node_speedtest.txt'), '', 'utf8');
   await writeFile(path.join(source.artifact_dir, 'vpn_node_speedtest_report.json'), '[]', 'utf8');
   const sessionDir = path.join(projectRoot, 'sessions', 'resume-speedtest-failed');
+  await rm(path.join(source.artifact_dir, 'run.db'), { force: true });
   const eventLog = path.join(sessionDir, 'events.jsonl');
   const humanLog = path.join(sessionDir, 'human.log');
   await mkdir(sessionDir, { recursive: true });
@@ -2272,6 +2277,9 @@ test('resumeNodePipeline resets interrupted sqlite nodes and schedules only inco
     { link: interrupted, status: 'availability_passed' }
   ]);
   resumedStore.close();
+  const dbStages = readLatestStageStatuses(path.join(artifactDir, 'run.db'));
+  assert.equal(dbStages.speedtest, resumed.stage_status.speedtest);
+  assert.equal(dbStages.availability, resumed.stage_status.availability);
   assert.equal(new Set((await readFile(path.join(artifactDir, 'vpn_node_availability.txt'), 'utf8')).trim().split(/\n/)).size, 2);
 });
 
