@@ -1138,6 +1138,7 @@ async function resumeNodeSpeedtest(options: NodeResumeOptions, context: RunNodeP
   const report = await readJson<Record<string, unknown>>(path.join(artifactDir, 'pipeline_report.json'), {});
   const summary = pipelineSummaryFromReport(artifactDir, report);
   const runtimePath = path.join(artifactDir, 'runtime');
+  const hadRunDb = fs.existsSync(path.join(artifactDir, 'run.db'));
   const runStore = RunStore.openOrImport(artifactDir);
   try {
   runStore.resetInterruptedRunning();
@@ -1166,7 +1167,9 @@ async function resumeNodeSpeedtest(options: NodeResumeOptions, context: RunNodeP
     }
   }
 
-  const { probes, fullResults } = await speedtestResumeStateFromEventLog(resumeEventLog);
+  const { probes, fullResults } = hadRunDb
+    ? { probes: new Map<string, ProbeResult>(), fullResults: new Map<string, SpeedTestResult>() }
+    : await speedtestResumeStateFromEventLog(resumeEventLog);
   for (const probe of runStore.probeResults()) probes.set(probe.link, probe);
   for (const result of runStore.speedResults().filter((row) => row.status === 'speed_passed' || row.status === 'speed_failed')) fullResults.set(result.link, result);
   emit('speedtest_resume_state', {
@@ -1335,13 +1338,16 @@ export async function resumeNodePipeline(options: NodeResumeOptions, context: Ru
     await writeReport();
   };
 
-  const rawLinks = await readLines(path.join(artifactDir, 'vpn_node_raw.txt'));
-  const dedupedLinks = await readLines(path.join(artifactDir, 'vpn_node_deduped.txt'));
   const runStore = RunStore.openOrImport(artifactDir);
   try {
+  const rawLinks = runStore.rawLinks();
+  const dedupedLinks = runStore.dedupedLinks();
+  await writeLines(artifactDir, 'vpn_node_raw.txt', rawLinks);
+  await writeLines(artifactDir, 'vpn_node_deduped.txt', dedupedLinks);
   let speedResults: SpeedTestResult[] = [];
-  summary.counts.raw_links = rawLinks.length;
-  summary.counts.deduped_links = dedupedLinks.length;
+  const storeCounts = runStore.counts();
+  summary.counts.raw_links = storeCounts.raw;
+  summary.counts.deduped_links = storeCounts.deduped;
   summary.counts.speedtest_links = speedResults.length;
 
   try {

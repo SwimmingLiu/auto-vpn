@@ -2237,8 +2237,8 @@ test('resumeNodePipeline resets interrupted sqlite nodes and schedules only inco
   store.markAvailabilityRunning(passed);
   store.markSpeedRunning(interrupted);
   store.close();
-  await writeFile(path.join(artifactDir, 'vpn_node_raw.txt'), `${passed}\n${interrupted}\n`);
-  await writeFile(path.join(artifactDir, 'vpn_node_deduped.txt'), `${passed}\n${interrupted}\n`);
+  await writeFile(path.join(artifactDir, 'vpn_node_raw.txt'), `${passed}\n`);
+  await writeFile(path.join(artifactDir, 'vpn_node_deduped.txt'), `${passed}\n`);
   await writeFile(path.join(artifactDir, 'vpn_node_speedtest.txt'), `${passed}\n`);
   await writeFile(path.join(artifactDir, 'vpn_node_speedtest_report.json'), JSON.stringify([
     { link: passed, reachable: true, average_download_mb_s: 3, latency_ms: 10, error: '' }
@@ -2265,6 +2265,8 @@ test('resumeNodePipeline resets interrupted sqlite nodes and schedules only inco
   });
 
   assert.equal(resumed.run_status, 'success');
+  assert.equal(resumed.counts.raw_links, 2);
+  assert.equal(resumed.counts.deduped_links, 2);
   assert.deepEqual(speedCalls, [interrupted]);
   assert.deepEqual(availabilityCalls.sort(), [interrupted, passed].sort());
   const resumedStore = RunStore.open(path.join(artifactDir, 'run.db'));
@@ -2281,6 +2283,8 @@ test('resumeNodePipeline resets interrupted sqlite nodes and schedules only inco
   assert.equal(dbStages.speedtest, resumed.stage_status.speedtest);
   assert.equal(dbStages.availability, resumed.stage_status.availability);
   assert.equal(new Set((await readFile(path.join(artifactDir, 'vpn_node_availability.txt'), 'utf8')).trim().split(/\n/)).size, 2);
+  assert.deepEqual((await readFile(path.join(artifactDir, 'vpn_node_raw.txt'), 'utf8')).trim().split(/\n/), [passed, interrupted]);
+  assert.deepEqual((await readFile(path.join(artifactDir, 'vpn_node_deduped.txt'), 'utf8')).trim().split(/\n/), [passed, interrupted]);
 });
 
 test('resumeNodePipeline speedtest mode restores terminal sqlite results without repeating them', async () => {
@@ -2302,7 +2306,10 @@ test('resumeNodePipeline speedtest mode restores terminal sqlite results without
   await writeFile(path.join(artifactDir, 'vpn_node_raw.txt'), `${passed}\n${interrupted}\n`);
   await writeFile(path.join(artifactDir, 'vpn_node_deduped.txt'), `${passed}\n${interrupted}\n`);
   await writeFile(path.join(artifactDir, 'pipeline_report.json'), JSON.stringify({ run_status: 'running', stage_status: {} }));
-  await writeFile(path.join(sessionDir, 'events.jsonl'), '');
+  await writeFile(path.join(sessionDir, 'events.jsonl'), `${JSON.stringify({
+    type: 'speedtest_result', completed: 2, total: 2, link: interrupted,
+    reachable: true, average_download_mb_s: 99, latency_ms: 1, passed_threshold: true, error: ''
+  })}\n`);
   await writeFile(path.join(sessionDir, 'session.json'), JSON.stringify({ artifact_dir: artifactDir, event_log: path.join(sessionDir, 'events.jsonl') }));
   const fullCalls = [];
   await resumeNodePipeline({ projectRoot, mode: 'speedtest', session: sessionDir }, {
