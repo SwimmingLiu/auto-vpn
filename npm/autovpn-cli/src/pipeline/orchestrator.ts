@@ -25,6 +25,8 @@ import { renderMainDataWithBackend } from './render.js';
 import { buildWorkerArtifactsWithBackend, WorkerBuildArtifacts } from './obfuscate.js';
 import { deployPagesWithBackend, isVerifySuccess, verifyDeploymentWithBackend } from './deploy.js';
 import { safeDeployment } from '../runtime/redaction.js';
+import { RunStore } from './run-store.js';
+import { BoundedWorkerPool } from './streaming-coordinator.js';
 
 type StageName = 'doctor' | 'extract' | 'dedupe' | 'speedtest' | 'availability' | 'postprocess' | 'render' | 'obfuscate' | 'deploy' | 'verify';
 type StageStatus = 'pending' | 'running' | 'success' | 'failed' | 'skipped';
@@ -271,14 +273,6 @@ function orderPreservingUnique(values: string[]): string[] {
   return result;
 }
 
-function streamingDedupeKey(link: string): string {
-  try {
-    return canonicalVmessKey(parseVmessLink(link));
-  } catch {
-    return link;
-  }
-}
-
 function defaultCountryFor(_link: string, _speedResult: SpeedTestResult, _availabilityResult: AvailabilityResultDict): string {
   return 'US';
 }
@@ -431,24 +425,6 @@ async function forEachWithConcurrency<T>(items: T[], concurrency: number, mapper
   }
 }
 
-function createLimiter(concurrency: number): <T>(task: () => Promise<T>) => Promise<T> {
-  const limit = Math.max(1, Math.trunc(Number(concurrency) || 1));
-  let active = 0;
-  const queue: Array<() => void> = [];
-  return async <T>(task: () => Promise<T>): Promise<T> => {
-    if (active >= limit) {
-      await new Promise<void>((resolve) => queue.push(resolve));
-    }
-    active += 1;
-    try {
-      return await task();
-    } finally {
-      active -= 1;
-      queue.shift()?.();
-    }
-  };
-}
-
 async function speedtestResumeStateFromEventLog(eventLog: string): Promise<{ probes: Map<string, ProbeResult>; fullResults: Map<string, SpeedTestResult> }> {
   const probes = new Map<string, ProbeResult>();
   const fullResults = new Map<string, SpeedTestResult>();
@@ -509,6 +485,8 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
   const env = mergeProjectEnv(projectRoot, { ...process.env, ...(context.env ?? {}) });
   const runtimeStageEnv = defaultRuntimeStageEnv(env);
   const artifactDir = await uniqueArtifactDir(resolveArtifactsRoot(projectRoot, env), formatTimestamp((context.now ?? (() => new Date()))()));
+  const runStore = RunStore.open(path.join(artifactDir, 'run.db'));
+  runStore.initializeRun('running');
   const summary: PipelineSummary = {
     artifact_dir: artifactDir,
     stage_status: stageStatus(),
@@ -528,12 +506,15 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
   };
   const writeReport = () => writeJson(artifactDir, 'pipeline_report.json', summary);
   let activeStage: StageName | undefined;
+  let activeSpeedPool: BoundedWorkerPool<string> | undefined;
+  let activeAvailabilityPool: BoundedWorkerPool<SpeedTestResult> | undefined;
   const setStage = async (stage: StageName, status: StageStatus, trackActive = true) => {
     summary.stage_status[stage] = status;
     if (trackActive) {
       activeStage = status === 'running' ? stage : activeStage === stage ? undefined : activeStage;
     }
     emit('stage', { stage, status });
+    runStore.setStageStatus(stage, status === 'failed' ? 'failed' : status);
     await writeReport();
   };
 
@@ -559,86 +540,67 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
     let passedSpeedLinks: string[] = [];
     let availabilityResults: AvailabilityResultDict[] = [];
     let availableLinks: string[] = [];
-    const streamedDeduped = new Set<string>();
-    const streamingAvailabilityTasks: Array<Promise<void>> = [];
-    const limitAvailability = createLimiter(speedConfig.concurrency);
-    let availabilityCompleted = 0;
-    let availabilityStageStart: Promise<void> | undefined;
-    let speedArtifactFlush = Promise.resolve();
-    let availabilityArtifactFlush = Promise.resolve();
-
-    const flushStreamingSpeedArtifacts = async (results: SpeedTestResult[], links: string[]): Promise<void> => {
-      const resultSnapshot = [...results];
-      const linkSnapshot = [...links];
-      speedArtifactFlush = speedArtifactFlush.catch(() => undefined).then(async () => {
-        await writeLines(artifactDir, 'vpn_node_speedtest.txt', linkSnapshot);
-        await writeJson(artifactDir, 'vpn_node_speedtest_report.json', resultSnapshot);
-      });
-      await speedArtifactFlush;
-    };
-
-    const flushStreamingAvailabilityArtifacts = async (): Promise<void> => {
-      const resultSnapshot = [...availabilityResults];
-      const linkSnapshot = resultSnapshot.filter((result) => result.all_passed).map((result) => result.link);
-      availabilityArtifactFlush = availabilityArtifactFlush.catch(() => undefined).then(async () => {
-        await writeLines(artifactDir, 'vpn_node_availability.txt', linkSnapshot);
-        await writeJson(artifactDir, 'vpn_node_availability_report.json', resultSnapshot);
-      });
-      await availabilityArtifactFlush;
-    };
-
-    const ensureAvailabilityStageStarted = (): Promise<void> => {
-      availabilityStageStart ??= setStage('availability', 'running', false);
-      return availabilityStageStart;
-    };
-
-    const runStreamingAvailability = (speedResult: SpeedTestResult): void => {
-      const task = limitAvailability(async () => {
-        await ensureAvailabilityStageStarted();
+    let speedCompleted = 0;
+    let availabilityCompletedStreaming = 0;
+    const availabilityPool = activeAvailabilityPool = new BoundedWorkerPool<SpeedTestResult>({
+      concurrency: speedConfig.concurrency,
+      capacity: speedConfig.concurrency * 2,
+      worker: async (speedResult) => {
+        runStore.markAvailabilityRunning(speedResult.link);
+        await new Promise<void>((resolve) => setImmediate(resolve));
         const results = context.stages?.availability
           ? await context.stages.availability([speedResult], profile.speed_test ?? {}, runtimePath, profile.availability_targets)
-          : await checkLinkAvailabilityBatchWithBackend({
-            results: [speedResult],
-            config: profile.speed_test ?? {},
-            runtime_path: runtimePath,
-            targets: profile.availability_targets as any
-          }, { cwd: projectRoot, env: runtimeStageEnv });
+          : await checkLinkAvailabilityBatchWithBackend({ results: [speedResult], config: profile.speed_test ?? {}, runtime_path: runtimePath, targets: profile.availability_targets as any }, { cwd: projectRoot, env: runtimeStageEnv });
         for (const result of results) {
-          availabilityResults.push(result);
-          availabilityCompleted += 1;
-          await flushStreamingAvailabilityArtifacts();
-          const statuses = Object.entries(result.provider_results)
-            .map(([name, provider]) => `${name}=${provider.passed ? 'ok' : provider.reason}`)
-            .join(' ');
-          emit('log', { message: `[availability] ${availabilityCompleted}/${passedSpeedLinks.length} ${statuses}` });
-          emit('availability_link_result', {
-            completed: availabilityCompleted,
-            total: passedSpeedLinks.length,
-            link: result.link,
-            all_passed: result.all_passed,
-            provider_results: result.provider_results
-          });
+          runStore.recordAvailabilityResult(result);
+          availabilityCompletedStreaming += 1;
+          emit('availability_link_result', { completed: availabilityCompletedStreaming, total: runStore.counts().speed, link: result.link, all_passed: result.all_passed, provider_results: result.provider_results });
+          emit('log', { message: `[availability] ${availabilityCompletedStreaming}/${runStore.counts().speed}` });
         }
-      });
-      streamingAvailabilityTasks.push(task);
-      task.catch(() => undefined);
-    };
+      }
+    });
+    const speedPool = activeSpeedPool = new BoundedWorkerPool<string>({
+      concurrency: speedConfig.concurrency,
+      capacity: speedConfig.concurrency * 2,
+      worker: async (link) => {
+        runStore.markSpeedRunning(link);
+        const probes = context.stages?.speedtestProbe
+          ? await context.stages.speedtestProbe([link], profile.speed_test ?? {}, runtimePath)
+          : await probeSpeedtestLinksInNode({ links: [link], config: profile.speed_test as any, runtime_path: runtimePath }, { cwd: projectRoot, env: runtimeStageEnv, progressCallback: (message) => emit('log', { message }), eventCallback: (type, payload) => emit(type, payload) });
+        const probe = probes[0] ?? { link, reachable: false, latency_ms: 0, error: 'probe returned no result' };
+        runStore.recordProbe(probe);
+        emit('speedtest_probe_result', { completed: runStore.counts().probes, total: runStore.counts().deduped, link, reachable: probe.reachable, latency_ms: probe.latency_ms, error: probe.error ?? '' });
+        let result: SpeedTestResult = { link, reachable: false, average_download_mb_s: 0, latency_ms: probe.latency_ms, error: probe.error ?? '' };
+        if (probe.reachable) {
+          result = context.stages?.speedtestLink
+            ? await context.stages.speedtestLink(link, profile.speed_test ?? {}, runtimePath)
+            : await testSpeedtestLinkInNode({ link, config: profile.speed_test as any, runtime_path: runtimePath }, { cwd: projectRoot, env: runtimeStageEnv });
+          if (result.latency_ms <= 0) result.latency_ms = probe.latency_ms;
+        }
+        const passed = result.reachable && result.average_download_mb_s >= speedConfig.min_download_mb_s;
+        runStore.recordSpeedResult(result, passed);
+        speedCompleted += 1;
+        emit('speedtest_result', { completed: speedCompleted, total: runStore.counts().deduped, link, reachable: result.reachable, average_download_mb_s: result.average_download_mb_s, latency_ms: result.latency_ms, passed_threshold: passed, error: result.error ?? '' });
+        emit('log', { message: `[speedtest] ${speedCompleted}/${runStore.counts().deduped} reachable=${result.reachable} speed=${result.average_download_mb_s}MB/s` });
+        if (passed) await availabilityPool.submit(result);
+      }
+    });
 
-    const onExtractedLinks = async (links: string[]): Promise<void> => {
+    const onExtractedLinks = async (sourceName: string, links: string[]): Promise<void> => {
       for (const link of links) {
-        rawLinks.push(link);
-        const key = streamingDedupeKey(link);
-        if (streamedDeduped.has(key)) {
-          continue;
-        }
-        streamedDeduped.add(key);
-        dedupedLinks.push(link);
+        const recorded = runStore.recordExtractedNode(sourceName, link);
+        if (recorded.inserted) await speedPool.submit(link);
       }
     };
 
     await setStage('extract', 'running');
     if (useStreamingStages) {
       await setStage('dedupe', 'running', false);
+      await setStage('speedtest', 'running', false);
+      await setStage('availability', 'running', false);
+      const requestedRuntime = String(runtimeStageEnv.AUTOVPN_SPEEDTEST_RUNTIME ?? '').trim().toLowerCase();
+      emit('speedtest_runtime', { runtime_core: requestedRuntime === 'direct' ? 'direct' : 'mihomo', probe_url: speedConfig.probe_url, urls: [...speedConfig.urls] });
+      emit('log', { message: `[speedtest] runtime_core=${requestedRuntime === 'direct' ? 'direct' : 'mihomo'} probe_url=${speedConfig.probe_url}` });
     }
     const extractResults: ExtractedSourceResult[] = await Promise.all(sourcesToRun.map(async ([sourceName, source]) => {
       const streamedLinks = new Set<string>();
@@ -648,7 +610,7 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
               for (const link of links) {
                 streamedLinks.add(link);
               }
-              await onExtractedLinks(links);
+              await onExtractedLinks(sourceName, links);
             }
           }
         : undefined;
@@ -675,6 +637,9 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
     }));
     if (!useStreamingStages) {
       rawLinks = extractResults.flatMap((result) => result.links);
+    } else {
+      rawLinks = runStore.rawLinks();
+      dedupedLinks = runStore.dedupedLinks();
     }
     if (sourcesToRun.length > 0 && rawLinks.length === 0 && extractResults.some((result) => result.requested_iterations > 0 || result.failed_iterations > 0)) {
       throw new Error('No links extracted from configured sources');
@@ -695,132 +660,35 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
     await writeLines(artifactDir, 'vpn_node_deduped.txt', dedupedLinks);
     await setStage('dedupe', 'success', !useStreamingStages);
 
+    if (useStreamingStages) {
+      speedPool.close();
+      await speedPool.drain();
+      availabilityPool.close();
+      await availabilityPool.drain();
+      speedResults = runStore.speedResults().map(({ status: _status, ...result }) => result);
+      passedSpeedLinks = runStore.speedResults().filter((result) => result.status === 'speed_passed').map((result) => result.link);
+      const storedSpeedByLink = new Map(speedResults.map((result) => [result.link, result]));
+      availabilityResults = runStore.availabilityResults().map(({ status: _status, error: _error, ...result }) => ({
+        ...(storedSpeedByLink.get(result.link) as SpeedTestResult),
+        ...result
+      } as AvailabilityResultDict));
+    }
+
     if (summary.stage_status.speedtest !== 'running') {
       await setStage('speedtest', 'running');
     }
-    if (useStreamingStages) {
-      const requestedRuntime = String(runtimeStageEnv.AUTOVPN_SPEEDTEST_RUNTIME ?? '').trim().toLowerCase();
-      emit('speedtest_runtime', {
-        runtime_core: requestedRuntime === 'direct' ? 'direct' : 'mihomo',
-        probe_url: speedConfig.probe_url,
-        urls: [...speedConfig.urls]
-      });
-      emit('log', {
-        message: `[speedtest] runtime_core=${requestedRuntime === 'direct' ? 'direct' : 'mihomo'} probe_url=${speedConfig.probe_url}`
-      });
-      const probes = context.stages?.speedtestProbe
-        ? await context.stages.speedtestProbe(dedupedLinks, profile.speed_test ?? {}, runtimePath)
-        : await probeSpeedtestLinksInNode({ links: dedupedLinks, config: profile.speed_test as any, runtime_path: runtimePath }, {
+    if (!useStreamingStages) {
+      speedResults = context.stages?.speedtest
+        ? await context.stages.speedtest(dedupedLinks, profile.speed_test ?? {}, runtimePath)
+        : await speedtestLinksWithBackend({ links: dedupedLinks, config: profile.speed_test as any, runtime_path: runtimePath }, {
           cwd: projectRoot,
           env: runtimeStageEnv,
           progressCallback: (message) => emit('log', { message }),
           eventCallback: (type, payload) => emit(type, payload)
         });
-      if (context.stages?.speedtestProbe) {
-        for (let index = 0; index < probes.length; index += 1) {
-          const result = probes[index];
-          emit('log', { message: `[speedtest:probe] ${index + 1}/${dedupedLinks.length} reachable=${result.reachable} latency=${result.latency_ms}ms` });
-          emit('speedtest_probe_result', {
-            completed: index + 1,
-            total: dedupedLinks.length,
-            link: result.link,
-            reachable: result.reachable,
-            latency_ms: result.latency_ms,
-            error: result.error ?? ''
-          });
-        }
-      }
-      const candidateLinks = selectSpeedtestCandidates(probes, speedConfig.max_download_candidates);
-      const reachableCount = probes.filter((probe) => probe.reachable).length;
-      emit('log', { message: `[speedtest] selected ${candidateLinks.length}/${reachableCount} reachable links for full download test` });
-      emit('speedtest_selected', {
-        total_links: dedupedLinks.length,
-        reachable_count: reachableCount,
-        candidate_count: candidateLinks.length
-      });
-      const probeByLink = new Map(probes.map((probe) => [probe.link, probe]));
-      const resultByLink = new Map<string, SpeedTestResult>();
-      for (const probe of probes) {
-        if (!probe.reachable) {
-          resultByLink.set(probe.link, {
-            link: probe.link,
-            reachable: false,
-            average_download_mb_s: 0,
-            latency_ms: probe.latency_ms,
-            error: probe.error ?? ''
-          });
-        }
-      }
-      let speedCompleted = 0;
-      try {
-        await forEachWithConcurrency(candidateLinks, speedConfig.concurrency, async (link) => {
-          const result = context.stages?.speedtestLink
-            ? await context.stages.speedtestLink(link, profile.speed_test ?? {}, runtimePath)
-            : await testSpeedtestLinkInNode({ link, config: profile.speed_test as any, runtime_path: runtimePath }, {
-              cwd: projectRoot,
-              env: runtimeStageEnv
-            });
-          if (result.reachable && result.latency_ms <= 0) {
-            result.latency_ms = probeByLink.get(result.link)?.latency_ms ?? 0;
-          }
-          resultByLink.set(result.link, result);
-          speedCompleted += 1;
-          const passed = result.reachable && result.average_download_mb_s >= speedConfig.min_download_mb_s;
-          emit('speedtest_result', {
-            completed: speedCompleted,
-            total: candidateLinks.length,
-            link: result.link,
-            reachable: result.reachable,
-            average_download_mb_s: result.average_download_mb_s,
-            latency_ms: result.latency_ms,
-            passed_threshold: passed,
-            error: result.error ?? ''
-          });
-          emit('log', {
-            message: `[speedtest] ${speedCompleted}/${candidateLinks.length} reachable=${result.reachable} speed=${result.average_download_mb_s}MB/s`
-          });
-          const currentSpeedResults = [
-            ...probes.filter((probe) => !probe.reachable).map((probe) => resultByLink.get(probe.link) as SpeedTestResult),
-            ...candidateLinks.map((candidate) => resultByLink.get(candidate)).filter((entry): entry is SpeedTestResult => Boolean(entry))
-          ];
-          const currentPassedLinks = candidateLinks.filter((candidate) => {
-            const entry = resultByLink.get(candidate);
-            return Boolean(entry?.reachable && entry.average_download_mb_s >= speedConfig.min_download_mb_s);
-          });
-          summary.counts.speedtest_links = currentPassedLinks.length;
-          await flushStreamingSpeedArtifacts(currentSpeedResults, currentPassedLinks);
-          if (passed) {
-            passedSpeedLinks.push(result.link);
-            runStreamingAvailability(result);
-          }
-        });
-      } catch (error) {
-        await Promise.allSettled(streamingAvailabilityTasks);
-        if (summary.stage_status.availability === 'running') {
-          await setStage('availability', 'failed', false);
-        }
-        throw error;
-      }
-      speedResults = [
-        ...probes.filter((probe) => !probe.reachable).map((probe) => resultByLink.get(probe.link) as SpeedTestResult),
-        ...candidateLinks.map((link) => resultByLink.get(link)).filter((result): result is SpeedTestResult => Boolean(result))
-      ];
-      passedSpeedLinks = candidateLinks.filter((link) => {
-        const result = resultByLink.get(link);
-        return Boolean(result?.reachable && result.average_download_mb_s >= speedConfig.min_download_mb_s);
-      });
-    } else {
-      speedResults = context.stages?.speedtest
-      ? await context.stages.speedtest(dedupedLinks, profile.speed_test ?? {}, runtimePath)
-      : await speedtestLinksWithBackend({ links: dedupedLinks, config: profile.speed_test as any, runtime_path: runtimePath }, {
-        cwd: projectRoot,
-        env: runtimeStageEnv,
-        progressCallback: (message) => emit('log', { message }),
-        eventCallback: (type, payload) => emit(type, payload)
-      });
       passedSpeedLinks = speedResults
-      .filter((result) => result.reachable && result.average_download_mb_s >= Number(profile.speed_test?.min_download_mb_s ?? 0))
-      .map((result) => result.link);
+        .filter((result) => result.reachable && result.average_download_mb_s >= Number(profile.speed_test?.min_download_mb_s ?? 0))
+        .map((result) => result.link);
     }
     summary.counts.speedtest_links = passedSpeedLinks.length;
     await writeLines(artifactDir, 'vpn_node_speedtest.txt', passedSpeedLinks);
@@ -830,16 +698,7 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
     }
     await setStage('speedtest', 'success');
 
-    if (useStreamingStages) {
-      try {
-        await Promise.all(streamingAvailabilityTasks);
-      } catch (error) {
-        await setStage('availability', 'failed', false);
-        throw error;
-      }
-      const availabilityByLink = new Map(availabilityResults.map((result) => [result.link, result]));
-      availabilityResults = passedSpeedLinks.map((link) => availabilityByLink.get(link)).filter((result): result is AvailabilityResultDict => Boolean(result));
-    } else if (summary.stage_status.availability !== 'running') {
+    if (!useStreamingStages && summary.stage_status.availability !== 'running') {
       await setStage('availability', 'running');
     }
     const speedResultByLink = new Map(speedResults.map((result) => [result.link, result]));
@@ -932,21 +791,31 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
       await setStage('verify', 'success');
     }
   } catch (error) {
+    activeSpeedPool?.abort(error);
+    activeAvailabilityPool?.abort(error);
+    await Promise.allSettled([activeSpeedPool?.drain(), activeAvailabilityPool?.drain()].filter((task): task is Promise<void> => Boolean(task)));
     summary.run_status = 'failed';
     summary.error = errorMessage(error);
-    if (activeStage && summary.stage_status[activeStage] === 'running') {
-      summary.stage_status[activeStage] = 'failed';
-      emit('stage', { stage: activeStage, status: 'failed' });
+    for (const stage of STAGES) {
+      if (summary.stage_status[stage] === 'running') {
+        summary.stage_status[stage] = 'failed';
+        runStore.setStageStatus(stage, 'failed', summary.error);
+        emit('stage', { stage, status: 'failed' });
+      }
     }
+    runStore.setRunStatus('failed', summary.error);
     await writeReport();
     emit('summary', summary as unknown as Record<string, unknown>);
     emit('run_failed', { error: summary.error });
+    runStore.close();
     throw error;
   }
 
   summary.run_status = 'success';
+  runStore.setRunStatus('success');
   await writeReport();
   emit('summary', summary as unknown as Record<string, unknown>);
+  runStore.close();
   return summary;
 }
 
