@@ -13,7 +13,7 @@ type Statement = import('node:sqlite').StatementSync;
 export interface SourceProgressInput {
   processed: number;
   total: number;
-  status: string;
+  status: SourceStatus;
   error?: string;
 }
 
@@ -23,7 +23,7 @@ export interface StoredProbeResult extends ProbeResult {
 
 export interface StoredSpeedResult extends SpeedTestResult {
   error: string;
-  status: string;
+  status: SpeedStatus;
 }
 
 export interface AvailabilityStoreResult {
@@ -35,13 +35,30 @@ export interface AvailabilityStoreResult {
 
 export interface StoredAvailabilityResult extends AvailabilityStoreResult {
   error: string;
-  status: string;
+  status: AvailabilityStatus;
 }
+
+export type RunStatus = 'pending' | 'running' | 'success' | 'failed' | 'cancelled';
+export type StageStatus = 'pending' | 'running' | 'success' | 'failed' | 'cancelled' | 'skipped';
+export type SourceStatus = StageStatus;
+export type SpeedStatus = 'pending' | 'running' | 'speed_passed' | 'speed_failed' | 'cancelled' | 'skipped';
+export type AvailabilityStatus = 'pending' | 'running' | 'availability_passed' | 'availability_failed' | 'cancelled' | 'skipped';
 
 const TERMINAL_STATUSES = new Set([
   'success', 'failed', 'cancelled', 'skipped',
   'speed_passed', 'speed_failed', 'availability_passed', 'availability_failed'
 ]);
+
+function parseProviderResults(value: unknown): Record<string, unknown> {
+  try {
+    const parsed: unknown = JSON.parse(String(value));
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
+}
 
 export class RunStore {
   private readonly statements = new Map<string, Statement>();
@@ -54,21 +71,21 @@ export class RunStore {
       PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS runs (
         run_id INTEGER PRIMARY KEY AUTOINCREMENT,
-        status TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending','running','success','failed','cancelled')),
         error TEXT NOT NULL DEFAULT ''
       );
       CREATE TABLE IF NOT EXISTS stage_events (
         run_id INTEGER NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
         stage_name TEXT NOT NULL,
-        status TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending','running','success','failed','cancelled','skipped')),
         error TEXT NOT NULL DEFAULT ''
       );
       CREATE TABLE IF NOT EXISTS source_progress (
         run_id INTEGER NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
         source TEXT NOT NULL,
-        processed INTEGER NOT NULL,
-        total INTEGER NOT NULL,
-        status TEXT NOT NULL,
+        processed INTEGER NOT NULL CHECK (processed >= 0 AND processed <= total),
+        total INTEGER NOT NULL CHECK (total >= 0),
+        status TEXT NOT NULL CHECK (status IN ('pending','running','success','failed','cancelled','skipped')),
         error TEXT NOT NULL DEFAULT '',
         PRIMARY KEY (run_id, source)
       );
@@ -98,7 +115,7 @@ export class RunStore {
       CREATE TABLE IF NOT EXISTS speed_results (
         run_id INTEGER NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
         canonical_key TEXT NOT NULL,
-        status TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending','running','speed_passed','speed_failed','cancelled','skipped')),
         reachable INTEGER NOT NULL DEFAULT 0,
         average_download_mb_s REAL NOT NULL DEFAULT 0,
         latency_ms REAL NOT NULL DEFAULT 0,
@@ -108,7 +125,7 @@ export class RunStore {
       CREATE TABLE IF NOT EXISTS availability_results (
         run_id INTEGER NOT NULL REFERENCES runs(run_id) ON DELETE CASCADE,
         canonical_key TEXT NOT NULL,
-        status TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending','running','availability_passed','availability_failed','cancelled','skipped')),
         all_passed INTEGER NOT NULL DEFAULT 0,
         provider_results TEXT NOT NULL DEFAULT '{}',
         error TEXT NOT NULL DEFAULT '',
@@ -131,33 +148,40 @@ export class RunStore {
     return Number((this.statement('PRAGMA busy_timeout').get() as { timeout: number }).timeout);
   }
 
-  initializeRun(status = 'running'): number {
+  initializeRun(status: RunStatus = 'running'): number {
     const result = this.statement('INSERT INTO runs(status) VALUES (?)').run(status);
     this.runId = Number(result.lastInsertRowid);
     return this.runId;
   }
 
-  setRunStatus(status: string, error = ''): void {
+  setRunStatus(status: RunStatus, error = ''): void {
     const runId = this.currentRunId();
-    const current = this.statement('SELECT status FROM runs WHERE run_id = ?').get(runId) as { status: string };
-    if (TERMINAL_STATUSES.has(current.status)) return;
-    this.statement('UPDATE runs SET status = ?, error = ? WHERE run_id = ?').run(status, redactText(error), runId);
+    this.statement(`UPDATE runs SET status = ?, error = ? WHERE run_id = ?
+      AND status NOT IN ('success','failed','cancelled')`).run(status, redactText(error), runId);
   }
 
-  setStageStatus(stageName: string, status: string, error = ''): void {
+  setStageStatus(stageName: string, status: StageStatus, error = ''): void {
     const runId = this.currentRunId();
-    const latest = this.statement('SELECT status FROM stage_events WHERE run_id = ? AND stage_name = ? ORDER BY rowid DESC LIMIT 1')
-      .get(runId, stageName) as { status: string } | undefined;
-    if (latest && TERMINAL_STATUSES.has(latest.status)) return;
-    this.statement('INSERT INTO stage_events(run_id, stage_name, status, error) VALUES (?, ?, ?, ?)')
-      .run(runId, stageName, status, redactText(error));
+    this.transaction(() => {
+      const latest = this.statement('SELECT status FROM stage_events WHERE run_id = ? AND stage_name = ? ORDER BY rowid DESC LIMIT 1')
+        .get(runId, stageName) as { status: string } | undefined;
+      if (!latest || !TERMINAL_STATUSES.has(latest.status)) {
+        this.statement('INSERT INTO stage_events(run_id, stage_name, status, error) VALUES (?, ?, ?, ?)')
+          .run(runId, stageName, status, redactText(error));
+      }
+    });
   }
 
   recordSourceProgress(source: string, progress: SourceProgressInput): void {
+    if (!Number.isInteger(progress.processed) || !Number.isInteger(progress.total) || progress.processed < 0 || progress.total < 0 || progress.processed > progress.total) {
+      throw new RangeError('source progress requires integer values with 0 <= processed <= total');
+    }
     this.statement(`INSERT INTO source_progress(run_id, source, processed, total, status, error)
       VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT(run_id, source) DO UPDATE SET
-        processed=excluded.processed, total=excluded.total, status=excluded.status, error=excluded.error`)
+        processed=excluded.processed, total=excluded.total, status=excluded.status, error=excluded.error
+      WHERE excluded.processed >= source_progress.processed
+        AND source_progress.status NOT IN ('success','failed','cancelled','skipped')`)
       .run(this.currentRunId(), source, progress.processed, progress.total, progress.status, redactText(progress.error ?? ''));
   }
 
@@ -226,7 +250,7 @@ export class RunStore {
     const rows = this.statement(`SELECT n.link, s.status, s.reachable, s.average_download_mb_s, s.latency_ms, s.error FROM speed_results s
       JOIN pipeline_nodes n ON n.run_id=s.run_id AND n.canonical_key=s.canonical_key
       WHERE s.run_id=? ORDER BY n.sequence`).all(this.currentRunId()) as Array<Record<string, unknown>>;
-    return rows.map((row) => ({ link: String(row.link), reachable: Boolean(row.reachable), average_download_mb_s: Number(row.average_download_mb_s), latency_ms: Number(row.latency_ms), error: String(row.error), status: String(row.status) }));
+    return rows.map((row) => ({ link: String(row.link), reachable: Boolean(row.reachable), average_download_mb_s: Number(row.average_download_mb_s), latency_ms: Number(row.latency_ms), error: String(row.error), status: String(row.status) as SpeedStatus }));
   }
 
   markAvailabilityRunning(link: string): void {
@@ -252,7 +276,7 @@ export class RunStore {
     const rows = this.statement(`SELECT n.link, a.status, a.all_passed, a.provider_results, a.error FROM availability_results a
       JOIN pipeline_nodes n ON n.run_id=a.run_id AND n.canonical_key=a.canonical_key
       WHERE a.run_id=? ORDER BY n.sequence`).all(this.currentRunId()) as Array<Record<string, unknown>>;
-    return rows.map((row) => ({ link: String(row.link), all_passed: Boolean(row.all_passed), provider_results: JSON.parse(String(row.provider_results)) as Record<string, unknown>, error: String(row.error), status: String(row.status) }));
+    return rows.map((row) => ({ link: String(row.link), all_passed: Boolean(row.all_passed), provider_results: parseProviderResults(row.provider_results), error: String(row.error), status: String(row.status) as AvailabilityStatus }));
   }
 
   counts(): { raw: number; deduped: number; probes: number; speed: number; availability: number } {
@@ -274,7 +298,11 @@ export class RunStore {
   }
 
   private nodeIdentity(link: string): { runId: number; key: string } {
-    return { runId: this.currentRunId(), key: canonicalVmessKey(parseVmessLink(link)) };
+    const runId = this.currentRunId();
+    const key = canonicalVmessKey(parseVmessLink(link));
+    const exists = this.statement('SELECT 1 AS found FROM pipeline_nodes WHERE run_id = ? AND canonical_key = ?').get(runId, key);
+    if (!exists) throw new Error('unknown pipeline node');
+    return { runId, key };
   }
 
   private currentRunId(): number {

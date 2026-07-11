@@ -165,3 +165,97 @@ test('persists explicit speed and availability failure terminal states', async (
     await ctx.cleanup();
   }
 });
+
+test('keeps run and stage terminal states monotonic across two connections', async () => {
+  const ctx = await fixture();
+  let second;
+  try {
+    ctx.store.initializeRun();
+    second = RunStore.open(ctx.dbPath);
+    ctx.store.setRunStatus('success');
+    second.setRunStatus('running');
+    ctx.store.setStageStatus('speed', 'running');
+    second.setStageStatus('speed', 'success');
+    ctx.store.setStageStatus('speed', 'running');
+
+    const db = new DatabaseSync(ctx.dbPath);
+    try {
+      assert.equal(db.prepare('SELECT status FROM runs ORDER BY run_id DESC LIMIT 1').get().status, 'success');
+      assert.deepEqual(db.prepare("SELECT status FROM stage_events WHERE stage_name='speed' ORDER BY rowid").all().map((row) => row.status), ['running', 'success']);
+    } finally {
+      db.close();
+    }
+  } finally {
+    second?.close();
+    await ctx.cleanup();
+  }
+});
+
+test('rejects invalid and stale source progress updates', async () => {
+  const ctx = await fixture();
+  try {
+    ctx.store.initializeRun();
+    assert.throws(() => ctx.store.recordSourceProgress('source', { processed: -1, total: 2, status: 'running' }), /processed/);
+    assert.throws(() => ctx.store.recordSourceProgress('source', { processed: 3, total: 2, status: 'running' }), /processed/);
+    ctx.store.recordSourceProgress('source', { processed: 2, total: 4, status: 'running' });
+    ctx.store.recordSourceProgress('source', { processed: 1, total: 4, status: 'running' });
+    ctx.store.recordSourceProgress('source', { processed: 4, total: 4, status: 'success' });
+    ctx.store.recordSourceProgress('source', { processed: 3, total: 4, status: 'running' });
+    assert.deepEqual(ctx.store.sourceProgress(), [{ source: 'source', processed: 4, total: 4, status: 'success', error: '' }]);
+  } finally {
+    await ctx.cleanup();
+  }
+});
+
+test('rejects result writes for unknown nodes without changing counts', async () => {
+  const ctx = await fixture();
+  try {
+    ctx.store.initializeRun();
+    const unknown = vmessLink('unknown', '9.9.9.9');
+    assert.throws(() => ctx.store.recordProbe({ link: unknown, reachable: false, latency_ms: 0 }), /unknown pipeline node/);
+    assert.throws(() => ctx.store.markSpeedRunning(unknown), /unknown pipeline node/);
+    assert.throws(() => ctx.store.recordSpeedResult({ link: unknown, reachable: false, average_download_mb_s: 0, latency_ms: 0 }, false), /unknown pipeline node/);
+    assert.throws(() => ctx.store.markAvailabilityRunning(unknown), /unknown pipeline node/);
+    assert.throws(() => ctx.store.recordAvailabilityResult({ link: unknown, all_passed: false, provider_results: {} }), /unknown pipeline node/);
+    assert.deepEqual(ctx.store.counts(), { raw: 0, deduped: 0, probes: 0, speed: 0, availability: 0 });
+    assert.deepEqual(ctx.store.speedResults(), []);
+    assert.deepEqual(ctx.store.availabilityResults(), []);
+  } finally {
+    await ctx.cleanup();
+  }
+});
+
+test('safely falls back for corrupt or non-object provider JSON', async () => {
+  const ctx = await fixture();
+  try {
+    ctx.store.initializeRun();
+    const first = vmessLink('first', '5.5.5.5');
+    const second = vmessLink('second', '6.6.6.6');
+    ctx.store.recordExtractedNode('source', first);
+    ctx.store.recordExtractedNode('source', second);
+    ctx.store.recordAvailabilityResult({ link: first, all_passed: true, provider_results: { ok: true } });
+    ctx.store.recordAvailabilityResult({ link: second, all_passed: true, provider_results: { ok: true } });
+    const db = new DatabaseSync(ctx.dbPath);
+    try {
+      db.prepare('UPDATE availability_results SET provider_results = ? WHERE canonical_key = ?').run('{broken', JSON.stringify(['5.5.5.5', '443', 'uuid', 'ws', '5.5.5.5', '/ws', 'tls', '']));
+      db.prepare('UPDATE availability_results SET provider_results = ? WHERE canonical_key = ?').run('[]', JSON.stringify(['6.6.6.6', '443', 'uuid', 'ws', '6.6.6.6', '/ws', 'tls', '']));
+    } finally {
+      db.close();
+    }
+    assert.deepEqual(ctx.store.availabilityResults().map((row) => row.provider_results), [{}, {}]);
+  } finally {
+    await ctx.cleanup();
+  }
+});
+
+test('rejects invalid persisted state names', async () => {
+  const ctx = await fixture();
+  try {
+    ctx.store.initializeRun();
+    assert.throws(() => ctx.store.setRunStatus('whatever'), /constraint failed/i);
+    assert.throws(() => ctx.store.setStageStatus('extract', 'whatever'), /constraint failed/i);
+    assert.throws(() => ctx.store.recordSourceProgress('source', { processed: 0, total: 1, status: 'whatever' }), /constraint failed/i);
+  } finally {
+    await ctx.cleanup();
+  }
+});
