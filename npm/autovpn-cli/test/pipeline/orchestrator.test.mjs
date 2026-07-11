@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 
 import { resumeNodePipeline, retryNodePipelineStage, runNodePipeline } from '../../dist/pipeline/orchestrator.js';
@@ -125,6 +126,7 @@ test('runNodePipeline closes RunStore exactly once when event handling throws', 
   const projectRoot = await makeProject();
   const originalClose = RunStore.prototype.close;
   let closeCalls = 0;
+  let artifactDir = '';
   RunStore.prototype.close = function close() {
     closeCalls += 1;
     return originalClose.call(this);
@@ -136,13 +138,60 @@ test('runNodePipeline closes RunStore exactly once when event handling throws', 
         VPN_AUTOMATION_PROFILE_PATH: path.join(projectRoot, 'state', 'profile.toml')
       },
       emit: (event) => {
-        if (event.type === 'run_started') throw new Error('event sink failed');
+        if (event.type === 'run_started') { artifactDir = event.artifact_dir; throw new Error('event sink failed'); }
       }
     }), /event sink failed/);
     assert.equal(closeCalls, 1);
+    const db = new DatabaseSync(path.join(artifactDir, 'run.db'));
+    try {
+      assert.equal(db.prepare('SELECT status FROM runs ORDER BY run_id DESC LIMIT 1').get().status, 'failed');
+    } finally { db.close(); }
   } finally {
     RunStore.prototype.close = originalClose;
   }
+});
+
+test('runNodePipeline rejects malformed single-node adapter results without running rows', async (t) => {
+  const cases = [
+    ['probe wrong link', { speedtestProbe: async () => [{ link: vmessLink('wrong', 'wrong.example'), reachable: true, latency_ms: 1, error: '' }] }],
+    ['speed wrong link', { speedtestProbe: async (links) => [{ link: links[0], reachable: true, latency_ms: 1, error: '' }], speedtestLink: async () => ({ link: vmessLink('wrong', 'wrong.example'), reachable: true, average_download_mb_s: 3, latency_ms: 1, error: '' }) }],
+    ['availability empty', { speedtestProbe: async (links) => [{ link: links[0], reachable: true, latency_ms: 1, error: '' }], speedtestLink: async (link) => ({ link, reachable: true, average_download_mb_s: 3, latency_ms: 1, error: '' }), availability: async () => [] }]
+  ];
+  for (const [name, adapters] of cases) await t.test(name, async () => {
+    const projectRoot = await makeProject();
+    const link = vmessLink('first', 'one.example');
+    let artifactDir = '';
+    await assert.rejects(() => runNodePipeline({ projectRoot, skipDeploy: true, skipVerify: true }, {
+      env: { VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'), VPN_AUTOMATION_PROFILE_PATH: path.join(projectRoot, 'state', 'profile.toml') },
+      emit: (event) => { if (event.type === 'run_started') artifactDir = event.artifact_dir; },
+      stages: { extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [link] }), ...adapters }
+    }), /adapter|result/i);
+    const store = RunStore.open(path.join(artifactDir, 'run.db'));
+    try {
+      assert.equal(store.speedResults().some((entry) => entry.status === 'running'), false);
+      assert.equal(store.availabilityResults().some((entry) => entry.status === 'running'), false);
+    } finally { store.close(); }
+  });
+});
+
+test('runNodePipeline availability progress totals only speed-passed nodes', async () => {
+  const projectRoot = await makeProject();
+  const links = [vmessLink('pass', 'one.example'), vmessLink('fail', 'two.example')];
+  const events = [];
+  await runNodePipeline({ projectRoot, skipDeploy: true, skipVerify: true }, {
+    env: { VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'), VPN_AUTOMATION_PROFILE_PATH: path.join(projectRoot, 'state', 'profile.toml') },
+    emit: (event) => events.push(event),
+    stages: {
+      extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links }),
+      speedtestProbe: async (input) => [{ link: input[0], reachable: true, latency_ms: 1, error: '' }],
+      speedtestLink: async (link) => ({ link, reachable: true, average_download_mb_s: link === links[0] ? 3 : 0, latency_ms: 1, error: '' }),
+      availability: async (results) => results.map((entry) => ({ ...entry, all_passed: true, provider_results: {} })),
+      countryLookup: () => 'US', obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
+    }
+  });
+  const progress = events.filter((event) => event.type === 'availability_link_result');
+  assert.equal(progress.at(-1).completed, 1);
+  assert.equal(progress.at(-1).total, 1);
 });
 
 test('runNodePipeline closes RunStore when initializeRun throws', async () => {
@@ -1126,6 +1175,8 @@ test('AUTOVPN_NO_PYTHON offline run succeeds when no sources have URL and key co
   assert.equal(result.run_status, 'success');
   assert.equal(result.counts.raw_links, 0);
   assert.equal(result.counts.availability_links, 0);
+  assert.equal(result.stage_status.speedtest, 'skipped');
+  assert.equal(result.stage_status.availability, 'skipped');
   assert.equal(await readFile(path.join(result.artifact_dir, 'vpn_node_raw.txt'), 'utf8'), '');
 });
 
