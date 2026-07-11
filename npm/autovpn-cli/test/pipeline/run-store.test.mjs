@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { RunStore } from '../../dist/pipeline/run-store.js';
+import { RunStore, readLatestStageStatuses, readRunStatus } from '../../dist/pipeline/run-store.js';
 
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require('node:sqlite');
@@ -131,6 +131,50 @@ test('keeps terminal states monotonic and transactionally resets interrupted wor
     assert.deepEqual(ctx.store.dedupedLinks(), [first, second]);
   } finally {
     await ctx.cleanup();
+  }
+});
+
+test('openOrImport creates run.db from legacy artifacts in discovery order and is idempotent', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'autovpn-run-import-'));
+  const first = vmessLink('first', '1.1.1.1');
+  const duplicate = vmessLink('duplicate', '1.1.1.1');
+  const second = vmessLink('second', '2.2.2.2');
+  try {
+    await writeFile(path.join(root, 'vpn_node_raw.txt'), `${first}\n${duplicate}\n${second}\n`);
+    await writeFile(path.join(root, 'vpn_node_deduped.txt'), `${first}\n${second}\n`);
+    await writeFile(path.join(root, 'vpn_node_speedtest_report.json'), JSON.stringify([
+      { link: first, reachable: true, average_download_mb_s: 3, latency_ms: 20, error: '' }
+    ]));
+    await writeFile(path.join(root, 'vpn_node_availability_report.json'), JSON.stringify([
+      { link: first, all_passed: true, provider_results: { site: { passed: true } }, error: '' }
+    ]));
+
+    let store = RunStore.openOrImport(root);
+    assert.deepEqual(store.rawLinks(), [first, duplicate, second]);
+    assert.deepEqual(store.dedupedLinks(), [first, second]);
+    assert.equal(store.speedResults()[0].status, 'speed_passed');
+    assert.equal(store.availabilityResults()[0].status, 'availability_passed');
+    store.close();
+
+    store = RunStore.openOrImport(root);
+    assert.deepEqual(store.counts(), { raw: 3, deduped: 2, probes: 0, speed: 1, availability: 1 });
+    store.close();
+    assert.equal(readRunStatus(path.join(root, 'run.db')), 'running');
+    assert.deepEqual(readLatestStageStatuses(path.join(root, 'run.db')), {});
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('safe status readers return undefined state for malformed databases', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'autovpn-run-reader-'));
+  const dbPath = path.join(root, 'run.db');
+  try {
+    await writeFile(dbPath, 'not sqlite');
+    assert.equal(readRunStatus(dbPath), undefined);
+    assert.deepEqual(readLatestStageStatuses(dbPath), {});
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
 

@@ -1,4 +1,6 @@
 import { createRequire } from 'node:module';
+import fs from 'node:fs';
+import path from 'node:path';
 
 import { redactText } from '../runtime/redaction.js';
 import { canonicalVmessKey, parseVmessLink } from './dedupe.js';
@@ -57,6 +59,49 @@ function parseProviderResults(value: unknown): Record<string, unknown> {
       : {};
   } catch {
     return {};
+  }
+}
+
+function readLegacyLines(filePath: string): string[] {
+  if (!fs.existsSync(filePath)) return [];
+  return fs.readFileSync(filePath, 'utf8').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+}
+
+function readLegacyReport(filePath: string): Array<Record<string, unknown>> {
+  if (!fs.existsSync(filePath)) return [];
+  const payload: unknown = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  if (!Array.isArray(payload) || payload.some((row) => row === null || typeof row !== 'object' || Array.isArray(row))) {
+    throw new Error(`Invalid legacy report: ${path.basename(filePath)}`);
+  }
+  return payload as Array<Record<string, unknown>>;
+}
+
+export function readRunStatus(dbPath: string): string | undefined {
+  if (!fs.existsSync(dbPath)) return undefined;
+  let db: Database | undefined;
+  try {
+    db = new DatabaseSync(dbPath);
+    const row = db.prepare('SELECT status FROM runs ORDER BY run_id DESC LIMIT 1').get() as { status?: unknown } | undefined;
+    const status = String(row?.status ?? '').trim();
+    return status || undefined;
+  } catch {
+    return undefined;
+  } finally {
+    try { db?.close(); } catch { /* malformed or locked databases are ignored */ }
+  }
+}
+
+export function readLatestStageStatuses(dbPath: string): Record<string, string> {
+  if (!fs.existsSync(dbPath)) return {};
+  let db: Database | undefined;
+  try {
+    db = new DatabaseSync(dbPath);
+    const rows = db.prepare('SELECT stage_name, status FROM stage_events ORDER BY rowid').all() as Array<{ stage_name?: unknown; status?: unknown }>;
+    return Object.fromEntries(rows.map((row) => [String(row.stage_name ?? ''), String(row.status ?? '')]).filter(([name]) => name));
+  } catch {
+    return {};
+  } finally {
+    try { db?.close(); } catch { /* malformed or locked databases are ignored */ }
   }
 }
 
@@ -138,6 +183,21 @@ export class RunStore {
 
   static open(filePath: string): RunStore {
     return new RunStore(new DatabaseSync(filePath));
+  }
+
+  static openOrImport(artifactDir: string): RunStore {
+    const dbPath = path.join(artifactDir, 'run.db');
+    if (fs.existsSync(dbPath)) return RunStore.open(dbPath);
+    const store = RunStore.open(dbPath);
+    try {
+      store.initializeRun('running');
+      store.importLegacyArtifacts(artifactDir);
+      return store;
+    } catch (error) {
+      store.close();
+      try { fs.rmSync(dbPath, { force: true }); } catch { /* preserve the original import error */ }
+      throw error;
+    }
   }
 
   close(): void {
@@ -295,6 +355,46 @@ export class RunStore {
       this.statement("UPDATE speed_results SET status='pending' WHERE run_id=? AND status='running'").run(runId);
       this.statement("UPDATE availability_results SET status='pending' WHERE run_id=? AND status='running'").run(runId);
       return { speed, availability };
+    });
+  }
+
+  private importLegacyArtifacts(artifactDir: string): void {
+    const runId = this.currentRunId();
+    const rawLinks = readLegacyLines(path.join(artifactDir, 'vpn_node_raw.txt'));
+    const dedupedLinks = readLegacyLines(path.join(artifactDir, 'vpn_node_deduped.txt'));
+    const speedRows = readLegacyReport(path.join(artifactDir, 'vpn_node_speedtest_report.json'));
+    const availabilityRows = readLegacyReport(path.join(artifactDir, 'vpn_node_availability_report.json'));
+    this.transaction(() => {
+      for (const link of rawLinks) {
+        parseVmessLink(link);
+        this.statement('INSERT INTO raw_observations(run_id, source, link) VALUES (?, ?, ?)').run(runId, 'legacy', link);
+      }
+      const nodeLinks = dedupedLinks.length > 0 ? dedupedLinks : rawLinks;
+      const seen = new Set<string>();
+      for (const link of nodeLinks) {
+        const key = canonicalVmessKey(parseVmessLink(link));
+        if (seen.has(key)) continue;
+        seen.add(key);
+        this.statement('INSERT INTO pipeline_nodes(run_id, canonical_key, link, sequence) VALUES (?, ?, ?, ?)')
+          .run(runId, key, link, seen.size);
+      }
+      for (const row of speedRows) {
+        const link = String(row.link ?? '');
+        const key = canonicalVmessKey(parseVmessLink(link));
+        if (!seen.has(key)) throw new Error('Legacy speed report references an unknown link');
+        this.statement(`INSERT INTO speed_results(run_id, canonical_key, status, reachable, average_download_mb_s, latency_ms, error)
+          VALUES (?, ?, 'speed_passed', ?, ?, ?, ?)`)
+          .run(runId, key, Number(Boolean(row.reachable)), Number(row.average_download_mb_s ?? 0), Number(row.latency_ms ?? 0), redactText(String(row.error ?? '')));
+      }
+      for (const row of availabilityRows) {
+        const link = String(row.link ?? '');
+        const key = canonicalVmessKey(parseVmessLink(link));
+        if (!seen.has(key)) throw new Error('Legacy availability report references an unknown link');
+        const allPassed = Boolean(row.all_passed);
+        this.statement(`INSERT INTO availability_results(run_id, canonical_key, status, all_passed, provider_results, error)
+          VALUES (?, ?, ?, ?, ?, ?)`)
+          .run(runId, key, allPassed ? 'availability_passed' : 'availability_failed', Number(allPassed), JSON.stringify(row.provider_results ?? {}), redactText(String(row.error ?? '')));
+      }
     });
   }
 

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -1318,6 +1319,7 @@ test('retryNodePipelineStage retries render from an existing artifact into a fre
   });
 
   assert.equal(retry.run_status, 'success');
+  assert.equal(existsSync(path.join(retry.artifact_dir, 'run.db')), true);
   assert.notEqual(retry.artifact_dir, source.artifact_dir);
   assert.deepEqual(retry.retry_context, {
     source_artifact_dir: source.artifact_dir,
@@ -1815,6 +1817,7 @@ test('resumeNodePipeline restores Python-compatible speedtest events when report
 
   assert.equal(resumed.run_status, 'success');
   assert.equal(resumed.counts.speedtest_links, 2);
+  assert.equal(existsSync(path.join(source.artifact_dir, 'run.db')), true);
 });
 
 test('resumeNodePipeline resumes speedtest sessions from partial event logs', async () => {

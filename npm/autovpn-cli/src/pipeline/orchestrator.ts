@@ -877,6 +877,8 @@ export async function retryNodePipelineStage(options: NodeRetryStageOptions, con
   const env = mergeProjectEnv(projectRoot, { ...process.env, ...(context.env ?? {}) });
   const runtimeStageEnv = defaultRuntimeStageEnv(env);
   const profile = await readProfile(projectRoot, env);
+  const sourceStore = RunStore.openOrImport(sourceArtifactDir);
+  sourceStore.close();
   const retryArtifactDir = await uniqueArtifactDir(resolveArtifactsRoot(projectRoot, env), formatTimestamp((context.now ?? (() => new Date()))()));
   const retryContext = {
     source_artifact_dir: sourceArtifactDir,
@@ -890,6 +892,8 @@ export async function retryNodePipelineStage(options: NodeRetryStageOptions, con
     retryContext,
     String(profile.worker_build?.bundle_subdir ?? 'pages_bundle')
   );
+  const retryStore = RunStore.openOrImport(retryArtifactDir);
+  retryStore.close();
 
   const emit = (type: string, payload: Record<string, unknown> = {}) => {
     const event = { type, ...payload } as AutoVpnEvent;
