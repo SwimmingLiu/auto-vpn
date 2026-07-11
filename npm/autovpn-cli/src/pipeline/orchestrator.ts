@@ -1423,6 +1423,7 @@ export async function resumeNodePipeline(options: NodeResumeOptions, context: Ru
       await speedPool.submit(link);
     }
     const latestStages = readLatestStageStatuses(path.join(artifactDir, 'run.db'));
+    runStore.reopenSourcesForResume(runStore.incompleteSourceProgress().map((row) => row.source));
     const progressBySource = new Map(runStore.sourceProgress().map((row) => [row.source, row]));
     const extractionIncomplete = runStore.incompleteSourceProgress().length > 0
       || (runStore.sourceProgress().length > 0 && !['success', 'skipped'].includes(latestStages.extract ?? summary.stage_status.extract));
@@ -1464,7 +1465,7 @@ export async function resumeNodePipeline(options: NodeResumeOptions, context: Ru
       throw new Error('No speedtest results available to continue pipeline');
     }
     for (const baseStage of ['doctor', 'extract', 'dedupe', 'speedtest'] as StageName[]) {
-      if (summary.stage_status[baseStage] === 'pending' || summary.stage_status[baseStage] === 'failed') {
+      if (['pending', 'failed', 'stopped'].includes(summary.stage_status[baseStage])) {
         summary.stage_status[baseStage] = 'success';
       }
       runStore.setStageStatus(baseStage, summary.stage_status[baseStage]);

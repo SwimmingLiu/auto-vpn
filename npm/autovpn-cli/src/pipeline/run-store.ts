@@ -292,10 +292,24 @@ export class RunStore {
     const runId = this.currentRunId();
     this.transaction(() => {
       this.statement("UPDATE runs SET status='running', error='' WHERE run_id=? AND status IN ('failed','cancelled','stopped')").run(runId);
-      const failedStages = this.statement(`SELECT stage_name FROM stage_events e WHERE run_id=? AND status='failed'
+      const failedStages = this.statement(`SELECT stage_name FROM stage_events e WHERE run_id=? AND status IN ('failed','stopped')
         AND rowid=(SELECT MAX(rowid) FROM stage_events x WHERE x.run_id=e.run_id AND x.stage_name=e.stage_name)`).all(runId) as Array<{ stage_name: string }>;
       for (const row of failedStages) {
         this.statement("INSERT INTO stage_events(run_id, stage_name, status, error) VALUES (?, ?, 'running', '')").run(runId, row.stage_name);
+      }
+    });
+  }
+
+  reopenSourcesForResume(sourceNames?: string[]): void {
+    const runId = this.currentRunId();
+    this.transaction(() => {
+      if (sourceNames && sourceNames.length === 0) return;
+      if (sourceNames) {
+        const placeholders = sourceNames.map(() => '?').join(',');
+        this.statement(`UPDATE source_progress SET status='pending', error='' WHERE run_id=?
+          AND source IN (${placeholders}) AND status IN ('failed','cancelled','stopped')`).run(runId, ...sourceNames);
+      } else {
+        this.statement("UPDATE source_progress SET status='pending', error='' WHERE run_id=? AND status IN ('failed','cancelled','stopped')").run(runId);
       }
     });
   }

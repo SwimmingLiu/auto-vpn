@@ -2247,10 +2247,12 @@ test('resumeNodePipeline resets interrupted sqlite nodes and schedules only inco
   store.recordSpeedResult({ link: passed, reachable: true, average_download_mb_s: 3, latency_ms: 10, error: '' }, true);
   store.markAvailabilityRunning(passed);
   store.markSpeedRunning(interrupted);
-  store.recordSourceProgress('leiting', { processed: 0, total: 1, status: 'running' });
+  store.recordSourceProgress('leiting', { processed: 0, total: 1, status: 'failed', error: 'interrupted' });
   for (const source of ['heidong', 'mifeng', 'xuanfeng-area', 'xuanfeng-all-area']) {
     store.recordSourceProgress(source, { processed: 1, total: 1, status: 'success' });
   }
+  for (const stage of ['extract', 'dedupe', 'speedtest', 'availability']) store.setStageStatus(stage, 'running');
+  store.stopForResume();
   store.close();
   await writeFile(path.join(artifactDir, 'vpn_node_raw.txt'), `${passed}\n`);
   await writeFile(path.join(artifactDir, 'vpn_node_deduped.txt'), `${passed}\n`);
@@ -2258,7 +2260,10 @@ test('resumeNodePipeline resets interrupted sqlite nodes and schedules only inco
   await writeFile(path.join(artifactDir, 'vpn_node_speedtest_report.json'), JSON.stringify([
     { link: passed, reachable: true, average_download_mb_s: 3, latency_ms: 10, error: '' }
   ]));
-  await writeFile(path.join(artifactDir, 'pipeline_report.json'), JSON.stringify({ run_status: 'running', stage_status: {} }));
+  await writeFile(path.join(artifactDir, 'pipeline_report.json'), JSON.stringify({
+    run_status: 'stopped',
+    stage_status: { extract: 'stopped', dedupe: 'stopped', speedtest: 'stopped', availability: 'stopped' }
+  }));
   await writeFile(path.join(sessionDir, 'session.json'), JSON.stringify({ artifact_dir: artifactDir }));
 
   const speedCalls = [];
@@ -2303,12 +2308,26 @@ test('resumeNodePipeline resets interrupted sqlite nodes and schedules only inco
     { link: extractedAfterResume, status: 'availability_passed' }
   ]);
   resumedStore.close();
+  const sourceStore = RunStore.open(path.join(artifactDir, 'run.db'));
+  assert.deepEqual(sourceStore.incompleteSourceProgress(), []);
+  sourceStore.close();
   const dbStages = readLatestStageStatuses(path.join(artifactDir, 'run.db'));
+  assert.equal(Object.values(dbStages).includes('stopped'), false);
   assert.equal(dbStages.speedtest, resumed.stage_status.speedtest);
   assert.equal(dbStages.availability, resumed.stage_status.availability);
   assert.equal(new Set((await readFile(path.join(artifactDir, 'vpn_node_availability.txt'), 'utf8')).trim().split(/\n/)).size, 3);
   assert.deepEqual(new Set((await readFile(path.join(artifactDir, 'vpn_node_raw.txt'), 'utf8')).trim().split(/\n/)), new Set([passed, interrupted, extractedAfterResume]));
   assert.deepEqual((await readFile(path.join(artifactDir, 'vpn_node_deduped.txt'), 'utf8')).trim().split(/\n/), [passed, interrupted, extractedAfterResume]);
+
+  let repeatedExtract = false;
+  await resumeNodePipeline({ projectRoot, mode: 'pipeline', session: sessionDir, skipDeploy: true }, {
+    stages: {
+      extract: async () => { repeatedExtract = true; throw new Error('completed source must not rerun'); },
+      countryLookup: () => 'US',
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { main_module: '_worker.js', modules: [] } })
+    }
+  });
+  assert.equal(repeatedExtract, false);
 });
 
 test('resumeNodePipeline speedtest mode restores terminal sqlite results without repeating them', async () => {

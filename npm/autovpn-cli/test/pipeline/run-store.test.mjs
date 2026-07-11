@@ -151,6 +151,26 @@ test('stopForResume atomically stops run and active stages while resetting inter
     assert.equal(readLatestStageStatuses(ctx.dbPath).extract, 'stopped');
     assert.equal(ctx.store.speedResults()[0].status, 'pending');
     assert.equal(ctx.store.availabilityResults()[0].status, 'pending');
+
+    ctx.store.reopenForResume();
+    assert.equal(readRunStatus(ctx.dbPath), 'running');
+    assert.equal(readLatestStageStatuses(ctx.dbPath).extract, 'running');
+  } finally {
+    await ctx.cleanup();
+  }
+});
+
+test('reopenSourcesForResume makes failed source progress writable and preserves counters', async () => {
+  const ctx = await fixture();
+  try {
+    ctx.store.initializeRun();
+    ctx.store.recordSourceProgress('failed-source', { processed: 2, total: 4, status: 'failed', error: 'token=SECRET' });
+
+    ctx.store.reopenSourcesForResume(['failed-source']);
+    ctx.store.recordSourceProgress('failed-source', { processed: 4, total: 4, status: 'success' });
+
+    assert.deepEqual(ctx.store.incompleteSourceProgress(), []);
+    assert.deepEqual(ctx.store.sourceProgress(), [{ source: 'failed-source', processed: 4, total: 4, status: 'success', error: '' }]);
   } finally {
     await ctx.cleanup();
   }
