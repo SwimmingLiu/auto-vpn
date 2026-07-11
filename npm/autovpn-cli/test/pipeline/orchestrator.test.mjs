@@ -145,6 +145,46 @@ test('runNodePipeline closes RunStore exactly once when event handling throws', 
   }
 });
 
+test('runNodePipeline closes RunStore when initializeRun throws', async () => {
+  const projectRoot = await makeProject();
+  const originalInitialize = RunStore.prototype.initializeRun;
+  const originalClose = RunStore.prototype.close;
+  let closeCalls = 0;
+  RunStore.prototype.initializeRun = function initializeRun() { throw new Error('initialize failed'); };
+  RunStore.prototype.close = function close() { closeCalls += 1; return originalClose.call(this); };
+  try {
+    await assert.rejects(() => runNodePipeline({ projectRoot }), /initialize failed/);
+    assert.equal(closeCalls, 1);
+  } finally {
+    RunStore.prototype.initializeRun = originalInitialize;
+    RunStore.prototype.close = originalClose;
+  }
+});
+
+test('runNodePipeline exports batch adapter results in discovery order', async () => {
+  const projectRoot = await makeProject();
+  const links = [vmessLink('first', 'one.example'), vmessLink('second', 'two.example')];
+  const result = await runNodePipeline({ projectRoot, skipDeploy: true, skipVerify: true }, {
+    env: {
+      VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'),
+      VPN_AUTOMATION_PROFILE_PATH: path.join(projectRoot, 'state', 'profile.toml')
+    },
+    stages: {
+      extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links }),
+      speedtest: async (input) => [...input].reverse().map((link) => ({ link, reachable: true, average_download_mb_s: 3, latency_ms: 20, error: '' })),
+      availability: async (results) => [...results].reverse().map((entry) => ({ ...entry, all_passed: true, provider_results: {} })),
+      countryLookup: () => 'US',
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
+    }
+  });
+  const speedReport = JSON.parse(await readFile(path.join(result.artifact_dir, 'vpn_node_speedtest_report.json'), 'utf8'));
+  const availabilityReport = JSON.parse(await readFile(path.join(result.artifact_dir, 'vpn_node_availability_report.json'), 'utf8'));
+  assert.deepEqual(speedReport.map((entry) => entry.link), links);
+  assert.deepEqual(availabilityReport.map((entry) => entry.link), links);
+  assert.deepEqual((await readFile(path.join(result.artifact_dir, 'vpn_node_speedtest.txt'), 'utf8')).trim().split(/\n/), links);
+  assert.deepEqual((await readFile(path.join(result.artifact_dir, 'vpn_node_availability.txt'), 'utf8')).trim().split(/\n/), links);
+});
+
 test('runNodePipeline fails availability before postprocess when speed-qualified links are unavailable', async () => {
   const projectRoot = await makeProject();
   const events = [];

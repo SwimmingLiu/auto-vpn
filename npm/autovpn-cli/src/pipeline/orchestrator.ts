@@ -473,7 +473,8 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
   const runtimeStageEnv = defaultRuntimeStageEnv(env);
   const artifactDir = await uniqueArtifactDir(resolveArtifactsRoot(projectRoot, env), formatTimestamp((context.now ?? (() => new Date()))()));
   const runStore = RunStore.open(path.join(artifactDir, 'run.db'));
-  runStore.initializeRun('running');
+  try {
+    runStore.initializeRun('running');
   const summary: PipelineSummary = {
     artifact_dir: artifactDir,
     stage_status: stageStatus(),
@@ -505,8 +506,7 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
     await writeReport();
   };
 
-  try {
-    emit('run_started', {
+  emit('run_started', {
     artifact_dir: artifactDir,
     skip_deploy: Boolean(options.skipDeploy),
     skip_verify: Boolean(options.skipVerify || options.skipDeploy),
@@ -680,6 +680,8 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
         runStore.recordProbe({ link: result.link, reachable: result.reachable, latency_ms: result.latency_ms, error: result.error ?? '' });
         runStore.recordSpeedResult(result, passedSpeedLinks.includes(result.link));
       }
+      speedResults = runStore.speedResults().map(({ status: _status, ...result }) => result);
+      passedSpeedLinks = runStore.speedResults().filter((result) => result.status === 'speed_passed').map((result) => result.link);
     }
     summary.counts.speedtest_links = runStore.speedResults().filter((result) => result.status === 'speed_passed').length;
     await writeLines(artifactDir, 'vpn_node_speedtest.txt', passedSpeedLinks);
@@ -711,6 +713,11 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
       });
     if (!useStreamingStages) {
       for (const result of availabilityResults) runStore.recordAvailabilityResult(result);
+      const storedSpeedByLink = new Map(speedResults.map((result) => [result.link, result]));
+      availabilityResults = runStore.availabilityResults().map(({ status: _status, error: _error, ...result }) => ({
+        ...(storedSpeedByLink.get(result.link) as SpeedTestResult),
+        ...result
+      } as AvailabilityResultDict));
     }
     const availabilityByLinkForOrder = new Map(availabilityResults.map((result) => [result.link, result]));
     availableLinks = passedSpeedLinks.filter((link) => availabilityByLinkForOrder.get(link)?.all_passed);
