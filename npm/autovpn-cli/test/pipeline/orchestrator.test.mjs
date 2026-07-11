@@ -1158,6 +1158,7 @@ test('AUTOVPN_NO_PYTHON offline run succeeds when no sources have URL and key co
     ''
   ].join('\n'), 'utf8');
 
+  const events = [];
   const result = await runNodePipeline({
     projectRoot,
     skipDeploy: true,
@@ -1169,7 +1170,8 @@ test('AUTOVPN_NO_PYTHON offline run succeeds when no sources have URL and key co
       VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'),
       VPN_AUTOMATION_PROFILE_PATH: profilePath
     },
-    now: () => new Date('2026-06-29T01:02:03Z')
+    now: () => new Date('2026-06-29T01:02:03Z'),
+    emit: (event) => events.push(event)
   });
 
   assert.equal(result.run_status, 'success');
@@ -1177,7 +1179,18 @@ test('AUTOVPN_NO_PYTHON offline run succeeds when no sources have URL and key co
   assert.equal(result.counts.availability_links, 0);
   assert.equal(result.stage_status.speedtest, 'skipped');
   assert.equal(result.stage_status.availability, 'skipped');
+  assert.equal(result.stage_status.dedupe, 'skipped');
+  assert.equal(events.some((event) => event.type === 'stage' && ['dedupe', 'speedtest', 'availability'].includes(event.stage) && event.status === 'running'), false);
   assert.equal(await readFile(path.join(result.artifact_dir, 'vpn_node_raw.txt'), 'utf8'), '');
+
+  const batchEvents = [];
+  const batch = await runNodePipeline({ projectRoot, skipDeploy: true, skipVerify: true }, {
+    env: { AUTOVPN_NO_PYTHON: '1', VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'), VPN_AUTOMATION_PROFILE_PATH: profilePath },
+    stages: { speedtest: async () => [], availability: async () => { throw new Error('empty batch availability must not run'); } },
+    emit: (event) => batchEvents.push(event)
+  });
+  assert.deepEqual({ dedupe: batch.stage_status.dedupe, speedtest: batch.stage_status.speedtest, availability: batch.stage_status.availability }, { dedupe: 'skipped', speedtest: 'skipped', availability: 'skipped' });
+  assert.equal(batchEvents.some((event) => event.type === 'stage' && ['dedupe', 'speedtest', 'availability'].includes(event.stage) && event.status === 'running'), false);
 });
 
 test('runNodePipeline marks the active stage failed and writes a summary on errors', async () => {

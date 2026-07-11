@@ -533,8 +533,10 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
     let availableLinks: string[] = [];
     let speedCompleted = 0;
     let availabilityCompletedStreaming = 0;
+    let dedupeStageStart: Promise<void> | undefined;
     let speedStageStart: Promise<void> | undefined;
     let availabilityStageStart: Promise<void> | undefined;
+    const ensureDedupeStageStarted = () => dedupeStageStart ??= setStage('dedupe', 'running', false);
     const ensureSpeedStageStarted = () => speedStageStart ??= setStage('speedtest', 'running', false);
     const ensureAvailabilityStageStarted = () => availabilityStageStart ??= setStage('availability', 'running', false);
     const availabilityPool = activeAvailabilityPool = new BoundedWorkerPool<SpeedTestResult>({
@@ -609,6 +611,7 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
 
     const onExtractedLinks = async (sourceName: string, links: string[]): Promise<void> => {
       for (const link of links) {
+        await ensureDedupeStageStarted();
         const recorded = runStore.recordExtractedNode(sourceName, link);
         if (recorded.inserted) {
           await ensureSpeedStageStarted();
@@ -619,7 +622,6 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
 
     await setStage('extract', 'running');
     if (useStreamingStages) {
-      await setStage('dedupe', 'running', false);
       const requestedRuntime = String(runtimeStageEnv.AUTOVPN_SPEEDTEST_RUNTIME ?? '').trim().toLowerCase();
       emit('speedtest_runtime', { runtime_core: requestedRuntime === 'direct' ? 'direct' : 'mihomo', probe_url: speedConfig.probe_url, urls: [...speedConfig.urls] });
       emit('log', { message: `[speedtest] runtime_core=${requestedRuntime === 'direct' ? 'direct' : 'mihomo'} probe_url=${speedConfig.probe_url}` });
@@ -660,26 +662,30 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
     if (!useStreamingStages) {
       rawLinks = extractResults.flatMap((result) => result.links);
       for (const result of extractResults) {
-        for (const link of result.links) runStore.recordExtractedNode(result.source_name, link);
+        for (const link of result.links) {
+          await ensureDedupeStageStarted();
+          runStore.recordExtractedNode(result.source_name, link);
+        }
       }
     } else {
       rawLinks = runStore.rawLinks();
       dedupedLinks = runStore.dedupedLinks();
     }
     if (sourcesToRun.length > 0 && rawLinks.length === 0 && extractResults.some((result) => result.requested_iterations > 0 || result.failed_iterations > 0)) {
+      await setStage('dedupe', 'skipped', false);
+      await setStage('speedtest', 'skipped', false);
+      await setStage('availability', 'skipped', false);
       throw new Error('No links extracted from configured sources');
     }
     summary.counts.raw_links = runStore.counts().raw;
     await writeLines(artifactDir, 'vpn_node_raw.txt', rawLinks);
     await setStage('extract', 'success');
 
-    if (summary.stage_status.dedupe !== 'running') {
-      await setStage('dedupe', 'running');
-    }
+    if (!dedupeStageStart) await setStage('dedupe', 'skipped', false);
     dedupedLinks = runStore.dedupedLinks();
     summary.counts.deduped_links = runStore.counts().deduped;
     await writeLines(artifactDir, 'vpn_node_deduped.txt', dedupedLinks);
-    await setStage('dedupe', 'success', !useStreamingStages);
+    if (summary.stage_status.dedupe !== 'skipped') await setStage('dedupe', 'success', !useStreamingStages);
 
     if (useStreamingStages) {
       if (!speedStageStart) await setStage('speedtest', 'skipped', false);
@@ -698,9 +704,9 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
     }
 
     if (!useStreamingStages && summary.stage_status.speedtest !== 'running') {
-      await setStage('speedtest', 'running');
+      await setStage('speedtest', dedupedLinks.length > 0 ? 'running' : 'skipped');
     }
-    if (!useStreamingStages) {
+    if (!useStreamingStages && dedupedLinks.length > 0) {
       speedResults = context.stages?.speedtest
         ? await context.stages.speedtest(dedupedLinks, profile.speed_test ?? {}, runtimePath)
         : await speedtestLinksWithBackend({ links: dedupedLinks, config: profile.speed_test as any, runtime_path: runtimePath }, {
@@ -728,11 +734,11 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
     if (summary.stage_status.speedtest !== 'skipped') await setStage('speedtest', 'success');
 
     if (!useStreamingStages && summary.stage_status.availability !== 'running') {
-      await setStage('availability', 'running');
+      await setStage('availability', passedSpeedLinks.length > 0 ? 'running' : 'skipped');
     }
     const speedResultByLink = new Map(speedResults.map((result) => [result.link, result]));
     const candidateSpeedResults = passedSpeedLinks.map((link) => speedResultByLink.get(link)).filter((result): result is SpeedTestResult => Boolean(result));
-    availabilityResults = useStreamingStages
+    availabilityResults = useStreamingStages || passedSpeedLinks.length === 0
       ? availabilityResults
       : context.stages?.availability
       ? await context.stages.availability(candidateSpeedResults, profile.speed_test ?? {}, runtimePath, profile.availability_targets)
