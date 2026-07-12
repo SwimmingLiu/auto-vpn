@@ -2425,9 +2425,8 @@ body[data-page="logs"] #logCenterTable {
   }
 
   .mobile-run-bar {
-    position: sticky;
-    top: calc(100dvh - 158px - env(safe-area-inset-bottom));
-    margin-top: calc(100dvh - 220px);
+    position: fixed;
+    inset: auto max(12px, env(safe-area-inset-right)) calc(76px + env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
     z-index: var(--z-sticky);
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 10px;

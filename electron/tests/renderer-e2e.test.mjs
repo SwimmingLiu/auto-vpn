@@ -917,8 +917,25 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     );
     assert.equal(await page.locator('[data-mobile-run-bar] select, [data-mobile-run-bar] [data-run-option]').count(), 0);
     assert.equal(await page.locator('details.run-secondary-controls').getAttribute('open'), null);
-    assert.equal(await page.locator('[data-mobile-run-bar]').evaluate((element) => getComputedStyle(element).position), 'sticky');
+    assert.match(await page.locator('[data-mobile-run-bar]').evaluate((element) => getComputedStyle(element).position), /^(sticky|fixed)$/);
     assert.notEqual(await page.locator('.run-control-panel').evaluate((element) => getComputedStyle(element).position), 'sticky');
+
+    const initialRunGeometry = await page.evaluate(() => {
+      const bar = document.querySelector('[data-mobile-run-bar]').getBoundingClientRect();
+      const nav = document.querySelector('.sidebar').getBoundingClientRect();
+      const summary = document.querySelector('details.run-secondary-controls > summary').getBoundingClientRect();
+      const stages = document.querySelector('#runsStageProgress').getBoundingClientRect();
+      return {
+        barBottom: bar.bottom,
+        navTop: nav.top,
+        firstContentTop: Math.min(summary.top, stages.top),
+        gapAfterBar: Math.min(summary.top, stages.top) - bar.bottom
+      };
+    });
+    assert.ok(initialRunGeometry.barBottom <= initialRunGeometry.navTop + 1, JSON.stringify(initialRunGeometry));
+    assert.ok(initialRunGeometry.navTop - initialRunGeometry.barBottom <= 32, JSON.stringify(initialRunGeometry));
+    assert.ok(initialRunGeometry.firstContentTop < initialRunGeometry.navTop, JSON.stringify(initialRunGeometry));
+    assert.ok(initialRunGeometry.gapAfterBar <= 32, JSON.stringify(initialRunGeometry));
 
     const details = page.locator('details.run-secondary-controls');
     await details.evaluate((element) => { element.open = true; });
