@@ -1659,9 +1659,10 @@ function resolveDefaultRetryStage(artifact) {
 
 function appendLog(message, overrides = {}) {
   const logCenter = document.querySelector('#logCenterTable');
-  const wasNearBottom = !logCenter || logCenter.scrollHeight - logCenter.scrollTop - logCenter.clientHeight <= 32;
-  state.logView.follow = wasNearBottom;
-  if (!wasNearBottom) {
+  if (logCenter) {
+    state.logView.follow = logCenter.scrollHeight - logCenter.scrollTop - logCenter.clientHeight <= 32;
+  }
+  if (!state.logView.follow) {
     state.logView.unseenCount += 1;
   }
   state.logEntries.push(classifyLogEntry(message, overrides));
@@ -1683,8 +1684,12 @@ function renderActiveRuntimeSections(viewModel) {
   const logCenter = document.querySelector('#logCenterTable');
   if (logCenter) {
     const previousScrollTop = logCenter.scrollTop;
+    const streamTop = logCenter.getBoundingClientRect().top;
+    const anchor = [...logCenter.querySelectorAll('.log-line')]
+      .find((line) => line.getBoundingClientRect().bottom >= streamTop);
+    const anchorText = anchor?.textContent;
+    const anchorViewportTop = anchor?.getBoundingClientRect().top;
     logCenter.innerHTML = buildLogCenterMarkup(viewModel);
-    logCenter.scrollTop = state.logView.follow ? logCenter.scrollHeight : previousScrollTop;
     const workspace = logCenter.closest('#logsWorkspace');
     workspace?.querySelectorAll('[data-log-jump-latest], [data-log-undo-clear]').forEach((node) => node.remove());
     if (!state.logView.follow && state.logView.unseenCount > 0) {
@@ -1692,6 +1697,15 @@ function renderActiveRuntimeSections(viewModel) {
     }
     if (state.logView.clearedSnapshot) {
       logCenter.insertAdjacentHTML('beforebegin', '<button class="btn btn-secondary small log-undo-clear" data-log-undo-clear type="button">撤销清空</button>');
+    }
+    if (state.logView.follow) {
+      logCenter.scrollTop = logCenter.scrollHeight;
+    } else if (anchorText) {
+      const restoredAnchor = [...logCenter.querySelectorAll('.log-line')]
+        .find((line) => line.textContent === anchorText);
+      logCenter.scrollTop += (restoredAnchor?.getBoundingClientRect().top ?? anchorViewportTop) - anchorViewportTop;
+    } else {
+      logCenter.scrollTop = previousScrollTop;
     }
   }
 
@@ -1715,7 +1729,10 @@ function handleLogScroll(event) {
   if (event.target?.id !== 'logCenterTable') return;
   const distance = event.target.scrollHeight - event.target.scrollTop - event.target.clientHeight;
   state.logView.follow = distance <= 32;
-  if (state.logView.follow) state.logView.unseenCount = 0;
+  if (state.logView.follow) {
+    state.logView.unseenCount = 0;
+    event.target.closest('#logsWorkspace')?.querySelectorAll('[data-log-jump-latest]').forEach((node) => node.remove());
+  }
 }
 
 function scrollLogToLatest() {

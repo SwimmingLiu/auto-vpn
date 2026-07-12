@@ -28,3 +28,11 @@
 
 - The log renderer intentionally keeps the existing 28-row display cap; following and anchor preservation operate on the rendered stream.
 - Undo is exposed in both the log workspace and the transient toast while a snapshot exists.
+
+## Review follow-up
+
+- RED: extended the browser regression with a uniquely identifiable anchor line. Appending multiple rows while scrolled up moved it by about 55px; the same flow also exposed stale jump controls and hidden-page follow-state loss.
+- Fix: non-follow mode now expands the rendered window and restores the first visible line to its previous viewport coordinate. Follow mode retains the 28-row cap.
+- Fix: manually reaching the bottom clears unseen state and removes the jump control immediately.
+- Fix: appends while the log page is unmounted preserve the existing follow intent and continue accumulating unseen rows when appropriate.
+- Verification: the three focused suites pass with 45 tests and 0 failures; `git diff --check` is clean.

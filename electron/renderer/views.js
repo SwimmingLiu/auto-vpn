@@ -118,6 +118,8 @@ export function buildViewModel(state, messages, language) {
   const currentSubscription = subscriptionCards.find((card) => card.title === state.subscriptionFormat) ?? subscriptionCards[0];
   const displayLogs = (state.logEntries ?? []).map((entry) => classifyLogEntry(entry));
   const logFilter = state.logFilter ?? '全部';
+  const filteredLogs = filterLogEntries(displayLogs, logFilter);
+  const trimLogWindow = state.logView?.follow !== false;
   const stageRows = normalizeStageRows(state.stageStatus, state.runState);
   const currentStage = stageRows.find((row) => row.status === 'running') ?? stageRows.find((row) => row.status === 'success') ?? stageRows[0];
   const artifactDir = state.artifactDir ?? '';
@@ -144,8 +146,8 @@ export function buildViewModel(state, messages, language) {
     displayLogs,
     logFilter,
     logView: state.logView ?? { follow: true, unseenCount: 0, clearedSnapshot: null },
-    logRows: buildLogRows(filterLogEntries(displayLogs, logFilter)),
-    logGroups: groupLogEntriesByStage(filterLogEntries(displayLogs, logFilter)),
+    logRows: buildLogRows(filteredLogs, trimLogWindow),
+    logGroups: groupLogEntriesByStage(filteredLogs, trimLogWindow),
     stageRows,
     currentStage,
     artifactDir,
@@ -1080,8 +1082,8 @@ function coerceAreaValue(value, fallback) {
   return Math.trunc(parsed);
 }
 
-function buildLogRows(displayLogs) {
-  return displayLogs.slice(-28).map((entry) => ({
+function buildLogRows(displayLogs, trimWindow = true) {
+  return (trimWindow ? displayLogs.slice(-28) : displayLogs).map((entry) => ({
     ...entry,
     levelClass: entry.level === 'error' ? 'danger' : entry.level === 'warning' ? 'warning' : 'success'
   }));
@@ -1135,9 +1137,9 @@ export function filterLogEntries(entries, filter = '全部') {
   return entries;
 }
 
-export function groupLogEntriesByStage(entries) {
+export function groupLogEntriesByStage(entries, trimWindow = true) {
   const groups = new Map();
-  for (const row of buildLogRows(entries)) {
+  for (const row of buildLogRows(entries, trimWindow)) {
     const label = row.stage || '其他';
     if (!groups.has(label)) {
       groups.set(label, { label, rows: [] });
