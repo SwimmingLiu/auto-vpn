@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { load as parseYaml } from 'js-yaml';
 
 const projectRoot = process.cwd();
 
@@ -56,7 +57,15 @@ function assertWorkflowTestGates(workflow, packageJson, allFiles) {
   const commandFor = (files) => `node --test --test-concurrency=1 ${files.map((file) => `electron/tests/${file}`).join(' ')}`;
   assert.equal(normalizeCommand(scripts['test:h5']), commandFor(h5FilesExpected), 'H5 script must match the exact approved command');
   assert.equal(normalizeCommand(scripts['test:electron-native']), commandFor(nativeFilesExpected), 'native script must match the exact approved command');
-  assert.doesNotMatch(workflow, /^\s*UPDATE_VISUAL_BASELINES\s*:/m, 'CI must never update reviewed visual baselines');
+  const parsedWorkflow = parseYaml(workflow);
+  const rejectVisualBaselineUpdateEnv = (node) => {
+    if (!node || typeof node !== 'object') return;
+    if (!Array.isArray(node) && node.env && typeof node.env === 'object') {
+      assert.equal(Object.hasOwn(node.env, 'UPDATE_VISUAL_BASELINES'), false, 'CI must never update reviewed visual baselines');
+    }
+    for (const value of Array.isArray(node) ? node : Object.values(node)) rejectVisualBaselineUpdateEnv(value);
+  };
+  rejectVisualBaselineUpdateEnv(parsedWorkflow);
 
   const h5Files = testFilesFromScript(scripts['test:h5']);
   const nativeFiles = testFilesFromScript(scripts['test:electron-native']);
@@ -474,6 +483,13 @@ test('gate contract rejects package-script and workflow shell bypasses', () => {
     ['step env', workflow.replace('      - name: Run H5 mobile Chromium and WebKit gate\n', '      - name: Run H5 mobile Chromium and WebKit gate\n        env:\n          UPDATE_VISUAL_BASELINES: "1"\n')]
   ]) {
     assert.throws(() => assertWorkflowTestGates(mutated, packageJson, allFiles), undefined, `should reject ${scope}`);
+  }
+
+  for (const [syntax, mutated] of [
+    ['inline env map', workflow.replace('      - name: Run H5 mobile Chromium and WebKit gate\n', '      - name: Run H5 mobile Chromium and WebKit gate\n        env: { UPDATE_VISUAL_BASELINES: "1" }\n')],
+    ['quoted env key', workflow.replace('      - name: Run H5 mobile Chromium and WebKit gate\n', '      - name: Run H5 mobile Chromium and WebKit gate\n        env:\n          "UPDATE_VISUAL_BASELINES": "1"\n')]
+  ]) {
+    assert.throws(() => assertWorkflowTestGates(mutated, packageJson, allFiles), undefined, `should reject ${syntax}`);
   }
 });
 
