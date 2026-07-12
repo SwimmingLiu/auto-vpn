@@ -14,8 +14,12 @@
     "build:autovpn-cli": "npm run build --prefix npm/autovpn-cli",
     "preelectron:dev": "npm run build:autovpn-cli",
     "electron:dev": "electron .",
+    "pretest:h5": "npm run build:autovpn-cli",
+    "test:h5": "node --test --test-concurrency=1 electron/tests/mobile-layout-contract.test.mjs electron/tests/web-server-e2e.test.mjs electron/tests/web-server-visual.test.mjs",
+    "pretest:electron-native": "npm run build:autovpn-cli",
+    "test:electron-native": "node --test --test-concurrency=1 electron/tests/app-launch.test.mjs electron/tests/artifact-preview.test.mjs electron/tests/backend.test.mjs electron/tests/ci-retry-helper.test.mjs electron/tests/package-build.test.mjs electron/tests/pipeline-child-finalizer.test.mjs electron/tests/process-lifecycle.test.mjs electron/tests/release-docs-workflow.test.mjs electron/tests/release-notes.test.mjs electron/tests/renderer-e2e.test.mjs electron/tests/renderer-visual.test.mjs electron/tests/ui-state.test.mjs electron/tests/window-config.test.mjs",
     "pretest:electron": "npm run build:autovpn-cli",
-    "test:electron": "node --test --test-concurrency=1 electron/tests/*.test.mjs",
+    "test:electron": "npm run test:h5 && npm run test:electron-native",
     "test:all": "npm test --prefix npm/autovpn-cli && npm run test:electron",
     "package:electron": "node electron/build/package.mjs"
   },

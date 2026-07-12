@@ -32,6 +32,18 @@ function extractWorkflowSegment(workflow, startMarker, endMarker) {
   return workflow.slice(start, end);
 }
 
+function extractNamedStep(workflow, name) {
+  const marker = `      - name: ${name}\n`;
+  const start = workflow.indexOf(marker);
+  assert.notEqual(start, -1, `workflow should contain step ${name}`);
+  const end = workflow.indexOf('\n      - name:', start + marker.length);
+  return workflow.slice(start, end === -1 ? workflow.length : end);
+}
+
+function testFilesFromScript(script) {
+  return [...script.matchAll(/electron\/tests\/([\w-]+\.test\.mjs)/g)].map((match) => match[1]);
+}
+
 function runReleaseTagValidation(script, { version, tagName }) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-release-tag-'));
   try {
@@ -187,7 +199,8 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
     'npm run build --prefix npm/autovpn-cli',
     'Install pinned Playwright Chromium and WebKit runtimes',
     'npx playwright install --with-deps chromium-headless-shell webkit',
-    'npm run test:electron',
+    'npm run test:h5',
+    'npm run test:electron-native',
     'Upload renderer visual diffs',
     'electron/tests/visual-artifacts/**',
     'npm run package:electron',
@@ -282,7 +295,8 @@ test('active CI and release workflows are Node-only and publish only npm and Ele
   }
 
   assert.match(headless, /node -e .*JSON\.parse/);
-  assert.match(headless, /npm run test:electron/);
+  assert.match(headless, /npm run test:h5/);
+  assert.match(headless, /npm run test:electron-native/);
   assert.match(release, /npm pack --json --pack-destination \.\.\/\.\.\/dist/);
   assert.match(release, /dist\/swimmingliu-autovpn-\$\{PKG_VERSION\}\.tgz/);
   assert.doesNotMatch(release, /find dist .*\.tar\.gz/);
@@ -341,18 +355,39 @@ test('release package version matches the next release tag', () => {
 });
 
 test('PR and release gates run the complete mobile Chromium/WebKit and visual matrix', () => {
+  const packageJson = JSON.parse(readProjectFile('package.json'));
+  const h5Files = testFilesFromScript(packageJson.scripts['test:h5']);
+  const nativeFiles = testFilesFromScript(packageJson.scripts['test:electron-native']);
+  const allFiles = fs.readdirSync(path.join(projectRoot, 'electron', 'tests'))
+    .filter((file) => file.endsWith('.test.mjs'))
+    .sort();
+
+  assert.deepEqual(h5Files, [
+    'mobile-layout-contract.test.mjs',
+    'web-server-e2e.test.mjs',
+    'web-server-visual.test.mjs'
+  ]);
+  assert.ok(nativeFiles.includes('app-launch.test.mjs'), 'native gate must include app launch');
+  assert.ok(nativeFiles.includes('renderer-e2e.test.mjs'), 'native gate must include desktop E2E');
+  assert.ok(nativeFiles.includes('renderer-visual.test.mjs'), 'native gate must include desktop visual');
+  assert.deepEqual([...new Set([...h5Files, ...nativeFiles])].sort(), allFiles, 'H5/native scripts must cover every Electron test exactly once');
+  assert.equal(new Set([...h5Files, ...nativeFiles]).size, h5Files.length + nativeFiles.length, 'H5/native scripts must not overlap');
+  assert.equal(packageJson.scripts['test:electron'], 'npm run test:h5 && npm run test:electron-native');
+
   for (const workflowPath of ['headless-cli.yml', 'release-electron.yml']) {
     const workflow = readProjectFile('.github', 'workflows', workflowPath);
+    const h5Step = extractNamedStep(workflow, 'Run H5 mobile Chromium and WebKit gate');
+    const nativeStep = extractNamedStep(workflow, 'Run Electron native and desktop gate');
     assert.match(workflow, /name: Install pinned Playwright Chromium and WebKit runtimes/);
     assert.match(workflow, /npx playwright install --with-deps chromium-headless-shell webkit/);
-    assert.match(workflow, /npm run test:electron/);
+    assert.ok(workflow.indexOf('Run H5 mobile Chromium and WebKit gate') < workflow.indexOf('Run Electron native and desktop gate'));
+    assert.match(h5Step, /run: npm run test:h5/);
+    assert.match(nativeStep, /run: npm run test:electron-native/);
     assert.match(workflow, /name: Upload renderer visual diffs/);
     assert.match(workflow, /if: failure\(\)/);
     assert.match(workflow, /uses: actions\/upload-artifact@v4/);
     assert.match(workflow, /electron\/tests\/visual-artifacts\/\*\*/);
-    assert.doesNotMatch(workflow, /'mobile-layout-contract\.test\.mjs'/);
-    assert.doesNotMatch(workflow, /'web-server-e2e\.test\.mjs'/);
-    assert.doesNotMatch(workflow, /'web-server-visual\.test\.mjs'/);
+    assert.doesNotMatch(`${h5Step}\n${nativeStep}`, /excluded|exclude|--test-name-pattern/i);
   }
 });
 

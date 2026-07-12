@@ -65,8 +65,11 @@ jobs:
       - name: Install pinned Playwright Chromium and WebKit runtimes
         run: npx playwright install --with-deps chromium-headless-shell webkit
 
-      - name: Run complete Electron and renderer matrix
-        run: npm run test:electron
+      - name: Run H5 mobile Chromium and WebKit gate
+        run: npm run test:h5
+
+      - name: Run Electron native and desktop gate
+        run: npm run test:electron-native
 
       - name: Upload renderer visual diffs
         if: failure()

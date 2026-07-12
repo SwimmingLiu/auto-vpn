@@ -34,3 +34,11 @@ The first Electron run reported an incomplete local `node_modules/electron` inst
 ## Documentation
 
 `docs/mobile-ux.md` documents breakpoints, navigation modes, safe-area variables, mobile run bar, sheet/focus semantics, the manual device checklist, baseline-update procedure, GeoIP unknown handling, and authoritative per-source raw/deduplicated count semantics. `DESIGN.md` points to this contract.
+
+## Review follow-up: ordered H5 and native gates
+
+- RED: strengthened the workflow contract to parse named workflow steps and package scripts; the test failed because `test:h5`/`test:electron-native` and ordered H5/native steps did not exist.
+- GREEN: both PR and release workflows now run `Run H5 mobile Chromium and WebKit gate` before `Run Electron native and desktop gate`.
+- `test:h5` explicitly owns `mobile-layout-contract`, `web-server-e2e`, and `web-server-visual`; `test:electron-native` explicitly owns every remaining Electron test, including app launch, desktop E2E, and desktop visual verification.
+- Contract validation compares both script file lists with the directory inventory, proving exactly-once coverage with no overlap, and rejects exclusion/test-name filtering inside either gate regardless of quote style.
+- Fresh verification: workflow 8/8, H5 19/19, native/desktop 136/136 (155/155 equivalent total), CLI 358/358.
