@@ -81,3 +81,11 @@ Follow-up verification:
 - Rejects IPv6 unspecified, loopback, ULA, link-local, multicast, documentation, and mapped non-global IPv4; only global-unicast IPv6 is sent to GeoIP providers.
 - Table-driven regression coverage proves every rejected address causes zero fetches and that representative global IPv4/IPv6 addresses still resolve. A mapped public IPv4 shares the canonical IPv4 cache entry.
 - Final special-use-IP verification: focused Task 9 contracts 108 passed, 0 failed; full CLI 357 passed, 0 failed.
+
+## IPv6 canonical-key review follow-up
+
+- Native IPv6 addresses now use a parsed 128-bit value to produce one RFC 5952-style key: lowercase hexadecimal, leading zero suppression, and first-longest zero-run compression.
+- Equivalent compressed, fully expanded, and uppercase spellings share provider URLs, in-flight work, positive cache entries, negative cache entries, and resolver-result deduplication.
+- IPv4-mapped IPv6 behavior remains canonical dotted IPv4 and therefore shares IPv4 cache/in-flight keys.
+- A deterministic concurrent regression test proves three equivalent native IPv6 spellings issue exactly one provider request and subsequent variants are positive-cache hits.
+- Final IPv6 canonicalization verification: GeoIP 15 passed, Task 9 focused 109 passed, and full CLI 358 passed; all had zero failures.

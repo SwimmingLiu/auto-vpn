@@ -155,6 +155,32 @@ test('deduplicates concurrent provider requests by resolved IP', async () => {
   assert.equal(calls, 1);
 });
 
+test('canonicalizes equivalent native IPv6 spellings for inflight and positive cache keys', async () => {
+  const variants = [
+    '2606:4700:4700::abcd',
+    '2606:4700:4700:0:0:0:0:ABCD',
+    '2606:4700:4700:0000:0000:0000:0000:abcd'
+  ];
+  let release;
+  let calls = 0;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const lookup = createGeoIpLookup({
+    fetch: async (url) => {
+      calls += 1;
+      assert.match(url, /2606%3A4700%3A4700%3A%3Aabcd/);
+      await gate;
+      return response(200, { success: true, country_code: 'DE' });
+    }
+  });
+  const pending = variants.map((address) => lookup(address));
+  await Promise.resolve();
+  release();
+  assert.deepEqual(await Promise.all(pending), ['DE', 'DE', 'DE']);
+  assert.equal(calls, 1);
+  for (const address of variants) assert.equal(await lookup(address), 'DE');
+  assert.equal(calls, 1);
+});
+
 test('returns ZZ for empty addresses and resolver failure', async () => {
   const lookup = createGeoIpLookup({ resolve: async () => { throw new Error('dns'); }, fetch: async () => { throw new Error('unused'); } });
   assert.equal(await lookup(''), 'ZZ');

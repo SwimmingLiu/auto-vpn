@@ -80,6 +80,30 @@ function ipv6Number(address: string): bigint | null {
   return groups.reduce((value, group) => (value << 16n) | BigInt(group), 0n);
 }
 
+function canonicalIpv6(value: bigint): string {
+  const groups = Array.from({ length: 8 }, (_, index) => Number((value >> BigInt((7 - index) * 16)) & 0xffffn));
+  let bestStart = -1;
+  let bestLength = 0;
+  for (let index = 0; index < groups.length;) {
+    if (groups[index] !== 0) {
+      index += 1;
+      continue;
+    }
+    let end = index;
+    while (end < groups.length && groups[end] === 0) end += 1;
+    if (end - index > bestLength) {
+      bestStart = index;
+      bestLength = end - index;
+    }
+    index = end;
+  }
+  const hex = groups.map((group) => group.toString(16));
+  if (bestLength < 2) return hex.join(':');
+  const before = hex.slice(0, bestStart).join(':');
+  const after = hex.slice(bestStart + bestLength).join(':');
+  return `${before}::${after}`;
+}
+
 function normalizeGlobalAddress(address: string): string | null {
   if (isIP(address) === 4) {
     const value = ipv4Number(address);
@@ -96,7 +120,7 @@ function normalizeGlobalAddress(address: string): string | null {
   const ietfProtocolAssignments = value >= 0x20010000000000000000000000000000n && value <= 0x200101ffffffffffffffffffffffffffn;
   const documentation = value >= 0x20010db8000000000000000000000000n && value <= 0x20010db8ffffffffffffffffffffffffn;
   const extendedDocumentation = value >= 0x3fff0000000000000000000000000000n && value <= 0x3fff0fffffffffffffffffffffffffffn;
-  return globalUnicast && !ietfProtocolAssignments && !documentation && !extendedDocumentation ? address : null;
+  return globalUnicast && !ietfProtocolAssignments && !documentation && !extendedDocumentation ? canonicalIpv6(value) : null;
 }
 
 export function createGeoIpLookup(options: GeoIpLookupOptions = {}): (address: string) => Promise<string> {
