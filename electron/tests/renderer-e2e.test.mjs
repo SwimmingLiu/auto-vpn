@@ -506,7 +506,14 @@ test('renderer matches the six-page canvas redesign and supports page navigation
         stopPipeline: async () => ({ ok: true, requested: true }),
         openUrl: async () => ({ ok: true }),
         openPath: async () => ({ ok: true }),
-        generateQr: async (text) => ({ ok: true, dataUrl: `data:image/mock;value=${encodeURIComponent(text)}` }),
+        generateQr: async (text) => {
+          if (window.__controlledQr) {
+            return new Promise((resolve, reject) => {
+              window.__qrRequests = [...(window.__qrRequests ?? []), { text, resolve, reject }];
+            });
+          }
+          return { ok: true, dataUrl: `data:image/mock;value=${encodeURIComponent(text)}` };
+        },
         previewArtifact: async () => ({
           ok: true,
           outputFiles: [],
@@ -660,6 +667,45 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     assert.notEqual(clashMetaCopyTarget, defaultCopyTarget);
     assert.equal(clashMetaCopyTarget, clashMetaSubscription);
     assert.equal(clashMetaOpenTarget, clashMetaSubscription);
+
+    const secretPayload = 'https://private.example/sub?token=TOP-SECRET';
+    await page.evaluate((payload) => {
+      window.vpnAutomation.copyText = async () => ({ ok: false, error: `clipboard failed for ${payload}` });
+    }, secretPayload);
+    await page.getByRole('button', { name: '复制链接' }).click();
+    await page.waitForSelector('[data-toast][data-toast-tone="danger"]');
+    assert.doesNotMatch(await page.locator('[data-toast]').innerText(), /TOP-SECRET|private\.example/);
+    await page.locator('#navLogs').click();
+    assert.doesNotMatch(await page.locator('#logsWorkspace').innerText(), /TOP-SECRET|private\.example/);
+    await page.evaluate(() => {
+      window.vpnAutomation.copyText = async (value) => {
+        window.__copiedTexts = [...(window.__copiedTexts ?? []), value];
+        return { ok: true };
+      };
+    });
+
+    await page.locator('#navSubscriptions').click();
+    await page.evaluate(() => { window.__controlledQr = true; window.__qrRequests = []; });
+    await page.getByRole('button', { name: 'Sing-box' }).click();
+    await page.getByRole('button', { name: 'Surge' }).click();
+    await page.waitForFunction(() => window.__qrRequests.length === 2);
+    await page.evaluate(() => window.__qrRequests[1].resolve({ dataUrl: 'data:image/mock;base64,newest' }));
+    await page.waitForFunction(() => document.querySelector('.qr-image')?.src.includes('newest'));
+    await page.evaluate(() => window.__qrRequests[0].resolve({ dataUrl: 'data:image/mock;base64,stale' }));
+    await page.waitForTimeout(20);
+    assert.match(await page.locator('.qr-image').getAttribute('src'), /newest/);
+
+    await page.evaluate(() => { window.__qrRequests = []; });
+    await page.getByRole('button', { name: 'Clash', exact: true }).click();
+    await page.getByRole('button', { name: 'Clash Meta' }).click();
+    await page.waitForFunction(() => window.__qrRequests.length === 2);
+    await page.evaluate(() => window.__qrRequests[1].resolve({ dataUrl: 'data:image/mock;base64,newest-after-error' }));
+    await page.waitForFunction(() => document.querySelector('.qr-image')?.src.includes('newest-after-error'));
+    await page.evaluate(() => window.__qrRequests[0].reject(new Error('stale QR failure')));
+    await page.waitForTimeout(20);
+    assert.match(await page.locator('.qr-image').getAttribute('src'), /newest-after-error/);
+    assert.equal(await page.locator('[data-action="retry-qr"]').count(), 0);
+    await page.evaluate(() => { window.__controlledQr = false; });
 
     await page.locator('#navSettings').click();
     await page.waitForSelector('#settingsWorkspace');
@@ -981,6 +1027,10 @@ test('renderer matches the six-page canvas redesign and supports page navigation
 
     await page.locator('#navSubscriptions').click();
     await page.waitForSelector('#subscriptionCards');
+    for (const name of ['复制链接', '打开订阅']) {
+      const box = await page.getByRole('button', { name }).boundingBox();
+      assert.ok(box && box.height >= 48, `${name} must be at least 48px tall, got ${box?.height}`);
+    }
     await page.getByRole('button', { name: 'Clash Meta' }).click();
     assert.equal(await page.getByRole('button', { name: 'Clash Meta' }).getAttribute('aria-pressed'), 'true');
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);

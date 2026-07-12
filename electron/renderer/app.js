@@ -147,6 +147,7 @@ const elements = {
 };
 
 let toastTimer = null;
+let qrRequestId = 0;
 
 async function bootstrap() {
   state.language = 'zh-CN';
@@ -748,14 +749,11 @@ async function copyText(value, options = {}) {
     showToast({ tone: 'success', message: options.successToast ?? messages.copiedToastMessage });
     appendLog(options.successLog ?? '已复制内容');
   } catch (error) {
-    const detail = resolveErrorMessage(error);
     showToast({
       tone: 'danger',
-      message: (options.failureToast ?? formatMessage(messages.copyFailedToastMessage, { error: detail })).replace('{error}', detail)
+      message: options.safeFailureToast ?? '复制失败，请重试'
     });
-    appendLog(
-      (options.failureLog ?? formatMessage(messages.copyFailedLogMessage, { error: detail })).replace('{error}', detail)
-    );
+    appendLog(options.safeFailureLog ?? '复制操作失败');
   } finally {
     if (control?.isConnected) {
       control.disabled = false;
@@ -806,6 +804,7 @@ async function openCurrentLogFile() {
 }
 
 async function refreshQrCode() {
+  const requestId = ++qrRequestId;
   const subscriptionUrl = resolveActiveSubscriptionUrl();
   if (!subscriptionUrl || !window.vpnAutomation?.generateQr) {
     state.qr = createQrState('unavailable', '', '当前环境不支持二维码生成');
@@ -817,10 +816,12 @@ async function refreshQrCode() {
   renderAll();
   try {
     const result = await window.vpnAutomation.generateQr(subscriptionUrl);
+    if (requestId !== qrRequestId || subscriptionUrl !== resolveActiveSubscriptionUrl()) return;
     state.qr = result?.dataUrl
       ? createQrState('success', result.dataUrl)
       : createQrState('unavailable', '', '二维码服务未返回图片');
   } catch (error) {
+    if (requestId !== qrRequestId || subscriptionUrl !== resolveActiveSubscriptionUrl()) return;
     state.qr = createQrState('error', '', resolveErrorMessage(error));
   }
   renderAll();

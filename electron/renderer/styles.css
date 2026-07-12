@@ -2080,6 +2080,10 @@ body[data-page="logs"] #logCenterTable {
 
 @media (max-width: 720px) {
 
+  .subscriptions-primary-panel .action-grid .btn {
+    min-height: 48px;
+  }
+
   .decoded-node-table thead {
     display: none;
   }
