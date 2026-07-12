@@ -42,3 +42,10 @@ The first Electron run reported an incomplete local `node_modules/electron` inst
 - `test:h5` explicitly owns `mobile-layout-contract`, `web-server-e2e`, and `web-server-visual`; `test:electron-native` explicitly owns every remaining Electron test, including app launch, desktop E2E, and desktop visual verification.
 - Contract validation compares both script file lists with the directory inventory, proving exactly-once coverage with no overlap, and rejects exclusion/test-name filtering inside either gate regardless of quote style.
 - Fresh verification: workflow 8/8, H5 19/19, native/desktop 136/136 (155/155 equivalent total), CLI 358/358.
+
+## Review follow-up: fail-closed gate commands
+
+- RED: added mutation fixtures for package-script filters/failure swallowing and workflow command/condition bypasses; the contract failed because the shared validator did not yet exist.
+- GREEN: the validator now inspects both package script bodies and both named workflow steps. It rejects `--test-name-pattern`, exclude/filter/grep selectors, `|| true`, `; true`, extra workflow shell commands, `continue-on-error`, and conditional `if` gates.
+- Workflow gate `run` values must normalize to exactly `npm run test:h5` and `npm run test:electron-native`; mutation fixtures prove each bypass is detected.
+- Fresh verification after this follow-up: workflow contract 9/9, H5 19/19, native/desktop 137/137. The extra native test is the new contract fixture, so complete coverage is now 156/156.
