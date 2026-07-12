@@ -185,16 +185,11 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
     'scripts/ci/retry-command.sh "npm ci --prefix npm/autovpn-cli"',
     'Build npm CLI web server',
     'npm run build --prefix npm/autovpn-cli',
-    'const testFiles = fs.readdirSync(\'electron/tests\')',
-    'const excluded = new Set([',
-    "'app-launch.test.mjs'",
-    "'renderer-e2e.test.mjs'",
-    "'renderer-visual.test.mjs'",
-    "'web-server-e2e.test.mjs'",
-    "'web-server-visual.test.mjs'",
-    "spawnSync(process.execPath, ['--test', '--test-timeout=600000', ...testFiles]",
-    'timeout: 600000',
-    'Electron tests timed out after 600 seconds.',
+    'Install pinned Playwright Chromium and WebKit runtimes',
+    'npx playwright install --with-deps chromium-headless-shell webkit',
+    'npm run test:electron',
+    'Upload renderer visual diffs',
+    'electron/tests/visual-artifacts/**',
     'npm run package:electron',
     'bash -eo pipefail -c',
     'AUTOVPN_PACKAGE_PLATFORM: ${{ matrix.package_platform }}',
@@ -287,7 +282,7 @@ test('active CI and release workflows are Node-only and publish only npm and Ele
   }
 
   assert.match(headless, /node -e .*JSON\.parse/);
-  assert.match(headless, /node --test --test-concurrency=1/);
+  assert.match(headless, /npm run test:electron/);
   assert.match(release, /npm pack --json --pack-destination \.\.\/\.\.\/dist/);
   assert.match(release, /dist\/swimmingliu-autovpn-\$\{PKG_VERSION\}\.tgz/);
   assert.doesNotMatch(release, /find dist .*\.tar\.gz/);
@@ -345,16 +340,19 @@ test('release package version matches the next release tag', () => {
   assert.equal(packageLock.packages[''].version, packageJson.version);
 });
 
-test('release renderer tests avoid forcing full Chromium in CI', () => {
-  const workflow = readProjectFile('.github', 'workflows', 'release-electron.yml');
-  assert.doesNotMatch(workflow, /Install Playwright browsers for tests/);
-  assert.doesNotMatch(workflow, /command = \["npx", "playwright", "install", "chromium-headless-shell"\]/);
-  assert.doesNotMatch(workflow, /command = \["npx", "playwright", "install", "chromium", "--no-shell"\]/);
-
-  for (const testFile of ['renderer-e2e.test.mjs', 'renderer-visual.test.mjs']) {
-    const source = readProjectFile('electron', 'tests', testFile);
-    assert.doesNotMatch(source, /channel: 'chromium'/, `${testFile} should not force full Chromium`);
-    assert.match(source, /chromium\.launch\(\)/, `${testFile} should rely on the installed headless shell`);
+test('PR and release gates run the complete mobile Chromium/WebKit and visual matrix', () => {
+  for (const workflowPath of ['headless-cli.yml', 'release-electron.yml']) {
+    const workflow = readProjectFile('.github', 'workflows', workflowPath);
+    assert.match(workflow, /name: Install pinned Playwright Chromium and WebKit runtimes/);
+    assert.match(workflow, /npx playwright install --with-deps chromium-headless-shell webkit/);
+    assert.match(workflow, /npm run test:electron/);
+    assert.match(workflow, /name: Upload renderer visual diffs/);
+    assert.match(workflow, /if: failure\(\)/);
+    assert.match(workflow, /uses: actions\/upload-artifact@v4/);
+    assert.match(workflow, /electron\/tests\/visual-artifacts\/\*\*/);
+    assert.doesNotMatch(workflow, /'mobile-layout-contract\.test\.mjs'/);
+    assert.doesNotMatch(workflow, /'web-server-e2e\.test\.mjs'/);
+    assert.doesNotMatch(workflow, /'web-server-visual\.test\.mjs'/);
   }
 });
 

@@ -60,9 +60,10 @@ radii:
    - 在涉及后端运行日志输出时，使用了极高对比度的暗色背景 (`#111826`) 和终端等宽字体，保证了技术用户在查看日志时的专业沉浸感和阅读性。
 
 ## 布局与组件模式 (Layout & Component Patterns)
-- **左侧导航 (Sidebar Navigation)**: 左侧为包含应用 Brand 和各个功能模块（概览、运行、结果、订阅、日志、设置）的导航栏，选中状态具有轻微的偏移和柔和的高亮底色。
+- **响应式导航 (Responsive Navigation)**: `<=720px` 使用底部导航，`721px-960px` 使用顶部导航，`>=961px` 使用左侧导航。导航、内容和固定操作区必须遵循安全区变量；完整约束与验证矩阵以 [docs/mobile-ux.md](docs/mobile-ux.md) 为准。
 - **动态控制面板 (Dashboards & Grids)**: 页面中运用了大量的 `Grid` 布局，并配合不同宽度和比例的卡片 (Metric Cards, Panel) 用于展示数据概览。
-- **悬浮抽屉 (Floating Drawer)**: 在设置界面中，次级详细配置通过屏幕中央带背景模糊的 Overlay Drawer 展示，以保持用户的当前上下文。
+- **自适应设置面板 (Adaptive Settings Sheet)**: 桌面端使用居中 Drawer，移动端使用底部 Sheet。两种模式共享焦点管理、取消/保存语义和背景滚动锁定。
+- **移动运行操作区 (Mobile Run Bar)**: 手机端仅将开始/停止固定在底部导航上方；历史重试和运行选项留在正常文档流中，避免遮挡最终内容。
 
 ## 现有页面截图一览 (Screenshots Reference)
 

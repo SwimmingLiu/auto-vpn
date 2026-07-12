@@ -12,11 +12,11 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const EXPECTED_DIGESTS = {
-  dashboard: '7e413e86d733238ca53a2b06577d2edeaf1253a16e8a92a4972db86a4ad41875',
-  runs: 'b0cbec28e45fd44a3a025ec4aef159d350edf87d8a836309c64306ea1478d353',
+  dashboard: '467b324e8d4b9abc77e4148bb9ac891f6df41433c8b796453d9eb27e6587a842',
+  runs: 'c76a4add50065ba121a0cb8175fa7be6370b9e2ccb50c694f2f34fcab6b22ac9',
   results: '68dd49e778e74223c346a0eb2515e2cc2ace8a3051a38df44fd35ddcb6a4b4d6',
   subscriptions: '53a4b19b870124028169ccc0e5d2cea19e4a9771ff45de96c7f46169b1d15449',
-  logs: '5a8fb03f4cb268506cd16f948baf98ebaa5ccbec0a61dab2f69aa07fa4472985',
+  logs: '91aa2f3a9ac32e1f5823f44900f0783eb2a7f1cdf85137ec2699f4067db83061',
   settings: 'f9f143698cede1832e2907f3f793257d4dcdd5cc1434ac12b8df98022ceb482e'
 };
 
