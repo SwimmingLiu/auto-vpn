@@ -27,6 +27,7 @@ import { deployPagesWithBackend, isVerifySuccess, verifyDeploymentWithBackend } 
 import { safeDeployment } from '../runtime/redaction.js';
 import { RunStore, readLatestStageStatuses } from './run-store.js';
 import { AsyncPermitPool, BoundedWorkerPool } from './streaming-coordinator.js';
+import { createGeoIpLookup, GeoIpLookupOptions } from './geoip.js';
 
 type StageName = 'doctor' | 'extract' | 'dedupe' | 'speedtest' | 'availability' | 'postprocess' | 'render' | 'obfuscate' | 'deploy' | 'verify';
 type StageStatus = 'pending' | 'running' | 'success' | 'failed' | 'skipped';
@@ -77,7 +78,7 @@ export interface NodePipelineStageOverrides {
   speedtestProbe?: (links: string[], config: Record<string, unknown>, runtimePath: string) => ProbeResult[] | Promise<ProbeResult[]>;
   speedtestLink?: (link: string, config: Record<string, unknown>, runtimePath: string) => SpeedTestResult | Promise<SpeedTestResult>;
   availability?: (results: SpeedTestResult[], config: Record<string, unknown>, runtimePath: string, targets: unknown) => AvailabilityResultDict[] | Promise<AvailabilityResultDict[]>;
-  countryLookup?: (link: string, speedResult: SpeedTestResult, availabilityResult: AvailabilityResultDict) => string;
+  countryLookup?: (link: string, speedResult: SpeedTestResult, availabilityResult: AvailabilityResultDict) => string | Promise<string>;
   obfuscate?: (input: { transformedSource: string; config: Record<string, unknown>; secretQuery: string }) => WorkerBuildArtifacts | Promise<WorkerBuildArtifacts>;
   deploy?: (input: { projectRoot: string; bundleDir: string; profile: PipelineProfile }) => Record<string, unknown> | Promise<Record<string, unknown>>;
   verify?: (input: { projectRoot: string; profile: PipelineProfile; deployment: Record<string, unknown> }) => Record<string, unknown> | Promise<Record<string, unknown>>;
@@ -88,6 +89,7 @@ export interface RunNodePipelineContext {
   now?: () => Date;
   emit?: (event: AutoVpnEvent) => void;
   stages?: NodePipelineStageOverrides;
+  geoIp?: GeoIpLookupOptions;
 }
 
 interface PipelineProfile {
@@ -260,8 +262,16 @@ function defaultRuntimeStageEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return { ...env };
 }
 
-function defaultCountryFor(_link: string, _speedResult: SpeedTestResult, _availabilityResult: AvailabilityResultDict): string {
-  return 'US';
+function createCountryLookup(context: RunNodePipelineContext): NodePipelineStageOverrides['countryLookup'] {
+  if (context.stages?.countryLookup) return context.stages.countryLookup;
+  const lookup = createGeoIpLookup(context.geoIp);
+  return async (link) => {
+    try {
+      return lookup(String(parseVmessLink(link).add ?? ''));
+    } catch {
+      return 'ZZ';
+    }
+  };
 }
 
 function normalizeRetryStage(stage: string): StageName {
@@ -818,12 +828,12 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
     if (summary.stage_status.availability !== 'skipped') await setStage('availability', 'success', !useStreamingStages);
 
     await setStage('postprocess', 'running');
-    const countryLookup = context.stages?.countryLookup ?? defaultCountryFor;
+    const countryLookup = createCountryLookup(context);
     const availabilityByLink = new Map(availabilityResults.map((result) => [result.link, result]));
-    const rankedLinks = availableLinks.map((link) => ({
+    const rankedLinks = await Promise.all(availableLinks.map(async (link) => ({
       link,
-      country_code: countryLookup(link, speedResultByLink.get(link) as SpeedTestResult, availabilityByLink.get(link) as AvailabilityResultDict)
-    }));
+      country_code: await countryLookup!(link, speedResultByLink.get(link) as SpeedTestResult, availabilityByLink.get(link) as AvailabilityResultDict)
+    })));
     const postprocessed = context.stages?.countryLookup
       ? { links: rankedLinks.map((item) => decorateLinkWithCountry(item.link, item.country_code)) }
       : await postprocessLinksWithBackend({ ranked_links: rankedLinks, filters: profile.filters as any }, { cwd: projectRoot, env });
@@ -1052,11 +1062,11 @@ export async function retryNodePipelineStage(options: NodeRetryStageOptions, con
       }
       await setStage('postprocess', 'running');
       const speedResultByLink = new Map(speedResults.map((result) => [result.link, result]));
-      const countryLookup = context.stages?.countryLookup ?? defaultCountryFor;
-      const rankedLinks = availabilityResults.map((availabilityResult) => ({
+      const countryLookup = createCountryLookup(context);
+      const rankedLinks = await Promise.all(availabilityResults.map(async (availabilityResult) => ({
         link: availabilityResult.link,
-        country_code: countryLookup(availabilityResult.link, speedResultByLink.get(availabilityResult.link) ?? availabilityResult, availabilityResult)
-      }));
+        country_code: await countryLookup!(availabilityResult.link, speedResultByLink.get(availabilityResult.link) ?? availabilityResult, availabilityResult)
+      })));
       const postprocessed = context.stages?.countryLookup
         ? { links: rankedLinks.map((item) => decorateLinkWithCountry(item.link, item.country_code)) }
         : await postprocessLinksWithBackend({ ranked_links: rankedLinks, filters: profile.filters as any }, { cwd: projectRoot, env });
@@ -1548,11 +1558,11 @@ export async function resumeNodePipeline(options: NodeResumeOptions, context: Ru
     await setStage('postprocess', 'running');
     const speedResultByLink = new Map(speedResults.map((result) => [result.link, result]));
     const availabilityByLink = new Map(availabilityResults.map((result) => [result.link, result]));
-    const countryLookup = context.stages?.countryLookup ?? defaultCountryFor;
-    const rankedLinks = availableLinks.map((link) => ({
+    const countryLookup = createCountryLookup(context);
+    const rankedLinks = await Promise.all(availableLinks.map(async (link) => ({
       link,
-      country_code: countryLookup(link, speedResultByLink.get(link) as SpeedTestResult, availabilityByLink.get(link) as AvailabilityResultDict)
-    }));
+      country_code: await countryLookup!(link, speedResultByLink.get(link) as SpeedTestResult, availabilityByLink.get(link) as AvailabilityResultDict)
+    })));
     const postprocessed = context.stages?.countryLookup
       ? { links: rankedLinks.map((item) => decorateLinkWithCountry(item.link, item.country_code)) }
       : await postprocessLinksWithBackend({ ranked_links: rankedLinks, filters: profile.filters as any }, { cwd: projectRoot, env });

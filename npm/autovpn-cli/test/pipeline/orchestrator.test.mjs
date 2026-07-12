@@ -36,6 +36,21 @@ function vmessName(link) {
   return JSON.parse(Buffer.from(link.replace(/^vmess:\/\//, ''), 'base64url').toString('utf8')).ps;
 }
 
+function geoIpOptions(countryCode = 'AU', seenAddresses = []) {
+  return {
+    resolve: async (address) => {
+      seenAddresses.push(address);
+      return [{ address: '203.0.113.40', family: 4 }];
+    },
+    fetch: async () => ({
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+      json: async () => ({ success: true, country_code: countryCode })
+    })
+  };
+}
+
 test('speed resume bulk probe requires exactly one matching result per requested link', () => {
   const first = vmessLink('first', 'one.example');
   const second = vmessLink('second', 'two.example');
@@ -135,6 +150,24 @@ test('runNodePipeline emits compatible events and writes non-deploy artifacts', 
   } finally {
     store.close();
   }
+});
+
+test('runNodePipeline uses production GeoIP lookup for the VMess server address', async () => {
+  const projectRoot = await makeProject();
+  const link = vmessLink('first', 'au-node.example');
+  const seen = [];
+  const result = await runNodePipeline({ projectRoot, skipDeploy: true, skipVerify: true }, {
+    env: { VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'), VPN_AUTOMATION_PROFILE_PATH: path.join(projectRoot, 'state', 'profile.toml') },
+    geoIp: geoIpOptions('AU', seen),
+    stages: {
+      extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [link] }),
+      speedtest: async (links) => links.map((item) => ({ link: item, reachable: true, average_download_mb_s: 3, latency_ms: 20, error: '' })),
+      availability: async (results) => results.map((entry) => ({ ...entry, all_passed: true, provider_results: {} })),
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
+    }
+  });
+  assert.deepEqual(seen, ['au-node.example']);
+  assert.equal(vmessName((await readFile(path.join(result.artifact_dir, 'vpn_node_emoji.txt'), 'utf8')).trim()), '🇦🇺 AU first');
 });
 
 test('runNodePipeline closes RunStore exactly once when event handling throws', async () => {
@@ -1686,21 +1719,19 @@ test('retryNodePipelineStage postprocesses only availability winners', async () 
   }, {
     env,
     now: () => new Date('2026-06-29T01:02:04Z'),
+    geoIp: geoIpOptions('AU', postprocessInputs),
     stages: {
       availability: async (results) => results.map((speedResult, index) => ({ ...speedResult, all_passed: index === 0, provider_results: {} })),
-      countryLookup: (link) => {
-        postprocessInputs.push(link);
-        return 'US';
-      },
       obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } }),
       deploy: async () => ({ returncode: 0, stdout: '', stderr: '', attempts: [] }),
       verify: async () => ({ pages_domain_ok: true, secret_ok: true, subscription_ok: true })
     }
   });
 
-  assert.deepEqual(postprocessInputs, [firstLink]);
+  assert.deepEqual(postprocessInputs, ['one.example']);
   assert.equal(retry.counts.availability_links, 1);
   assert.equal(retry.counts.final_links, 1);
+  assert.equal(vmessName((await readFile(path.join(retry.artifact_dir, 'vpn_node_emoji.txt'), 'utf8')).trim()), '🇦🇺 AU first');
 });
 
 test('retryNodePipelineStage rejects and emits run_failed when retry stage has no winners', async () => {
@@ -1850,12 +1881,12 @@ test('resumeNodePipeline continues pipeline sessions in the original artifact', 
   }, {
     env,
     emit: (event) => events.push(event),
+    geoIp: geoIpOptions('AU'),
     stages: {
       availability: async (results) => {
         assert.deepEqual(results.map((result) => vmessName(result.link)), ['second', 'first']);
         return results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} }));
       },
-      countryLookup: () => 'US',
       obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } }),
       deploy: async ({ bundleDir }) => ({ returncode: 0, stdout: `deployed ${bundleDir}`, stderr: '', attempts: [{ mode: 'direct', returncode: 0 }] }),
       verify: async () => ({ pages_domain_ok: true, secret_ok: true, subscription_ok: true })
@@ -1863,6 +1894,7 @@ test('resumeNodePipeline continues pipeline sessions in the original artifact', 
   });
 
   assert.equal(resumed.artifact_dir, source.artifact_dir);
+  assert.ok((await readFile(path.join(resumed.artifact_dir, 'vpn_node_emoji.txt'), 'utf8')).trim().split(/\n/).every((link) => vmessName(link).includes('AU')));
   assert.equal(resumed.run_status, 'success');
   assert.equal(resumed.stage_status.availability, 'success');
   assert.equal(resumed.stage_status.deploy, 'success');
@@ -1871,7 +1903,7 @@ test('resumeNodePipeline continues pipeline sessions in the original artifact', 
   assert.equal(events[0].speedtest_links, 2);
   assert.equal(events.at(-1).type, 'summary');
   assert.equal(JSON.parse(await readFile(path.join(source.artifact_dir, 'pipeline_report.json'), 'utf8')).run_status, 'success');
-  assert.deepEqual((await readFile(path.join(source.artifact_dir, 'vpn_node_emoji.txt'), 'utf8')).trim().split(/\n/).map(vmessName), ['\u{1F1FA}\u{1F1F8} US first', '\u{1F1FA}\u{1F1F8} US second']);
+  assert.deepEqual((await readFile(path.join(source.artifact_dir, 'vpn_node_emoji.txt'), 'utf8')).trim().split(/\n/).map(vmessName), ['\u{1F1E6}\u{1F1FA} AU first', '\u{1F1E6}\u{1F1FA} AU second']);
   assert.equal((await readFile(eventLog, 'utf8')).trim().split(/\n/).at(-1), JSON.stringify(events.at(-1)));
   assert.match(await readFile(humanLog, 'utf8'), /\[summary\] run_status=success/);
 });
