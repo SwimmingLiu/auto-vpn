@@ -49,3 +49,10 @@ The first Electron run reported an incomplete local `node_modules/electron` inst
 - GREEN: the validator now inspects both package script bodies and both named workflow steps. It rejects `--test-name-pattern`, exclude/filter/grep selectors, `|| true`, `; true`, extra workflow shell commands, `continue-on-error`, and conditional `if` gates.
 - Workflow gate `run` values must normalize to exactly `npm run test:h5` and `npm run test:electron-native`; mutation fixtures prove each bypass is detected.
 - Fresh verification after this follow-up: workflow contract 9/9, H5 19/19, native/desktop 137/137. The extra native test is the new contract fixture, so complete coverage is now 156/156.
+
+## Final review follow-up: strict script allowlist
+
+- RED: added mutations for `| cat`, `|| :`, `; exit 0`, redirection, an unknown flag, and a duplicate test path; the prior blacklist missed the pipe bypass.
+- GREEN: package gate scripts are now normalized only for whitespace and compared with exact allowlisted commands. H5 must contain only Node's test runner, `--test-concurrency=1`, and the exact three H5 files; native must contain the same approved runner/flag and every remaining test exactly once in directory order.
+- Any shell operator, redirection, command substitution/extra token, unknown flag, duplicate, missing file, or reordered/subset command fails the contract. Workflow steps retain their exact-command and unconditional/fail-closed validation.
+- Fresh verification: workflow contract 9/9, H5 19/19, native/desktop 137/137.

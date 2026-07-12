@@ -46,9 +46,16 @@ function testFilesFromScript(script) {
 
 function assertWorkflowTestGates(workflow, packageJson, allFiles) {
   const scripts = packageJson.scripts;
-  const forbiddenScriptSyntax = /--test-name-pattern|\b(?:exclude|filter|grep)\b|\|\|\s*true\b|;\s*true\b/i;
-  assert.doesNotMatch(scripts['test:h5'], forbiddenScriptSyntax, 'H5 script must not filter tests or swallow failures');
-  assert.doesNotMatch(scripts['test:electron-native'], forbiddenScriptSyntax, 'native script must not filter tests or swallow failures');
+  const normalizeCommand = (command) => command.trim().replace(/\s+/g, ' ');
+  const h5FilesExpected = [
+    'mobile-layout-contract.test.mjs',
+    'web-server-e2e.test.mjs',
+    'web-server-visual.test.mjs'
+  ];
+  const nativeFilesExpected = allFiles.filter((file) => !h5FilesExpected.includes(file));
+  const commandFor = (files) => `node --test --test-concurrency=1 ${files.map((file) => `electron/tests/${file}`).join(' ')}`;
+  assert.equal(normalizeCommand(scripts['test:h5']), commandFor(h5FilesExpected), 'H5 script must match the exact approved command');
+  assert.equal(normalizeCommand(scripts['test:electron-native']), commandFor(nativeFilesExpected), 'native script must match the exact approved command');
 
   const h5Files = testFilesFromScript(scripts['test:h5']);
   const nativeFiles = testFilesFromScript(scripts['test:electron-native']);
@@ -427,7 +434,13 @@ test('gate contract rejects package-script and workflow shell bypasses', () => {
     '--exclude renderer-visual',
     '| grep -v visual',
     '|| true',
-    '; true'
+    '; true',
+    '| cat',
+    '|| :',
+    '; exit 0',
+    '> /tmp/autovpn-test.log',
+    '--unknown-flag',
+    'electron/tests/mobile-layout-contract.test.mjs'
   ]) {
     const mutated = structuredClone(packageJson);
     mutated.scripts['test:h5'] += ` ${bypass}`;
