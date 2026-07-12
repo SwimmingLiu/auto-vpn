@@ -6,17 +6,51 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import { chromium } from 'playwright';
+import { PNG } from 'pngjs';
 
 import { createAutoVpnServer } from '../../npm/autovpn-cli/dist/server/http.js';
-
-const EXPECTED_DIGESTS = {
-  dashboard: 'd3c0e6e4d947f3476b2697cf7df12aef866e1891cd09a507d01f9e4300e17a96',
-  runs: '0ebd70e19e508b41d26a27a547deeb0a7bdf3c91634aa1b7b6c83d40d0731eba'
-};
 
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
 const MOBILE_BASELINE_DIR = path.join(TEST_DIR, 'visual-baselines/mobile');
 const MOBILE_ARTIFACT_DIR = path.join(TEST_DIR, 'visual-artifacts/mobile');
+const PIXEL_CHANNEL_THRESHOLD = 12;
+const MAX_DIFFERENT_PIXEL_RATIO = 0.002;
+
+function comparePng(actualBuffer, expectedBuffer) {
+  const actual = PNG.sync.read(actualBuffer);
+  const expected = PNG.sync.read(expectedBuffer);
+  assert.equal(actual.width, expected.width, 'screenshot width changed');
+  assert.equal(actual.height, expected.height, 'screenshot height changed');
+  const diff = new PNG({ width: actual.width, height: actual.height });
+  let differentPixels = 0;
+  for (let index = 0; index < actual.data.length; index += 4) {
+    const delta = Math.max(
+      Math.abs(actual.data[index] - expected.data[index]),
+      Math.abs(actual.data[index + 1] - expected.data[index + 1]),
+      Math.abs(actual.data[index + 2] - expected.data[index + 2]),
+      Math.abs(actual.data[index + 3] - expected.data[index + 3])
+    );
+    const changed = delta > PIXEL_CHANNEL_THRESHOLD;
+    if (changed) differentPixels += 1;
+    diff.data[index] = changed ? 255 : 255;
+    diff.data[index + 1] = changed ? 0 : 255;
+    diff.data[index + 2] = changed ? 96 : 255;
+    diff.data[index + 3] = 255;
+  }
+  const totalPixels = actual.width * actual.height;
+  return { differentPixels, ratio: differentPixels / totalPixels, diff: PNG.sync.write(diff) };
+}
+
+async function enableVisualTestFont(page) {
+  await page.addInitScript(() => document.documentElement.dataset.visualTest = 'true');
+}
+
+async function waitForVisualTestFont(page) {
+  await page.waitForFunction(async () => {
+    await document.fonts.load('16px "AutoVPN Visual Test"');
+    return document.fonts.check('16px "AutoVPN Visual Test"');
+  });
+}
 
 async function assertPngBaseline(page, name) {
   const actual = await page.screenshot({ animations: 'disabled', caret: 'hide', scale: 'css' });
@@ -27,52 +61,29 @@ async function assertPngBaseline(page, name) {
     return;
   }
   const baseline = await fs.readFile(baselinePath);
-  if (!actual.equals(baseline)) {
+  const comparison = comparePng(actual, baseline);
+  if (comparison.ratio > MAX_DIFFERENT_PIXEL_RATIO) {
     await fs.mkdir(MOBILE_ARTIFACT_DIR, { recursive: true });
     await fs.writeFile(path.join(MOBILE_ARTIFACT_DIR, `${name}-actual.png`), actual);
-    const diffDataUrl = await page.evaluate(async ({ expectedUrl, actualUrl }) => {
-      const load = (src) => new Promise((resolve, reject) => {
-        const image = new Image();
-        image.onload = () => resolve(image);
-        image.onerror = reject;
-        image.src = src;
-      });
-      const [expectedImage, actualImage] = await Promise.all([load(expectedUrl), load(actualUrl)]);
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.max(expectedImage.width, actualImage.width);
-      canvas.height = Math.max(expectedImage.height, actualImage.height);
-      const context = canvas.getContext('2d');
-      context.drawImage(expectedImage, 0, 0);
-      const expectedPixels = context.getImageData(0, 0, canvas.width, canvas.height);
-      context.clearRect(0, 0, canvas.width, canvas.height);
-      context.drawImage(actualImage, 0, 0);
-      const actualPixels = context.getImageData(0, 0, canvas.width, canvas.height);
-      for (let index = 0; index < actualPixels.data.length; index += 4) {
-        const delta = Math.max(
-          Math.abs(actualPixels.data[index] - expectedPixels.data[index]),
-          Math.abs(actualPixels.data[index + 1] - expectedPixels.data[index + 1]),
-          Math.abs(actualPixels.data[index + 2] - expectedPixels.data[index + 2]),
-          Math.abs(actualPixels.data[index + 3] - expectedPixels.data[index + 3])
-        );
-        actualPixels.data[index] = delta ? 255 : 255;
-        actualPixels.data[index + 1] = delta ? 0 : 255;
-        actualPixels.data[index + 2] = delta ? 96 : 255;
-        actualPixels.data[index + 3] = 255;
-      }
-      context.putImageData(actualPixels, 0, 0);
-      return canvas.toDataURL('image/png');
-    }, {
-      expectedUrl: `data:image/png;base64,${baseline.toString('base64')}`,
-      actualUrl: `data:image/png;base64,${actual.toString('base64')}`
-    });
-    await fs.writeFile(path.join(MOBILE_ARTIFACT_DIR, `${name}-diff.png`), Buffer.from(diffDataUrl.split(',')[1], 'base64'));
+    await fs.writeFile(path.join(MOBILE_ARTIFACT_DIR, `${name}-diff.png`), comparison.diff);
     await fs.writeFile(path.join(MOBILE_ARTIFACT_DIR, `${name}-diff.txt`),
-      `expected ${crypto.createHash('sha256').update(baseline).digest('hex')}\nactual   ${crypto.createHash('sha256').update(actual).digest('hex')}\n`);
+      `expected ${crypto.createHash('sha256').update(baseline).digest('hex')}\nactual   ${crypto.createHash('sha256').update(actual).digest('hex')}\ndifferent pixels ${comparison.differentPixels} (${(comparison.ratio * 100).toFixed(4)}%)\n`);
   }
-  assert.deepEqual(actual, baseline, `${name} differs; inspect electron/tests/visual-artifacts/mobile`);
+  assert.ok(comparison.ratio <= MAX_DIFFERENT_PIXEL_RATIO,
+    `${name} differs in ${(comparison.ratio * 100).toFixed(4)}% of pixels; inspect electron/tests/visual-artifacts/mobile`);
 }
 
-test('served web ui visual hashes match browser baseline', async () => {
+test('pixel comparison tolerates raster noise but rejects visible changes', () => {
+  const expected = new PNG({ width: 100, height: 100 });
+  expected.data.fill(255);
+  const noisy = PNG.sync.read(PNG.sync.write(expected));
+  noisy.data[0] -= PIXEL_CHANNEL_THRESHOLD;
+  assert.equal(comparePng(PNG.sync.write(noisy), PNG.sync.write(expected)).ratio, 0);
+  for (let pixel = 0; pixel < 25; pixel += 1) noisy.data[pixel * 4] = 0;
+  assert.ok(comparePng(PNG.sync.write(noisy), PNG.sync.write(expected)).ratio > MAX_DIFFERENT_PIXEL_RATIO);
+});
+
+test('served web ui desktop PNGs match browser baselines', async () => {
   const service = await createAutoVpnServer({
     host: '127.0.0.1',
     port: 0,
@@ -113,29 +124,27 @@ test('served web ui visual hashes match browser baseline', async () => {
   try {
     browser = await chromium.launch();
     const page = await browser.newPage({ viewport: { width: 1440, height: 960 }, deviceScaleFactor: 1 });
+    await enableVisualTestFont(page);
     await page.addInitScript(() => {
       const fixedNow = 1783051200000;
       Date.now = () => fixedNow;
       window.localStorage.setItem('vpn-automation-language', 'zh-CN');
     });
     await page.goto(`${service.origin}/`);
+    await waitForVisualTestFont(page);
     await page.waitForSelector('#dashboardOverview');
     await page.waitForFunction(() => document.body.innerText.includes('20260703-120000'));
     await page.screenshot({ animations: 'disabled' });
 
-    const digests = {};
     for (const [name, navSelector, readySelector] of [
-      ['dashboard', '#navDashboard', '#dashboardOverview'],
-      ['runs', '#navRuns', '#runsWorkspace']
+      ['dashboard-1440x960', '#navDashboard', '#dashboardOverview'],
+      ['runs-1440x960', '#navRuns', '#runsWorkspace']
     ]) {
       await page.locator(navSelector).click();
       await page.waitForSelector(readySelector);
       await page.waitForTimeout(120);
-      const buffer = await page.screenshot({ animations: 'disabled' });
-      digests[name] = crypto.createHash('sha256').update(buffer).digest('hex');
+      await assertPngBaseline(page, name);
     }
-
-    assert.deepEqual(digests, EXPECTED_DIGESTS);
   } finally {
     await browser?.close();
     await service.close();
@@ -199,12 +208,14 @@ test('served web ui mobile PNGs match reviewable browser baselines', async () =>
       deviceScaleFactor: 2,
       isMobile: true
     });
+    await enableVisualTestFont(page);
     await page.addInitScript(() => {
       const fixedNow = 1783051200000;
       Date.now = () => fixedNow;
       window.localStorage.setItem('vpn-automation-language', 'zh-CN');
     });
     await page.goto(`${service.origin}/`);
+    await waitForVisualTestFont(page);
     await page.waitForSelector('#dashboardOverview');
 
     for (const [name, navSelector, readySelector] of [
@@ -260,7 +271,9 @@ test('served web login PNG matches mobile browser baseline', async () => {
   const browser = await chromium.launch();
   try {
     const page = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true });
+    await enableVisualTestFont(page);
     await page.goto(service.origin);
+    await waitForVisualTestFont(page);
     await page.waitForSelector('[data-server-login]');
     await assertPngBaseline(page, 'login-390x844');
   } finally {

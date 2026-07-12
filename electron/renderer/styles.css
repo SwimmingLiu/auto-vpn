@@ -32,6 +32,22 @@
   --safe-area-left: env(safe-area-inset-left, 0px);
 }
 
+@font-face {
+  font-family: "AutoVPN Visual Test";
+  src: url("./assets/fonts/AutoVPNVisualTest-NotoSansSC.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: block;
+}
+
+html[data-visual-test] body,
+html[data-visual-test] input,
+html[data-visual-test] button,
+html[data-visual-test] select,
+html[data-visual-test] textarea {
+  font-family: "AutoVPN Visual Test", sans-serif;
+}
+
 * {
   box-sizing: border-box;
 }
