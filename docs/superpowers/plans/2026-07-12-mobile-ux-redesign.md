@@ -373,6 +373,96 @@ Open a PR, request code review, apply all feedback, rerun every affected browser
 
 ---
 
+### Task 8: Persist and Report Per-Source Canonical Dedupe Counts
+
+**Files:**
+- Modify: `npm/autovpn-cli/src/pipeline/run-store.ts`
+- Modify: `npm/autovpn-cli/src/pipeline/orchestrator.ts`
+- Modify: `npm/autovpn-cli/test/pipeline/run-store.test.mjs`
+- Modify: `npm/autovpn-cli/test/pipeline/orchestrator.test.mjs`
+- Modify: `electron/renderer/app.js`
+- Modify: `electron/tests/ui-state.test.mjs`
+
+**Interfaces:**
+- Produces: `RunStore.sourceDedupedCounts(): Record<string, number>` from persisted first-seen canonical ownership.
+- Produces: `source_counts[source].deduped_links` for normal, retry, resume, and final summaries.
+
+- [ ] **Step 1: Add failing first-seen ownership tests**
+
+Use two sources where A observes `shared + uniqueA` and B observes `shared + uniqueB`. Assert SQLite assigns `shared` to A, returns `{ A: 2, B: 1 }`, and the sum equals global canonical count 3 after reopen/resume.
+
+- [ ] **Step 2: Add failing orchestrator producer tests**
+
+Assert the returned result and `pipeline_report.json` contain raw and deduped source counts for normal and resume paths. Verify legacy artifacts with missing dedupe counts are normalized as unknown rather than zero in the renderer.
+
+- [ ] **Step 3: Run RED tests**
+
+Run: `rtk node --test npm/autovpn-cli/test/pipeline/run-store.test.mjs npm/autovpn-cli/test/pipeline/orchestrator.test.mjs electron/tests/ui-state.test.mjs`
+
+Expected: FAIL because `pipeline_nodes` has no source owner and reports omit per-source dedupe counts.
+
+- [ ] **Step 4: Add SQLite ownership migration and authoritative query**
+
+Add a nullable `first_source` column through the existing migration system. Set it atomically only when inserting a new canonical node; preserve it on duplicate observations. Backfill from the earliest matching raw observation where possible. Implement `sourceDedupedCounts()` and use it for every summary path.
+
+- [ ] **Step 5: Preserve legacy artifact semantics**
+
+Make renderer normalization distinguish a missing `deduped_links` field from a numeric zero; render missing historical data as `—` while rendering real zero as `0`.
+
+- [ ] **Step 6: Verify and commit**
+
+Run focused CLI/Electron tests plus `rtk git diff --check`.
+
+Commit: `fix: report per-source dedupe counts`
+
+---
+
+### Task 9: Restore Production GeoIP Lookup Without False-US Fallback
+
+**Files:**
+- Create: `npm/autovpn-cli/src/pipeline/geoip.ts`
+- Create: `npm/autovpn-cli/test/pipeline/geoip.test.mjs`
+- Modify: `npm/autovpn-cli/src/pipeline/orchestrator.ts`
+- Modify: `npm/autovpn-cli/src/pipeline/postprocess.ts`
+- Modify: `npm/autovpn-cli/test/pipeline/orchestrator.test.mjs`
+- Modify: `npm/autovpn-cli/test/pipeline/postprocess.test.mjs`
+- Modify: `electron/lib/artifact-preview.js`
+- Modify: `electron/tests/artifact-preview.test.mjs`
+
+**Interfaces:**
+- Produces: `createGeoIpLookup(options?): (address: string) => Promise<string>` returning ISO alpha-2 or `ZZ`.
+- Consumes: VMess server `add` values from postprocess nodes.
+
+- [ ] **Step 1: Add failing provider and resolver tests**
+
+Cover public-safe fixtures for IPv4 AU, IPv6, domain A/AAAA, primary success, primary 429 with `Retry-After` then fallback success, malformed schema, timeout, and dual failure returning `ZZ`. Use injected fetch/resolver clocks; no live network dependency in tests.
+
+- [ ] **Step 2: Add failing production-path tests**
+
+Run the orchestrator without a test `countryLookup` override and assert a non-US provider result reaches node `ps`; cover normal, retry, and resume. Assert empty/invalid/`ZZ` postprocess country never becomes US and UI preview labels it as other/unknown.
+
+- [ ] **Step 3: Run RED tests**
+
+Run: `rtk node --test npm/autovpn-cli/test/pipeline/geoip.test.mjs npm/autovpn-cli/test/pipeline/postprocess.test.mjs npm/autovpn-cli/test/pipeline/orchestrator.test.mjs electron/tests/artifact-preview.test.mjs`
+
+Expected: FAIL because production defaults to `US` and no GeoIP service exists.
+
+- [ ] **Step 4: Implement bounded GeoIP service**
+
+Resolve literals/domains with IPv4 and IPv6 support, query the primary provider with timeout, validate schema/status, honor bounded `Retry-After`, then query fallback. Cache successful country codes; use a short negative TTL for `ZZ`; deduplicate concurrent lookups by resolved IP.
+
+- [ ] **Step 5: Wire every pipeline path and remove false-US defaults**
+
+Create one lookup per run and reuse it in normal, retry, and resume paths. Keep injected lookup support for deterministic tests. Change every unknown/invalid fallback from `US` to `ZZ`, map it to neutral “其他/未知” UI presentation, and retain explicit real US results.
+
+- [ ] **Step 6: Verify and commit**
+
+Run focused tests, the full CLI suite, Electron artifact/UI tests, and `rtk git diff --check`.
+
+Commit: `fix: restore reliable geoip lookup`
+
+---
+
 ## Plan Self-Review
 
 - Every explicit page and audit P1 issue maps to Tasks 1–5.
