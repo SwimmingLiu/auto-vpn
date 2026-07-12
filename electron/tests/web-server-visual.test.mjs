@@ -11,7 +11,14 @@ import { PNG } from 'pngjs';
 import { createAutoVpnServer } from '../../npm/autovpn-cli/dist/server/http.js';
 
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
-const VISUAL_BASELINE_PLATFORM = process.env.VISUAL_BASELINE_PLATFORM || process.platform;
+function resolveVisualBaselinePlatform(platform) {
+  if (platform !== 'darwin' && platform !== 'linux') {
+    throw new Error(`H5 visual baselines are not reviewed for ${platform}`);
+  }
+  return platform;
+}
+
+const VISUAL_BASELINE_PLATFORM = resolveVisualBaselinePlatform(process.platform);
 const MOBILE_BASELINE_DIR = path.join(TEST_DIR, 'visual-baselines/h5', VISUAL_BASELINE_PLATFORM);
 const MOBILE_ARTIFACT_DIR = path.join(TEST_DIR, 'visual-artifacts/mobile');
 const PIXEL_CHANNEL_THRESHOLD = 12;
@@ -88,6 +95,7 @@ test('visual baselines are selected by operating system without weakening pixel 
   assert.equal(path.basename(MOBILE_BASELINE_DIR), VISUAL_BASELINE_PLATFORM);
   assert.equal(MAX_DIFFERENT_PIXEL_RATIO, 0.002);
   assert.equal(PIXEL_CHANNEL_THRESHOLD, 12);
+  assert.throws(() => resolveVisualBaselinePlatform('win32'), /not reviewed/);
 });
 
 test('macOS and Linux visual baseline sets cover the same reviewed screenshots', async () => {

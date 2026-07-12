@@ -56,6 +56,7 @@ function assertWorkflowTestGates(workflow, packageJson, allFiles) {
   const commandFor = (files) => `node --test --test-concurrency=1 ${files.map((file) => `electron/tests/${file}`).join(' ')}`;
   assert.equal(normalizeCommand(scripts['test:h5']), commandFor(h5FilesExpected), 'H5 script must match the exact approved command');
   assert.equal(normalizeCommand(scripts['test:electron-native']), commandFor(nativeFilesExpected), 'native script must match the exact approved command');
+  assert.doesNotMatch(workflow, /^\s*UPDATE_VISUAL_BASELINES\s*:/m, 'CI must never update reviewed visual baselines');
 
   const h5Files = testFilesFromScript(scripts['test:h5']);
   const nativeFiles = testFilesFromScript(scripts['test:electron-native']);
@@ -465,6 +466,14 @@ test('gate contract rejects package-script and workflow shell bypasses', () => {
   ]) {
     const mutated = workflow.replace('run: npm run test:h5', replacement);
     assert.throws(() => assertWorkflowTestGates(mutated, packageJson, allFiles), undefined, `should reject ${replacement}`);
+  }
+
+  for (const [scope, mutated] of [
+    ['workflow env', workflow.replace('env:\n', 'env:\n  UPDATE_VISUAL_BASELINES: "1"\n')],
+    ['job env', workflow.replace('    name: Linux headless CLI\n', '    name: Linux headless CLI\n    env:\n      UPDATE_VISUAL_BASELINES: "1"\n')],
+    ['step env', workflow.replace('      - name: Run H5 mobile Chromium and WebKit gate\n', '      - name: Run H5 mobile Chromium and WebKit gate\n        env:\n          UPDATE_VISUAL_BASELINES: "1"\n')]
+  ]) {
+    assert.throws(() => assertWorkflowTestGates(mutated, packageJson, allFiles), undefined, `should reject ${scope}`);
   }
 });
 
