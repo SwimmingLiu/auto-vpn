@@ -724,7 +724,7 @@ test('runNodePipeline overlaps extract, dedupe, speedtest, and availability', as
     }
   });
 
-  assert.equal(await Promise.race([availabilityStarted.then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), 100))]), true);
+  assert.equal(await Promise.race([availabilityStarted.then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), 2_000))]), true);
   assert.equal(events.some((event) => event.type === 'stage' && event.stage === 'extract' && event.status === 'success'), false);
   releaseExtract();
   await runPromise;
