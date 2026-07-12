@@ -56,3 +56,8 @@ The first Electron run reported an incomplete local `node_modules/electron` inst
 - GREEN: package gate scripts are now normalized only for whitespace and compared with exact allowlisted commands. H5 must contain only Node's test runner, `--test-concurrency=1`, and the exact three H5 files; native must contain the same approved runner/flag and every remaining test exactly once in directory order.
 - Any shell operator, redirection, command substitution/extra token, unknown flag, duplicate, missing file, or reordered/subset command fails the contract. Workflow steps retain their exact-command and unconditional/fail-closed validation.
 - Fresh verification: workflow contract 9/9, H5 19/19, native/desktop 137/137.
+
+## Final fixture coverage
+
+- Added an explicit missing-file mutation that removes `web-server-visual.test.mjs` from `test:h5` and proves the strict validator rejects the incomplete gate.
+- Fresh workflow contract verification: 9/9; `git diff --check` clean. H5/native were not rerun because this follow-up changes only the contract fixture and report.

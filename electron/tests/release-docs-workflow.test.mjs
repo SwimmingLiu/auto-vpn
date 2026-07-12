@@ -447,6 +447,15 @@ test('gate contract rejects package-script and workflow shell bypasses', () => {
     assert.throws(() => assertWorkflowTestGates(workflow, mutated, allFiles), undefined, `should reject ${bypass}`);
   }
 
+  const missingFile = structuredClone(packageJson);
+  missingFile.scripts['test:h5'] = missingFile.scripts['test:h5']
+    .replace(' electron/tests/web-server-visual.test.mjs', '');
+  assert.throws(
+    () => assertWorkflowTestGates(workflow, missingFile, allFiles),
+    undefined,
+    'should reject an H5 gate with a missing test file'
+  );
+
   for (const replacement of [
     'run: npm run test:h5 || true',
     'run: npm run test:h5 -- --test-name-pattern mobile',
