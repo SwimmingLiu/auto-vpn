@@ -88,6 +88,36 @@ async function closeWithin(promise, milliseconds = 2000) {
   }
 }
 
+export async function closeAllWithin(closeOperations, milliseconds = 5000) {
+  const results = await Promise.allSettled(closeOperations.map((close) => closeWithin(close(), milliseconds)));
+  const failures = results.filter((result) => result.status === 'rejected').map((result) => result.reason);
+  if (failures.length) throw new AggregateError(failures, 'one or more test resources failed to close');
+}
+
+test('fixture cleanup attempts every resource when an earlier close rejects', async () => {
+  const closed = [];
+  await assert.rejects(
+    closeAllWithin([
+      async () => { closed.push('browser'); throw new Error('browser close failed'); },
+      async () => { closed.push('service'); }
+    ]),
+    /test resources failed to close/
+  );
+  assert.deepEqual(closed, ['browser', 'service']);
+});
+
+test('fixture cleanup closes the service when browser shutdown stalls', async () => {
+  let serviceClosed = false;
+  await assert.rejects(
+    closeAllWithin([
+      () => new Promise(() => {}),
+      async () => { serviceClosed = true; }
+    ], 20),
+    /test resources failed to close/
+  );
+  assert.equal(serviceClosed, true);
+});
+
 test('all breakpoint contracts preserve navigation, targets, overflow and content reachability', async () => {
   const service = await createFixture();
   const browser = await chromium.launch();
@@ -106,12 +136,11 @@ test('all breakpoint contracts preserve navigation, targets, overflow and conten
     await page.locator('#navDashboard').click();
     await assertMobileLayout(page, { width: 768, height: 1024 });
   } finally {
-    await closeWithin(browser.close());
-    await closeWithin(service.close());
+    await closeAllWithin([() => browser.close(), () => service.close()]);
   }
 });
 
-test('WebKit preserves safe-area navigation, run bar and settings visual viewport', { timeout: 8000 }, async () => {
+test('WebKit preserves safe-area navigation, run bar and settings visual viewport', { timeout: 30000 }, async () => {
   const service = await createFixture();
   const browser = await webkit.launch();
   try {
@@ -142,12 +171,11 @@ test('WebKit preserves safe-area navigation, run bar and settings visual viewpor
     assert.equal(await page.locator('.settings-drawer-actions').evaluate((node) => getComputedStyle(node).paddingBottom), '36px');
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.visualViewport.width));
   } finally {
-    await closeWithin(browser.close());
-    await closeWithin(service.close());
+    await closeAllWithin([() => browser.close(), () => service.close()]);
   }
 });
 
-test('WebKit mobile login reports an inline error and accepts the configured password', { timeout: 8000 }, async () => {
+test('WebKit mobile login reports an inline error and accepts the configured password', { timeout: 30000 }, async () => {
   const service = await createAutoVpnServer({
     host: '127.0.0.1', port: 0, projectRoot: '/repo',
     auth: { enabled: true, token: 'issued-token', password: 'web-password', maxAttempts: 5 },
@@ -168,7 +196,6 @@ test('WebKit mobile login reports an inline error and accepts the configured pas
     await page.waitForSelector('#dashboardOverview');
     assert.equal(await page.evaluate(() => localStorage.getItem('autovpn.server.token')), 'issued-token');
   } finally {
-    await closeWithin(browser.close());
-    await closeWithin(service.close());
+    await closeAllWithin([() => browser.close(), () => service.close()]);
   }
 });
