@@ -1411,7 +1411,7 @@ body[data-page="logs"] #logCenterTable {
   max-width: 1320px;
   max-height: min(88vh, 960px);
   padding: 26px 26px 24px;
-  background: rgba(255, 255, 255, 0.96);
+  background: #fff;
   border: 1px solid var(--border);
   border-radius: 26px;
   box-shadow: 0 16px 48px rgba(29, 39, 71, 0.16);
@@ -2193,6 +2193,7 @@ body[data-page="logs"] #logCenterTable {
     border-radius: 0;
     transform: none !important;
     overflow: hidden;
+    background: #fff;
   }
 
   .settings-drawer-head {

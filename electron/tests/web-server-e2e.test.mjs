@@ -860,6 +860,7 @@ test('served web ui supports mobile bottom navigation and run controls', async (
     await page.waitForSelector('#runsWorkspace');
     assert.equal(await page.locator('#navRuns').getAttribute('aria-current'), 'page');
     assert.equal(await page.locator('#navDashboard').getAttribute('aria-current'), null);
+    await page.locator('.run-secondary-controls').evaluate((node) => { node.open = true; });
     for (const control of await page.locator('#runsWorkspace select, #runsWorkspace .retry-stage-button, #runsWorkspace .checkbox-chip').all()) {
       const box = await control.boundingBox();
       assert.ok(box && box.width >= 44 && box.height >= 44, `mobile run control was ${JSON.stringify(box)}`);
