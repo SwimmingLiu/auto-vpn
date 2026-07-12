@@ -40,7 +40,7 @@ function geoIpOptions(countryCode = 'AU', seenAddresses = []) {
   return {
     resolve: async (address) => {
       seenAddresses.push(address);
-      return [{ address: '203.0.113.40', family: 4 }];
+      return [{ address: '1.1.1.40', family: 4 }];
     },
     fetch: async () => ({
       ok: true,

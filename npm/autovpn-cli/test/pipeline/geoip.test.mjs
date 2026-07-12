@@ -29,7 +29,7 @@ test('supports IPv6 literals', async () => {
 test('resolves domains using injected A and AAAA resolver results', async () => {
   const resolved = [];
   const lookup = createGeoIpLookup({
-    resolve: async (hostname) => { resolved.push(hostname); return [{ address: '2001:db8::1', family: 6 }, { address: '203.0.113.8', family: 4 }]; },
+    resolve: async (hostname) => { resolved.push(hostname); return [{ address: '2606:4700:4700::1001', family: 6 }, { address: '1.1.1.8', family: 4 }]; },
     fetch: async () => response(200, { success: true, country_code: 'JP' })
   });
   assert.equal(await lookup('node.example'), 'JP');
@@ -41,13 +41,13 @@ test('tries resolved addresses in stable order until one has a country', async (
   const lookup = createGeoIpLookup({
     resolve: async () => [
       { address: '10.0.0.8', family: 4 },
-      { address: '203.0.113.31', family: 4 },
-      { address: '2001:db8::31', family: 6 }
+      { address: '1.1.1.31', family: 4 },
+      { address: '2606:4700:4700::1031', family: 6 }
     ],
     fetch: async (url) => {
       requested.push(url);
-      if (url.includes('203.0.113.31')) return response(503, {});
-      if (url.includes('2001%3Adb8%3A%3A31')) return response(200, { success: true, country_code: 'CA' });
+      if (url.includes('1.1.1.31')) return response(503, {});
+      if (url.includes('2606%3A4700%3A4700%3A%3A1031')) return response(200, { success: true, country_code: 'CA' });
       return response(503, {});
     }
   });
@@ -66,7 +66,7 @@ test('honors bounded Retry-After before using fallback provider', async () => {
     sleep: async (milliseconds) => { sleeps.push(milliseconds); },
     maxRetryAfterMs: 1500
   });
-  assert.equal(await lookup('203.0.113.10'), 'SG');
+  assert.equal(await lookup('1.1.1.10'), 'SG');
   assert.deepEqual(sleeps, [1500]);
 });
 
@@ -82,7 +82,7 @@ test('parses HTTP-date Retry-After using the injected clock and clamps it', asyn
     sleep: async (milliseconds) => { sleeps.push(milliseconds); },
     maxRetryAfterMs: 1200
   });
-  assert.equal(await lookup('203.0.113.32'), 'SG');
+  assert.equal(await lookup('1.1.1.32'), 'SG');
   assert.deepEqual(sleeps, [1200]);
 });
 
@@ -106,7 +106,7 @@ test('rejects malformed primary schema and falls back', async () => {
       ? response(200, { success: true, country_code: 'Australia' })
       : response(200, { country_code: 'NZ' })
   });
-  assert.equal(await lookup('203.0.113.11'), 'NZ');
+  assert.equal(await lookup('1.1.1.11'), 'NZ');
 });
 
 test('times out primary requests and uses fallback', async () => {
@@ -120,7 +120,7 @@ test('times out primary requests and uses fallback', async () => {
     setTimeout: (callback) => { queueMicrotask(callback); return 1; },
     clearTimeout: () => {}
   });
-  assert.equal(await lookup('203.0.113.12'), 'GB');
+  assert.equal(await lookup('1.1.1.12'), 'GB');
 });
 
 test('returns ZZ on dual failure and uses a short negative cache TTL', async () => {
@@ -131,11 +131,11 @@ test('returns ZZ on dual failure and uses a short negative cache TTL', async () 
     now: () => now,
     negativeTtlMs: 100
   });
-  assert.equal(await lookup('203.0.113.13'), 'ZZ');
-  assert.equal(await lookup('203.0.113.13'), 'ZZ');
+  assert.equal(await lookup('1.1.1.13'), 'ZZ');
+  assert.equal(await lookup('1.1.1.13'), 'ZZ');
   assert.equal(calls, 2);
   now = 101;
-  assert.equal(await lookup('203.0.113.13'), 'ZZ');
+  assert.equal(await lookup('1.1.1.13'), 'ZZ');
   assert.equal(calls, 4);
 });
 
@@ -144,7 +144,7 @@ test('deduplicates concurrent provider requests by resolved IP', async () => {
   let calls = 0;
   const gate = new Promise((resolve) => { release = resolve; });
   const lookup = createGeoIpLookup({
-    resolve: async () => [{ address: '203.0.113.20', family: 4 }],
+    resolve: async () => [{ address: '1.1.1.20', family: 4 }],
     fetch: async () => { calls += 1; await gate; return response(200, { success: true, country_code: 'FR' }); }
   });
   const first = lookup('one.example');
@@ -159,4 +159,29 @@ test('returns ZZ for empty addresses and resolver failure', async () => {
   const lookup = createGeoIpLookup({ resolve: async () => { throw new Error('dns'); }, fetch: async () => { throw new Error('unused'); } });
   assert.equal(await lookup(''), 'ZZ');
   assert.equal(await lookup('missing.example'), 'ZZ');
+});
+
+test('rejects non-global IPv4 and IPv6 addresses without provider fetches', async () => {
+  const rejected = [
+    '0.0.0.0', '10.1.2.3', '100.64.0.1', '127.0.0.1', '169.254.1.1',
+    '172.16.0.1', '192.0.0.1', '192.0.2.1', '192.88.99.1', '192.168.1.1', '198.18.0.1',
+    '198.51.100.1', '203.0.113.1', '224.0.0.1', '240.0.0.1', '255.255.255.255',
+    '::', '::1', 'fc00::1', 'fd00::1', 'fe80::1', 'ff02::1', '2001::1', '2001:db8::1', '3fff::1',
+    '::ffff:127.0.0.1', '::ffff:10.0.0.1', '::ffff:192.0.2.1'
+  ];
+  let fetches = 0;
+  const lookup = createGeoIpLookup({ fetch: async () => { fetches += 1; return response(200, { success: true, country_code: 'US' }); } });
+  for (const address of rejected) assert.equal(await lookup(address), 'ZZ', address);
+  assert.equal(fetches, 0);
+});
+
+test('allows globally routable IPv4 and IPv6 addresses', async () => {
+  const requested = [];
+  const lookup = createGeoIpLookup({
+    fetch: async (url) => { requested.push(url); return response(200, { success: true, country_code: 'AU' }); }
+  });
+  for (const address of ['1.1.1.1', '8.8.8.8', '2606:4700:4700::1111', '2001:4860:4860::8888', '::ffff:8.8.8.8']) {
+    assert.equal(await lookup(address), 'AU', address);
+  }
+  assert.equal(requested.length, 4);
 });

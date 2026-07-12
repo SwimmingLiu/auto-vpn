@@ -35,17 +35,68 @@ function retryAfterMilliseconds(value: string | null, now: number, maximum: numb
   return Number.isFinite(delay) && delay > 0 ? Math.min(delay, maximum) : 0;
 }
 
-function isPrivateAddress(address: string): boolean {
-  if (address.includes(':')) {
-    const normalized = address.toLowerCase();
-    return normalized === '::' || normalized === '::1' || normalized.startsWith('fc') || normalized.startsWith('fd') || /^fe[89ab]/.test(normalized);
-  }
+function ipv4Number(address: string): number | null {
   const octets = address.split('.').map(Number);
-  return octets[0] === 10
-    || octets[0] === 127
-    || (octets[0] === 169 && octets[1] === 254)
-    || (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31)
-    || (octets[0] === 192 && octets[1] === 168);
+  if (octets.length !== 4 || octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)) return null;
+  return (((octets[0] * 256 + octets[1]) * 256 + octets[2]) * 256 + octets[3]) >>> 0;
+}
+
+function ipv4InCidr(value: number, base: string, prefix: number): boolean {
+  const baseValue = ipv4Number(base) as number;
+  const size = 2 ** (32 - prefix);
+  return Math.floor(value / size) === Math.floor(baseValue / size);
+}
+
+function isRejectedIpv4(value: number): boolean {
+  return [
+    ['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8],
+    ['169.254.0.0', 16], ['172.16.0.0', 12], ['192.0.0.0', 24], ['192.0.2.0', 24], ['192.88.99.0', 24],
+    ['192.168.0.0', 16], ['198.18.0.0', 15], ['198.51.100.0', 24], ['203.0.113.0', 24],
+    ['224.0.0.0', 4], ['240.0.0.0', 4]
+  ].some(([base, prefix]) => ipv4InCidr(value, base as string, prefix as number));
+}
+
+function ipv6Number(address: string): bigint | null {
+  const pieces = address.toLowerCase().split('::');
+  if (pieces.length > 2) return null;
+  const parseSide = (side: string): number[] | null => {
+    if (!side) return [];
+    const groups = side.split(':');
+    const last = groups.at(-1) ?? '';
+    if (last.includes('.')) {
+      const mapped = ipv4Number(last);
+      if (mapped === null) return null;
+      groups.splice(-1, 1, ((mapped >>> 16) & 0xffff).toString(16), (mapped & 0xffff).toString(16));
+    }
+    const parsed = groups.map((group) => /^[0-9a-f]{1,4}$/.test(group) ? Number.parseInt(group, 16) : -1);
+    return parsed.some((group) => group < 0) ? null : parsed;
+  };
+  const left = parseSide(pieces[0]);
+  const right = parseSide(pieces[1] ?? '');
+  if (!left || !right) return null;
+  const missing = 8 - left.length - right.length;
+  if ((pieces.length === 1 && missing !== 0) || (pieces.length === 2 && missing < 1)) return null;
+  const groups = [...left, ...Array(missing).fill(0), ...right];
+  return groups.reduce((value, group) => (value << 16n) | BigInt(group), 0n);
+}
+
+function normalizeGlobalAddress(address: string): string | null {
+  if (isIP(address) === 4) {
+    const value = ipv4Number(address);
+    return value !== null && !isRejectedIpv4(value) ? address : null;
+  }
+  const value = ipv6Number(address);
+  if (value === null) return null;
+  if ((value >> 32n) === 0xffffn) {
+    const mapped = Number(value & 0xffffffffn) >>> 0;
+    if (isRejectedIpv4(mapped)) return null;
+    return `${mapped >>> 24}.${(mapped >>> 16) & 255}.${(mapped >>> 8) & 255}.${mapped & 255}`;
+  }
+  const globalUnicast = value >= 0x20000000000000000000000000000000n && value <= 0x3fffffffffffffffffffffffffffffffn;
+  const ietfProtocolAssignments = value >= 0x20010000000000000000000000000000n && value <= 0x200101ffffffffffffffffffffffffffn;
+  const documentation = value >= 0x20010db8000000000000000000000000n && value <= 0x20010db8ffffffffffffffffffffffffn;
+  const extendedDocumentation = value >= 0x3fff0000000000000000000000000000n && value <= 0x3fff0fffffffffffffffffffffffffffn;
+  return globalUnicast && !ietfProtocolAssignments && !documentation && !extendedDocumentation ? address : null;
 }
 
 export function createGeoIpLookup(options: GeoIpLookupOptions = {}): (address: string) => Promise<string> {
@@ -122,9 +173,10 @@ export function createGeoIpLookup(options: GeoIpLookupOptions = {}): (address: s
       const results = isIP(address) ? [{ address, family: isIP(address) }] : await resolve(address);
       const seen = new Set<string>();
       for (const result of results) {
-        if (!isIP(result.address) || isPrivateAddress(result.address) || seen.has(result.address)) continue;
-        seen.add(result.address);
-        const resultCountry = await lookupIp(result.address);
+        const globalAddress = normalizeGlobalAddress(result.address);
+        if (!globalAddress || seen.has(globalAddress)) continue;
+        seen.add(globalAddress);
+        const resultCountry = await lookupIp(globalAddress);
         if (resultCountry !== 'ZZ') return resultCountry;
       }
       return 'ZZ';

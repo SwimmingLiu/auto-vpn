@@ -64,7 +64,7 @@ Addressed the P1 and three P2 review findings with new RED/GREEN coverage:
 - Renderer `buildRegionStats` now prioritizes preview `row.regionCode`; `ZZ` and `OTHER` merge into the user-visible “其他” bucket, while a real `US` remains US. Both region-stat model and rendered results markup are covered.
 - Domain lookup preserves resolver order, skips obvious private/loopback/link-local addresses, and tries each unique resolved IP until one returns a non-`ZZ` country. Per-IP positive/negative caches and in-flight deduplication remain unchanged.
 - `Retry-After` accepts both delta-seconds and HTTP-date values, evaluates HTTP dates against the injected clock, and clamps both formats to `maxRetryAfterMs`.
-- Provider URL builders are validated before fetch: HTTPS only, exact `ipwho.is`/`ipapi.co` host, no credentials or explicit port. HTTP and foreign-host outputs return provider failure without any fetch call.
+- Provider URL builders are validated before fetch: HTTPS only, exact `ipwho.is`/`ipapi.co` host, no credentials or non-default port after URL canonicalization. HTTP and foreign-host outputs return provider failure without any fetch call.
 
 Follow-up verification:
 
@@ -72,3 +72,12 @@ Follow-up verification:
 - Full CLI: 355 passed, 0 failed.
 - Focused Electron artifact/UI/Playwright: 66 passed, 1 unrelated visual aggregate failure. Results-page visual hash matched exactly; only the previously noted dashboard/runs/logs hashes differ.
 - `rtk git diff --check`: clean.
+
+## Special-use IP review follow-up
+
+- Replaced the partial string-prefix check with numeric IPv4 CIDR and parsed IPv6 classification.
+- IPv4-mapped IPv6 addresses are normalized back to canonical dotted IPv4 before classification, provider lookup, cache lookup, and in-flight deduplication.
+- Rejects IPv4 unspecified, private, CGNAT, loopback, link-local, protocol-assignment, documentation, benchmark, multicast, and reserved ranges.
+- Rejects IPv6 unspecified, loopback, ULA, link-local, multicast, documentation, and mapped non-global IPv4; only global-unicast IPv6 is sent to GeoIP providers.
+- Table-driven regression coverage proves every rejected address causes zero fetches and that representative global IPv4/IPv6 addresses still resolve. A mapped public IPv4 shares the canonical IPv4 cache entry.
+- Final special-use-IP verification: focused Task 9 contracts 108 passed, 0 failed; full CLI 357 passed, 0 failed.
