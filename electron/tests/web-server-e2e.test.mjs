@@ -66,6 +66,7 @@ test('served web ui loads profile and starts a run through the web adapter', asy
 
     await page.locator('#navRuns').click();
     await page.waitForSelector('#runsWorkspace');
+    await page.locator('.run-secondary-controls').evaluate((node) => { node.open = true; });
     await page.locator('#runsWorkspace [data-run-action="start"]').click();
     await page.waitForTimeout(150);
 
@@ -605,7 +606,7 @@ test('served web adapter saves profile, generates QR, and starts retry stage', a
   }
 });
 
-test('served web ui handles visible browser controls across all pages', async () => {
+test('served web ui handles visible browser controls across all pages', { timeout: 12000 }, async () => {
   const calls = [];
   let subscriber;
   const service = await createAutoVpnServer({
@@ -689,7 +690,7 @@ test('served web ui handles visible browser controls across all pages', async ()
   let browser;
   try {
     browser = await chromium.launch();
-    const page = await browser.newPage({ viewport: { width: 1360, height: 900 } });
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true });
     await page.goto(`${service.origin}/`);
     await page.waitForSelector('#dashboardOverview');
 
@@ -729,11 +730,13 @@ test('served web ui handles visible browser controls across all pages', async ()
     assert.equal(await page.locator('[data-drawer-close="cancel"]').last().isVisible(), true);
     await page.locator('[data-drawer-close="cancel"]').last().click();
     await page.waitForSelector('#settingsDrawer[hidden]');
-    await page.setViewportSize({ width: 1360, height: 900 });
+    await page.setViewportSize({ width: 390, height: 844 });
 
     await page.locator('#navRuns').click();
     await page.waitForSelector('#runsWorkspace');
+    await page.locator('.run-secondary-controls').evaluate((node) => { node.open = true; });
     await page.locator('[data-run-retry-stage]').selectOption('deploy');
+    await page.locator('.run-secondary-controls').evaluate((node) => { node.open = true; });
     await page.locator('[data-action="retry-stage"]').click();
     await page.waitForFunction(() => !document.querySelector('#runsWorkspace [data-run-action="start"]')?.disabled);
 
@@ -748,9 +751,20 @@ test('served web ui handles visible browser controls across all pages', async ()
     assert.match(await page.locator('[data-toast]').innerText(), /复制|已复制/);
     await page.getByRole('button', { name: '打开目录' }).click();
 
+    await page.evaluate(() => {
+      let attempts = 0;
+      window.vpnAutomation.generateQr = async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('mobile QR failure');
+        return { ok: true, dataUrl: 'data:image/mock;base64,mobile-retry' };
+      };
+    });
     await page.locator('#navSubscriptions').click();
     await page.waitForSelector('#subscriptionCards');
     await page.getByRole('button', { name: 'Clash Meta' }).click();
+    await page.waitForSelector('[data-action="retry-qr"]');
+    await page.locator('[data-action="retry-qr"]').click();
+    await page.waitForSelector('.qr-image');
     assert.match(await page.locator('#subscriptionCards [data-copy-text]').first().getAttribute('data-copy-text'), /format=clash-meta/);
     await page.getByRole('button', { name: '复制链接' }).click();
     await page.waitForSelector('[data-toast]');
@@ -764,6 +778,13 @@ test('served web ui handles visible browser controls across all pages', async ()
     await page.getByRole('button', { name: '复制日志' }).click();
     await page.waitForSelector('[data-toast]');
     await page.getByRole('button', { name: '清空显示' }).click();
+    await page.waitForSelector('[data-log-undo-clear]');
+    await page.locator('[data-log-undo-clear]').first().click();
+    for (let index = 0; index < 40; index += 1) subscriber?.({ type: 'log', message: `[mobile] line ${index}` });
+    await page.locator('#logCenterTable').evaluate((node) => { node.scrollTop = 0; node.dispatchEvent(new Event('scroll')); });
+    subscriber?.({ type: 'log', message: '[mobile] followed latest' });
+    await page.waitForSelector('[data-log-jump-latest]');
+    await page.locator('[data-log-jump-latest]').click();
     assert.equal(await page.getByRole('button', { name: '打开日志文件' }).count(), 0);
 
     assert.ok(calls.some(([name]) => name === 'retry'));

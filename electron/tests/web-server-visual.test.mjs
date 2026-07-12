@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import { chromium } from 'playwright';
@@ -13,8 +14,9 @@ const EXPECTED_DIGESTS = {
   runs: '0ebd70e19e508b41d26a27a547deeb0a7bdf3c91634aa1b7b6c83d40d0731eba'
 };
 
-const MOBILE_BASELINE_DIR = path.resolve('electron/tests/visual-baselines/mobile');
-const MOBILE_ARTIFACT_DIR = path.resolve('electron/tests/visual-artifacts/mobile');
+const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
+const MOBILE_BASELINE_DIR = path.join(TEST_DIR, 'visual-baselines/mobile');
+const MOBILE_ARTIFACT_DIR = path.join(TEST_DIR, 'visual-artifacts/mobile');
 
 async function assertPngBaseline(page, name) {
   const actual = await page.screenshot({ animations: 'disabled', caret: 'hide', scale: 'css' });
@@ -141,6 +143,7 @@ test('served web ui visual hashes match browser baseline', async () => {
 });
 
 test('served web ui mobile PNGs match reviewable browser baselines', async () => {
+  let subscriber;
   const service = await createAutoVpnServer({
     host: '127.0.0.1',
     port: 0,
@@ -163,11 +166,11 @@ test('served web ui mobile PNGs match reviewable browser baselines', async () =>
           },
           paths: { project_root: '/repo', artifacts_root: '/repo/artifacts' }
         },
-        runState: 'running',
+        runState: 'idle',
         artifact: {
           artifact_dir: '/repo/artifacts/20260703-120000',
-          run_status: '',
-          stage_status: { doctor: 'success', extract: 'success', dedupe: 'success', speedtest: 'running' },
+          run_status: 'success',
+          stage_status: { doctor: 'success', extract: 'success', dedupe: 'success', speedtest: 'success', availability: 'success', postprocess: 'success', render: 'success', obfuscate: 'success', deploy: 'success', verify: 'success' },
           counts: { raw_links: 132, deduped_links: 119, speedtest_links: 23, availability_links: 0 },
           source_counts: {
             leiting: { raw_links: 32, deduped_links: 28 },
@@ -178,12 +181,13 @@ test('served web ui mobile PNGs match reviewable browser baselines', async () =>
           nodeRows: []
         },
         retryArtifacts: [],
-        logEvents: [
-          { type: 'stage', stage: 'speedtest', status: 'running' },
-          { type: 'log', message: '[speedtest] selected 50/119 reachable links for full download test' }
-        ]
+        logEvents: [{ type: 'log', message: '[verify] latest retained run completed successfully' }]
       }),
-      subscribe: () => () => {}
+      startRun: async () => {
+        setTimeout(() => subscriber?.({ type: 'stage', stage: 'speedtest', status: 'running' }), 25);
+        return { ok: true, runId: 'visual-running' };
+      },
+      subscribe: (handler) => { subscriber = handler; return () => { subscriber = undefined; }; }
     }
   });
 
@@ -205,7 +209,7 @@ test('served web ui mobile PNGs match reviewable browser baselines', async () =>
 
     for (const [name, navSelector, readySelector] of [
       ['dashboard-390x844', '#navDashboard', '#dashboardOverview'],
-      ['runs-running-390x844', '#navRuns', '#runsWorkspace'],
+      ['runs-idle-390x844', '#navRuns', '#runsWorkspace'],
       ['results-390x844', '#navResults', '#resultsWorkspace'],
       ['subscriptions-390x844', '#navSubscriptions', '#subscriptionCards'],
       ['logs-390x844', '#navLogs', '#logsWorkspace'],
@@ -216,6 +220,12 @@ test('served web ui mobile PNGs match reviewable browser baselines', async () =>
       await page.waitForTimeout(160);
       await assertPngBaseline(page, name);
     }
+    await page.locator('#navRuns').click();
+    await page.locator('#runsWorkspace [data-run-action="start"]').click();
+    await page.waitForFunction(() => document.querySelector('#runStateBadge')?.textContent?.includes('运行中'));
+    await page.waitForTimeout(60);
+    await assertPngBaseline(page, 'runs-running-390x844');
+    await page.locator('#navSettings').click();
     await page.locator('[data-settings-card="deploy"]').click();
     await page.waitForSelector('#settingsDrawer[data-open="true"]');
     await assertPngBaseline(page, 'settings-sheet-390x844');

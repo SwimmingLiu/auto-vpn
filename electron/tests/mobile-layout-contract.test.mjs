@@ -36,6 +36,12 @@ export async function assertMobileLayout(page, { width, height }) {
   }
   assert.equal(await page.locator('#sidebarNav [aria-current="page"]').count(), 1);
 
+  const undersized = await page.locator('#pageContent button:visible, #pageContent input:visible, #pageContent select:visible, #pageContent [tabindex="0"]:visible').evaluateAll((nodes) => nodes
+    .filter((node) => !node.closest('[hidden], [aria-hidden="true"]'))
+    .map((node) => { const box = node.getBoundingClientRect(); return { tag: node.tagName, text: node.textContent?.trim().slice(0, 32), width: box.width, height: box.height }; })
+    .filter(({ width: targetWidth, height: targetHeight }) => targetWidth < 44 || targetHeight < 44));
+  assert.deepEqual(undersized, [], `undersized visible page controls at ${width}x${height}`);
+
   const reachable = page.locator('#pageContent button:visible, #pageContent input:visible, #pageContent select:visible, #pageContent [tabindex="0"]:visible');
   const finalElement = reachable.last();
   if (await reachable.count()) {
@@ -74,7 +80,12 @@ async function createFixture() {
 }
 
 async function closeWithin(promise, milliseconds = 2000) {
-  await Promise.race([promise, new Promise((resolve) => setTimeout(resolve, milliseconds))]);
+  let timer;
+  try {
+    await Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`cleanup timed out after ${milliseconds}ms`)), milliseconds); })]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 test('all breakpoint contracts preserve navigation, targets, overflow and content reachability', async () => {
@@ -107,6 +118,8 @@ test('WebKit preserves safe-area navigation, run bar and settings visual viewpor
     const page = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true });
     await page.goto(service.origin, { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('#dashboardOverview');
+    await page.addStyleTag({ content: ':root { --safe-area-top: 18px; --safe-area-bottom: 24px; --safe-area-left: 9px; --safe-area-right: 11px; }' });
+    assert.equal(await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--safe-area-bottom').trim()), '24px');
     await assertMobileLayout(page, { width: 390, height: 844 });
     await page.evaluate(() => document.querySelector('#navRuns')?.click());
     await page.waitForSelector('#runsWorkspace');
@@ -118,12 +131,15 @@ test('WebKit preserves safe-area navigation, run bar and settings visual viewpor
       const button = document.querySelector('#runsWorkspace [data-run-action="start"]');
       return { runBar: toBox(button.parentElement), nav: toBox(document.querySelector('.sidebar')) };
     });
-    assert.ok(runBar && nav && runBar.y + runBar.height <= nav.y);
+    assert.ok(runBar && nav && runBar.y + runBar.height <= nav.y, JSON.stringify({ runBar, nav }));
+    assert.equal(await page.locator('.mobile-run-bar').evaluate((node) => getComputedStyle(node).bottom), '100px');
+    assert.equal(await page.locator('.sidebar').evaluate((node) => getComputedStyle(node).paddingBottom), '32px');
     await page.evaluate(() => document.querySelector('#navSettings')?.click());
     await page.waitForSelector('#settingsWorkspace');
     await page.evaluate(() => document.querySelector('[data-settings-card="deploy"]')?.click());
     assert.equal(await page.locator('[data-drawer-save="save"]').isVisible(), true);
     assert.equal(await page.locator('[data-settings-dialog]').evaluate((node) => getComputedStyle(node).backgroundColor), 'rgb(255, 255, 255)');
+    assert.equal(await page.locator('.settings-drawer-actions').evaluate((node) => getComputedStyle(node).paddingBottom), '36px');
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.visualViewport.width));
   } finally {
     await closeWithin(browser.close());

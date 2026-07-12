@@ -40,3 +40,13 @@
 
 - PNG comparison is intentionally byte-deterministic. On a mismatch, the baseline and `actual` PNG are retained, `diff.png` renders changed pixels in magenta, and `diff.txt` records exact digests.
 - Baselines use Playwright Chromium at CSS scale with fixed time/language and disabled animations. Browser/runtime upgrades require an intentional baseline refresh.
+
+## Spec-review remediation (2026-07-12)
+
+- RED: the expanded control contract failed on six 34–38 px landscape Logs controls; the injected 24 px WebKit safe-area assertion failed because production CSS consumed `env()` directly; and the visual test failed until a distinct idle Runs baseline existed.
+- GREEN: the six-page workflow now remains at a real 390×844 mobile viewport for Runs, Results, Subscriptions, Logs, and Settings (including all sheets), with mobile QR failure/retry and log clear/undo/follow/jump-latest exercised in the same flow.
+- Safe areas are represented by production `--safe-area-*` properties backed by `env(..., 0px)`. WebKit injects non-zero 18/24/9/11 px values and proves the 100 px run-bar bottom offset, 32 px bottom-nav padding, and 36 px sheet action padding.
+- `assertMobileLayout` now checks every visible page `button`, `input`, `select`, and `[tabindex="0"]` target for 44×44 minimum, excluding controls under `[hidden]` or `[aria-hidden="true"]`; landscape toolbar controls were fixed to satisfy it.
+- Cleanup timeouts now reject with `cleanup timed out...` and always clear their timer instead of silently continuing.
+- Baseline/artifact paths now resolve from `import.meta.url`. Runs has separate `runs-idle-390x844.png` and `runs-running-390x844.png` evidence; both were manually reviewed after regeneration.
+- Final requested matrix after remediation: 19/19 PASS in 17.96 s.
