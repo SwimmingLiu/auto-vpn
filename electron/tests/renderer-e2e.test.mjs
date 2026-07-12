@@ -628,6 +628,23 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     assert.doesNotMatch(logText, /隐藏|占位|合并/);
     assert.match(logText, /extract started/);
 
+    await page.evaluate(() => {
+      for (let index = 0; index < 80; index += 1) {
+        window.__emitPipelineEvent({ type: 'log', message: `[INFO] scroll sample ${index}` });
+      }
+    });
+    await page.locator('#logCenterTable').evaluate((element) => { element.scrollTop = element.scrollHeight; });
+    await page.evaluate(() => window.__emitPipelineEvent({ type: 'log', message: '[INFO] followed latest' }));
+    assert.equal(await page.locator('#logCenterTable').evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight <= 32), true);
+
+    await page.locator('#logCenterTable').evaluate((element) => { element.scrollTop = 0; });
+    const retainedScrollTop = await page.locator('#logCenterTable').evaluate((element) => element.scrollTop);
+    await page.evaluate(() => window.__emitPipelineEvent({ type: 'log', message: '[INFO] unseen latest' }));
+    assert.equal(await page.locator('#logCenterTable').evaluate((element) => element.scrollTop), retainedScrollTop);
+    assert.match(await page.locator('[data-log-jump-latest]').innerText(), /1 条新消息/);
+    await page.locator('[data-log-jump-latest]').click();
+    assert.equal(await page.locator('#logCenterTable').evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight <= 32), true);
+
     await page.getByRole('button', { name: '错误' }).click();
     const errorText = await page.locator('#logCenterTable').innerText();
     assert.match(errorText, /availability failed/);
@@ -635,16 +652,19 @@ test('renderer matches the six-page canvas redesign and supports page navigation
 
     await page.getByRole('button', { name: '运行日志' }).click();
     const runtimeText = await page.locator('#logCenterTable').innerText();
-    assert.match(runtimeText, /extract started/);
+    assert.match(runtimeText, /scroll sample/);
     assert.doesNotMatch(runtimeText, /availability failed/);
 
     await page.getByRole('button', { name: '按阶段' }).click();
     const groupedText = await page.locator('#logCenterTable').innerText();
-    assert.match(groupedText, /extract/);
-    assert.match(groupedText, /其他|availability/);
+    assert.match(groupedText, /scroll sample/);
+    assert.match(groupedText, /其他/);
 
     await page.getByRole('button', { name: '清空显示' }).click();
     assert.match(await page.locator('#logCenterTable').innerText(), /暂无日志|暂无可显示日志/);
+    assert.ok(await page.locator('[data-log-undo-clear]').count() >= 1);
+    await page.locator('[data-log-undo-clear]').first().click();
+    assert.match(await page.locator('#logCenterTable').innerText(), /unseen latest/);
 
     await page.locator('#navSubscriptions').click();
     await page.waitForSelector('#subscriptionCards');

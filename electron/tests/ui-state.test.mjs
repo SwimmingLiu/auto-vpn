@@ -191,6 +191,32 @@ test('groupLogEntriesByStage groups unknown lines into 其他', () => {
   assert.equal(groups.at(-1).label, '其他');
 });
 
+test('logs workspace exposes an accessible stream and separated destructive action', () => {
+  const messages = getMessages('zh-CN');
+  const vm = buildViewModel({
+    runtime: 'web',
+    logFilter: '错误',
+    logEntries: ['[ERROR] availability failed'],
+    logView: { follow: false, unseenCount: 3, clearedSnapshot: null }
+  }, messages, 'zh-CN');
+  const markup = buildPageMarkup('logs', vm, messages, 'zh-CN');
+
+  assert.match(markup, /id="logCenterTable"[^>]*role="log"/);
+  assert.match(markup, /data-log-filter="错误"[^>]*aria-pressed="true"/);
+  assert.match(markup, /data-log-filter="全部"[^>]*aria-pressed="false"/);
+  assert.match(markup, /class="[^"]*log-destructive-actions[^"]*"[\s\S]*data-action="clear-log"/);
+  assert.match(markup, /data-log-jump-latest[\s\S]*3 条新消息/);
+});
+
+test('logs workspace hides latest and undo actions without pending state', () => {
+  const messages = getMessages('zh-CN');
+  const vm = buildViewModel({ logEntries: [], logView: { follow: true, unseenCount: 0, clearedSnapshot: null } }, messages, 'zh-CN');
+  const markup = buildPageMarkup('logs', vm, messages, 'zh-CN');
+
+  assert.doesNotMatch(markup, /data-log-jump-latest/);
+  assert.doesNotMatch(markup, /data-log-undo-clear/);
+});
+
 test('buildRegionStats counts decoded vmess rows by region prefix', () => {
   const stats = buildRegionStats([
     { name: '🇺🇸 US alpha' },

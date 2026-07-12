@@ -143,6 +143,7 @@ export function buildViewModel(state, messages, language) {
     qr: state.qr ?? { status: state.qrDataUrl ? 'success' : 'idle', dataUrl: state.qrDataUrl ?? '', message: '' },
     displayLogs,
     logFilter,
+    logView: state.logView ?? { follow: true, unseenCount: 0, clearedSnapshot: null },
     logRows: buildLogRows(filterLogEntries(displayLogs, logFilter)),
     logGroups: groupLogEntriesByStage(filterLogEntries(displayLogs, logFilter)),
     stageRows,
@@ -588,17 +589,24 @@ function buildLogsPage(vm, messages) {
               <button
                 class="subtab ${vm.logFilter === filter ? 'active' : ''}"
                 data-log-filter="${escapeHtml(filter)}"
+                aria-pressed="${vm.logFilter === filter ? 'true' : 'false'}"
                 type="button"
               >${escapeHtml(filter)}</button>
             `).join('')}
           </div>
           <div class="toolbar-right">
-            <button class="btn btn-secondary small" data-action="copy-log" type="button">复制日志</button>
-            <button class="btn btn-secondary small" data-action="clear-log" type="button">清空显示</button>
-            ${vm.runtime === 'web' ? '' : '<button class="btn btn-primary small" data-action="open-log-file" type="button">打开日志文件</button>'}
+            <div class="log-utility-actions">
+              <button class="btn btn-secondary small" data-action="copy-log" type="button">复制日志</button>
+              ${vm.runtime === 'web' ? '' : '<button class="btn btn-primary small" data-action="open-log-file" type="button">打开日志文件</button>'}
+            </div>
+            <div class="log-destructive-actions">
+              <button class="btn btn-secondary small" data-action="clear-log" type="button">清空显示</button>
+            </div>
           </div>
         </div>
-        <div id="logCenterTable" class="terminal-output log-stream">
+        ${!vm.logView.follow && vm.logView.unseenCount > 0 ? `<button class="btn btn-primary small log-jump-latest" data-log-jump-latest type="button">回到底部 · ${vm.logView.unseenCount} 条新消息</button>` : ''}
+        ${vm.logView.clearedSnapshot ? '<button class="btn btn-secondary small log-undo-clear" data-log-undo-clear type="button">撤销清空</button>' : ''}
+        <div id="logCenterTable" class="terminal-output log-stream" role="log" aria-live="polite">
           ${buildLogCenterMarkup(vm)}
         </div>
       </article>

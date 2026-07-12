@@ -1,5 +1,5 @@
 import { getMessages, formatMessage } from './i18n.js';
-import { createQrState, resolveRunControlState } from './state.js';
+import { createLogViewState, createQrState, resolveRunControlState } from './state.js';
 import {
   addAvailabilityTargetDraft,
   applyAvailabilityTargetDraft,
@@ -115,6 +115,7 @@ const state = {
   runState: 'idle',
   runResult: 'idle',
   logEntries: [],
+  logView: createLogViewState(),
   extractDedupedFingerprints: new Set(),
   artifactDir: '',
   retryArtifacts: [],
@@ -221,6 +222,7 @@ function bindActions() {
   document.addEventListener('input', handleDocumentInput);
   document.addEventListener('change', handleDocumentInput);
   document.addEventListener('keydown', handleSettingsDrawerKeydown);
+  document.addEventListener('scroll', handleLogScroll, true);
   window.addEventListener('resize', syncRunDetailsPresentation);
   
   document.addEventListener('mousedown', (e) => {
@@ -353,6 +355,26 @@ function runTone() {
 }
 
 async function handleDocumentClick(event) {
+  const jumpLatest = event.target.closest('[data-log-jump-latest]');
+  if (jumpLatest) {
+    state.logView.follow = true;
+    state.logView.unseenCount = 0;
+    renderAll();
+    scrollLogToLatest();
+    return;
+  }
+
+  const undoClear = event.target.closest('[data-log-undo-clear]');
+  if (undoClear && state.logView.clearedSnapshot) {
+    state.logEntries = state.logView.clearedSnapshot;
+    state.logView.clearedSnapshot = null;
+    state.logView.follow = true;
+    state.logView.unseenCount = 0;
+    state.toast = null;
+    renderAll();
+    scrollLogToLatest();
+    return;
+  }
   const navButton = event.target.closest('[data-page-target]');
   if (navButton) {
     state.activePage = navButton.dataset.pageTarget;
@@ -444,8 +466,12 @@ async function handleDocumentClick(event) {
     return;
   }
   if (action?.dataset.action === 'clear-log') {
+    state.logView.clearedSnapshot = [...state.logEntries];
     state.logEntries = [];
+    state.logView.follow = true;
+    state.logView.unseenCount = 0;
     renderAll();
+    showToast({ tone: 'neutral', message: '日志已清空', durationMs: 5000, action: 'undo-clear' });
     return;
   }
   if (action?.dataset.action === 'open-log-file') {
@@ -699,16 +725,20 @@ async function writeClipboardText(text) {
   throw new Error('clipboard_unavailable');
 }
 
-function showToast({ tone = 'neutral', message, durationMs = 2400 }) {
+function showToast({ tone = 'neutral', message, durationMs = 2400, action = null }) {
   if (!message) {
     return;
   }
-  state.toast = { tone, message };
+  state.toast = { tone, message, action };
   renderToast();
   if (toastTimer) {
     clearTimeout(toastTimer);
   }
   toastTimer = window.setTimeout(() => {
+    if (state.toast?.action === 'undo-clear') {
+      state.logView.clearedSnapshot = null;
+      renderActiveRuntimeSections(buildViewModel(state, getMessages(state.language), state.language));
+    }
     state.toast = null;
     renderToast();
     toastTimer = null;
@@ -726,6 +756,7 @@ function renderToast() {
   elements.toastRoot.innerHTML = `
     <div class="toast ${escapeHtml(state.toast.tone || 'neutral')}" data-toast data-toast-tone="${escapeHtml(state.toast.tone || 'neutral')}">
       ${escapeHtml(state.toast.message)}
+      ${state.toast.action === 'undo-clear' ? '<button class="btn small" data-log-undo-clear type="button">撤销</button>' : ''}
     </div>
   `;
 }
@@ -1627,6 +1658,12 @@ function resolveDefaultRetryStage(artifact) {
 }
 
 function appendLog(message, overrides = {}) {
+  const logCenter = document.querySelector('#logCenterTable');
+  const wasNearBottom = !logCenter || logCenter.scrollHeight - logCenter.scrollTop - logCenter.clientHeight <= 32;
+  state.logView.follow = wasNearBottom;
+  if (!wasNearBottom) {
+    state.logView.unseenCount += 1;
+  }
   state.logEntries.push(classifyLogEntry(message, overrides));
   touchUpdate();
   renderRuntimeOnly({ chrome: false });
@@ -1645,7 +1682,17 @@ function renderRuntimeOnly({ chrome = true } = {}) {
 function renderActiveRuntimeSections(viewModel) {
   const logCenter = document.querySelector('#logCenterTable');
   if (logCenter) {
+    const previousScrollTop = logCenter.scrollTop;
     logCenter.innerHTML = buildLogCenterMarkup(viewModel);
+    logCenter.scrollTop = state.logView.follow ? logCenter.scrollHeight : previousScrollTop;
+    const workspace = logCenter.closest('#logsWorkspace');
+    workspace?.querySelectorAll('[data-log-jump-latest], [data-log-undo-clear]').forEach((node) => node.remove());
+    if (!state.logView.follow && state.logView.unseenCount > 0) {
+      logCenter.insertAdjacentHTML('beforebegin', `<button class="btn btn-primary small log-jump-latest" data-log-jump-latest type="button">回到底部 · ${state.logView.unseenCount} 条新消息</button>`);
+    }
+    if (state.logView.clearedSnapshot) {
+      logCenter.insertAdjacentHTML('beforebegin', '<button class="btn btn-secondary small log-undo-clear" data-log-undo-clear type="button">撤销清空</button>');
+    }
   }
 
   const stageProgress = document.querySelector('#runsStageProgress');
@@ -1662,6 +1709,18 @@ function renderActiveRuntimeSections(viewModel) {
   if (dashboardMetrics) {
     dashboardMetrics.outerHTML = buildDashboardMetricsMarkup(viewModel);
   }
+}
+
+function handleLogScroll(event) {
+  if (event.target?.id !== 'logCenterTable') return;
+  const distance = event.target.scrollHeight - event.target.scrollTop - event.target.clientHeight;
+  state.logView.follow = distance <= 32;
+  if (state.logView.follow) state.logView.unseenCount = 0;
+}
+
+function scrollLogToLatest() {
+  const logCenter = document.querySelector('#logCenterTable');
+  if (logCenter) logCenter.scrollTop = logCenter.scrollHeight;
 }
 
 function resolveVisibleLogEntries() {

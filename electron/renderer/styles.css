@@ -994,6 +994,25 @@ body[data-page="logs"] .page-content {
   margin-top: 16px;
 }
 
+.log-utility-actions,
+.log-destructive-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.log-destructive-actions {
+  margin-left: 8px;
+  padding-left: 12px;
+  border-left: 1px solid rgba(255, 135, 148, 0.45);
+}
+
+.log-jump-latest,
+.log-undo-clear {
+  justify-self: end;
+  margin: 8px 0;
+  min-height: 44px;
+}
+
 .compact-result-table {
   min-width: 560px;
 }
@@ -1045,7 +1064,7 @@ body[data-page="logs"] #logsWorkspace > .panel {
 
 body[data-page="logs"] #logsWorkspace > .panel {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto minmax(0, 1fr);
 }
 
 body[data-page="logs"] #logCenterTable {
@@ -2560,6 +2579,21 @@ body[data-page="logs"] #logCenterTable {
   .toolbar-right .btn,
   .subtab {
     width: 100%;
+  }
+
+  .log-utility-actions,
+  .log-destructive-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin-left: 0;
+    padding-left: 0;
+    border-left: 0;
+  }
+
+  .log-destructive-actions {
+    grid-template-columns: 1fr;
+    padding-top: 8px;
+    border-top: 1px solid rgba(255, 135, 148, 0.45);
   }
 
   .terminal-output,
