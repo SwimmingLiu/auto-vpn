@@ -1510,7 +1510,9 @@ function normalizeSourceCounts(sourceCounts = {}) {
       {
         ...counts,
         raw_links: Number(counts?.raw_links ?? 0),
-        deduped_links: Number(counts?.deduped_links ?? 0)
+        ...(counts && Object.hasOwn(counts, 'deduped_links')
+          ? { deduped_links: Number(counts.deduped_links) }
+          : {})
       }
     ])
   );

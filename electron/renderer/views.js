@@ -936,11 +936,6 @@ function buildSourceMetricRows(profile, sourceCounts = {}, countKey = 'raw_links
     ...Object.keys(profile.sources ?? {}),
     ...Object.keys(sourceCounts ?? {})
   ]);
-  const hasRequestedValues = countKey === 'raw_links'
-    || Object.values(sourceCounts ?? {}).some((counts) => counts && countKey in counts);
-  if (!hasRequestedValues) {
-    return [];
-  }
   return Array.from(sourceNames)
     .sort((left, right) => {
       const leftIndex = SOURCE_DISPLAY_ORDER.indexOf(left);
@@ -950,7 +945,9 @@ function buildSourceMetricRows(profile, sourceCounts = {}, countKey = 'raw_links
     .map((name) => ({
       name,
       label: SOURCE_NAMES[name] || name,
-      count: Number(sourceCounts[name]?.[countKey] ?? 0)
+      count: countKey !== 'raw_links' && !Object.hasOwn(sourceCounts[name] ?? {}, countKey)
+        ? '—'
+        : Number(sourceCounts[name]?.[countKey] ?? 0)
     }));
 }
 

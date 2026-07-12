@@ -517,3 +517,19 @@ test('dashboard metrics show deduped node copy and per-source dedupe counts', ()
   assert.match(markup, /黑洞 4/);
   assert.doesNotMatch(markup, /去重后/);
 });
+
+test('dashboard metrics render missing legacy per-source dedupe counts as unknown instead of zero', () => {
+  const messages = getMessages('zh-CN');
+  const vm = buildViewModel({
+    profile: {
+      sources: { leiting: { url: 'https://a.example', key: 'a', enabled: true } },
+      availability_targets: {},
+      speed_test: {},
+      deploy: {}
+    },
+    counts: { raw_links: 7, deduped_links: 5 },
+    sourceCounts: { leiting: { raw_links: 7 } }
+  }, messages, 'zh-CN');
+
+  assert.match(buildDashboardMetricsMarkup(vm), /雷霆 —/);
+});

@@ -82,6 +82,31 @@ test('preserves raw observations while deduping canonical vmess endpoints in dis
   }
 });
 
+test('persists first-seen canonical ownership and reports authoritative per-source counts after reopen', async () => {
+  const ctx = await fixture();
+  try {
+    ctx.store.initializeRun();
+    const sharedA = vmessLink('shared-a', 'shared.example');
+    const sharedB = vmessLink('shared-b', 'shared.example');
+    const uniqueA = vmessLink('unique-a', 'a.example');
+    const uniqueB = vmessLink('unique-b', 'b.example');
+
+    ctx.store.recordExtractedNode('A', sharedA);
+    ctx.store.recordExtractedNode('A', uniqueA);
+    ctx.store.recordExtractedNode('B', sharedB);
+    ctx.store.recordExtractedNode('B', uniqueB);
+
+    assert.deepEqual(ctx.store.sourceDedupedCounts(), { A: 2, B: 1 });
+    assert.equal(Object.values(ctx.store.sourceDedupedCounts()).reduce((sum, count) => sum + count, 0), ctx.store.counts().deduped);
+
+    ctx.store.close();
+    ctx.store = RunStore.open(ctx.dbPath);
+    assert.deepEqual(ctx.store.sourceDedupedCounts(), { A: 2, B: 1 });
+  } finally {
+    await ctx.cleanup();
+  }
+});
+
 test('roundtrips speed and availability results and redacts errors before persistence', async () => {
   const ctx = await fixture();
   try {
@@ -318,9 +343,11 @@ test('openOrImport migrates historical minimal schema and imports raw-only artif
     assert.deepEqual(store.dedupedLinks(), [link]);
     store.close();
     const migrated = new DatabaseSync(dbPath);
-    assert.equal(migrated.prepare('PRAGMA user_version').get().user_version, 2);
+    assert.equal(migrated.prepare('PRAGMA user_version').get().user_version, 3);
     assert.ok(migrated.prepare('PRAGMA table_info(runs)').all().some((row) => row.name === 'error'));
     assert.ok(migrated.prepare('PRAGMA table_info(stage_events)').all().some((row) => row.name === 'run_id'));
+    assert.ok(migrated.prepare('PRAGMA table_info(pipeline_nodes)').all().some((row) => row.name === 'first_source'));
+    assert.equal(migrated.prepare('SELECT first_source FROM pipeline_nodes').get().first_source, 'legacy');
     migrated.close();
   } finally { await rm(root, { recursive: true, force: true }); }
 });

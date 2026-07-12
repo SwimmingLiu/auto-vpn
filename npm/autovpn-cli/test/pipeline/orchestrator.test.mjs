@@ -113,6 +113,8 @@ test('runNodePipeline emits compatible events and writes non-deploy artifacts', 
   assert.equal(result.counts.speedtest_links, 2);
   assert.equal(result.counts.availability_links, 2);
   assert.equal(result.counts.final_links, 2);
+  assert.equal(result.source_counts.fixture.raw_links, 3);
+  assert.equal(result.source_counts.fixture.deduped_links, 2);
   assert.deepEqual(events.map((event) => event.type).filter((type) => type === 'summary'), ['summary']);
 
   const artifactDir = result.artifact_dir;
@@ -122,7 +124,9 @@ test('runNodePipeline emits compatible events and writes non-deploy artifacts', 
   assert.equal((await readFile(path.join(artifactDir, 'vpn_node_availability.txt'), 'utf8')).trim().split(/\n/).length, 2);
   const decoratedNames = (await readFile(path.join(artifactDir, 'vpn_node_emoji.txt'), 'utf8')).trim().split(/\n/).map(vmessName);
   assert.deepEqual(decoratedNames, ['\u{1F1FA}\u{1F1F8} US first', '\u{1F1FA}\u{1F1F8} US second']);
-  assert.equal(JSON.parse(await readFile(path.join(artifactDir, 'pipeline_report.json'), 'utf8')).run_status, 'success');
+  const pipelineReport = JSON.parse(await readFile(path.join(artifactDir, 'pipeline_report.json'), 'utf8'));
+  assert.equal(pipelineReport.run_status, 'success');
+  assert.equal(pipelineReport.source_counts.fixture.deduped_links, 2);
   const store = RunStore.open(path.join(artifactDir, 'run.db'));
   try {
     assert.deepEqual(store.counts(), { raw: 3, deduped: 2, probes: 2, speed: 2, availability: 2 });
@@ -2369,6 +2373,8 @@ test('resumeNodePipeline resets interrupted sqlite nodes and schedules only inco
   assert.equal(resumed.run_status, 'success');
   assert.equal(resumed.counts.raw_links, 3);
   assert.equal(resumed.counts.deduped_links, 3);
+  assert.deepEqual(resumed.source_counts.source, { raw_links: 2, deduped_links: 2 });
+  assert.equal(resumed.source_counts.fixture.deduped_links, 1);
   assert.deepEqual(extractCalls, ['fixture']);
   assert.deepEqual(speedCalls.sort(), [interrupted, extractedAfterResume].sort());
   assert.deepEqual(availabilityCalls.sort(), [interrupted, passed, extractedAfterResume].sort());
@@ -2390,6 +2396,9 @@ test('resumeNodePipeline resets interrupted sqlite nodes and schedules only inco
   assert.deepEqual(sourceStore.incompleteSourceProgress(), []);
   assert.deepEqual(sourceStore.sourceProgress().find((row) => row.source === 'fixture'), { source: 'fixture', processed: 1, total: 1, status: 'success', error: '' });
   sourceStore.close();
+  const resumedReport = JSON.parse(await readFile(path.join(artifactDir, 'pipeline_report.json'), 'utf8'));
+  assert.equal(resumedReport.source_counts.source.deduped_links, 2);
+  assert.equal(resumedReport.source_counts.fixture.deduped_links, 1);
   const dbStages = readLatestStageStatuses(path.join(artifactDir, 'run.db'));
   assert.equal(Object.values(dbStages).includes('stopped'), false);
   assert.equal(dbStages.speedtest, resumed.stage_status.speedtest);

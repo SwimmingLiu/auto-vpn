@@ -339,6 +339,18 @@ function pipelineSummaryFromReport(artifactDir: string, report: Record<string, u
   };
 }
 
+function refreshSourceCounts(summary: PipelineSummary, store: RunStore): void {
+  const rawCounts = store.sourceRawCounts();
+  const dedupedCounts = store.sourceDedupedCounts();
+  for (const source of new Set([...Object.keys(summary.source_counts), ...Object.keys(rawCounts), ...Object.keys(dedupedCounts)])) {
+    summary.source_counts[source] = {
+      ...(summary.source_counts[source] ?? {}),
+      raw_links: rawCounts[source] ?? 0,
+      deduped_links: dedupedCounts[source] ?? 0
+    };
+  }
+}
+
 function passedSpeedResults(allResults: SpeedTestResult[], passedLinks: string[]): SpeedTestResult[] {
   const byLink = new Map(allResults.map((result) => [result.link, result]));
   return passedLinks
@@ -709,6 +721,7 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
     if (!dedupeStageStart) await setStage('dedupe', 'skipped', false);
     dedupedLinks = runStore.dedupedLinks();
     summary.counts.deduped_links = runStore.counts().deduped;
+    refreshSourceCounts(summary, runStore);
     await writeLines(artifactDir, 'vpn_node_deduped.txt', dedupedLinks);
     if (summary.stage_status.dedupe !== 'skipped') await setStage('dedupe', 'success', !useStreamingStages);
 
@@ -916,6 +929,7 @@ export async function retryNodePipelineStage(options: NodeRetryStageOptions, con
     String(profile.worker_build?.bundle_subdir ?? 'pages_bundle')
   );
   const retryStore = RunStore.seedRetry(sourceArtifactDir, retryArtifactDir, stage);
+  refreshSourceCounts(summary, retryStore);
   try {
 
   const emit = (type: string, payload: Record<string, unknown> = {}) => {
@@ -1168,6 +1182,7 @@ async function resumeNodeSpeedtest(options: NodeResumeOptions, context: RunNodeP
   try {
   runStore.reopenForResume();
   runStore.resetInterruptedRunning();
+  refreshSourceCounts(summary, runStore);
 
   const emit = (type: string, payload: Record<string, unknown> = {}) => {
     const event = { type, ...payload } as AutoVpnEvent;
@@ -1376,6 +1391,7 @@ export async function resumeNodePipeline(options: NodeResumeOptions, context: Ru
   const storeCounts = runStore.counts();
   summary.counts.raw_links = storeCounts.raw;
   summary.counts.deduped_links = storeCounts.deduped;
+  refreshSourceCounts(summary, runStore);
   summary.counts.speedtest_links = speedResults.length;
 
   try {
@@ -1480,6 +1496,7 @@ export async function resumeNodePipeline(options: NodeResumeOptions, context: Ru
     }
     summary.counts.raw_links = runStore.counts().raw;
     summary.counts.deduped_links = runStore.counts().deduped;
+    refreshSourceCounts(summary, runStore);
     await writeLines(artifactDir, 'vpn_node_raw.txt', runStore.rawLinks());
     await writeLines(artifactDir, 'vpn_node_deduped.txt', runStore.dedupedLinks());
     const storedPassedSpeedResults = runStore.speedResults().filter((result) => result.status === 'speed_passed');
