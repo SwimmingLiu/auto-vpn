@@ -349,15 +349,21 @@ function pipelineSummaryFromReport(artifactDir: string, report: Record<string, u
   };
 }
 
-function refreshSourceCounts(summary: PipelineSummary, store: RunStore): void {
+export function refreshSourceCounts(summary: PipelineSummary, store: Pick<RunStore,
+  'sourceRawCounts' | 'sourceDedupedCounts' | 'sourceProgress' | 'hasCompleteSourceOwnership'>): void {
   const rawCounts = store.sourceRawCounts();
   const dedupedCounts = store.sourceDedupedCounts();
+  const completeOwnership = store.hasCompleteSourceOwnership();
   const progressSources = store.sourceProgress().map((progress) => progress.source);
   for (const source of new Set([...Object.keys(summary.source_counts), ...progressSources, ...Object.keys(rawCounts), ...Object.keys(dedupedCounts)])) {
     summary.source_counts[source] = {
       ...(summary.source_counts[source] ?? {}),
       raw_links: rawCounts[source] ?? 0,
-      deduped_links: dedupedCounts[source] ?? 0
+      ...(Object.hasOwn(dedupedCounts, source)
+        ? { deduped_links: dedupedCounts[source] }
+        : completeOwnership
+          ? { deduped_links: 0 }
+          : {})
     };
   }
 }

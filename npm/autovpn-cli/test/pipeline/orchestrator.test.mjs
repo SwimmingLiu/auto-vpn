@@ -7,7 +7,7 @@ import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 
-import { resumeNodePipeline, retryNodePipelineStage, runNodePipeline, validateSpeedResumeProbeBatch } from '../../dist/pipeline/orchestrator.js';
+import { refreshSourceCounts, resumeNodePipeline, retryNodePipelineStage, runNodePipeline, validateSpeedResumeProbeBatch } from '../../dist/pipeline/orchestrator.js';
 import { RunStore, readLatestStageStatuses, readRunStatus } from '../../dist/pipeline/run-store.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -50,6 +50,36 @@ function geoIpOptions(countryCode = 'AU', seenAddresses = []) {
     })
   };
 }
+
+test('source count refresh leaves deduped counts unknown until all node ownership is authoritative', () => {
+  const summary = {
+    source_counts: {
+      known: { raw_links: 9, deduped_links: 7 },
+      unknown: { raw_links: 4 }
+    }
+  };
+  refreshSourceCounts(summary, {
+    sourceRawCounts: () => ({ known: 2, unknown: 1 }),
+    sourceDedupedCounts: () => ({ known: 1 }),
+    sourceProgress: () => [],
+    hasCompleteSourceOwnership: () => false
+  });
+  assert.deepEqual(summary.source_counts, {
+    known: { raw_links: 2, deduped_links: 1 },
+    unknown: { raw_links: 1 }
+  });
+});
+
+test('source count refresh emits real zeroes when all node ownership is authoritative', () => {
+  const summary = { source_counts: { empty: { raw_links: 5 } } };
+  refreshSourceCounts(summary, {
+    sourceRawCounts: () => ({ empty: 0 }),
+    sourceDedupedCounts: () => ({}),
+    sourceProgress: () => [],
+    hasCompleteSourceOwnership: () => true
+  });
+  assert.deepEqual(summary.source_counts.empty, { raw_links: 0, deduped_links: 0 });
+});
 
 test('speed resume bulk probe requires exactly one matching result per requested link', () => {
   const first = vmessLink('first', 'one.example');

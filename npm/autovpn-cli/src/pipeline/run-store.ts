@@ -421,6 +421,13 @@ export class RunStore {
     return Object.fromEntries(rows.map((row) => [row.source, Number(row.count)]));
   }
 
+  hasCompleteSourceOwnership(): boolean {
+    const row = this.statement(`SELECT NOT EXISTS(
+      SELECT 1 FROM pipeline_nodes WHERE run_id = ? AND first_source IS NULL
+    ) AS complete`).get(this.currentRunId()) as { complete: number };
+    return Boolean(row.complete);
+  }
+
   sourceRawCounts(): Record<string, number> {
     const rows = this.statement(`SELECT source, COUNT(*) AS count FROM raw_observations
       WHERE run_id = ? GROUP BY source ORDER BY MIN(observation_id)`)
