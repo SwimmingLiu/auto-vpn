@@ -16,6 +16,7 @@ import {
   buildAvailabilityTargetDraft,
   buildDashboardMetricsMarkup,
   buildPageMarkup,
+  buildSidebarNav,
   buildViewModel,
   buildRegionStats,
   buildSourceIterationDraft,
@@ -25,6 +26,13 @@ import {
   groupLogEntriesByStage,
   removeAvailabilityTargetDraft
 } from '../renderer/views.js';
+
+test('buildSidebarNav marks only the active page as current', () => {
+  const nav = buildSidebarNav(getMessages('zh-CN'), 'runs');
+
+  assert.match(nav, /id="navRuns"[^>]*aria-current="page"/);
+  assert.doesNotMatch(nav, /id="navDashboard"[^>]*aria-current/);
+});
 
 test('buildStageModel marks stages in configured order', () => {
   const rows = buildStageModel({ doctor: 'success', availability: 'running', deploy: 'running' });

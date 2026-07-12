@@ -821,8 +821,20 @@ test('served web ui supports mobile bottom navigation and run controls', async (
     assert.ok(navBox);
     assert.ok(navBox.y > 760);
 
+    const navItems = page.locator('#sidebarNav .nav-item');
+    assert.equal(await navItems.count(), 6);
+    for (let index = 0; index < 6; index += 1) {
+      const item = navItems.nth(index);
+      assert.ok(await item.isVisible());
+      const box = await item.boundingBox();
+      assert.ok(box && box.width >= 44 && box.height >= 44);
+    }
+    assert.equal(await page.locator('#navDashboard').getAttribute('aria-current'), 'page');
+
     await page.locator('#navRuns').click();
     await page.waitForSelector('#runsWorkspace');
+    assert.equal(await page.locator('#navRuns').getAttribute('aria-current'), 'page');
+    assert.equal(await page.locator('#navDashboard').getAttribute('aria-current'), null);
     await page.locator('#runsWorkspace [data-run-action="start"]').click();
     await page.waitForFunction(() => document.querySelector('#runsWorkspace [data-run-action="start"]')?.disabled);
     await page.locator('#runsWorkspace [data-run-action="stop"]').click();
@@ -831,6 +843,15 @@ test('served web ui supports mobile bottom navigation and run controls', async (
     await page.waitForSelector('#logsWorkspace');
     assert.match(await page.locator('#logsWorkspace').innerText(), /extract|leiting/);
     assert.equal(await page.locator('[data-action="open-log-file"]').count(), 0);
+    await page.locator('#navSettings').click();
+    await page.waitForSelector('#settingsWorkspace');
+    const finalControl = page.locator('#settingsWorkspace .settings-overview-card').last();
+    await finalControl.evaluate((element) => element.scrollIntoView({ block: 'center' }));
+    const finalControlBox = await finalControl.boundingBox();
+    const bottomNavBox = await page.locator('.sidebar').boundingBox();
+    assert.ok(finalControlBox && bottomNavBox && finalControlBox.y + finalControlBox.height <= bottomNavBox.y,
+      JSON.stringify({ finalControlBox, bottomNavBox }));
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth));
     assert.ok(calls.some(([name]) => name === 'start'));
     assert.ok(calls.some(([name]) => name === 'stop'));
   } finally {

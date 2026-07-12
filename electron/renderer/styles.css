@@ -21,6 +21,11 @@
   --terminal-soft: #1b2436;
   --terminal-text: #d6e2ff;
   --shadow: 0 20px 44px rgba(29, 39, 71, 0.08);
+  --z-sticky: 30;
+  --z-bottom-nav: 40;
+  --z-backdrop: 50;
+  --z-sheet: 60;
+  --z-toast: 70;
 }
 
 * {
@@ -890,7 +895,7 @@ body[data-page="logs"] .page-content {
   position: fixed;
   top: 58px;
   right: 28px;
-  z-index: 40;
+  z-index: var(--z-toast);
   display: grid;
   gap: 8px;
   pointer-events: none;
@@ -1338,7 +1343,7 @@ body[data-page="logs"] #logCenterTable {
   align-items: center;
   justify-content: center;
   padding: 24px;
-  z-index: 30;
+  z-index: var(--z-backdrop);
 }
 
 .settings-drawer-shell[data-open="false"] {
@@ -1375,6 +1380,7 @@ body[data-page="logs"] #logCenterTable {
   opacity: 0;
   transition: transform 0.2s ease, opacity 0.2s ease;
   position: relative;
+  z-index: var(--z-sheet);
 }
 
 .settings-drawer-shell[data-section="availability_targets"] .settings-drawer-panel {
@@ -1984,6 +1990,17 @@ body[data-page="logs"] #logCenterTable {
     padding-bottom: 4px;
   }
 
+  .nav-copy {
+    display: block;
+  }
+
+  .nav-item {
+    justify-content: flex-start;
+    min-width: 112px;
+    min-height: 44px;
+    padding-inline: 10px;
+  }
+
   .main-shell {
     min-height: calc(100vh - 132px);
   }
@@ -2029,6 +2046,20 @@ body[data-page="logs"] #logCenterTable {
     min-height: 100%;
   }
 
+  html {
+    scroll-padding-bottom: calc(86px + env(safe-area-inset-bottom));
+  }
+
+  #settingsWorkspace button,
+  #settingsWorkspace input,
+  #settingsWorkspace select {
+    scroll-margin-bottom: calc(86px + env(safe-area-inset-bottom));
+  }
+
+  #settingsWorkspace {
+    padding-bottom: calc(86px + env(safe-area-inset-bottom));
+  }
+
   body {
     overflow: auto;
     background: linear-gradient(180deg, #fbfcff 0%, var(--bg) 100%);
@@ -2050,7 +2081,7 @@ body[data-page="logs"] #logCenterTable {
     left: 0;
     right: 0;
     bottom: 0;
-    z-index: 80;
+    z-index: var(--z-bottom-nav);
     display: block;
     padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
     border: 1px solid rgba(207, 215, 239, 0.82);
@@ -2068,11 +2099,13 @@ body[data-page="logs"] #logCenterTable {
     display: grid;
     grid-template-columns: repeat(6, minmax(0, 1fr));
     gap: 4px;
-    overflow: visible;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
     padding: 0;
   }
 
   .nav-item {
+    min-width: 0;
     min-height: 58px;
     display: grid;
     justify-items: center;
@@ -2103,13 +2136,13 @@ body[data-page="logs"] #logCenterTable {
   .main-shell {
     display: block;
     min-height: auto;
-    padding: 12px 12px 18px;
+    padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) 18px max(12px, env(safe-area-inset-left));
   }
 
   .topbar {
     position: sticky;
     top: 0;
-    z-index: 40;
+    z-index: var(--z-sticky);
     grid-template-columns: 1fr;
     gap: 12px;
     padding: 14px;
@@ -2141,7 +2174,7 @@ body[data-page="logs"] #logCenterTable {
   .topbar-actions .btn {
     min-width: 0;
     padding: 0 8px;
-    min-height: 42px;
+    min-height: 44px;
     border-radius: 12px;
     font-size: 13px;
   }
@@ -2236,7 +2269,7 @@ body[data-page="logs"] #logCenterTable {
   .run-control-panel {
     position: sticky;
     bottom: calc(76px + env(safe-area-inset-bottom));
-    z-index: 35;
+    z-index: var(--z-sticky);
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 10px;
     background: rgba(255, 255, 255, 0.98);
@@ -2320,6 +2353,48 @@ body[data-page="logs"] #logCenterTable {
     left: 12px;
     right: 12px;
     bottom: calc(86px + env(safe-area-inset-bottom));
+  }
+}
+
+@media (max-width: 320px) {
+  .sidebar-nav {
+    grid-template-columns: none;
+    grid-auto-flow: column;
+    grid-auto-columns: 56px;
+  }
+}
+
+@media (orientation: landscape) and (max-height: 500px) {
+  .topbar {
+    position: static;
+  }
+
+  .topbar-heading p,
+  .page-header-card {
+    display: none;
+  }
+
+  .terminal-output,
+  .log-stream,
+  body[data-page="logs"] #logCenterTable {
+    min-height: 180px;
+    height: 46dvh;
+    max-height: 46dvh;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+
+  .settings-drawer-panel {
+    transform: none !important;
   }
 }
 

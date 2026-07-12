@@ -194,6 +194,7 @@ export function buildSidebarNav(messages, activePage) {
       class="nav-item ${activePage === page ? 'active' : ''}"
       data-page-target="${page}"
       type="button"
+      ${activePage === page ? 'aria-current="page"' : ''}
     >
       <span class="nav-icon">${NAV_ICONS[page]}</span>
       <span class="nav-copy">${escapeHtml(messages.nav[page])}</span>
