@@ -66,13 +66,7 @@ jobs:
         run: npx playwright install --with-deps chromium-headless-shell webkit
 
       - name: Run H5 mobile Chromium and WebKit gate
-        run: UPDATE_VISUAL_BASELINES=1 npm run test:h5
-
-      - name: Upload Linux H5 release baselines
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-h5-release-baselines
-          path: electron/tests/visual-baselines/h5/linux/*.png
+        run: npm run test:h5
 
       - name: Run Electron native and desktop gate
         run: npm run test:electron-native
