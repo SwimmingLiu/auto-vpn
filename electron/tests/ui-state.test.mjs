@@ -282,6 +282,29 @@ test('settings page renders AI availability target card and drawer table', () =>
   assert.doesNotMatch(markup, /data-availability-key="negative_phrases"/);
   assert.doesNotMatch(markup, /屏蔽短语/);
   assert.match(markup, /gemini\.google\.com/);
+  assert.match(markup, /<aside[^>]*data-settings-dialog[^>]*role="dialog"[^>]*aria-modal="true"[^>]*aria-labelledby="settingsDrawerTitle"/);
+  assert.match(markup, /aria-label="Gemini：URL"/);
+});
+
+test('settings drawer is inert and has no actions while closed, with explicit source field names when open', () => {
+  const messages = getMessages('zh-CN');
+  const profile = {
+    sources: { leiting: { url: 'https://example.com', key: 'secret', enabled: true } },
+    availability_targets: {},
+    speed_test: { min_download_mb_s: 1, timeout_seconds: 20, concurrency: 3 },
+    deploy: { subscription_url: '' }
+  };
+  const closedMarkup = buildPageMarkup('settings', buildViewModel({ profile }, messages, 'zh-CN'), messages, 'zh-CN');
+  assert.match(closedMarkup, /id="settingsDrawer"[^>]*hidden[^>]*inert/);
+  assert.doesNotMatch(closedMarkup, /data-drawer-close="cancel"|data-drawer-save="save"/);
+
+  const openState = {
+    profile,
+    settingsDrawer: { section: 'sources', draft: { sources: profile.sources } }
+  };
+  const openMarkup = buildPageMarkup('settings', buildViewModel(openState, messages, 'zh-CN'), messages, 'zh-CN');
+  assert.match(openMarkup, /aria-label="雷霆：地址"/);
+  assert.match(openMarkup, /aria-label="雷霆：密钥"/);
 });
 
 test('settings page renders deploy card and drawer fields', () => {

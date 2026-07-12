@@ -691,6 +691,24 @@ test('renderer matches the six-page canvas redesign and supports page navigation
 
     await page.locator('[data-settings-card="sources"]').click();
     await page.waitForSelector('#settingsDrawer[data-open="true"]');
+    assert.equal(await page.locator('[data-settings-dialog]').count(), 1);
+    assert.equal(await page.evaluate(() => document.querySelector('[data-settings-dialog]')?.contains(document.activeElement)), true);
+    const dialogFocusable = page.locator('[data-settings-dialog] button, [data-settings-dialog] input, [data-settings-dialog] textarea, [data-settings-dialog] select');
+    await dialogFocusable.last().focus();
+    await page.keyboard.press('Tab');
+    assert.equal(await page.evaluate(() => document.activeElement === document.querySelector('[data-settings-dialog] button, [data-settings-dialog] input, [data-settings-dialog] textarea, [data-settings-dialog] select')), true);
+    await page.keyboard.press('Shift+Tab');
+    assert.equal(await dialogFocusable.last().evaluate((node) => node === document.activeElement), true);
+    await page.keyboard.press('Escape');
+    await page.waitForSelector('#settingsDrawer[hidden]');
+    assert.equal(await page.evaluate(() => document.activeElement?.matches('[data-settings-card="sources"]')), true);
+    await page.locator('[data-settings-card="sources"]').click();
+    await page.waitForSelector('#settingsDrawer[data-open="true"]');
+    await page.setViewportSize({ width: 390, height: 520 });
+    assert.equal(await page.locator('[data-drawer-save="save"]').isVisible(), true);
+    assert.equal(await page.locator('[data-drawer-close="cancel"]').last().isVisible(), true);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
+    await page.setViewportSize({ width: 1440, height: 960 });
     assert.match(await page.locator('#settingsDrawerTitle').innerText(), /数据源配置/);
     assert.equal(await page.locator('[data-source-max-iterations]').inputValue(), '40');
     const sourceSettingTops = await page.locator('.source-drawer-settings .field').evaluateAll((nodes) =>

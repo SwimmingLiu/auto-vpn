@@ -673,15 +673,20 @@ function buildSettingsDrawer(vm) {
 
   const style = vm.modalTransform ? `style="transform: ${escapeHtml(vm.modalTransform)};"` : '';
 
+  if (!isOpen) {
+    return '<div id="settingsDrawer" class="settings-drawer-shell" data-open="false" data-section="" hidden inert></div>';
+  }
+
   return `
     <div id="settingsDrawer" class="settings-drawer-shell" data-open="${isOpen ? 'true' : 'false'}" data-section="${escapeHtml(section)}">
       <button class="settings-drawer-backdrop" data-drawer-dismiss="backdrop" type="button" aria-label="关闭设置弹窗"></button>
-      <aside class="settings-drawer-panel" ${style}>
+      <aside data-settings-dialog role="dialog" aria-modal="true" aria-labelledby="settingsDrawerTitle" class="settings-drawer-panel" ${style}>
         <div class="settings-drawer-head">
           <div>
             <span class="settings-card-kicker">编辑配置</span>
             <h3 id="settingsDrawerTitle">${escapeHtml(title)}</h3>
           </div>
+          <button class="icon-btn settings-drawer-close" data-drawer-close="cancel" type="button" aria-label="关闭${escapeHtml(title)}">×</button>
         </div>
         <div class="settings-drawer-body">
           ${isOpen ? buildSettingsDrawerBody(section, drawer.draft) : ''}
@@ -726,18 +731,19 @@ function buildSettingsDrawerBody(section, draft) {
           <thead><tr><th>启用</th><th>名称</th><th>地址</th><th>密钥</th></tr></thead>
           <tbody>
             ${Object.entries(sourceDraft).map(([name, source]) => `
-              <tr>
-                <td><input type="checkbox" data-drawer-source="${escapeHtml(name)}" data-drawer-key="enabled" ${source.enabled ? 'checked' : ''} /></td>
-                <td><strong class="settings-source-name">${escapeHtml(SOURCE_NAMES[name] || name)}</strong></td>
-                <td>
+              <tr data-settings-field-group>
+                <td data-field-label="启用"><input aria-label="${escapeHtml(SOURCE_NAMES[name] || name)}：启用" type="checkbox" data-drawer-source="${escapeHtml(name)}" data-drawer-key="enabled" ${source.enabled ? 'checked' : ''} /></td>
+                <td data-field-label="名称"><strong class="settings-source-name">${escapeHtml(SOURCE_NAMES[name] || name)}</strong></td>
+                <td data-field-label="地址">
                   <textarea
                     class="table-textarea mono"
                     rows="3"
+                    aria-label="${escapeHtml(SOURCE_NAMES[name] || name)}：地址"
                     data-drawer-source="${escapeHtml(name)}"
                     data-drawer-key="url"
                   >${escapeHtml(source.url ?? '')}</textarea>
                 </td>
-                <td><input data-drawer-source="${escapeHtml(name)}" data-drawer-key="key" value="${escapeHtml(source.key ?? '')}" /></td>
+                <td data-field-label="密钥"><input aria-label="${escapeHtml(SOURCE_NAMES[name] || name)}：密钥" data-drawer-source="${escapeHtml(name)}" data-drawer-key="key" value="${escapeHtml(source.key ?? '')}" /></td>
               </tr>
             `).join('')}
           </tbody>
@@ -772,13 +778,13 @@ function buildSettingsDrawerBody(section, draft) {
           <thead><tr><th>启用</th><th>名称</th><th>URL</th><th>操作</th></tr></thead>
           <tbody>
             ${(draft?.targets ?? []).map((target, index) => `
-              <tr>
-                <td><input type="checkbox" data-availability-index="${index}" data-availability-key="enabled" ${target.enabled ? 'checked' : ''} /></td>
-                <td><input data-availability-index="${index}" data-availability-key="name" value="${escapeHtml(target.name ?? '')}" /></td>
-                <td>
-                  <textarea class="table-textarea mono" rows="3" data-availability-index="${index}" data-availability-key="url">${escapeHtml(target.url ?? '')}</textarea>
+              <tr data-settings-field-group>
+                <td data-field-label="启用"><input aria-label="${escapeHtml(formatAvailabilityName(target.name))}：启用" type="checkbox" data-availability-index="${index}" data-availability-key="enabled" ${target.enabled ? 'checked' : ''} /></td>
+                <td data-field-label="名称"><input aria-label="${escapeHtml(formatAvailabilityName(target.name))}：名称" data-availability-index="${index}" data-availability-key="name" value="${escapeHtml(target.name ?? '')}" /></td>
+                <td data-field-label="URL">
+                  <textarea aria-label="${escapeHtml(formatAvailabilityName(target.name))}：URL" class="table-textarea mono" rows="3" data-availability-index="${index}" data-availability-key="url">${escapeHtml(target.url ?? '')}</textarea>
                 </td>
-                <td><button class="btn btn-secondary small" data-availability-action="remove" data-availability-index="${index}" type="button">删除</button></td>
+                <td data-field-label="操作"><button class="btn btn-secondary small destructive" data-availability-action="remove" data-availability-index="${index}" type="button">删除</button></td>
               </tr>
             `).join('')}
           </tbody>
@@ -811,6 +817,11 @@ function buildSettingsDrawerBody(section, draft) {
       <p>该分组暂无可供编辑的内容。</p>
     </div>
   `;
+}
+
+function formatAvailabilityName(name) {
+  const labels = { gemini: 'Gemini', chatgpt: 'ChatGPT', claude: 'Claude' };
+  return labels[String(name ?? '').toLowerCase()] ?? String(name || '网站');
 }
 
 function renderDrawerField(label, type, value, path, isCompact = false, extraAttrs = '') {

@@ -1355,6 +1355,9 @@ body[data-page="logs"] #logCenterTable {
 }
 
 .settings-drawer-backdrop {
+  position: absolute;
+  inset: 0;
+  border: 0;
   background: rgba(17, 24, 38, 0.22);
   opacity: 0;
   transition: opacity 0.18s ease;
@@ -1399,6 +1402,10 @@ body[data-page="logs"] #logCenterTable {
   justify-content: space-between;
   gap: 12px;
   cursor: grab;
+}
+
+.settings-drawer-close {
+  flex: 0 0 auto;
 }
 
 .settings-drawer-head:active {
@@ -2065,6 +2072,111 @@ body[data-page="logs"] #logCenterTable {
     background: linear-gradient(180deg, #fbfcff 0%, var(--bg) 100%);
   }
 
+  .settings-drawer-shell {
+    padding: 0;
+  }
+
+  .settings-drawer-panel,
+  .settings-drawer-shell[data-section="availability_targets"] .settings-drawer-panel {
+    width: 100vw;
+    max-width: none;
+    height: 100vh;
+    height: 100dvh;
+    max-height: none;
+    padding: 0;
+    gap: 0;
+    border: 0;
+    border-radius: 0;
+    transform: none !important;
+    overflow: hidden;
+  }
+
+  .settings-drawer-head {
+    padding: calc(14px + env(safe-area-inset-top)) 16px 14px;
+    border-bottom: 1px solid var(--border);
+    cursor: default;
+  }
+
+  .settings-drawer-head h3 {
+    font-size: 22px;
+  }
+
+  .settings-drawer-body {
+    max-height: none;
+    padding: 16px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    overscroll-behavior: contain;
+  }
+
+  .settings-drawer-actions {
+    position: sticky;
+    bottom: 0;
+    padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+    background: rgba(255, 255, 255, 0.98);
+    border-top: 1px solid var(--border);
+  }
+
+  .settings-drawer-actions .btn {
+    flex: 1;
+    min-height: 48px;
+  }
+
+  .settings-source-table,
+  .availability-target-table {
+    min-width: 0;
+  }
+
+  .settings-source-table thead,
+  .settings-source-table colgroup,
+  .availability-target-table thead,
+  .availability-target-table colgroup {
+    display: none;
+  }
+
+  .settings-source-table tbody,
+  .settings-source-table tr,
+  .settings-source-table td,
+  .availability-target-table tbody,
+  .availability-target-table tr,
+  .availability-target-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .settings-source-table tr,
+  .availability-target-table tr {
+    margin-bottom: 14px;
+    padding: 12px;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+  }
+
+  .settings-source-table td,
+  .availability-target-table td {
+    padding: 6px 0;
+    border: 0;
+  }
+
+  .settings-source-table td::before,
+  .availability-target-table td::before {
+    content: attr(data-field-label);
+    display: block;
+    margin-bottom: 5px;
+    color: var(--text-soft);
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  .settings-source-table input,
+  .settings-source-table textarea,
+  .availability-target-table input,
+  .availability-target-table textarea,
+  .availability-target-table button {
+    width: 100%;
+    max-width: 100%;
+  }
+
   .app-frame {
     display: block;
     height: auto;
@@ -2349,13 +2461,14 @@ body[data-page="logs"] #logCenterTable {
     width: 100vw;
     max-width: none;
     height: 100vh;
+    height: 100dvh;
     max-height: none;
     border-radius: 0;
     transform: none !important;
   }
 
   .settings-drawer-body {
-    max-height: calc(100vh - 154px);
+    max-height: none;
     overflow: auto;
   }
 

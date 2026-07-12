@@ -131,6 +131,8 @@ const state = {
   modalTransform: ''
 };
 
+let settingsDrawerOpener = null;
+
 const elements = {
   sidebarTitle: document.querySelector('#sidebarTitle'),
   sidebarVersion: document.querySelector('#sidebarVersion'),
@@ -216,6 +218,7 @@ function bindActions() {
   document.addEventListener('click', handleDocumentClick);
   document.addEventListener('input', handleDocumentInput);
   document.addEventListener('change', handleDocumentInput);
+  document.addEventListener('keydown', handleSettingsDrawerKeydown);
   
   document.addEventListener('mousedown', (e) => {
     const header = e.target.closest('.settings-drawer-head');
@@ -413,7 +416,7 @@ async function handleDocumentClick(event) {
 
   const settingsCard = event.target.closest('[data-settings-card]');
   if (settingsCard) {
-    openSettingsDrawer(settingsCard.dataset.settingsCard);
+    openSettingsDrawer(settingsCard.dataset.settingsCard, settingsCard);
     return;
   }
 
@@ -424,16 +427,12 @@ async function handleDocumentClick(event) {
   }
 
   if (event.target.closest('[data-drawer-dismiss="backdrop"]')) {
-    state.settingsDrawer = null;
-    state.modalTransform = '';
-    renderAll();
+    closeSettingsDrawer({ restoreFocus: true });
     return;
   }
 
   if (event.target.closest('[data-drawer-close="cancel"]')) {
-    state.settingsDrawer = null;
-    state.modalTransform = '';
-    renderAll();
+    closeSettingsDrawer({ restoreFocus: true });
     return;
   }
 
@@ -786,7 +785,7 @@ function resolveActiveSubscriptionUrl() {
   return `${baseUrl}?format=${encodeURIComponent(format.toLowerCase().replaceAll(' ', '-'))}`;
 }
 
-function openSettingsDrawer(section) {
+function openSettingsDrawer(section, opener = document.activeElement) {
   if (!state.profile) {
     return;
   }
@@ -797,8 +796,52 @@ function openSettingsDrawer(section) {
   }
 
   state.modalTransform = '';
+  settingsDrawerOpener = opener?.matches?.('[data-settings-card]')
+    ? `[data-settings-card="${CSS.escape(opener.dataset.settingsCard)}"]`
+    : opener?.id
+      ? `#${CSS.escape(opener.id)}`
+      : null;
   state.settingsDrawer = { section, draft };
   renderAll();
+  queueMicrotask(() => {
+    const dialog = document.querySelector('[data-settings-dialog]');
+    const focusTarget = dialog?.querySelector('input:not([disabled]), textarea:not([disabled]), select:not([disabled]), button:not([disabled])');
+    focusTarget?.focus();
+  });
+}
+
+function closeSettingsDrawer({ restoreFocus = true } = {}) {
+  const openerSelector = settingsDrawerOpener;
+  state.settingsDrawer = null;
+  state.modalTransform = '';
+  settingsDrawerOpener = null;
+  renderAll();
+  if (restoreFocus && openerSelector) {
+    queueMicrotask(() => document.querySelector(openerSelector)?.focus());
+  }
+}
+
+function handleSettingsDrawerKeydown(event) {
+  const dialog = document.querySelector('[data-settings-dialog]');
+  if (!dialog) return;
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    closeSettingsDrawer({ restoreFocus: true });
+    return;
+  }
+  if (event.key !== 'Tab') return;
+  const focusable = [...dialog.querySelectorAll('button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])')]
+    .filter((element) => !element.hidden && element.getClientRects().length > 0);
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable.at(-1);
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
 }
 
 function buildSettingsDraft(section) {
@@ -833,8 +876,7 @@ async function saveSettingsDrawer() {
   if (section !== 'about') {
     state.profile[section] = resolveSettingsDraftPayload(section, draft);
   }
-  state.settingsDrawer = null;
-  state.modalTransform = '';
+  closeSettingsDrawer({ restoreFocus: true });
   touchUpdate();
   if (section === 'deploy') {
     await refreshQrCode();

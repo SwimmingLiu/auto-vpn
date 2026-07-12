@@ -697,8 +697,12 @@ test('served web ui handles visible browser controls across all pages', async ()
     await page.waitForSelector('#settingsWorkspace');
 
     for (const section of ['sources', 'speed_test', 'availability_targets', 'deploy']) {
-      await page.locator(`[data-settings-card="${section}"]`).click();
+      const opener = page.locator(`[data-settings-card="${section}"]`);
+      await opener.click();
       await page.waitForSelector(`#settingsDrawer[data-open="true"][data-section="${section}"]`);
+      await page.waitForSelector('[data-settings-dialog]');
+      assert.equal(await page.evaluate(() => document.querySelector('[data-settings-dialog]')?.contains(document.activeElement)), true);
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
       if (section === 'availability_targets') {
         await page.locator('[data-availability-action="add"]').click();
         await page.locator('[data-availability-key="name"]').last().fill('custom');
@@ -707,8 +711,20 @@ test('served web ui handles visible browser controls across all pages', async ()
         await page.locator('[data-drawer-path="deploy.project_name"]').fill('web-sub-nodes');
       }
       await page.locator('[data-drawer-save="save"]').click();
-      await page.waitForSelector('#settingsDrawer[data-open="false"]');
+      await page.waitForSelector('#settingsDrawer[hidden]');
+      assert.equal(await opener.evaluate((node) => node === document.activeElement), true);
     }
+
+    await page.locator('[data-settings-card="deploy"]').click();
+    await page.locator('[data-drawer-dismiss="backdrop"]').dispatchEvent('click');
+    await page.waitForSelector('#settingsDrawer[hidden]');
+    await page.setViewportSize({ width: 390, height: 520 });
+    await page.locator('[data-settings-card="deploy"]').click();
+    assert.equal(await page.locator('[data-drawer-save="save"]').isVisible(), true);
+    assert.equal(await page.locator('[data-drawer-close="cancel"]').last().isVisible(), true);
+    await page.locator('[data-drawer-close="cancel"]').last().click();
+    await page.waitForSelector('#settingsDrawer[hidden]');
+    await page.setViewportSize({ width: 1360, height: 900 });
 
     await page.locator('#navRuns').click();
     await page.waitForSelector('#runsWorkspace');
