@@ -7,6 +7,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { RunStore, readLatestStageStatuses, readRunStatus } from '../../dist/pipeline/run-store.js';
+import { canonicalVmessKey, parseVmessLink } from '../../dist/pipeline/dedupe.js';
 
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require('node:sqlite');
@@ -350,6 +351,40 @@ test('openOrImport migrates historical minimal schema and imports raw-only artif
     assert.equal(migrated.prepare('SELECT first_source FROM pipeline_nodes').get().first_source, 'legacy');
     migrated.close();
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('v3 migration backfills a large ownership fixture from earliest observations', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'autovpn-v3-backfill-'));
+  const dbPath = path.join(root, 'run.db');
+  const db = new DatabaseSync(dbPath);
+  try {
+    db.exec(`
+      CREATE TABLE runs (run_id INTEGER PRIMARY KEY, status TEXT NOT NULL, error TEXT NOT NULL DEFAULT '');
+      CREATE TABLE stage_events (run_id INTEGER, stage_name TEXT NOT NULL, status TEXT NOT NULL, error TEXT NOT NULL DEFAULT '');
+      CREATE TABLE raw_observations (observation_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id INTEGER NOT NULL, source TEXT NOT NULL, link TEXT NOT NULL);
+      CREATE TABLE pipeline_nodes (node_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id INTEGER NOT NULL, canonical_key TEXT NOT NULL, link TEXT NOT NULL, sequence INTEGER NOT NULL, UNIQUE(run_id, canonical_key), UNIQUE(run_id, sequence));
+      INSERT INTO runs VALUES (1, 'running', '');
+    `);
+    const rawInsert = db.prepare('INSERT INTO raw_observations(run_id, source, link) VALUES (1, ?, ?)');
+    const nodeInsert = db.prepare('INSERT INTO pipeline_nodes(run_id, canonical_key, link, sequence) VALUES (1, ?, ?, ?)');
+    for (let index = 0; index < 200; index += 1) {
+      const first = vmessLink(`first-${index}`, `node-${index}.example`);
+      const duplicate = vmessLink(`duplicate-${index}`, `node-${index}.example`);
+      rawInsert.run(index % 2 === 0 ? 'A' : 'B', first);
+      rawInsert.run('later', duplicate);
+      nodeInsert.run(canonicalVmessKey(parseVmessLink(first)), first, index + 1);
+    }
+  } finally {
+    db.close();
+  }
+
+  try {
+    const store = RunStore.open(dbPath);
+    assert.deepEqual(store.sourceDedupedCounts(), { A: 100, B: 100 });
+    store.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test('reopenForResume explicitly reopens failed run and failed stages', async () => {

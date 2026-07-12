@@ -1086,6 +1086,57 @@ test('runNodePipeline fails extract when configured sources produce no links', a
   assert.equal(events.at(-1).type, 'run_failed');
 });
 
+test('runNodePipeline refreshes failed summary counts after a partial streaming extractor failure', async () => {
+  const projectRoot = await makeProject();
+  const first = vmessLink('partial-first', 'partial-one.example');
+  const duplicate = vmessLink('partial-duplicate', 'partial-one.example');
+  const second = vmessLink('partial-second', 'partial-two.example');
+  const events = [];
+
+  await assert.rejects(() => runNodePipeline({ projectRoot, skipDeploy: true, skipVerify: true, output: 'jsonl' }, {
+    env: { VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'), VPN_AUTOMATION_PROFILE_PATH: path.join(projectRoot, 'state', 'profile.toml') },
+    emit: (event) => events.push(event),
+    stages: {
+      extract: async (_source, stream) => {
+        await stream.onLinks([first, duplicate, second]);
+        throw new Error('stream interrupted');
+      },
+      speedtestProbe: async (links) => links.map((link) => ({ link, reachable: false, latency_ms: 0, error: 'offline' })),
+      speedtestLink: async () => { throw new Error('unreachable'); },
+      availability: async () => []
+    }
+  }), /stream interrupted/);
+
+  const summary = events.at(-2);
+  assert.equal(summary.type, 'summary');
+  assert.deepEqual(summary.counts, { raw_links: 3, deduped_links: 2 });
+  assert.deepEqual(summary.source_counts.fixture, { raw_links: 3, deduped_links: 2 });
+  const report = JSON.parse(await readFile(path.join(events.find((event) => event.type === 'run_started').artifact_dir, 'pipeline_report.json'), 'utf8'));
+  assert.deepEqual(report.counts, summary.counts);
+  assert.deepEqual(report.source_counts, summary.source_counts);
+});
+
+test('runNodePipeline writes real zero source counts before reporting zero-link failure', async () => {
+  const projectRoot = await makeProject();
+  const events = [];
+
+  await assert.rejects(() => runNodePipeline({ projectRoot, skipDeploy: true, skipVerify: true, output: 'jsonl' }, {
+    env: { VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'), VPN_AUTOMATION_PROFILE_PATH: path.join(projectRoot, 'state', 'profile.toml') },
+    emit: (event) => events.push(event),
+    stages: {
+      extract: async ({ source_name }) => ({ source_name, requested_iterations: 1, successful_iterations: 0, failed_iterations: 1, links: [] })
+    }
+  }), /No links extracted/);
+
+  const summary = events.at(-2);
+  assert.equal(summary.type, 'summary');
+  assert.deepEqual(summary.counts, { raw_links: 0, deduped_links: 0 });
+  assert.deepEqual(summary.source_counts.fixture, { raw_links: 0, successful_iterations: 0, failed_iterations: 1, deduped_links: 0 });
+  const report = JSON.parse(await readFile(path.join(events.find((event) => event.type === 'run_started').artifact_dir, 'pipeline_report.json'), 'utf8'));
+  assert.deepEqual(report.counts, summary.counts);
+  assert.deepEqual(report.source_counts, summary.source_counts);
+});
+
 test('runNodePipeline extracts enabled sources concurrently while preserving profile order', async () => {
   const projectRoot = await makeProject();
   const profilePath = path.join(projectRoot, 'state', 'profile.toml');

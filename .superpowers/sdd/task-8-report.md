@@ -45,3 +45,15 @@ Coverage includes first-observer ownership `{ A: 2, B: 1 }`, equality with globa
 ## Commit
 
 `fix: report per-source dedupe counts` (exact hash recorded in the task handoff).
+
+## Review follow-up
+
+The P1 failure path now drains active streaming workers, re-reads global and per-source raw/deduped counts from SQLite, and only then writes the failed report and emits the terminal `summary` / `run_failed` events. RED tests covered both a partially persisted streaming extraction (`raw=3`, canonical `2`) and a zero-link extraction with explicit numeric zero source counts.
+
+The P2 v3 backfill now scans ordered raw observations once to build a `(run_id, canonical_key) -> earliest source` map, then performs one lookup per canonical node. It no longer reparses all raw observations for every node. A 200-node / 400-observation migration fixture verifies earliest ownership distribution, and legacy import was also changed to build canonical raw keys once.
+
+Follow-up verification:
+
+`rtk npm run build && rtk node --test test/pipeline/run-store.test.mjs test/pipeline/orchestrator.test.mjs ../../electron/tests/ui-state.test.mjs && rtk git diff --check`
+
+Result: exit 0; 107 tests passed, 0 failed; build and diff check passed.

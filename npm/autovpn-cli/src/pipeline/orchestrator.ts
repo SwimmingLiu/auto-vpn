@@ -879,6 +879,10 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
     activeSpeedPool?.abort(error);
     activeAvailabilityPool?.abort(error);
     await Promise.allSettled([activeSpeedPool?.drain(), activeAvailabilityPool?.drain()].filter((task): task is Promise<void> => Boolean(task)));
+    const failedCounts = runStore.counts();
+    summary.counts.raw_links = failedCounts.raw;
+    summary.counts.deduped_links = failedCounts.deduped;
+    refreshSourceCounts(summary, runStore);
     summary.run_status = 'failed';
     summary.error = errorMessage(error);
     runStore.setRunStatus('failed', summary.error);

@@ -541,8 +541,9 @@ export class RunStore {
     const speedRows = readLegacyReport(path.join(artifactDir, 'vpn_node_speedtest_report.json'));
     const availabilityRows = readLegacyReport(path.join(artifactDir, 'vpn_node_availability_report.json'));
     this.transaction(() => {
+      const rawCanonicalKeys = new Set<string>();
       for (const link of rawLinks) {
-        parseVmessLink(link);
+        rawCanonicalKeys.add(canonicalVmessKey(parseVmessLink(link)));
         this.statement('INSERT INTO raw_observations(run_id, source, link) VALUES (?, ?, ?)').run(runId, 'legacy', link);
       }
       const nodeLinks = dedupedLinks.length > 0 ? dedupedLinks : rawLinks;
@@ -551,9 +552,8 @@ export class RunStore {
         const key = canonicalVmessKey(parseVmessLink(link));
         if (seen.has(key)) continue;
         seen.add(key);
-        const firstSource = this.firstObservedSource(runId, key);
         this.statement('INSERT INTO pipeline_nodes(run_id, canonical_key, link, sequence, first_source) VALUES (?, ?, ?, ?, ?)')
-          .run(runId, key, link, seen.size, firstSource);
+          .run(runId, key, link, seen.size, rawCanonicalKeys.has(key) ? 'legacy' : null);
       }
       for (const row of speedRows) {
         const link = String(row.link ?? '');
@@ -595,19 +595,6 @@ export class RunStore {
       .all(this.currentRunId()) as Array<{ link: string; first_source: string | null }>;
   }
 
-  private firstObservedSource(runId: number, canonicalKey: string): string | null {
-    const observations = this.statement('SELECT source, link FROM raw_observations WHERE run_id = ? ORDER BY observation_id')
-      .all(runId) as Array<{ source: string; link: string }>;
-    for (const observation of observations) {
-      try {
-        if (canonicalVmessKey(parseVmessLink(observation.link)) === canonicalKey) return observation.source;
-      } catch {
-        // Historical malformed observations cannot establish canonical ownership.
-      }
-    }
-    return null;
-  }
-
   private migrateSchema(): void {
     const columns = (table: string) => new Set((this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((row) => row.name));
     this.db.exec('PRAGMA foreign_keys=OFF; PRAGMA legacy_alter_table=ON;');
@@ -616,12 +603,23 @@ export class RunStore {
       if (!columns('runs').has('error')) this.db.exec("ALTER TABLE runs ADD COLUMN error TEXT NOT NULL DEFAULT ''");
       if (!columns('pipeline_nodes').has('first_source')) {
         this.db.exec('ALTER TABLE pipeline_nodes ADD COLUMN first_source TEXT');
+        const earliestSources = new Map<string, string>();
+        const observations = this.db.prepare('SELECT run_id, source, link FROM raw_observations ORDER BY run_id, observation_id')
+          .all() as Array<{ run_id: number; source: string; link: string }>;
+        for (const observation of observations) {
+          try {
+            const identity = `${observation.run_id}\0${canonicalVmessKey(parseVmessLink(observation.link))}`;
+            if (!earliestSources.has(identity)) earliestSources.set(identity, observation.source);
+          } catch {
+            // Historical malformed observations cannot establish canonical ownership.
+          }
+        }
         const nodes = this.db.prepare('SELECT node_id, run_id, canonical_key FROM pipeline_nodes ORDER BY run_id, sequence')
           .all() as Array<{ node_id: number; run_id: number; canonical_key: string }>;
         const update = this.db.prepare('UPDATE pipeline_nodes SET first_source = ? WHERE node_id = ? AND first_source IS NULL');
         for (const node of nodes) {
-          const source = this.firstObservedSource(node.run_id, node.canonical_key);
-          if (source !== null) update.run(source, node.node_id);
+          const source = earliestSources.get(`${node.run_id}\0${node.canonical_key}`);
+          if (source !== undefined) update.run(source, node.node_id);
         }
       }
       const stageColumns = columns('stage_events');
