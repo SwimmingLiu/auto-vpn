@@ -89,16 +89,16 @@ async function closeWithin(promise, milliseconds = 2000) {
 }
 
 export async function closeAllWithin(closeOperations, milliseconds = 5000) {
-  const results = await Promise.allSettled(closeOperations.map((close) => closeWithin(close(), milliseconds)));
+  const results = await Promise.allSettled(closeOperations.map((close) => closeWithin(Promise.resolve().then(close), milliseconds)));
   const failures = results.filter((result) => result.status === 'rejected').map((result) => result.reason);
   if (failures.length) throw new AggregateError(failures, 'one or more test resources failed to close');
 }
 
-test('fixture cleanup attempts every resource when an earlier close rejects', async () => {
+test('fixture cleanup attempts every resource when an earlier close throws synchronously', async () => {
   const closed = [];
   await assert.rejects(
     closeAllWithin([
-      async () => { closed.push('browser'); throw new Error('browser close failed'); },
+      () => { closed.push('browser'); throw new Error('browser close failed'); },
       async () => { closed.push('service'); }
     ]),
     /test resources failed to close/
@@ -120,8 +120,9 @@ test('fixture cleanup closes the service when browser shutdown stalls', async ()
 
 test('all breakpoint contracts preserve navigation, targets, overflow and content reachability', async () => {
   const service = await createFixture();
-  const browser = await chromium.launch();
+  let browser;
   try {
+    browser = await chromium.launch();
     const page = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true });
     await page.goto(service.origin, { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('#dashboardOverview');
@@ -136,14 +137,15 @@ test('all breakpoint contracts preserve navigation, targets, overflow and conten
     await page.locator('#navDashboard').click();
     await assertMobileLayout(page, { width: 768, height: 1024 });
   } finally {
-    await closeAllWithin([() => browser.close(), () => service.close()]);
+    await closeAllWithin([() => browser?.close(), () => service.close()]);
   }
 });
 
 test('WebKit preserves safe-area navigation, run bar and settings visual viewport', { timeout: 30000 }, async () => {
   const service = await createFixture();
-  const browser = await webkit.launch();
+  let browser;
   try {
+    browser = await webkit.launch();
     const page = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true });
     await page.goto(service.origin, { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('#dashboardOverview');
@@ -171,7 +173,7 @@ test('WebKit preserves safe-area navigation, run bar and settings visual viewpor
     assert.equal(await page.locator('.settings-drawer-actions').evaluate((node) => getComputedStyle(node).paddingBottom), '36px');
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.visualViewport.width));
   } finally {
-    await closeAllWithin([() => browser.close(), () => service.close()]);
+    await closeAllWithin([() => browser?.close(), () => service.close()]);
   }
 });
 
@@ -184,8 +186,9 @@ test('WebKit mobile login reports an inline error and accepts the configured pas
       subscribe: () => () => {}
     }
   });
-  const browser = await webkit.launch();
+  let browser;
   try {
+    browser = await webkit.launch();
     const page = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true });
     await page.goto(service.origin, { waitUntil: 'domcontentloaded' });
     await page.locator('[data-server-password]').fill('wrong-password');
@@ -196,6 +199,6 @@ test('WebKit mobile login reports an inline error and accepts the configured pas
     await page.waitForSelector('#dashboardOverview');
     assert.equal(await page.evaluate(() => localStorage.getItem('autovpn.server.token')), 'issued-token');
   } finally {
-    await closeAllWithin([() => browser.close(), () => service.close()]);
+    await closeAllWithin([() => browser?.close(), () => service.close()]);
   }
 });
