@@ -632,6 +632,9 @@ test('renderer matches the six-page canvas redesign and supports page navigation
       for (let index = 0; index < 80; index += 1) {
         window.__emitPipelineEvent({ type: 'log', message: `[INFO] scroll sample ${index}` });
       }
+      for (let index = 0; index < 400; index += 1) {
+        window.__emitPipelineEvent({ type: 'log', message: '[INFO] repeated heartbeat' });
+      }
     });
     await page.locator('#logCenterTable').evaluate((element) => {
       element.scrollTop = element.scrollHeight;
@@ -641,18 +644,22 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     assert.equal(await page.locator('#logCenterTable').evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight <= 32), true);
 
     await page.locator('#logCenterTable').evaluate((element) => { element.scrollTop = 0; });
-    const retainedAnchorTop = await page.getByText('[INFO] scroll sample 60', { exact: true }).evaluate((element) => element.getBoundingClientRect().top);
+    const anchorLine = page.locator('#logCenterTable .log-line').nth(8);
+    const anchorId = await anchorLine.getAttribute('data-log-id');
+    assert.ok(anchorId);
+    const retainedAnchorTop = await anchorLine.evaluate((element) => element.getBoundingClientRect().top);
     await page.evaluate(() => window.__emitPipelineEvent({ type: 'log', message: '[INFO] unseen latest' }));
-    const unseenAnchorTop = await page.getByText('[INFO] scroll sample 60', { exact: true }).evaluate((element) => element.getBoundingClientRect().top);
+    const unseenAnchorTop = await page.locator(`[data-log-id="${anchorId}"]`).evaluate((element) => element.getBoundingClientRect().top);
     assert.ok(Math.abs(unseenAnchorTop - retainedAnchorTop) <= 2, JSON.stringify({ retainedAnchorTop, unseenAnchorTop }));
     assert.match(await page.locator('[data-log-jump-latest]').innerText(), /1 条新消息/);
-    const anchorBefore = await page.getByText('[INFO] scroll sample 60', { exact: true }).evaluate((element) => element.getBoundingClientRect().top);
+    const anchorBefore = await page.locator(`[data-log-id="${anchorId}"]`).evaluate((element) => element.getBoundingClientRect().top);
     await page.evaluate(() => {
       window.__emitPipelineEvent({ type: 'log', message: '[INFO] anchor append one' });
       window.__emitPipelineEvent({ type: 'log', message: '[INFO] anchor append two' });
     });
-    const anchorAfter = await page.getByText('[INFO] scroll sample 60', { exact: true }).evaluate((element) => element.getBoundingClientRect().top);
+    const anchorAfter = await page.locator(`[data-log-id="${anchorId}"]`).evaluate((element) => element.getBoundingClientRect().top);
     assert.ok(Math.abs(anchorAfter - anchorBefore) <= 2, JSON.stringify({ anchorBefore, anchorAfter }));
+    assert.ok(await page.locator('#logCenterTable .log-line').count() <= 120);
 
     await page.locator('#navSubscriptions').click();
     await page.evaluate(() => window.__emitPipelineEvent({ type: 'log', message: '[INFO] while logs hidden' }));
@@ -674,12 +681,12 @@ test('renderer matches the six-page canvas redesign and supports page navigation
 
     await page.getByRole('button', { name: '运行日志' }).click();
     const runtimeText = await page.locator('#logCenterTable').innerText();
-    assert.match(runtimeText, /scroll sample/);
+    assert.match(runtimeText, /repeated heartbeat|followed after manual scroll/);
     assert.doesNotMatch(runtimeText, /availability failed/);
 
     await page.getByRole('button', { name: '按阶段' }).click();
     const groupedText = await page.locator('#logCenterTable').innerText();
-    assert.match(groupedText, /scroll sample/);
+    assert.match(groupedText, /repeated heartbeat|followed after manual scroll/);
     assert.match(groupedText, /其他/);
 
     await page.getByRole('button', { name: '清空显示' }).click();

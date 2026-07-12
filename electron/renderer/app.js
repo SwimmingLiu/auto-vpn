@@ -134,6 +134,7 @@ const state = {
 
 let settingsDrawerOpener = null;
 let runDetailsMobileBreakpoint = null;
+let nextLogSequence = 0;
 
 const elements = {
   sidebarTitle: document.querySelector('#sidebarTitle'),
@@ -1661,11 +1662,20 @@ function appendLog(message, overrides = {}) {
   const logCenter = document.querySelector('#logCenterTable');
   if (logCenter) {
     state.logView.follow = logCenter.scrollHeight - logCenter.scrollTop - logCenter.clientHeight <= 32;
+    if (!state.logView.follow) {
+      const streamTop = logCenter.getBoundingClientRect().top;
+      state.logView.anchorId = [...logCenter.querySelectorAll('.log-line')]
+        .find((line) => line.getBoundingClientRect().bottom >= streamTop)
+        ?.dataset.logId ?? state.logView.anchorId;
+    }
   }
   if (!state.logView.follow) {
     state.logView.unseenCount += 1;
   }
-  state.logEntries.push(classifyLogEntry(message, overrides));
+  state.logEntries.push({
+    ...classifyLogEntry(message, overrides),
+    logId: `live-${++nextLogSequence}`
+  });
   touchUpdate();
   renderRuntimeOnly({ chrome: false });
 }
@@ -1687,7 +1697,7 @@ function renderActiveRuntimeSections(viewModel) {
     const streamTop = logCenter.getBoundingClientRect().top;
     const anchor = [...logCenter.querySelectorAll('.log-line')]
       .find((line) => line.getBoundingClientRect().bottom >= streamTop);
-    const anchorText = anchor?.textContent;
+    const anchorId = anchor?.dataset.logId;
     const anchorViewportTop = anchor?.getBoundingClientRect().top;
     logCenter.innerHTML = buildLogCenterMarkup(viewModel);
     const workspace = logCenter.closest('#logsWorkspace');
@@ -1700,9 +1710,8 @@ function renderActiveRuntimeSections(viewModel) {
     }
     if (state.logView.follow) {
       logCenter.scrollTop = logCenter.scrollHeight;
-    } else if (anchorText) {
-      const restoredAnchor = [...logCenter.querySelectorAll('.log-line')]
-        .find((line) => line.textContent === anchorText);
+    } else if (anchorId) {
+      const restoredAnchor = logCenter.querySelector(`[data-log-id="${CSS.escape(anchorId)}"]`);
       logCenter.scrollTop += (restoredAnchor?.getBoundingClientRect().top ?? anchorViewportTop) - anchorViewportTop;
     } else {
       logCenter.scrollTop = previousScrollTop;

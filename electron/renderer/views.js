@@ -116,10 +116,13 @@ export function buildViewModel(state, messages, language) {
   const subscriptionUrl = profile.deploy.subscription_url || FALLBACK_PROFILE.deploy.subscription_url;
   const subscriptionCards = buildSubscriptionCards(subscriptionUrl);
   const currentSubscription = subscriptionCards.find((card) => card.title === state.subscriptionFormat) ?? subscriptionCards[0];
-  const displayLogs = (state.logEntries ?? []).map((entry) => classifyLogEntry(entry));
+  const displayLogs = (state.logEntries ?? []).map((entry, index) => ({
+    logId: entry?.logId ?? `history-${index}`,
+    ...classifyLogEntry(entry)
+  }));
   const logFilter = state.logFilter ?? '全部';
   const filteredLogs = filterLogEntries(displayLogs, logFilter);
-  const trimLogWindow = state.logView?.follow !== false;
+  const logWindow = selectLogWindow(filteredLogs, state.logView);
   const stageRows = normalizeStageRows(state.stageStatus, state.runState);
   const currentStage = stageRows.find((row) => row.status === 'running') ?? stageRows.find((row) => row.status === 'success') ?? stageRows[0];
   const artifactDir = state.artifactDir ?? '';
@@ -146,8 +149,8 @@ export function buildViewModel(state, messages, language) {
     displayLogs,
     logFilter,
     logView: state.logView ?? { follow: true, unseenCount: 0, clearedSnapshot: null },
-    logRows: buildLogRows(filteredLogs, trimLogWindow),
-    logGroups: groupLogEntriesByStage(filteredLogs, trimLogWindow),
+    logRows: buildLogRows(logWindow, false),
+    logGroups: groupLogEntriesByStage(logWindow, false),
     stageRows,
     currentStage,
     artifactDir,
@@ -1089,11 +1092,20 @@ function buildLogRows(displayLogs, trimWindow = true) {
   }));
 }
 
+function selectLogWindow(entries, logView) {
+  if (logView?.follow !== false) return entries.slice(-28);
+  const anchorIndex = entries.findIndex((entry) => entry.logId === logView.anchorId);
+  const start = anchorIndex >= 0
+    ? Math.max(0, Math.min(anchorIndex - 8, Math.max(0, entries.length - 120)))
+    : Math.max(0, entries.length - 120);
+  return entries.slice(start, start + 120);
+}
+
 function renderLogRows(rows) {
   if (!rows.length) {
     return '<div class="empty-state log-empty-state">暂无可显示日志</div>';
   }
-  return rows.map((row) => `<div class="log-line ${row.levelClass}">${escapeHtml(row.line)}</div>`).join('');
+  return rows.map((row) => `<div class="log-line ${row.levelClass}" data-log-id="${escapeHtml(row.logId)}">${escapeHtml(row.line)}</div>`).join('');
 }
 
 function renderLogGroups(groups) {
@@ -1103,7 +1115,7 @@ function renderLogGroups(groups) {
   return groups.map((group) => `
     <section class="log-group">
       <div class="log-group-title">${escapeHtml(group.label)}</div>
-      ${group.rows.map((row) => `<div class="log-line ${row.levelClass}">${escapeHtml(row.line)}</div>`).join('')}
+      ${group.rows.map((row) => `<div class="log-line ${row.levelClass}" data-log-id="${escapeHtml(row.logId)}">${escapeHtml(row.line)}</div>`).join('')}
     </section>
   `).join('');
 }

@@ -36,3 +36,11 @@
 - Fix: manually reaching the bottom clears unseen state and removes the jump control immediately.
 - Fix: appends while the log page is unmounted preserve the existing follow intent and continue accumulating unseen rows when appropriate.
 - Verification: the three focused suites pass with 45 tests and 0 failures; `git diff --check` is clean.
+
+## Second review follow-up
+
+- RED: added 400 identical heartbeat rows, selected one by its unique DOM ID, and reproduced the missing-ID failure before implementation.
+- Every appended row now receives a stable `live-N` ID; hydrated rows receive stable index-derived IDs. Rendered rows expose `data-log-id`, and viewport restoration resolves the exact ID rather than duplicate text.
+- Non-follow rendering now uses a maximum 120-row window positioned around the anchor. Follow rendering remains capped at 28 rows, preventing unbounded DOM and measurement work.
+- Regression assertions cover duplicate text, stable same-ID viewport coordinates across multiple appends, a 120-row DOM ceiling, and exact unseen counts including hidden-page appends.
+- Verification: all three focused suites pass with 45 tests and 0 failures; `git diff --check` is clean.

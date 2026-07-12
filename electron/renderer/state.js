@@ -78,7 +78,7 @@ export function createQrState(status = 'idle', dataUrl = '', message = '') {
 }
 
 export function createLogViewState() {
-  return { follow: true, unseenCount: 0, clearedSnapshot: null };
+  return { follow: true, unseenCount: 0, clearedSnapshot: null, anchorId: null };
 }
 
 export function toMetricItems(counts = {}) {
