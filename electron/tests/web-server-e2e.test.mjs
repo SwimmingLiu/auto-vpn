@@ -830,17 +830,29 @@ test('served web ui supports mobile bottom navigation and run controls', async (
       assert.ok(box && box.width >= 44 && box.height >= 44);
     }
     assert.equal(await page.locator('#navDashboard').getAttribute('aria-current'), 'page');
+    for (const action of await page.locator('#pageActions .btn').all()) {
+      const box = await action.boundingBox();
+      assert.ok(box && box.height >= 48, `mobile primary action height was ${box?.height}`);
+    }
 
     await page.locator('#navRuns').click();
     await page.waitForSelector('#runsWorkspace');
     assert.equal(await page.locator('#navRuns').getAttribute('aria-current'), 'page');
     assert.equal(await page.locator('#navDashboard').getAttribute('aria-current'), null);
+    for (const control of await page.locator('#runsWorkspace select, #runsWorkspace .retry-stage-button, #runsWorkspace .checkbox-chip').all()) {
+      const box = await control.boundingBox();
+      assert.ok(box && box.width >= 44 && box.height >= 44, `mobile run control was ${JSON.stringify(box)}`);
+    }
     await page.locator('#runsWorkspace [data-run-action="start"]').click();
     await page.waitForFunction(() => document.querySelector('#runsWorkspace [data-run-action="start"]')?.disabled);
     await page.locator('#runsWorkspace [data-run-action="stop"]').click();
 
     await page.locator('#navLogs').click();
     await page.waitForSelector('#logsWorkspace');
+    for (const control of await page.locator('#logsWorkspace .btn.small, #logsWorkspace .subtab').all()) {
+      const box = await control.boundingBox();
+      assert.ok(box && box.width >= 44 && box.height >= 44, `mobile log control was ${JSON.stringify(box)}`);
+    }
     assert.match(await page.locator('#logsWorkspace').innerText(), /extract|leiting/);
     assert.equal(await page.locator('[data-action="open-log-file"]').count(), 0);
     await page.locator('#navSettings').click();
@@ -852,6 +864,15 @@ test('served web ui supports mobile bottom navigation and run controls', async (
     assert.ok(finalControlBox && bottomNavBox && finalControlBox.y + finalControlBox.height <= bottomNavBox.y,
       JSON.stringify({ finalControlBox, bottomNavBox }));
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth));
+    const iconButtonBox = await page.evaluate(() => {
+      const button = document.createElement('button');
+      button.className = 'icon-btn';
+      document.body.append(button);
+      const box = button.getBoundingClientRect();
+      button.remove();
+      return { width: box.width, height: box.height };
+    });
+    assert.ok(iconButtonBox.width >= 44 && iconButtonBox.height >= 44, `mobile icon button was ${JSON.stringify(iconButtonBox)}`);
     assert.ok(calls.some(([name]) => name === 'start'));
     assert.ok(calls.some(([name]) => name === 'stop'));
   } finally {
