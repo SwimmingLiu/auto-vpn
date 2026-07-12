@@ -1,9 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { createRequire } from 'node:module';
 import { AutoVpnEvent } from '../events/schema.js';
 import { resumeNodePipeline, retryNodePipelineStage, runNodePipeline } from '../pipeline/orchestrator.js';
 import { resolveArtifactsRoot } from '../runtime/paths.js';
+import { readLatestStageStatuses, readRunStatus } from '../pipeline/run-store.js';
 import {
   AutoVpnBackend,
   DetachedRunOptions,
@@ -13,8 +13,6 @@ import {
   RetryOptions,
   RunOptions
 } from './types.js';
-
-const require = createRequire(import.meta.url);
 
 export interface NodeBackendOptions {
   env?: NodeJS.ProcessEnv;
@@ -37,7 +35,6 @@ function latestIncompleteRunArtifact(projectRoot: string, env: NodeJS.ProcessEnv
   if (!fs.existsSync(artifactsRoot)) {
     return undefined;
   }
-  const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
   const candidates = fs.readdirSync(artifactsRoot, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
     .map((entry) => {
@@ -49,25 +46,13 @@ function latestIncompleteRunArtifact(projectRoot: string, env: NodeJS.ProcessEnv
     .sort((left, right) => fs.statSync(right.artifactDir).mtimeMs - fs.statSync(left.artifactDir).mtimeMs);
 
   for (const candidate of candidates) {
-    let db: import('node:sqlite').DatabaseSync | undefined;
-    try {
-      db = new DatabaseSync(candidate.dbPath);
-      const runRow = db.prepare('SELECT status FROM runs ORDER BY run_id DESC LIMIT 1').get() as { status?: unknown } | undefined;
-      const runStatus = String(runRow?.status ?? '').trim();
-      if (['success', 'failed', 'stopped'].includes(runStatus)) {
-        continue;
-      }
-      const stageRows = db.prepare('SELECT stage_name, status FROM stage_events ORDER BY rowid ASC').all() as Array<{ stage_name?: unknown; status?: unknown }>;
-      const stageStatus = new Map(stageRows.map((row) => [String(row.stage_name ?? ''), String(row.status ?? '')]));
-      if (stageStatus.get('verify') === 'success') {
-        continue;
-      }
-      return candidate.artifactDir;
-    } catch {
+    const runStatus = readRunStatus(candidate.dbPath);
+    if (!runStatus || ['success', 'failed', 'stopped', 'cancelled'].includes(runStatus)) {
       continue;
-    } finally {
-      db?.close();
     }
+    const stageStatus = readLatestStageStatuses(candidate.dbPath);
+    if (stageStatus.verify === 'success') continue;
+    return candidate.artifactDir;
   }
   return undefined;
 }

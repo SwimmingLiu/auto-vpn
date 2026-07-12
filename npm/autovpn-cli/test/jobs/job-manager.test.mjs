@@ -12,6 +12,7 @@ import { runCliShell } from '../../dist/cli/main.js';
 import { createJobStore } from '../../dist/jobs/store.js';
 import { startDetachedRun, stopManagedJob } from '../../dist/jobs/commands.js';
 import { cmdlineMatchesJob, processMatchesJob, terminateProcessGroup } from '../../dist/jobs/process.js';
+import { RunStore, readRunStatus } from '../../dist/pipeline/run-store.js';
 
 function createIo() {
   return {
@@ -210,6 +211,10 @@ test('Node job manager stop marks the active artifact stopped', async () => {
     stage_status: { extract: 'running', speedtest: 'pending' },
     error: ''
   }), 'utf8');
+  const runStore = RunStore.open(path.join(artifactDir, 'run.db'));
+  runStore.initializeRun('running');
+  runStore.setStageStatus('extract', 'running');
+  runStore.close();
   const store = createJobStore(projectRoot, { now: () => '2026-06-28T00:00:00+00:00', jobId: () => 'stop-artifact-job' });
   const job = store.createRunningJob({
     kind: 'run',
@@ -230,8 +235,46 @@ test('Node job manager stop marks the active artifact stopped', async () => {
 
   const report = JSON.parse(await readFile(path.join(artifactDir, 'pipeline_report.json'), 'utf8'));
   assert.equal(report.run_status, 'stopped');
-  assert.equal(report.stage_status.extract, 'failed');
+  assert.equal(report.stage_status.extract, 'stopped');
   assert.match(report.error, /Stopped by user/);
+  assert.equal(readRunStatus(path.join(artifactDir, 'run.db')), 'stopped');
+});
+
+test('Node job manager stop falls back to report when run.db is corrupt', async () => {
+  const projectRoot = await createProject();
+  const artifactDir = path.join(projectRoot, 'artifacts', 'corrupt-stop');
+  await mkdir(artifactDir, { recursive: true });
+  await writeFile(path.join(artifactDir, 'run.db'), 'not sqlite', 'utf8');
+  await writeFile(path.join(artifactDir, 'pipeline_report.json'), JSON.stringify({ run_status: 'running', stage_status: { extract: 'running' }, error: '' }));
+  const store = createJobStore(projectRoot, { jobId: () => 'corrupt-stop-job' });
+  const job = store.createRunningJob({ kind: 'run', command: ['/venv/bin/autovpn', 'run'], pid: 0, options: {} });
+  job.artifact_dir = artifactDir;
+  store.writeJob(job);
+
+  const stopped = await stopManagedJob(projectRoot, job.job_id);
+
+  assert.equal(stopped.status, 'stopped');
+  assert.equal(JSON.parse(await readFile(path.join(artifactDir, 'pipeline_report.json'), 'utf8')).run_status, 'stopped');
+});
+
+test('Node job manager preserves completed sqlite truth when stop races completion', async () => {
+  const projectRoot = await createProject();
+  const artifactDir = path.join(projectRoot, 'artifacts', 'completed-race');
+  await mkdir(artifactDir, { recursive: true });
+  await writeFile(path.join(artifactDir, 'pipeline_report.json'), JSON.stringify({ run_status: 'running', stage_status: {}, error: '' }));
+  const runStore = RunStore.open(path.join(artifactDir, 'run.db'));
+  runStore.initializeRun('success');
+  runStore.close();
+  const store = createJobStore(projectRoot, { jobId: () => 'completed-race-job' });
+  const job = store.createRunningJob({ kind: 'run', command: ['/venv/bin/autovpn', 'run'], pid: 0, options: {} });
+  job.artifact_dir = artifactDir;
+  store.writeJob(job);
+
+  const completed = await stopManagedJob(projectRoot, job.job_id);
+
+  assert.equal(completed.status, 'success');
+  assert.equal(completed.exit_code, 0);
+  assert.equal(JSON.parse(await readFile(path.join(artifactDir, 'pipeline_report.json'), 'utf8')).run_status, 'success');
 });
 
 test('Node job manager stop refuses mismatched process metadata', async () => {

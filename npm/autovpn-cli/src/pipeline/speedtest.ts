@@ -6,6 +6,7 @@ import {
   MihomoRuntime,
   OpenMihomoRuntimeOptions
 } from './proxy-runtime.js';
+import { retryTransientNetwork } from './network-retry.js';
 
 type FetchLike = (url: string, init?: Record<string, unknown>) => Promise<{
   ok?: boolean;
@@ -230,35 +231,8 @@ function requireOkResponse(response: Awaited<ReturnType<FetchLike>>, allowedStat
   }
 }
 
-function isTransientProbeError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  const code = typeof error === 'object' && error !== null && 'code' in error
-    ? String((error as { code?: unknown }).code ?? '')
-    : '';
-  const statusMatch = /(?:unexpected status|failed with status)\s+(\d{3})\b/i.exec(message);
-  if (statusMatch) {
-    const status = Number(statusMatch[1]);
-    return status >= 500 && status <= 599;
-  }
-  if (['AUTOVPN_INTERNAL_TIMEOUT', 'ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ECONNREFUSED', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT'].includes(code.toUpperCase())) {
-    return true;
-  }
-  return error instanceof TypeError && message.trim().toLowerCase() === 'fetch failed';
-}
-
 async function retryTransientProbe<T>(operation: () => Promise<T>): Promise<T> {
-  let lastError: unknown;
-  for (let attempt = 1; attempt <= PROBE_MAX_ATTEMPTS; attempt += 1) {
-    try {
-      return await operation();
-    } catch (error) {
-      lastError = error;
-      if (attempt >= PROBE_MAX_ATTEMPTS || !isTransientProbeError(error)) {
-        throw error;
-      }
-    }
-  }
-  throw lastError;
+  return retryTransientNetwork(operation, { maxAttempts: PROBE_MAX_ATTEMPTS, delayMs: 0 });
 }
 
 function socketConnect(host: string, port: number, timeoutMs: number): Promise<net.Socket> {
@@ -443,8 +417,14 @@ export async function downloadUrlViaHttpProxy(
     rejectUnauthorized: false
   });
   await new Promise<void>((resolve, reject) => {
-    secureSocket.once('secureConnect', resolve);
-    secureSocket.once('error', reject);
+    const timer = setTimeout(() => {
+      secureSocket.destroy();
+      const error = new Error(`TLS handshake timed out after ${timeoutMs}ms`) as Error & { code?: string };
+      error.code = 'AUTOVPN_INTERNAL_TIMEOUT';
+      reject(error);
+    }, timeoutMs);
+    secureSocket.once('secureConnect', () => { clearTimeout(timer); resolve(); });
+    secureSocket.once('error', (error) => { clearTimeout(timer); reject(error); });
   });
   secureSocket.write([
     `GET ${requestPath} HTTP/1.1`,
@@ -565,42 +545,41 @@ async function testLinkMihomo(
 ): Promise<SpeedTestResult> {
   const openRuntime = options.openMihomoRuntime ?? defaultOpenMihomoRuntime;
   const downloadViaProxy = options.downloadUrlViaHttpProxy ?? downloadUrlViaHttpProxy;
-  let runtime: Pick<MihomoRuntime, 'proxies' | 'close'> | undefined;
   try {
-    runtime = await openRuntime(link, {
-      runtimePath,
-      startupWaitSeconds: config.startup_wait_seconds,
-      env: options.env
-    });
-    const now = options.now ?? defaultNow;
-    const speedValues: number[] = [];
-    const failures: string[] = [];
-    for (const url of config.urls) {
-      const started = now();
+    return await retryTransientNetwork(async () => {
+      let runtime: Pick<MihomoRuntime, 'proxies' | 'close'> | undefined;
       try {
-        const total = await downloadViaProxy(url, runtime.proxies.http, Math.max(1, Number(config.max_download_bytes)), config.timeout_seconds);
-        const elapsedSeconds = Math.max((now() - started) / 1000, 0.001);
-        speedValues.push(total / elapsedSeconds / 1024 / 1024);
-      } catch (error) {
-        failures.push(`${url}: ${error instanceof Error ? error.message : String(error)}`);
+        runtime = await openRuntime(link, {
+          runtimePath,
+          startupWaitSeconds: config.startup_wait_seconds,
+          env: options.env
+        });
+        const now = options.now ?? defaultNow;
+        const speedValues: number[] = [];
+        const failures: string[] = [];
+        let lastFailure: unknown;
+        for (const url of config.urls) {
+          try {
+            const measurement = await retryTransientNetwork(async () => {
+              const started = now();
+              const total = await downloadViaProxy(url, runtime!.proxies.http, Math.max(1, Number(config.max_download_bytes)), config.timeout_seconds);
+              return { total, elapsedSeconds: Math.max((now() - started) / 1000, 0.001) };
+            });
+            speedValues.push(measurement.total / measurement.elapsedSeconds / 1024 / 1024);
+          } catch (error) {
+            lastFailure = error;
+            failures.push(`${url}: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+        if (speedValues.length === 0) {
+          if (lastFailure) throw lastFailure;
+          return { link, reachable: false, average_download_mb_s: 0, latency_ms: 0, error: failures.join('; ') || 'all speed test urls failed' };
+        }
+        return { link, reachable: true, average_download_mb_s: aggregateSpeedMeasurements(speedValues), latency_ms: 0, error: failures.join('; ') };
+      } finally {
+        await runtime?.close();
       }
-    }
-    if (speedValues.length === 0) {
-      return {
-        link,
-        reachable: false,
-        average_download_mb_s: 0,
-        latency_ms: 0,
-        error: failures.join('; ') || 'all speed test urls failed'
-      };
-    }
-    return {
-      link,
-      reachable: true,
-      average_download_mb_s: aggregateSpeedMeasurements(speedValues),
-      latency_ms: 0,
-      error: failures.join('; ')
-    };
+    });
   } catch (error) {
     return {
       link,
@@ -609,8 +588,6 @@ async function testLinkMihomo(
       latency_ms: 0,
       error: error instanceof Error ? error.message : String(error)
     };
-  } finally {
-    await runtime?.close();
   }
 }
 

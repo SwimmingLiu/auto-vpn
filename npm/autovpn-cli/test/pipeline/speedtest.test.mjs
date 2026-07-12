@@ -708,6 +708,50 @@ test('Node speedtest backend defaults to Mihomo runtime so speed tests use each 
   }]);
 });
 
+test('Node Mihomo full speedtest retries a transient download failure', async () => {
+  let downloads = 0;
+  let opened = 0;
+  let clock = 0;
+  const results = await speedtestLinksWithBackend({
+    links: ['vmess://transient-full'],
+    config: { min_download_mb_s: 0.001, timeout_seconds: 20, concurrency: 1, urls: ['http://speed.example/bytes'], max_download_bytes: 1024, max_download_candidates: 1 },
+    runtime_path: '/opt/mihomo'
+  }, {
+    env: {},
+    now: () => clock,
+    openMihomoRuntime: async () => { opened += 1; return { controllerUrl: 'http://controller', proxyName: 'runtime-node', proxies: { http: `http://127.0.0.1:${18080 + opened}`, https: `http://127.0.0.1:${18080 + opened}` }, close: async () => {} }; },
+    probeMihomoProxyDelay: async () => 20,
+    downloadUrlViaHttpProxy: async () => {
+      downloads += 1;
+      if (downloads === 1) { clock += 20_000; throw Object.assign(new Error('connect ECONNRESET'), { code: 'ECONNRESET' }); }
+      clock += 1_000;
+      return 1024;
+    }
+  });
+  assert.equal(downloads, 2);
+  assert.equal(opened, 2);
+  assert.equal(results[0].reachable, true);
+  assert.equal(results[0].average_download_mb_s, 0.001);
+});
+
+test('Node Mihomo full speedtest reopens a runtime after transient retries are exhausted', async () => {
+  let opened = 0;
+  let downloads = 0;
+  const results = await speedtestLinksWithBackend({
+    links: ['vmess://reopen-full'],
+    config: { min_download_mb_s: 0, timeout_seconds: 20, concurrency: 1, urls: ['http://speed.example/bytes'], max_download_bytes: 1024, max_download_candidates: 1 },
+    runtime_path: '/opt/mihomo'
+  }, {
+    env: {}, now: (() => { let value = 0; return () => value += 1000; })(),
+    openMihomoRuntime: async () => { opened += 1; return { controllerUrl: 'http://controller', proxyName: 'runtime-node', proxies: { http: `http://127.0.0.1:${18080 + opened}`, https: `http://127.0.0.1:${18080 + opened}` }, close: async () => {} }; },
+    probeMihomoProxyDelay: async () => 20,
+    downloadUrlViaHttpProxy: async () => { downloads += 1; if (downloads <= 2) throw Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }); return 1024; }
+  });
+  assert.equal(opened, 3);
+  assert.equal(downloads, 3);
+  assert.equal(results[0].reachable, true);
+});
+
 test('Node speedtest backend times out stalled response bodies', async () => {
   const stalledBody = new ReadableStream({
     pull() {

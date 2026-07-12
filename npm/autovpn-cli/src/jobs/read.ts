@@ -1,9 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { createRequire } from 'node:module';
 
 import { resolveProfilePath, readOptionValue } from '../runtime/paths.js';
 import { redactText } from '../runtime/redaction.js';
+import { readRunStatus } from '../pipeline/run-store.js';
 
 function jobsRoot(projectRoot: string, env: NodeJS.ProcessEnv = process.env): string {
   return path.join(path.dirname(resolveProfilePath(projectRoot, env)), 'jobs');
@@ -84,27 +84,16 @@ function reconcileFromRunDb(job: Record<string, any>): Record<string, any> | und
   if (!fs.existsSync(runDbPath)) {
     return undefined;
   }
-  try {
-    const require = createRequire(import.meta.url);
-    const sqlite = require('node:sqlite') as { DatabaseSync: new (file: string) => any };
-    const db = new sqlite.DatabaseSync(runDbPath);
-    try {
-      const row = db.prepare('SELECT status FROM runs ORDER BY run_id DESC LIMIT 1').get() as { status?: string } | undefined;
-      const runStatus = String(row?.status ?? '');
-      if (!['success', 'failed', 'stopped'].includes(runStatus)) {
-        return undefined;
-      }
-      return {
-        status: runStatus,
-        finished_at: job.finished_at || nowIso(),
-        exit_code: runStatus === 'success' ? 0 : 1
-      };
-    } finally {
-      db.close();
-    }
-  } catch {
+  const storedStatus = readRunStatus(runDbPath);
+  const runStatus = storedStatus === 'cancelled' ? 'stopped' : storedStatus;
+  if (!runStatus || !['success', 'failed', 'stopped'].includes(runStatus)) {
     return undefined;
   }
+  return {
+    status: runStatus,
+    finished_at: job.finished_at || nowIso(),
+    exit_code: runStatus === 'success' ? 0 : 1
+  };
 }
 
 function writeJob(job: Record<string, any>): void {

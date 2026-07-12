@@ -93,6 +93,9 @@ test('renderer updates live global dedupe counts from canonical extract fingerpr
     await page.locator('#runsWorkspace [data-run-action="start"]').click();
     await page.waitForFunction(() => window.__runCalls === 1);
     await page.evaluate((fingerprint) => {
+      for (const stage of ['extract', 'dedupe', 'speedtest', 'availability']) {
+        window.__emitPipelineEvent({ type: 'stage', stage, status: 'running' });
+      }
       window.__emitPipelineEvent({
         type: 'extract_iteration',
         source_name: 'leiting',
@@ -117,15 +120,66 @@ test('renderer updates live global dedupe counts from canonical extract fingerpr
       });
     }, duplicateFingerprint);
 
+    await page.locator('#navRuns').click();
+    const overlappingStages = await page.locator('#runsStageProgress').innerText();
+    for (const stage of ['extract', 'dedupe', 'speedtest', 'availability']) {
+      assert.match(overlappingStages, new RegExp(`${stage}\\s+运行中`));
+    }
+
+    await page.evaluate(() => {
+      window.__emitPipelineEvent({ type: 'speedtest_result', passed_threshold: true, total: 1 });
+      window.__emitPipelineEvent({ type: 'availability_link_result', all_passed: true, total: 1 });
+      window.__emitPipelineEvent({
+        type: 'extract_iteration',
+        source_name: 'leiting',
+        total_links: 5,
+        deduped_links: 5,
+        new_item_fingerprints: ['new-2', 'new-3', 'new-4', 'new-5']
+      });
+      window.__emitPipelineEvent({ type: 'speedtest_result', passed_threshold: false, total: 5 });
+      window.__emitPipelineEvent({ type: 'availability_link_result', all_passed: false, total: 5 });
+      window.__emitPipelineEvent({ type: 'extract_source_completed', source_name: 'leiting', raw_links: 3 });
+      window.__emitPipelineEvent({ type: 'extract_iteration', source_name: 'leiting', total_links: -7, deduped_links: Number.NaN });
+      window.__emitPipelineEvent({ type: 'extract_source_completed', source_name: 'leiting', raw_links: Number.POSITIVE_INFINITY });
+    });
+    await page.evaluate(() => {
+      window.__emitPipelineEvent({ type: 'stage', stage: 'extract', status: 'success' });
+      window.__emitPipelineEvent({ type: 'stage', stage: 'dedupe', status: 'success' });
+      window.__emitPipelineEvent({ type: 'stage', stage: 'speedtest', status: 'skipped' });
+      window.__emitPipelineEvent({ type: 'stage', stage: 'availability', status: 'skipped' });
+    });
+    const settledStages = await page.locator('#runsStageProgress').innerText();
+    for (const stage of ['speedtest', 'availability']) {
+      assert.match(settledStages, new RegExp(`${stage}\\s+已跳过`));
+    }
+
     await page.locator('#navDashboard').click();
     const rawMetric = await page.locator('[data-metric-key="raw_links"]').innerText();
     const dedupedMetric = await page.locator('[data-metric-key="deduped_links"]').innerText();
-    assert.match(rawMetric, /^\s*原始节点\s+2\b/);
-    assert.match(rawMetric, /雷霆 1/);
+    assert.match(rawMetric, /^\s*原始节点\s+6\b/);
+    assert.match(rawMetric, /雷霆 5/);
     assert.match(rawMetric, /黑洞 1/);
-    assert.match(dedupedMetric, /^\s*去重节点\s+1\b/);
-    assert.match(dedupedMetric, /雷霆 1/);
+    assert.match(dedupedMetric, /^\s*去重节点\s+5\b/);
+    assert.match(dedupedMetric, /雷霆 5/);
     assert.match(dedupedMetric, /黑洞 1/);
+    assert.match(await page.locator('[data-metric-key="speedtest_links"]').innerText(), /^\s*测速通过\s+1\b/);
+    assert.match(await page.locator('[data-metric-key="availability_links"]').innerText(), /^\s*最终可用\s+1\b/);
+
+    await page.evaluate(() => {
+      window.__emitPipelineEvent({ type: 'run_started', artifact_dir: '/tmp/artifacts/external-one' });
+      window.__emitPipelineEvent({ type: 'extract_iteration', source_name: 'leiting', total_links: 2, deduped_links: 2 });
+      window.__emitPipelineEvent({ type: 'run_started', artifact_dir: '/tmp/artifacts/external-one' });
+      window.__emitPipelineEvent({ type: 'extract_source_completed', source_name: 'leiting', raw_links: 1 });
+    });
+    assert.match(await page.locator('[data-metric-key="raw_links"]').innerText(), /^\s*原始节点\s+2\b/);
+    assert.match(await page.locator('[data-metric-key="deduped_links"]').innerText(), /^\s*去重节点\s+2\b/);
+
+    await page.evaluate(() => {
+      window.__emitPipelineEvent({ type: 'run_started', artifact_dir: '/tmp/artifacts/external-two' });
+      window.__emitPipelineEvent({ type: 'extract_iteration', source_name: 'leiting', total_links: 1, deduped_links: 1 });
+    });
+    assert.match(await page.locator('[data-metric-key="raw_links"]').innerText(), /^\s*原始节点\s+1\b/);
+    assert.match(await page.locator('[data-metric-key="deduped_links"]').innerText(), /^\s*去重节点\s+1\b/);
 
     await page.locator('#navLogs').click();
     const eventAndLogText = await page.evaluate(() => JSON.stringify({
@@ -139,7 +193,7 @@ test('renderer updates live global dedupe counts from canonical extract fingerpr
       assert.doesNotMatch(eventAndLogText, new RegExp(String(secret).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
     }
     assert.deepEqual(
-      await page.evaluate(() => Object.keys(window.__extractEvents[0]).sort()),
+      await page.evaluate(() => Object.keys(window.__extractEvents.find((event) => event.type === 'extract_iteration')).sort()),
       ['deduped_links', 'extracted_links', 'iteration', 'new_item_fingerprints', 'new_items', 'requested_iterations', 'source_name', 'total_links', 'type'].sort()
     );
 
