@@ -253,7 +253,7 @@ export function buildSidebarStatus(viewModel, messages, state, language) {
 
 export function buildPageMarkup(activePage, viewModel, messages, language, subtabs = {}) {
   return `
-    <section class="page-shell" data-page-shell="${activePage}">
+    <section ${activePage === 'runs' ? 'id="runsWorkspace"' : ''} class="page-shell" data-page-shell="${activePage}">
       ${buildPageInner(activePage, viewModel, messages, language, subtabs)}
     </section>
   `;
@@ -359,12 +359,12 @@ function buildRunsPage(vm, messages) {
   const stageDisabled = vm.runControlState.isBusy || !vm.retryStageOptions.length ? 'disabled' : '';
   const retryDisabled = vm.runControlState.isBusy || !vm.selectedRetryArtifactDir || !vm.selectedRetryStage ? 'disabled' : '';
   return `
-    <div id="runsWorkspace" class="page-grid runs-grid">
+    <div class="mobile-run-bar" data-mobile-run-bar>
+        <button class="btn btn-primary run-big" data-run-action="start" type="button" ${runDisabled}>▶ 开始运行</button>
+        <button class="btn btn-secondary run-big" data-run-action="stop" type="button" ${vm.runControlState.stopDisabled ? 'disabled' : ''}>■ 停止运行</button>
+    </div>
+    <div class="page-grid runs-grid">
       <article class="panel wide-panel run-control-panel">
-        <div class="mobile-run-bar" data-mobile-run-bar>
-          <button class="btn btn-primary run-big" data-run-action="start" type="button" ${runDisabled}>▶ 开始运行</button>
-          <button class="btn btn-secondary run-big" data-run-action="stop" type="button" ${vm.runControlState.stopDisabled ? 'disabled' : ''}>■ 停止运行</button>
-        </div>
         <details class="run-secondary-controls">
           <summary>重试历史、阶段与运行选项</summary>
           <div class="retry-control-card">

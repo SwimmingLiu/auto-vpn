@@ -132,6 +132,7 @@ const state = {
 };
 
 let settingsDrawerOpener = null;
+let runDetailsMobileBreakpoint = null;
 
 const elements = {
   sidebarTitle: document.querySelector('#sidebarTitle'),
@@ -273,12 +274,20 @@ function renderAll() {
     state.subtabs
   );
   syncRunDetailsPresentation();
+  updateChromeState(messages);
   renderToast();
 }
 
 function syncRunDetailsPresentation() {
   const details = document.querySelector('details.run-secondary-controls');
-  if (details) details.open = !window.matchMedia('(max-width: 720px)').matches;
+  if (!details) return;
+  const mobile = window.matchMedia('(max-width: 720px)').matches;
+  const isNewDetails = details.dataset.breakpointInitialized !== 'true';
+  if (isNewDetails || mobile !== runDetailsMobileBreakpoint) {
+    details.open = !mobile;
+    details.dataset.breakpointInitialized = 'true';
+  }
+  runDetailsMobileBreakpoint = mobile;
 }
 
 function renderChrome(messages, viewModel) {
@@ -305,7 +314,7 @@ function updateChromeState(messages = getMessages(state.language)) {
   for (const button of document.querySelectorAll('[data-run-action="start"]')) {
     button.disabled = controlState.runDisabled;
     button.setAttribute('aria-busy', String(controlState.isBusy));
-    if (button.closest('#pageActions')) button.textContent = resolveRunButtonLabel(messages);
+    button.textContent = resolveRunButtonLabel(messages);
   }
   for (const button of document.querySelectorAll('[data-run-action="stop"]')) {
     button.disabled = controlState.stopDisabled;

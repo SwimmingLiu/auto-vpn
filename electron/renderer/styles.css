@@ -815,7 +815,17 @@ body[data-page="logs"] .page-content {
 .mobile-run-bar {
   display: grid;
   grid-template-columns: repeat(2, minmax(160px, 1fr));
+  grid-column: 1 / -1;
+  align-self: start;
   gap: 14px;
+}
+
+#runsWorkspace {
+  display: block;
+}
+
+#runsWorkspace > .runs-grid {
+  margin-top: 16px;
 }
 
 .run-secondary-controls > summary {
@@ -2063,6 +2073,14 @@ body[data-page="logs"] #logCenterTable {
     min-height: 100%;
   }
 
+  .app-frame {
+    height: auto;
+  }
+
+  .app-content-shell {
+    overflow: visible;
+  }
+
   html {
     scroll-padding-bottom: calc(86px + env(safe-area-inset-bottom));
   }
@@ -2408,7 +2426,8 @@ body[data-page="logs"] #logCenterTable {
 
   .mobile-run-bar {
     position: sticky;
-    bottom: calc(76px + env(safe-area-inset-bottom));
+    top: calc(100dvh - 158px - env(safe-area-inset-bottom));
+    margin-top: calc(100dvh - 220px);
     z-index: var(--z-sticky);
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 10px;
@@ -2417,6 +2436,16 @@ body[data-page="logs"] #logCenterTable {
     backdrop-filter: blur(16px);
     border: 1px solid var(--border);
     border-radius: 16px;
+  }
+
+  #runsCurrentStage {
+    scroll-margin-bottom: 170px;
+  }
+
+  #runsWorkspace::after {
+    content: '';
+    display: block;
+    height: 170px;
   }
 
   .run-secondary-controls > summary {

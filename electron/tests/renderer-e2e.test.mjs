@@ -911,10 +911,49 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     await page.setViewportSize({ width: 390, height: 844 });
     await page.waitForFunction(() => !document.querySelector('details.run-secondary-controls')?.open);
     assert.equal(await page.locator('[data-mobile-run-bar] [data-run-action]').count(), 2);
+    assert.deepEqual(
+      await page.locator('[data-mobile-run-bar] > [data-run-action]').evaluateAll((buttons) => buttons.map((button) => button.dataset.runAction)),
+      ['start', 'stop']
+    );
     assert.equal(await page.locator('[data-mobile-run-bar] select, [data-mobile-run-bar] [data-run-option]').count(), 0);
     assert.equal(await page.locator('details.run-secondary-controls').getAttribute('open'), null);
     assert.equal(await page.locator('[data-mobile-run-bar]').evaluate((element) => getComputedStyle(element).position), 'sticky');
     assert.notEqual(await page.locator('.run-control-panel').evaluate((element) => getComputedStyle(element).position), 'sticky');
+
+    const details = page.locator('details.run-secondary-controls');
+    await details.evaluate((element) => { element.open = true; });
+    await page.setViewportSize({ width: 400, height: 760 });
+    assert.equal(await details.evaluate((element) => element.open), true);
+    await details.evaluate((element) => { element.open = false; });
+    await page.setViewportSize({ width: 390, height: 800 });
+    assert.equal(await details.evaluate((element) => element.open), false);
+
+    await page.evaluate(() => document.querySelector('#runsCurrentStage')?.scrollIntoView({ block: 'end' }));
+    const stickyGeometry = await page.evaluate(() => {
+      const bar = document.querySelector('[data-mobile-run-bar]').getBoundingClientRect();
+      const nav = document.querySelector('.sidebar').getBoundingClientRect();
+      const current = document.querySelector('#runsCurrentStage').getBoundingClientRect();
+      const shell = document.querySelector('#runsWorkspace').getBoundingClientRect();
+      return { barTop: bar.top, barBottom: bar.bottom, navTop: nav.top, currentBottom: current.bottom, shellBottom: shell.bottom, scrollY };
+    });
+    assert.ok(stickyGeometry.barBottom <= stickyGeometry.navTop + 1, JSON.stringify(stickyGeometry));
+    assert.ok(stickyGeometry.currentBottom <= stickyGeometry.barTop + 1, JSON.stringify(stickyGeometry));
+
+    const runStart = page.locator('[data-mobile-run-bar] [data-run-action="start"]');
+    const runStop = page.locator('[data-mobile-run-bar] [data-run-action="stop"]');
+    await page.evaluate(() => window.__emitPipelineEvent({ type: 'server_state', run_state: 'running' }));
+    assert.equal(await runStart.innerText(), '运行中');
+    assert.equal(await runStart.isDisabled(), true);
+    assert.equal(await runStop.isDisabled(), false);
+    await page.evaluate(() => window.__emitPipelineEvent({ type: 'server_state', run_state: 'stopping' }));
+    assert.equal(await runStart.innerText(), '停止中');
+    assert.equal(await runStart.isDisabled(), true);
+    assert.equal(await runStop.isDisabled(), true);
+    await page.evaluate(() => window.__emitPipelineEvent({ type: 'server_state', run_state: 'idle' }));
+    assert.equal(await runStart.innerText(), '立即运行');
+    assert.equal(await runStart.isDisabled(), false);
+    assert.equal(await runStop.isDisabled(), true);
+
     await page.setViewportSize({ width: 1280, height: 820 });
     await page.waitForFunction(() => document.querySelector('details.run-secondary-controls')?.open);
 

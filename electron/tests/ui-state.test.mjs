@@ -43,7 +43,7 @@ test('buildStageModel marks stages in configured order', () => {
   assert.equal(rows.at(-1).name, 'verify');
 });
 
-test('runs workspace separates primary actions and exposes textual stage status', () => {
+test('runs workspace exposes secondary controls and textual stage status', () => {
   const messages = getMessages('zh-CN');
   const vm = buildViewModel({
     runState: 'idle',
@@ -52,10 +52,6 @@ test('runs workspace separates primary actions and exposes textual stage status'
   }, messages, 'zh-CN');
   const markup = buildPageMarkup('runs', vm, messages, 'zh-CN');
 
-  const runBar = markup.match(/<div[^>]+data-mobile-run-bar[\s\S]*?<\/div>/)?.[0] ?? '';
-  assert.match(runBar, /data-run-action="start"/);
-  assert.match(runBar, /data-run-action="stop"/);
-  assert.doesNotMatch(runBar, /retry|data-run-option/);
   assert.match(markup, /<details[^>]+class="[^"]*run-secondary-controls/);
   assert.match(markup, /doctor[\s\S]*?完成/);
   assert.match(markup, /extract[\s\S]*?运行中/);
