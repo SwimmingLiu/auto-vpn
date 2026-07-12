@@ -26,7 +26,7 @@ import { buildWorkerArtifactsWithBackend, WorkerBuildArtifacts } from './obfusca
 import { deployPagesWithBackend, isVerifySuccess, verifyDeploymentWithBackend } from './deploy.js';
 import { safeDeployment } from '../runtime/redaction.js';
 import { RunStore, readLatestStageStatuses } from './run-store.js';
-import { BoundedWorkerPool } from './streaming-coordinator.js';
+import { AsyncPermitPool, BoundedWorkerPool } from './streaming-coordinator.js';
 
 type StageName = 'doctor' | 'extract' | 'dedupe' | 'speedtest' | 'availability' | 'postprocess' | 'render' | 'obfuscate' | 'deploy' | 'verify';
 type StageStatus = 'pending' | 'running' | 'success' | 'failed' | 'skipped';
@@ -534,6 +534,9 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
     const sourcesToRun = enabledSources(profile);
     const runtimePath = path.join(artifactDir, 'runtime');
     const speedConfig = normalizeSpeedTestConfig(profile.speed_test as any);
+    // Preserve cross-stage streaming even for concurrency=1 while preventing
+    // the independent speed and availability pools from doubling larger limits.
+    const runtimePermits = new AsyncPermitPool(Math.max(2, speedConfig.concurrency));
     const useStreamingStages = !context.stages?.speedtest || Boolean(context.stages.speedtestLink);
     let rawLinks: string[] = [];
     let dedupedLinks: string[] = [];
@@ -557,9 +560,9 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
         let results: AvailabilityResultDict[];
         try {
           await new Promise<void>((resolve) => setImmediate(resolve));
-          results = context.stages?.availability
+          results = await runtimePermits.run(async () => context.stages?.availability
             ? await context.stages.availability([speedResult], profile.speed_test ?? {}, runtimePath, profile.availability_targets)
-            : await checkLinkAvailabilityBatchWithBackend({ results: [speedResult], config: profile.speed_test ?? {}, runtime_path: runtimePath, targets: profile.availability_targets as any }, { cwd: projectRoot, env: runtimeStageEnv });
+            : await checkLinkAvailabilityBatchWithBackend({ results: [speedResult], config: profile.speed_test ?? {}, runtime_path: runtimePath, targets: profile.availability_targets as any }, { cwd: projectRoot, env: runtimeStageEnv }));
           if (results.length !== 1 || results[0].link !== speedResult.link) throw new Error('availability adapter must return exactly one matching result');
         } catch (error) {
           runStore.recordAvailabilityResult({ link: speedResult.link, all_passed: false, provider_results: {}, error: errorMessage(error) });
@@ -581,9 +584,9 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
         runStore.markSpeedRunning(link);
         let probes: ProbeResult[];
         try {
-          probes = context.stages?.speedtestProbe
+          probes = await runtimePermits.run(async () => context.stages?.speedtestProbe
             ? await context.stages.speedtestProbe([link], profile.speed_test ?? {}, runtimePath)
-            : await probeSpeedtestLinksInNode({ links: [link], config: profile.speed_test as any, runtime_path: runtimePath }, { cwd: projectRoot, env: runtimeStageEnv, progressCallback: (message) => emit('log', { message }), eventCallback: (type, payload) => emit(type, payload) });
+            : await probeSpeedtestLinksInNode({ links: [link], config: profile.speed_test as any, runtime_path: runtimePath }, { cwd: projectRoot, env: runtimeStageEnv, progressCallback: (message) => emit('log', { message }), eventCallback: (type, payload) => emit(type, payload) }));
           if (probes.length !== 1 || probes[0].link !== link) throw new Error('speedtest probe adapter must return exactly one matching result');
         } catch (error) {
           const failed = { link, reachable: false, latency_ms: 0, error: errorMessage(error) };
@@ -597,9 +600,9 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
         let result: SpeedTestResult = { link, reachable: false, average_download_mb_s: 0, latency_ms: probe.latency_ms, error: probe.error ?? '' };
         if (probe.reachable) {
           try {
-            result = context.stages?.speedtestLink
+            result = await runtimePermits.run(async () => context.stages?.speedtestLink
               ? await context.stages.speedtestLink(link, profile.speed_test ?? {}, runtimePath)
-              : await testSpeedtestLinkInNode({ link, config: profile.speed_test as any, runtime_path: runtimePath }, { cwd: projectRoot, env: runtimeStageEnv });
+              : await testSpeedtestLinkInNode({ link, config: profile.speed_test as any, runtime_path: runtimePath }, { cwd: projectRoot, env: runtimeStageEnv }));
             if (result.link !== link) throw new Error('speedtest link adapter must return a matching result');
           } catch (error) {
             runStore.recordSpeedResult({ link, reachable: false, average_download_mb_s: 0, latency_ms: probe.latency_ms, error: errorMessage(error) }, false);
@@ -1378,15 +1381,16 @@ export async function resumeNodePipeline(options: NodeResumeOptions, context: Ru
   try {
     runStore.resetInterruptedRunning();
     const speedConfig = normalizeSpeedTestConfig(profile.speed_test as any);
+    const runtimePermits = new AsyncPermitPool(Math.max(2, speedConfig.concurrency));
     runStore.classifySpeedResults(speedConfig.min_download_mb_s);
     const availabilityPool = new BoundedWorkerPool<SpeedTestResult>({
       concurrency: speedConfig.concurrency,
       capacity: speedConfig.concurrency * 2,
       worker: async (speedResult) => {
         runStore.markAvailabilityRunning(speedResult.link);
-        const results = context.stages?.availability
+        const results = await runtimePermits.run(async () => context.stages?.availability
           ? await context.stages.availability([speedResult], profile.speed_test ?? {}, runtimePath, profile.availability_targets)
-          : await checkLinkAvailabilityBatchWithBackend({ results: [speedResult], config: profile.speed_test ?? {}, runtime_path: runtimePath, targets: profile.availability_targets as any }, { cwd: projectRoot, env: runtimeStageEnv });
+          : await checkLinkAvailabilityBatchWithBackend({ results: [speedResult], config: profile.speed_test ?? {}, runtime_path: runtimePath, targets: profile.availability_targets as any }, { cwd: projectRoot, env: runtimeStageEnv }));
         if (results.length !== 1 || results[0].link !== speedResult.link) throw new Error('availability adapter must return exactly one matching result');
         runStore.recordAvailabilityResult(results[0]);
       }
@@ -1400,17 +1404,17 @@ export async function resumeNodePipeline(options: NodeResumeOptions, context: Ru
       capacity: speedConfig.concurrency * 2,
       worker: async (link) => {
       runStore.markSpeedRunning(link);
-      const probes = context.stages?.speedtestProbe
+      const probes = await runtimePermits.run(async () => context.stages?.speedtestProbe
         ? await context.stages.speedtestProbe([link], profile.speed_test ?? {}, runtimePath)
-        : await probeSpeedtestLinksInNode({ links: [link], config: profile.speed_test as any, runtime_path: runtimePath }, { cwd: projectRoot, env: runtimeStageEnv });
+        : await probeSpeedtestLinksInNode({ links: [link], config: profile.speed_test as any, runtime_path: runtimePath }, { cwd: projectRoot, env: runtimeStageEnv }));
       if (probes.length !== 1 || probes[0].link !== link) throw new Error('speedtest probe adapter must return exactly one matching result');
       const probe = probes[0];
       runStore.recordProbe(probe);
       let result: SpeedTestResult = { link, reachable: false, average_download_mb_s: 0, latency_ms: probe.latency_ms, error: probe.error ?? '' };
       if (probe.reachable) {
-        result = context.stages?.speedtestLink
+        result = await runtimePermits.run(async () => context.stages?.speedtestLink
           ? await context.stages.speedtestLink(link, profile.speed_test ?? {}, runtimePath)
-          : await testSpeedtestLinkInNode({ link, config: profile.speed_test as any, runtime_path: runtimePath }, { cwd: projectRoot, env: runtimeStageEnv });
+          : await testSpeedtestLinkInNode({ link, config: profile.speed_test as any, runtime_path: runtimePath }, { cwd: projectRoot, env: runtimeStageEnv }));
         if (result.link !== link) throw new Error('speedtest link adapter must return a matching result');
         if (result.latency_ms <= 0) result.latency_ms = probe.latency_ms;
       }

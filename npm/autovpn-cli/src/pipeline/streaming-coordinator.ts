@@ -15,6 +15,39 @@ interface DrainWaiter {
   reject: (error: unknown) => void;
 }
 
+export class AsyncPermitPool {
+  private available: number;
+  private readonly waiters: Array<() => void> = [];
+
+  constructor(limit: number) {
+    if (!Number.isInteger(limit) || limit <= 0) throw new RangeError('permit limit must be a positive integer');
+    this.available = limit;
+  }
+
+  async run<T>(operation: () => Promise<T>): Promise<T> {
+    await this.acquire();
+    try {
+      return await operation();
+    } finally {
+      this.release();
+    }
+  }
+
+  private async acquire(): Promise<void> {
+    if (this.available > 0) {
+      this.available -= 1;
+      return;
+    }
+    await new Promise<void>((resolve) => this.waiters.push(resolve));
+  }
+
+  private release(): void {
+    const waiter = this.waiters.shift();
+    if (waiter) waiter();
+    else this.available += 1;
+  }
+}
+
 export class BoundedWorkerPool<T> {
   private readonly concurrency: number;
   private readonly limit: number;

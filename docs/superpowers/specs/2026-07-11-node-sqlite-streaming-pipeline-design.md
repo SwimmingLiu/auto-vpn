@@ -104,6 +104,16 @@ All dynamic JSON is parsed and validated at the RunStore boundary. Secrets are n
 
 The pools use bounded pending capacity. When the speed queue is full, the extraction callback awaits capacity, providing backpressure instead of accumulating an unbounded number of promises. Availability uses the same rule. Concurrency comes from `speed_test.concurrency`; pending capacity defaults to twice that value and remains an internal implementation detail unless evidence shows a user setting is needed.
 
+### Mihomo and transient-network resilience
+
+The speed and availability queues overlap, but their Mihomo-backed operations share a runtime permit pool. The total permit count is `max(2, speed_test.concurrency)`: two permits preserve visible speed/availability overlap when the configured concurrency is one, while larger configurations no longer double the requested concurrency by independently saturating both stage pools.
+
+Automatically selected mixed and controller ports are reserved inside the process until the runtime closes. This prevents concurrent AutoVPN workers in the same process from reusing a port during the bind-to-spawn window. Mihomo startup also races process exit, and controller selection/delay calls enforce their configured timeout.
+
+Probe, full-download, runtime startup, and availability provider transport operations retry at most once after a short delay when the failure is classified as transient. Retryable failures include internal/network timeouts, connection resets/refusals, temporary DNS/network reachability errors, fetch transport failures, and HTTP 5xx responses that are surfaced as errors. Provider semantic results such as unsupported regions, challenge pages, blocked responses, and unlock-marker changes are not retried or reclassified as network failures.
+
+Historical artifacts must be interpreted accordingly: a provider `unsupported_region` result is a real exit-location decision, while `runtime_error`, status zero, timeouts, and SSL/socket failures may be transient or node-specific. SQLite retains terminal failures for new runs so later analysis is not limited to winner-only text artifacts.
+
 ## Stage and event semantics
 
 The four streaming stages may all display `running` concurrently. Their success transitions remain dependency-aware:
@@ -153,4 +163,3 @@ TDD coverage must prove:
 - no global candidate-ranking wait remains in pipeline mode.
 
 After focused Node tests, run the repository's complete unit suite. Because behavior and Electron progress presentation change, also run the H5 renderer in a browser first, perform a manual browser test, then run Electron E2E and pixel-level visual verification. Open a PR, review it, apply feedback with complete re-verification after any behavioral change, merge only when checks pass, and package the merged application. Packaging must verify the project-derived transparent icon and absence of the default Electron icon warning.
-

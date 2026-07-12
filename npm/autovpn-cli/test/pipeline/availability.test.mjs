@@ -366,6 +366,28 @@ test('Node availability backend checks providers through Mihomo proxy by default
   assert.ok(result.every((item) => item.all_passed && item.provider_results.custom.reason === 'ok'));
 });
 
+test('Node availability retries transient provider transport failures without retrying semantic results', async () => {
+  let fetches = 0;
+  let opened = 0;
+  const result = await checkLinkAvailabilityBatchWithBackend({
+    results: [{ ...speedResult, link: 'vmess://retry-availability' }],
+    config: { concurrency: 1, timeout_seconds: 20, startup_wait_seconds: 1 },
+    runtime_path: '/opt/mihomo',
+    targets: { custom: { url: 'http://custom.example/ok', enabled: true, allowed_hosts: ['custom.example'], negative_phrases: ['blocked'] } }
+  }, {
+    env: {},
+    openMihomoRuntime: async () => { opened += 1; return { proxies: { http: `http://127.0.0.1:${18080 + opened}`, https: `http://127.0.0.1:${18080 + opened}` }, close: async () => {} }; },
+    fetchUrlViaHttpProxy: async (url) => {
+      fetches += 1;
+      if (fetches <= 2) throw Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' });
+      return { final_url: url, status_code: 200, body: '<html><title>OK</title><body>available</body></html>' };
+    }
+  });
+  assert.equal(fetches, 3);
+  assert.equal(opened, 2);
+  assert.equal(result[0].provider_results.custom.reason, 'ok');
+});
+
 test('fetchUrlViaHttpProxy returns provider status and body through an HTTP proxy', async () => {
   const upstream = http.createServer((request, response) => {
     assert.equal(request.url, '/ok');

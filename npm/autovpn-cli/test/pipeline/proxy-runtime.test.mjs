@@ -320,6 +320,70 @@ test('Node proxy runtime allocates local ports when callers do not provide them'
   await runtime.close();
 });
 
+test('concurrent Mihomo runtimes reserve distinct automatically allocated ports', async () => {
+  const link = vmessLink({ add: 'edge.example.com', port: '443', id: '11111111-2222-3333-4444-555555555555' });
+  const candidates = [12001, 12001, 12002, 12001, 12002, 12003, 12004];
+  const makeChild = () => {
+    const child = new EventEmitter();
+    child.exitCode = null;
+    child.kill = (signal) => { child.exitCode = 0; child.emit('close', 0, signal); return true; };
+    return child;
+  };
+  const options = {
+    runtimePath: '/opt/bin/mihomo',
+    allocatePort: async () => candidates.shift(),
+    spawn: makeChild,
+    waitForPort: async () => {},
+    selectProxy: async () => {}
+  };
+  const [first, second] = await Promise.all([openMihomoRuntime(link, options), openMihomoRuntime(link, options)]);
+  const ports = [
+    Number(new URL(first.proxies.http).port),
+    Number(new URL(first.controllerUrl).port),
+    Number(new URL(second.proxies.http).port),
+    Number(new URL(second.controllerUrl).port)
+  ];
+  assert.equal(new Set(ports).size, 4);
+  assert.deepEqual([...ports].sort((left, right) => left - right), [12001, 12002, 12003, 12004]);
+  await Promise.all([first.close(), second.close()]);
+});
+
+test('automatic port reservation fails instead of looping forever on duplicate candidates', async () => {
+  const link = vmessLink({ add: 'edge.example.com', port: '443', id: '11111111-2222-3333-4444-555555555555' });
+  const makeChild = () => {
+    const child = new EventEmitter(); child.exitCode = null;
+    child.kill = (signal) => { child.exitCode = 0; child.emit('close', 0, signal); return true; };
+    return child;
+  };
+  const first = await openMihomoRuntime(link, { runtimePath: '/opt/bin/mihomo', allocatePort: async () => 13001, controllerPort: 13002, spawn: makeChild, waitForPort: async () => {}, selectProxy: async () => {} });
+  const result = await Promise.race([
+    openMihomoRuntime(link, { runtimePath: '/opt/bin/mihomo', allocatePort: async () => 13001, controllerPort: 13003, spawn: makeChild, waitForPort: async () => {}, selectProxy: async () => {} }).catch((error) => error),
+    new Promise((resolve) => setTimeout(() => resolve('hung'), 100))
+  ]);
+  assert.notEqual(result, 'hung');
+  assert.match(result.message, /unable to reserve a unique local port/);
+  await first.close();
+});
+
+test('automatic ports are released even when runtime process cleanup fails', async () => {
+  const link = vmessLink({ add: 'edge.example.com', port: '443', id: '11111111-2222-3333-4444-555555555555' });
+  const candidates = [14001, 14002, 14001, 14002];
+  const first = await openMihomoRuntime(link, {
+    runtimePath: '/opt/bin/mihomo', allocatePort: async () => candidates.shift(),
+    spawn: () => { const child = new EventEmitter(); child.exitCode = null; child.kill = () => { throw new Error('kill failed'); }; return child; },
+    waitForPort: async () => {}, selectProxy: async () => {}
+  });
+  await assert.rejects(() => first.close(), /kill failed/);
+  const second = await openMihomoRuntime(link, {
+    runtimePath: '/opt/bin/mihomo', allocatePort: async () => candidates.shift(),
+    spawn: () => { const child = new EventEmitter(); child.exitCode = null; child.kill = (signal) => { child.exitCode = 0; child.emit('close', 0, signal); return true; }; return child; },
+    waitForPort: async () => {}, selectProxy: async () => {}
+  });
+  assert.equal(new URL(second.proxies.http).port, '14001');
+  assert.equal(new URL(second.controllerUrl).port, '14002');
+  await second.close();
+});
+
 test('Node proxy runtime selects proxies and probes Mihomo delay through controller API', async () => {
   const calls = [];
   const fetch = async (url, init) => {
@@ -336,6 +400,53 @@ test('Node proxy runtime selects proxies and probes Mihomo delay through control
   await selectMihomoProxy('http://127.0.0.1:9090', 'runtime-node', 3, { fetch });
   assert.equal(await probeMihomoProxyDelay('http://127.0.0.1:9090', 'runtime-node', 'https://probe.example/204', 3, { fetch }), 123);
   assert.equal(calls.length, 2);
+});
+
+test('Node proxy controller requests enforce the configured timeout', async () => {
+  const result = await Promise.race([
+    selectMihomoProxy('http://127.0.0.1:9090', 'runtime-node', 0.01, { fetch: async () => await new Promise(() => {}) }).catch((error) => error),
+    new Promise((resolve) => setTimeout(() => resolve('hung'), 100))
+  ]);
+  assert.notEqual(result, 'hung');
+  assert.ok(result instanceof Error);
+  assert.equal(result.code, 'AUTOVPN_INTERNAL_TIMEOUT');
+});
+
+test('Node proxy runtime tags an early Mihomo exit as transient', async () => {
+  const link = vmessLink({ add: 'edge.example.com', port: '443', id: '11111111-2222-3333-4444-555555555555' });
+  await assert.rejects(() => openMihomoRuntime(link, {
+    runtimePath: '/opt/bin/mihomo', mixedPort: 10013, controllerPort: 10014,
+    spawn: () => {
+      const child = new EventEmitter(); child.exitCode = null; child.kill = () => true;
+      process.nextTick(() => { child.exitCode = 2; child.emit('exit', 2, null); });
+      return child;
+    },
+    waitForPort: async () => await new Promise(() => {}), selectProxy: async () => {}
+  }), (error) => {
+    assert.equal(error.code, 'AUTOVPN_INTERNAL_TIMEOUT');
+    return true;
+  });
+});
+
+test('Node proxy runtime surfaces an early Mihomo exit while waiting for ports', async () => {
+  const link = vmessLink({ add: 'edge.example.com', port: '443', id: '11111111-2222-3333-4444-555555555555' });
+  await assert.rejects(() => openMihomoRuntime(link, {
+    runtimePath: '/opt/bin/mihomo',
+    mixedPort: 10011,
+    controllerPort: 10012,
+    spawn: () => {
+      const child = new EventEmitter();
+      child.exitCode = null;
+      child.kill = () => true;
+      process.nextTick(() => {
+        child.exitCode = 2;
+        child.emit('exit', 2, null);
+      });
+      return child;
+    },
+    waitForPort: async () => await new Promise(() => {}),
+    selectProxy: async () => {}
+  }), /mihomo exited during startup with code 2/);
 });
 
 test('Node proxy runtime clamps Mihomo delay timeout to controller API limits', async () => {

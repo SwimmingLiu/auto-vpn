@@ -49,6 +49,7 @@ export interface OpenMihomoRuntimeOptions {
   spawn?: SpawnLike;
   waitForPort?: (port: number, timeoutSeconds: number) => Promise<void>;
   selectProxy?: (controllerUrl: string, proxyName: string, timeoutSeconds: number) => Promise<void>;
+  allocatePort?: () => Promise<number>;
 }
 
 export const PROXY_ENV_KEYS = [
@@ -63,6 +64,7 @@ export const PROXY_ENV_KEYS = [
 ] as const;
 
 const MIHOMO_DELAY_TIMEOUT_MAX_MS = 30_000;
+const reservedAutomaticPorts = new Set<number>();
 
 function padBase64(encoded: string): string {
   return encoded + '='.repeat((4 - (encoded.length % 4)) % 4);
@@ -144,21 +146,52 @@ function requireOkResponse(response: Awaited<ReturnType<FetchLike>>, context: st
   }
 }
 
+async function fetchControllerWithTimeout(
+  fetchImpl: FetchLike,
+  url: string,
+  init: Record<string, unknown>,
+  timeoutSeconds: number
+): Promise<Awaited<ReturnType<FetchLike>>> {
+  const controller = new AbortController();
+  let timedOut = false;
+  const timeoutMs = Math.max(1, Math.trunc(timeoutSeconds * 1000));
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      const timeoutError = new Error(`mihomo controller request timed out after ${timeoutMs}ms`) as Error & { code?: string };
+      timeoutError.code = 'AUTOVPN_INTERNAL_TIMEOUT';
+      reject(timeoutError);
+      controller.abort();
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([fetchImpl(url, { ...init, signal: controller.signal }), timeout]);
+  } catch (error) {
+    if (!timedOut || (error instanceof Error && (error as Error & { code?: string }).code === 'AUTOVPN_INTERNAL_TIMEOUT')) throw error;
+    const timeoutError = new Error(`mihomo controller request timed out after ${timeoutMs}ms`, { cause: error }) as Error & { code?: string };
+    timeoutError.code = 'AUTOVPN_INTERNAL_TIMEOUT';
+    throw timeoutError;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export async function selectMihomoProxy(
   controllerUrl: string,
   proxyName: string,
-  _timeoutSeconds: number,
+  timeoutSeconds: number,
   options: { fetch?: FetchLike } = {}
 ): Promise<void> {
   if (!controllerUrl) {
     return;
   }
   const fetchImpl = requireFetch(options.fetch);
-  const response = await fetchImpl(`${controllerUrl}/proxies/GLOBAL`, {
+  const response = await fetchControllerWithTimeout(fetchImpl, `${controllerUrl}/proxies/GLOBAL`, {
     method: 'PUT',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ name: proxyName })
-  });
+  }, timeoutSeconds);
   requireOkResponse(response, 'mihomo proxy selection');
 }
 
@@ -174,7 +207,7 @@ export async function probeMihomoProxyDelay(
   const timeoutMs = Math.min(MIHOMO_DELAY_TIMEOUT_MAX_MS, Math.max(1, Math.trunc(timeoutSeconds * 1000)));
   url.searchParams.set('timeout', String(timeoutMs));
   url.searchParams.set('url', probeUrl);
-  const response = await fetchImpl(url.toString(), { method: 'GET' });
+  const response = await fetchControllerWithTimeout(fetchImpl, url.toString(), { method: 'GET' }, timeoutSeconds);
   requireOkResponse(response, 'mihomo proxy delay probe');
   const payload = await response.json?.();
   const delay = Number((payload as { delay?: unknown } | undefined)?.delay ?? -1);
@@ -203,6 +236,20 @@ async function findFreePort(): Promise<number> {
       });
     });
   });
+}
+
+async function reserveAutomaticPort(allocatePort: () => Promise<number>): Promise<number> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const port = await allocatePort();
+    if (!Number.isInteger(port) || port <= 0) {
+      throw new Error(`invalid automatically allocated port: ${port}`);
+    }
+    if (!reservedAutomaticPorts.has(port)) {
+      reservedAutomaticPorts.add(port);
+      return port;
+    }
+  }
+  throw new Error('unable to reserve a unique local port after 100 attempts');
 }
 
 async function canConnectToPort(port: number): Promise<boolean> {
@@ -240,18 +287,27 @@ async function closeChildProcess(process: ChildProcess): Promise<void> {
   if (process.exitCode !== null || process.killed) {
     return;
   }
-  await new Promise<void>((resolve) => {
+  await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {
-      if (process.exitCode === null && !process.killed) {
-        process.kill('SIGKILL');
+      try {
+        if (process.exitCode === null && !process.killed) {
+          process.kill('SIGKILL');
+        }
+        resolve();
+      } catch (error) {
+        reject(error);
       }
-      resolve();
     }, 2000);
     process.once('close', () => {
       clearTimeout(timer);
       resolve();
     });
-    process.kill('SIGTERM');
+    try {
+      process.kill('SIGTERM');
+    } catch (error) {
+      clearTimeout(timer);
+      reject(error);
+    }
   });
 }
 
@@ -306,26 +362,47 @@ async function resolveMihomoCommand(runtimePath?: string, env: NodeJS.ProcessEnv
 
 export async function openMihomoRuntime(link: string, options: OpenMihomoRuntimeOptions = {}): Promise<MihomoRuntime> {
   const startupWaitSeconds = Number(options.startupWaitSeconds ?? 1);
+  const payload = parseVmessLink(link);
+  const automaticPorts: number[] = [];
+  const allocatePort = options.allocatePort ?? findFreePort;
   const mixedPort = Number.isInteger(options.mixedPort) && Number(options.mixedPort) > 0
     ? Number(options.mixedPort)
-    : await findFreePort();
-  const controllerPort = Number.isInteger(options.controllerPort) && Number(options.controllerPort) > 0
-    ? Number(options.controllerPort)
-    : await findFreePort();
+    : await reserveAutomaticPort(allocatePort);
+  if (!(Number.isInteger(options.mixedPort) && Number(options.mixedPort) > 0)) automaticPorts.push(mixedPort);
+  let controllerPort: number;
+  try {
+    controllerPort = Number.isInteger(options.controllerPort) && Number(options.controllerPort) > 0
+      ? Number(options.controllerPort)
+      : await reserveAutomaticPort(allocatePort);
+    if (!(Number.isInteger(options.controllerPort) && Number(options.controllerPort) > 0)) automaticPorts.push(controllerPort);
+  } catch (error) {
+    for (const port of automaticPorts) reservedAutomaticPorts.delete(port);
+    throw error;
+  }
 
   const proxyName = 'runtime-node';
   const controllerUrl = `http://127.0.0.1:${controllerPort}`;
-  const payload = parseVmessLink(link);
-  const config = buildMihomoRuntimeConfig(payload, { mixedPort, controllerPort });
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'autovpn-mihomo-'));
-  const configPath = path.join(tempDir, 'config.json');
-  await writeFile(configPath, JSON.stringify(config), 'utf8');
-
-  const command = await resolveMihomoCommand(options.runtimePath, options.env ?? process.env);
-  const child = (options.spawn ?? defaultSpawn)(command, ['-f', configPath], {
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env: stripProxyEnv(options.env ?? process.env)
-  });
+  let tempDir = '';
+  let configPath = '';
+  let child: ChildProcess;
+  try {
+    const config = buildMihomoRuntimeConfig(payload, { mixedPort, controllerPort });
+    tempDir = await mkdtemp(path.join(os.tmpdir(), 'autovpn-mihomo-'));
+    configPath = path.join(tempDir, 'config.json');
+    await writeFile(configPath, JSON.stringify(config), 'utf8');
+    const command = await resolveMihomoCommand(options.runtimePath, options.env ?? process.env);
+    child = (options.spawn ?? defaultSpawn)(command, ['-f', configPath], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: stripProxyEnv(options.env ?? process.env)
+    });
+  } catch (error) {
+    try {
+      if (tempDir) await rm(tempDir, { recursive: true, force: true });
+    } finally {
+      for (const port of automaticPorts) reservedAutomaticPorts.delete(port);
+    }
+    throw error;
+  }
   let rejectStartupError: ((error: Error) => void) | undefined;
   const startupError = new Promise<never>((_resolve, reject) => {
     rejectStartupError = reject;
@@ -334,6 +411,16 @@ export async function openMihomoRuntime(link: string, options: OpenMihomoRuntime
     rejectStartupError?.(error);
   };
   child.once('error', onStartupError);
+  let rejectStartupExit: ((error: Error) => void) | undefined;
+  const startupExit = new Promise<never>((_resolve, reject) => {
+    rejectStartupExit = reject;
+  });
+  const onStartupExit = (code: number | null, signal: NodeJS.Signals | null): void => {
+    const error = new Error(`mihomo exited during startup with code ${code ?? 'unknown'}${signal ? ` signal ${signal}` : ''}`) as Error & { code?: string };
+    error.code = 'AUTOVPN_INTERNAL_TIMEOUT';
+    rejectStartupExit?.(error);
+  };
+  child.once('exit', onStartupExit);
 
   let closed = false;
   const close = async (): Promise<void> => {
@@ -341,23 +428,29 @@ export async function openMihomoRuntime(link: string, options: OpenMihomoRuntime
       return;
     }
     closed = true;
-    await closeChildProcess(child);
-    await rm(tempDir, { recursive: true, force: true });
+    try {
+      await closeChildProcess(child);
+      await rm(tempDir, { recursive: true, force: true });
+    } finally {
+      for (const port of automaticPorts) reservedAutomaticPorts.delete(port);
+    }
   };
 
   try {
     const waitForPort = options.waitForPort ?? defaultWaitForPort;
-    await Promise.race([waitForPort(mixedPort, startupWaitSeconds + 4), startupError]);
-    await Promise.race([waitForPort(controllerPort, startupWaitSeconds + 4), startupError]);
+    await Promise.race([waitForPort(mixedPort, startupWaitSeconds + 4), startupError, startupExit]);
+    await Promise.race([waitForPort(controllerPort, startupWaitSeconds + 4), startupError, startupExit]);
     await Promise.race([(options.selectProxy ?? ((url, name, timeoutSeconds) => selectMihomoProxy(url, name, timeoutSeconds)))(
       controllerUrl,
       proxyName,
       startupWaitSeconds + 4
-    ), startupError]);
+    ), startupError, startupExit]);
     child.off('error', onStartupError);
+    child.off('exit', onStartupExit);
     child.on('error', () => {});
   } catch (error) {
     child.off('error', onStartupError);
+    child.off('exit', onStartupExit);
     child.on('error', () => {});
     await close();
     if (

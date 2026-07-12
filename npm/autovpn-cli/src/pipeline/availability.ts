@@ -6,6 +6,7 @@ import {
   MihomoRuntime,
   OpenMihomoRuntimeOptions
 } from './proxy-runtime.js';
+import { isTransientNetworkError, retryTransientNetwork } from './network-retry.js';
 
 type FetchLike = (url: string, init?: Record<string, unknown>) => Promise<{
   ok?: boolean;
@@ -762,18 +763,19 @@ async function checkLinkAvailabilityMihomo(
 ): Promise<AvailabilityResult> {
   const openRuntime = options.openMihomoRuntime ?? defaultOpenMihomoRuntime;
   const fetchViaProxy = options.fetchUrlViaHttpProxy ?? fetchUrlViaHttpProxy;
-  let runtime: Pick<MihomoRuntime, 'proxies' | 'close'> | undefined;
-  try {
-    runtime = await openRuntime(speedResult.link, {
-      runtimePath: options.runtimePath,
-      startupWaitSeconds: numberOrDefault(config.startup_wait_seconds, 1),
-      env: options.env
-    });
-    const providerResults: Record<string, ProviderCheckResult> = {};
-    const timeoutSeconds = Math.max(1, numberOrDefault(config.timeout_seconds, 20));
-    for (const target of options.targets) {
+  return retryTransientNetwork(async () => {
+    let runtime: Pick<MihomoRuntime, 'proxies' | 'close'> | undefined;
+    try {
+      runtime = await openRuntime(speedResult.link, {
+        runtimePath: options.runtimePath,
+        startupWaitSeconds: numberOrDefault(config.startup_wait_seconds, 1),
+        env: options.env
+      });
+      const providerResults: Record<string, ProviderCheckResult> = {};
+      const timeoutSeconds = Math.max(1, numberOrDefault(config.timeout_seconds, 20));
+      for (const target of options.targets) {
       try {
-        const response = await fetchViaProxy(target.url, runtime.proxies.http, timeoutSeconds);
+        const response = await retryTransientNetwork(() => fetchViaProxy(target.url, runtime!.proxies.http, timeoutSeconds));
         providerResults[target.name] = evaluateProviderResponse(target, {
           final_url: response.final_url,
           status_code: response.status_code,
@@ -781,6 +783,7 @@ async function checkLinkAvailabilityMihomo(
           body: response.body
         });
       } catch (error) {
+        if (isTransientNetworkError(error)) throw error;
         providerResults[target.name] = {
           provider: target.name,
           passed: false,
@@ -790,14 +793,12 @@ async function checkLinkAvailabilityMihomo(
           matched_phrase: error instanceof Error ? error.message : String(error)
         };
       }
+      }
+      return { speed_result: speedResult, provider_results: providerResults };
+    } finally {
+      await runtime?.close();
     }
-    return {
-      speed_result: speedResult,
-      provider_results: providerResults
-    };
-  } finally {
-    await runtime?.close();
-  }
+  });
 }
 
 async function checkBatchInNode(input: AvailabilityBatchInput, options: AvailabilityBackendOptions): Promise<AvailabilityResultDict[]> {

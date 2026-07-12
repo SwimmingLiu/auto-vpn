@@ -657,6 +657,42 @@ test('runNodePipeline streams passing speedtests into availability before remain
   );
 });
 
+test('runNodePipeline bounds combined speedtest and availability runtime concurrency', async () => {
+  const projectRoot = await makeProject();
+  const profilePath = path.join(projectRoot, 'state', 'profile.toml');
+  await writeFile(profilePath, (await readFile(profilePath, 'utf8')).replace('concurrency = 1', 'concurrency = 2'), 'utf8');
+  const links = ['one', 'two', 'three', 'four'].map((name) => vmessLink(name, `${name}.example`));
+  let active = 0;
+  let peak = 0;
+  let overlappingStages = false;
+  let activeSpeed = 0;
+  let activeAvailability = 0;
+  const enter = async (stage, delay) => {
+    active += 1;
+    if (stage === 'speed') activeSpeed += 1;
+    else activeAvailability += 1;
+    peak = Math.max(peak, active);
+    overlappingStages ||= activeSpeed > 0 && activeAvailability > 0;
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    active -= 1;
+    if (stage === 'speed') activeSpeed -= 1;
+    else activeAvailability -= 1;
+  };
+  await runNodePipeline({ projectRoot, skipDeploy: true, skipVerify: true, output: 'jsonl' }, {
+    env: { VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'), VPN_AUTOMATION_PROFILE_PATH: profilePath },
+    stages: {
+      extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links }),
+      speedtestProbe: async (input) => input.map((link) => ({ link, reachable: true, latency_ms: 10, error: '' })),
+      speedtestLink: async (link) => { await enter('speed', 20); return { link, reachable: true, average_download_mb_s: 3, latency_ms: 10, error: '' }; },
+      availability: async (results) => { await enter('availability', 50); return results.map((result) => ({ ...result, all_passed: true, provider_results: {} })); },
+      countryLookup: () => 'US',
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
+    }
+  });
+  assert.equal(overlappingStages, true);
+  assert.ok(peak <= 2, `combined runtime concurrency peaked at ${peak}`);
+});
+
 test('runNodePipeline overlaps extract, dedupe, speedtest, and availability', async () => {
   const projectRoot = await makeProject();
   const firstLink = vmessLink('first', 'one.example');
@@ -2250,6 +2286,7 @@ test('resumeNodePipeline resets interrupted sqlite nodes and schedules only inco
     VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'),
     VPN_AUTOMATION_PROFILE_PATH: path.join(projectRoot, 'state', 'profile.toml')
   };
+  await writeFile(env.VPN_AUTOMATION_PROFILE_PATH, (await readFile(env.VPN_AUTOMATION_PROFILE_PATH, 'utf8')).replace('concurrency = 1', 'concurrency = 2'), 'utf8');
   const artifactDir = path.join(projectRoot, 'artifacts', 'interrupted');
   const sessionDir = path.join(projectRoot, 'sessions', 'interrupted');
   await mkdir(artifactDir, { recursive: true });
@@ -2287,6 +2324,22 @@ test('resumeNodePipeline resets interrupted sqlite nodes and schedules only inco
   const speedCalls = [];
   const availabilityCalls = [];
   const extractCalls = [];
+  let activeRuntime = 0;
+  let peakRuntime = 0;
+  let activeSpeed = 0;
+  let activeAvailability = 0;
+  let resumeOverlapSeen = false;
+  const holdRuntime = async (stage, delay) => {
+    activeRuntime += 1;
+    if (stage === 'speed') activeSpeed += 1;
+    else activeAvailability += 1;
+    peakRuntime = Math.max(peakRuntime, activeRuntime);
+    resumeOverlapSeen ||= activeSpeed > 0 && activeAvailability > 0;
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    activeRuntime -= 1;
+    if (stage === 'speed') activeSpeed -= 1;
+    else activeAvailability -= 1;
+  };
   const resumed = await resumeNodePipeline({ projectRoot, mode: 'pipeline', session: sessionDir, skipDeploy: true }, {
     env,
     stages: {
@@ -2298,12 +2351,16 @@ test('resumeNodePipeline resets interrupted sqlite nodes and schedules only inco
       speedtestProbe: async (links) => links.map((link) => ({ link, reachable: true, latency_ms: 15, error: '' })),
       speedtestLink: async (link) => {
         speedCalls.push(link);
+        await holdRuntime('speed', 20);
         return { link, reachable: true, average_download_mb_s: 2, latency_ms: 15, error: '' };
       },
-      availability: async (results) => results.map((result) => {
+      availability: async (results) => {
+        await holdRuntime('availability', 50);
+        return results.map((result) => {
         availabilityCalls.push(result.link);
         return { ...result, all_passed: true, provider_results: {} };
-      }),
+        });
+      },
       countryLookup: () => 'US',
       obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { main_module: '_worker.js', modules: [] } })
     }
@@ -2315,6 +2372,8 @@ test('resumeNodePipeline resets interrupted sqlite nodes and schedules only inco
   assert.deepEqual(extractCalls, ['fixture']);
   assert.deepEqual(speedCalls.sort(), [interrupted, extractedAfterResume].sort());
   assert.deepEqual(availabilityCalls.sort(), [interrupted, passed, extractedAfterResume].sort());
+  assert.equal(resumeOverlapSeen, true);
+  assert.ok(peakRuntime <= 2, `resume runtime concurrency peaked at ${peakRuntime}`);
   const resumedStore = RunStore.open(path.join(artifactDir, 'run.db'));
   assert.deepEqual(resumedStore.speedResults().map(({ link, status }) => ({ link, status })), [
     { link: passed, status: 'speed_passed' },
