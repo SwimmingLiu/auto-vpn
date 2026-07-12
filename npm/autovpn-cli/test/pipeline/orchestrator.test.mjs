@@ -2246,6 +2246,10 @@ test('resumeNodePipeline marks speedtest failed when resumed results do not pass
 
 test('resumeNodePipeline resets interrupted sqlite nodes and schedules only incomplete speed and availability work', async () => {
   const projectRoot = await makeProject();
+  const env = {
+    VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'),
+    VPN_AUTOMATION_PROFILE_PATH: path.join(projectRoot, 'state', 'profile.toml')
+  };
   const artifactDir = path.join(projectRoot, 'artifacts', 'interrupted');
   const sessionDir = path.join(projectRoot, 'sessions', 'interrupted');
   await mkdir(artifactDir, { recursive: true });
@@ -2261,7 +2265,7 @@ test('resumeNodePipeline resets interrupted sqlite nodes and schedules only inco
   store.recordSpeedResult({ link: passed, reachable: true, average_download_mb_s: 3, latency_ms: 10, error: '' }, true);
   store.markAvailabilityRunning(passed);
   store.markSpeedRunning(interrupted);
-  store.recordSourceProgress('leiting', { processed: 2, total: 4, status: 'failed', error: 'interrupted' });
+  store.recordSourceProgress('fixture', { processed: 2, total: 4, status: 'failed', error: 'interrupted' });
   for (const source of ['heidong', 'mifeng', 'xuanfeng-area', 'xuanfeng-all-area']) {
     store.recordSourceProgress(source, { processed: 1, total: 1, status: 'success' });
   }
@@ -2284,6 +2288,7 @@ test('resumeNodePipeline resets interrupted sqlite nodes and schedules only inco
   const availabilityCalls = [];
   const extractCalls = [];
   const resumed = await resumeNodePipeline({ projectRoot, mode: 'pipeline', session: sessionDir, skipDeploy: true }, {
+    env,
     stages: {
       extract: async ({ source_name }, stream) => {
         extractCalls.push(source_name);
@@ -2307,7 +2312,7 @@ test('resumeNodePipeline resets interrupted sqlite nodes and schedules only inco
   assert.equal(resumed.run_status, 'success');
   assert.equal(resumed.counts.raw_links, 3);
   assert.equal(resumed.counts.deduped_links, 3);
-  assert.deepEqual(extractCalls, ['leiting']);
+  assert.deepEqual(extractCalls, ['fixture']);
   assert.deepEqual(speedCalls.sort(), [interrupted, extractedAfterResume].sort());
   assert.deepEqual(availabilityCalls.sort(), [interrupted, passed, extractedAfterResume].sort());
   const resumedStore = RunStore.open(path.join(artifactDir, 'run.db'));
@@ -2324,7 +2329,7 @@ test('resumeNodePipeline resets interrupted sqlite nodes and schedules only inco
   resumedStore.close();
   const sourceStore = RunStore.open(path.join(artifactDir, 'run.db'));
   assert.deepEqual(sourceStore.incompleteSourceProgress(), []);
-  assert.deepEqual(sourceStore.sourceProgress().find((row) => row.source === 'leiting'), { source: 'leiting', processed: 1, total: 1, status: 'success', error: '' });
+  assert.deepEqual(sourceStore.sourceProgress().find((row) => row.source === 'fixture'), { source: 'fixture', processed: 1, total: 1, status: 'success', error: '' });
   sourceStore.close();
   const dbStages = readLatestStageStatuses(path.join(artifactDir, 'run.db'));
   assert.equal(Object.values(dbStages).includes('stopped'), false);
@@ -2336,6 +2341,7 @@ test('resumeNodePipeline resets interrupted sqlite nodes and schedules only inco
 
   let repeatedExtract = false;
   await resumeNodePipeline({ projectRoot, mode: 'pipeline', session: sessionDir, skipDeploy: true }, {
+    env,
     stages: {
       extract: async () => { repeatedExtract = true; throw new Error('completed source must not rerun'); },
       countryLookup: () => 'US',
@@ -2347,6 +2353,10 @@ test('resumeNodePipeline resets interrupted sqlite nodes and schedules only inco
 
 test('resumeNodePipeline persists extract failure truth in sqlite and report', async () => {
   const projectRoot = await makeProject();
+  const env = {
+    VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'),
+    VPN_AUTOMATION_PROFILE_PATH: path.join(projectRoot, 'state', 'profile.toml')
+  };
   const artifactDir = path.join(projectRoot, 'artifacts', 'extract-failure');
   const sessionDir = path.join(projectRoot, 'sessions', 'extract-failure');
   await mkdir(artifactDir, { recursive: true });
@@ -2354,10 +2364,10 @@ test('resumeNodePipeline persists extract failure truth in sqlite and report', a
   const link = vmessLink('existing', 'existing.example');
   const store = RunStore.open(path.join(artifactDir, 'run.db'));
   store.initializeRun('running');
-  store.recordExtractedNode('leiting', link);
+  store.recordExtractedNode('fixture', link);
   store.recordSpeedResult({ link, reachable: true, average_download_mb_s: 3, latency_ms: 10, error: '' }, true);
   store.markAvailabilityRunning(link);
-  store.recordSourceProgress('leiting', { processed: 0, total: 1, status: 'failed', error: 'interrupted' });
+  store.recordSourceProgress('fixture', { processed: 0, total: 1, status: 'failed', error: 'interrupted' });
   for (const source of ['heidong', 'mifeng', 'xuanfeng-area', 'xuanfeng-all-area']) store.recordSourceProgress(source, { processed: 1, total: 1, status: 'success' });
   store.setStageStatus('extract', 'running');
   store.stopForResume();
@@ -2372,6 +2382,7 @@ test('resumeNodePipeline persists extract failure truth in sqlite and report', a
   const events = [];
   let settled = false;
   const resumePromise = resumeNodePipeline({ projectRoot, mode: 'pipeline', session: sessionDir, skipDeploy: true }, {
+    env,
     emit: (event) => events.push(event),
     stages: {
       extract: async () => { throw new Error('extract exploded token=SECRET'); },
@@ -2402,6 +2413,10 @@ test('resumeNodePipeline persists extract failure truth in sqlite and report', a
 
 test('resumeNodePipeline speedtest mode restores terminal sqlite results without repeating them', async () => {
   const projectRoot = await makeProject();
+  const env = {
+    VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'),
+    VPN_AUTOMATION_PROFILE_PATH: path.join(projectRoot, 'state', 'profile.toml')
+  };
   const artifactDir = path.join(projectRoot, 'artifacts', 'speed-interrupted');
   const sessionDir = path.join(projectRoot, 'sessions', 'speed-interrupted');
   await mkdir(artifactDir, { recursive: true });
@@ -2426,6 +2441,7 @@ test('resumeNodePipeline speedtest mode restores terminal sqlite results without
   await writeFile(path.join(sessionDir, 'session.json'), JSON.stringify({ artifact_dir: artifactDir, event_log: path.join(sessionDir, 'events.jsonl') }));
   const fullCalls = [];
   await resumeNodePipeline({ projectRoot, mode: 'speedtest', session: sessionDir }, {
+    env,
     stages: {
       speedtestProbe: async (links) => links.map((link) => ({ link, reachable: true, latency_ms: 15, error: '' })),
       speedtestLink: async (link) => {
