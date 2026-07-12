@@ -94,7 +94,7 @@ test('rejects unsafe provider builder URLs without fetching them', async () => {
       fallbackUrl: () => unsafeUrl,
       fetch: async () => { calls += 1; return response(200, { success: true, country_code: 'US' }); }
     });
-    assert.equal(await lookup('1.1.1.1'), 'ZZ');
+    assert.equal(await lookup('1.1.1.1'), 'US');
     assert.equal(calls, 0);
   }
 });
@@ -123,7 +123,7 @@ test('times out primary requests and uses fallback', async () => {
   assert.equal(await lookup('1.1.1.12'), 'GB');
 });
 
-test('returns ZZ on dual failure and uses a short negative cache TTL', async () => {
+test('falls back to US on dual failure and uses a short negative cache TTL', async () => {
   let now = 0;
   let calls = 0;
   const lookup = createGeoIpLookup({
@@ -131,11 +131,11 @@ test('returns ZZ on dual failure and uses a short negative cache TTL', async () 
     now: () => now,
     negativeTtlMs: 100
   });
-  assert.equal(await lookup('1.1.1.13'), 'ZZ');
-  assert.equal(await lookup('1.1.1.13'), 'ZZ');
+  assert.equal(await lookup('1.1.1.13'), 'US');
+  assert.equal(await lookup('1.1.1.13'), 'US');
   assert.equal(calls, 2);
   now = 101;
-  assert.equal(await lookup('1.1.1.13'), 'ZZ');
+  assert.equal(await lookup('1.1.1.13'), 'US');
   assert.equal(calls, 4);
 });
 
@@ -181,10 +181,10 @@ test('canonicalizes equivalent native IPv6 spellings for inflight and positive c
   assert.equal(calls, 1);
 });
 
-test('returns ZZ for empty addresses and resolver failure', async () => {
+test('falls back to US for empty addresses and resolver failure', async () => {
   const lookup = createGeoIpLookup({ resolve: async () => { throw new Error('dns'); }, fetch: async () => { throw new Error('unused'); } });
-  assert.equal(await lookup(''), 'ZZ');
-  assert.equal(await lookup('missing.example'), 'ZZ');
+  assert.equal(await lookup(''), 'US');
+  assert.equal(await lookup('missing.example'), 'US');
 });
 
 test('rejects non-global IPv4 and IPv6 addresses without provider fetches', async () => {
@@ -197,7 +197,7 @@ test('rejects non-global IPv4 and IPv6 addresses without provider fetches', asyn
   ];
   let fetches = 0;
   const lookup = createGeoIpLookup({ fetch: async () => { fetches += 1; return response(200, { success: true, country_code: 'US' }); } });
-  for (const address of rejected) assert.equal(await lookup(address), 'ZZ', address);
+  for (const address of rejected) assert.equal(await lookup(address), 'US', address);
   assert.equal(fetches, 0);
 });
 

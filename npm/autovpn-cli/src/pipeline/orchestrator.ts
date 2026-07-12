@@ -269,7 +269,7 @@ function createCountryLookup(context: RunNodePipelineContext): NodePipelineStage
     try {
       return lookup(String(parseVmessLink(link).add ?? ''));
     } catch {
-      return 'ZZ';
+      return 'US';
     }
   };
 }

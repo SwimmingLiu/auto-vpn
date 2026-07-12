@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented production GeoIP lookup for normal, retry, and resume pipeline paths. Unknown or invalid countries remain `ZZ` and Electron artifact previews group them under `OTHER`; explicit `US` remains unchanged.
+Implemented production GeoIP lookup for normal, retry, and resume pipeline paths. Per the latest product decision, unknown or failed detection falls back to `US`; successful detection retains the actual country.
 
 ## RED evidence
 
@@ -24,9 +24,9 @@ Initial result: 3 failures. `geoip.js` did not exist, postprocess produced `🇺
 - Added `createGeoIpLookup(options?)` with IPv4/IPv6 literal handling and injected A/AAAA DNS resolution.
 - Added strict `ipwho.is` primary response validation and configurable fallback URL (default `ipapi.co`).
 - Added bounded request timeouts, strict HTTP/schema failure handling, and bounded `429 Retry-After` delay before fallback.
-- Added successful-result caching, short negative `ZZ` caching, and in-flight deduplication keyed by resolved IP.
+- Added successful-result caching, short negative caching for failed lookups, and in-flight deduplication keyed by resolved IP.
 - The orchestrator parses the VMess server `add` value and awaits one run-local lookup in normal, retry, and resume paths. Existing `countryLookup` injection remains supported.
-- Removed all false-US normalization. Unknown/invalid values decorate as `🏳️ ZZ`; preview groups `ZZ` as neutral `OTHER` (renderer copy: “其他”).
+- Unknown/invalid values now decorate and preview as `🇺🇸 US`; successful non-US provider values remain unchanged.
 
 ## Deterministic network and concurrency evidence
 
@@ -43,8 +43,8 @@ All GeoIP tests use injected `fetch`, resolver, timer/clock, and sleep functions
 ## Self-review
 
 - No live network dependency exists in tests.
-- Provider errors cannot promote a node to US; dual failure is `ZZ`.
-- Real provider `US` values still validate and render as US.
+- Provider dual failure, DNS failure, rejected/non-global addresses, and invalid country values fall back to `US`.
+- Real provider `US` values and failure fallback both render as US, while internal detection metadata preserves short negative TTL behavior.
 - Cache TTLs and Retry-After waits are bounded and injectable.
 - Concurrent hostname resolutions that yield the same IP share the provider request.
 
@@ -61,8 +61,8 @@ All GeoIP tests use injected `fetch`, resolver, timer/clock, and sleep functions
 
 Addressed the P1 and three P2 review findings with new RED/GREEN coverage:
 
-- Renderer `buildRegionStats` now prioritizes preview `row.regionCode`; `ZZ` and `OTHER` merge into the user-visible “其他” bucket, while a real `US` remains US. Both region-stat model and rendered results markup are covered.
-- Domain lookup preserves resolver order, skips obvious private/loopback/link-local addresses, and tries each unique resolved IP until one returns a non-`ZZ` country. Per-IP positive/negative caches and in-flight deduplication remain unchanged.
+- Renderer `buildRegionStats` prioritizes preview `row.regionCode`; `ZZ`, `OTHER`, and missing regions now merge into `US`. Both region-stat model and rendered results markup are covered.
+- Domain lookup preserves resolver order, skips non-global addresses, and tries each unique resolved IP until one is successfully detected. Per-IP positive/negative caches and in-flight deduplication remain unchanged.
 - `Retry-After` accepts both delta-seconds and HTTP-date values, evaluates HTTP dates against the injected clock, and clamps both formats to `maxRetryAfterMs`.
 - Provider URL builders are validated before fetch: HTTPS only, exact `ipwho.is`/`ipapi.co` host, no credentials or non-default port after URL canonicalization. HTTP and foreign-host outputs return provider failure without any fetch call.
 
@@ -89,3 +89,10 @@ Follow-up verification:
 - IPv4-mapped IPv6 behavior remains canonical dotted IPv4 and therefore shares IPv4 cache/in-flight keys.
 - A deterministic concurrent regression test proves three equivalent native IPv6 spellings issue exactly one provider request and subsequent variants are positive-cache hits.
 - Final IPv6 canonicalization verification: GeoIP 15 passed, Task 9 focused 109 passed, and full CLI 358 passed; all had zero failures.
+
+## Product fallback update
+
+- Latest product decision changes the external unknown/failure result from `ZZ/OTHER` to `US` across GeoIP, postprocess, Electron artifact preview, and renderer region statistics.
+- Internal `{ country, detected }` metadata distinguishes a successfully detected real US result from a failure fallback, preserving short negative TTL and multi-address continuation behavior.
+- Successful provider detection still emits the actual country code (including non-US countries); only exhausted, invalid, rejected, or unresolved lookups fall back to US.
+- Verification: Task 9 CLI/Electron focused suite 138 passed, renderer Playwright and pixel/visual suite 6 passed, and full CLI 358 passed; all had zero failures.

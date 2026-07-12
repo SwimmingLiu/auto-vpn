@@ -226,13 +226,12 @@ test('buildRegionStats counts decoded vmess rows by region prefix', () => {
   ]);
 
   assert.deepEqual(stats, [
-    { region: 'US', count: 2 },
-    { region: 'JP', count: 1 },
-    { region: '其他', count: 1 }
+    { region: 'US', count: 3 },
+    { region: 'JP', count: 1 }
   ]);
 });
 
-test('buildRegionStats trusts preview regionCode and normalizes unknown regions', () => {
+test('buildRegionStats trusts preview regionCode and defaults unknown regions to US', () => {
   const stats = buildRegionStats([
     { name: '🏳️ ZZ first', regionCode: 'OTHER' },
     { name: '🏳️ ZZ second', regionCode: 'ZZ' },
@@ -241,12 +240,11 @@ test('buildRegionStats trusts preview regionCode and normalizes unknown regions'
   ]);
 
   assert.deepEqual(stats, [
-    { region: '其他', count: 2 },
-    { region: 'US', count: 2 }
+    { region: 'US', count: 4 }
   ]);
 });
 
-test('results page renders unknown preview regions as 其他 and keeps real US', () => {
+test('results page renders unknown preview regions as US', () => {
   const messages = getMessages('zh-CN');
   const vm = buildViewModel({
     runState: 'success',
@@ -258,8 +256,8 @@ test('results page renders unknown preview regions as 其他 and keeps real US',
   }, messages, 'zh-CN');
   const markup = buildPageMarkup('results', vm, messages, 'zh-CN');
 
-  assert.match(markup, />其他<\/span>[\s\S]*?<strong>1<\/strong>/);
-  assert.match(markup, />US<\/span>[\s\S]*?<strong>1<\/strong>/);
+  assert.match(markup, />US<\/span>[\s\S]*?<strong>2<\/strong>/);
+  assert.doesNotMatch(markup, />其他<\/span>/);
   assert.doesNotMatch(markup, />ZZ<\/span>/);
 });
 

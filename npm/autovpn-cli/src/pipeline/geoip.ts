@@ -19,6 +19,11 @@ export interface GeoIpLookupOptions {
   fallbackUrl?: (ip: string) => string;
 }
 
+interface GeoIpResult {
+  country: string;
+  detected: boolean;
+}
+
 const ISO_ALPHA_2 = /^[A-Z]{2}$/;
 
 function countryCode(value: unknown): string | null {
@@ -136,8 +141,8 @@ export function createGeoIpLookup(options: GeoIpLookupOptions = {}): (address: s
   const maxRetryAfterMs = options.maxRetryAfterMs ?? 2000;
   const primaryUrl = options.primaryUrl ?? ((ip) => `https://ipwho.is/${encodeURIComponent(ip)}`);
   const fallbackUrl = options.fallbackUrl ?? ((ip) => `https://ipapi.co/${encodeURIComponent(ip)}/json/`);
-  const cache = new Map<string, { country: string; expiresAt: number }>();
-  const pending = new Map<string, Promise<string>>();
+  const cache = new Map<string, GeoIpResult & { expiresAt: number }>();
+  const pending = new Map<string, Promise<GeoIpResult>>();
 
   async function request(url: string, provider: 'primary' | 'fallback'): Promise<{ country: string | null; retryAfterMs: number }> {
     try {
@@ -168,22 +173,24 @@ export function createGeoIpLookup(options: GeoIpLookupOptions = {}): (address: s
     }
   }
 
-  async function lookupIp(ip: string): Promise<string> {
+  async function lookupIp(ip: string): Promise<GeoIpResult> {
     const cached = cache.get(ip);
-    if (cached && cached.expiresAt > now()) return cached.country;
+    if (cached && cached.expiresAt > now()) return cached;
     const existing = pending.get(ip);
     if (existing) return existing;
     const operation = (async () => {
       const primary = await request(primaryUrl(ip), 'primary');
-      if (primary.country) return primary.country;
+      if (primary.country) return { country: primary.country, detected: true };
       if (primary.retryAfterMs > 0) await sleep(primary.retryAfterMs);
       const fallback = await request(fallbackUrl(ip), 'fallback');
-      return fallback.country ?? 'ZZ';
+      return fallback.country
+        ? { country: fallback.country, detected: true }
+        : { country: 'US', detected: false };
     })();
     pending.set(ip, operation);
     try {
       const result = await operation;
-      cache.set(ip, { country: result, expiresAt: now() + (result === 'ZZ' ? negativeTtlMs : successTtlMs) });
+      cache.set(ip, { ...result, expiresAt: now() + (result.detected ? successTtlMs : negativeTtlMs) });
       return result;
     } finally {
       pending.delete(ip);
@@ -192,7 +199,7 @@ export function createGeoIpLookup(options: GeoIpLookupOptions = {}): (address: s
 
   return async (rawAddress: string): Promise<string> => {
     const address = String(rawAddress ?? '').trim();
-    if (!address) return 'ZZ';
+    if (!address) return 'US';
     try {
       const results = isIP(address) ? [{ address, family: isIP(address) }] : await resolve(address);
       const seen = new Set<string>();
@@ -201,11 +208,11 @@ export function createGeoIpLookup(options: GeoIpLookupOptions = {}): (address: s
         if (!globalAddress || seen.has(globalAddress)) continue;
         seen.add(globalAddress);
         const resultCountry = await lookupIp(globalAddress);
-        if (resultCountry !== 'ZZ') return resultCountry;
+        if (resultCountry.detected) return resultCountry.country;
       }
-      return 'ZZ';
+      return 'US';
     } catch {
-      return 'ZZ';
+      return 'US';
     }
   };
 }

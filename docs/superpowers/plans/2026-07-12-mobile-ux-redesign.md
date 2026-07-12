@@ -430,16 +430,16 @@ Commit: `fix: report per-source dedupe counts`
 - Modify: `electron/tests/artifact-preview.test.mjs`
 
 **Interfaces:**
-- Produces: `createGeoIpLookup(options?): (address: string) => Promise<string>` returning ISO alpha-2 or `ZZ`.
+- Produces: `createGeoIpLookup(options?): (address: string) => Promise<string>` returning detected ISO alpha-2, or `US` when detection is unknown/fails.
 - Consumes: VMess server `add` values from postprocess nodes.
 
 - [ ] **Step 1: Add failing provider and resolver tests**
 
-Cover public-safe fixtures for IPv4 AU, IPv6, domain A/AAAA, primary success, primary 429 with `Retry-After` then fallback success, malformed schema, timeout, and dual failure returning `ZZ`. Use injected fetch/resolver clocks; no live network dependency in tests.
+Cover public-safe fixtures for IPv4 AU, IPv6, domain A/AAAA, primary success, primary 429 with `Retry-After` then fallback success, malformed schema, timeout, and dual failure falling back to `US`. Use injected fetch/resolver clocks; no live network dependency in tests.
 
 - [ ] **Step 2: Add failing production-path tests**
 
-Run the orchestrator without a test `countryLookup` override and assert a non-US provider result reaches node `ps`; cover normal, retry, and resume. Assert empty/invalid/`ZZ` postprocess country never becomes US and UI preview labels it as other/unknown.
+Run the orchestrator without a test `countryLookup` override and assert a non-US provider result reaches node `ps`; cover normal, retry, and resume. Assert empty/invalid/`ZZ` postprocess country falls back to US and Electron preview/UI presents it as US.
 
 - [ ] **Step 3: Run RED tests**
 
@@ -449,11 +449,11 @@ Expected: FAIL because production defaults to `US` and no GeoIP service exists.
 
 - [ ] **Step 4: Implement bounded GeoIP service**
 
-Resolve literals/domains with IPv4 and IPv6 support, query the primary provider with timeout, validate schema/status, honor bounded `Retry-After`, then query fallback. Cache successful country codes; use a short negative TTL for `ZZ`; deduplicate concurrent lookups by resolved IP.
+Resolve literals/domains with IPv4 and IPv6 support, query the primary provider with timeout, validate schema/status, honor bounded `Retry-After`, then query fallback. Cache successful country codes; use a short negative TTL for failed lookups that externally return `US`; deduplicate concurrent lookups by resolved IP.
 
-- [ ] **Step 5: Wire every pipeline path and remove false-US defaults**
+- [ ] **Step 5: Wire every pipeline path and apply the US failure fallback**
 
-Create one lookup per run and reuse it in normal, retry, and resume paths. Keep injected lookup support for deterministic tests. Change every unknown/invalid fallback from `US` to `ZZ`, map it to neutral “其他/未知” UI presentation, and retain explicit real US results.
+Create one lookup per run and reuse it in normal, retry, and resume paths. Keep injected lookup support for deterministic tests. Normalize every unknown/invalid lookup or country value to `US` in CLI output and Electron preview/UI, while retaining actual detected countries on success.
 
 - [ ] **Step 6: Verify and commit**
 

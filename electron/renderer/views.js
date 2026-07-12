@@ -974,7 +974,7 @@ export function buildRegionStats(nodeRows = []) {
   for (const row of nodeRows) {
     const previewRegion = String(row?.regionCode ?? '').trim().toUpperCase();
     const inferredRegion = previewRegion || inferNodeRegion(row?.name);
-    const region = inferredRegion === 'ZZ' || inferredRegion === 'OTHER' ? '其他' : inferredRegion;
+    const region = inferredRegion === 'ZZ' || inferredRegion === 'OTHER' || inferredRegion === '其他' ? 'US' : inferredRegion;
     counts.set(region, (counts.get(region) ?? 0) + 1);
   }
   return Array.from(counts.entries()).map(([region, count]) => ({ region, count }));
@@ -1065,7 +1065,7 @@ export function applySourceIterationDraft(sources = {}, draft = {}) {
 function inferNodeRegion(name = '') {
   const normalized = String(name).replace(/^[^\p{L}\p{N}]+/u, '').trim();
   const match = normalized.match(/^([A-Z]{2})(?:\b|[\s_-])/);
-  return match ? match[1] : '其他';
+  return match ? match[1] : 'US';
 }
 
 function coercePositiveInteger(value, fallback) {

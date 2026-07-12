@@ -59,8 +59,7 @@ const EMOJI_MAP: Record<string, string> = {
   ZA: '🇿🇦'
 };
 
-const UNKNOWN_COUNTRY_CODE = 'ZZ';
-const UNKNOWN_COUNTRY_EMOJI = '🏳️';
+const FALLBACK_COUNTRY_CODE = 'US';
 const DEFAULT_FILTERS: Required<PostprocessFilters> = {
   excluded_country_codes: ['CN'],
   per_country_limit: {}
@@ -81,15 +80,15 @@ export function generateVmessLink(payload: Record<string, unknown>): string {
 
 export function normalizeCountryCode(countryCode: string): string {
   const normalized = String(countryCode || '').trim().toUpperCase();
-  if (normalized.length !== 2 || !/^[A-Z]{2}$/.test(normalized) || normalized === UNKNOWN_COUNTRY_CODE) {
-    return UNKNOWN_COUNTRY_CODE;
+  if (normalized.length !== 2 || !/^[A-Z]{2}$/.test(normalized) || normalized === 'ZZ') {
+    return FALLBACK_COUNTRY_CODE;
   }
   return normalized;
 }
 
 export function countryToEmoji(countryCode: string): string {
   const normalized = normalizeCountryCode(countryCode);
-  return EMOJI_MAP[normalized] ?? UNKNOWN_COUNTRY_EMOJI;
+  return EMOJI_MAP[normalized] ?? EMOJI_MAP[FALLBACK_COUNTRY_CODE];
 }
 
 function resolveFilters(filters: PostprocessFilters | undefined): Required<PostprocessFilters> {

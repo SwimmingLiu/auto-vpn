@@ -83,7 +83,7 @@ export function parseVmessLinkForPreview(link) {
 function extractRegionCode(name) {
   const text = String(name ?? '').trim().toUpperCase();
   const match = text.match(/\b([A-Z]{2})\b/);
-  return match && match[1] !== 'ZZ' ? match[1] : 'OTHER';
+  return match && match[1] !== 'ZZ' ? match[1] : 'US';
 }
 
 function buildRegionCards(nodeRows) {
