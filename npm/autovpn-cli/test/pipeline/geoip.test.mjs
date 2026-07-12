@@ -60,6 +60,7 @@ test('honors bounded Retry-After before using fallback provider', async () => {
   const sleeps = [];
   let calls = 0;
   const lookup = createGeoIpLookup({
+    now: () => 0,
     fetch: async () => ++calls === 1
       ? response(429, {}, { 'retry-after': '30' })
       : response(200, { country_code: 'SG' }),
@@ -68,6 +69,55 @@ test('honors bounded Retry-After before using fallback provider', async () => {
   });
   assert.equal(await lookup('1.1.1.10'), 'SG');
   assert.deepEqual(sleeps, [1500]);
+});
+
+test('bounds concurrent provider requests across many unique IPs', async () => {
+  let active = 0;
+  let maximum = 0;
+  const releases = [];
+  const lookup = createGeoIpLookup({
+    providerConcurrency: 4,
+    fetch: async () => {
+      active += 1;
+      maximum = Math.max(maximum, active);
+      await new Promise((resolve) => releases.push(resolve));
+      active -= 1;
+      return response(200, { success: true, country_code: 'CA' });
+    }
+  });
+  const pending = Array.from({ length: 12 }, (_, index) => lookup(`8.8.4.${index + 1}`));
+  while (releases.length < 4) await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(active, 4);
+  while (releases.length) {
+    releases.shift()();
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.deepEqual(await Promise.all(pending), Array(12).fill('CA'));
+  assert.equal(maximum, 4);
+});
+
+test('shares Retry-After cooldown with queued unique-IP lookups and then recovers', async () => {
+  let currentTime = 0;
+  const sleeps = [];
+  const requested = [];
+  let calls = 0;
+  const lookup = createGeoIpLookup({
+    providerConcurrency: 1,
+    now: () => currentTime,
+    sleep: async (milliseconds) => { sleeps.push(milliseconds); currentTime += milliseconds; },
+    fetch: async (url) => {
+      requested.push(url);
+      calls += 1;
+      if (calls === 1) return response(429, {}, { 'retry-after': '1' });
+      return response(200, url.includes('ipwho.is')
+        ? { success: true, country_code: 'JP' }
+        : { country_code: 'SG' });
+    }
+  });
+  assert.deepEqual(await Promise.all([lookup('8.8.8.1'), lookup('8.8.8.2')]), ['SG', 'JP']);
+  assert.deepEqual(sleeps, [1000]);
+  assert.deepEqual(requested.map((url) => new URL(url).hostname), ['ipwho.is', 'ipwho.is', 'ipapi.co']);
+  assert.equal(await lookup('8.8.8.3'), 'JP');
 });
 
 test('parses HTTP-date Retry-After using the injected clock and clamps it', async () => {

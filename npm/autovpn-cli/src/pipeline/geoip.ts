@@ -16,6 +16,7 @@ export interface GeoIpLookupOptions {
   successTtlMs?: number;
   negativeTtlMs?: number;
   maxRetryAfterMs?: number;
+  providerConcurrency?: number;
   primaryUrl?: (ip: string) => string;
   fallbackUrl?: (ip: string) => string;
 }
@@ -138,10 +139,27 @@ export function createGeoIpLookup(options: GeoIpLookupOptions = {}): (address: s
   const successTtlMs = options.successTtlMs ?? 24 * 60 * 60 * 1000;
   const negativeTtlMs = options.negativeTtlMs ?? 60 * 1000;
   const maxRetryAfterMs = options.maxRetryAfterMs ?? 2000;
+  const providerConcurrency = Math.max(1, Math.floor(options.providerConcurrency ?? 4));
   const primaryUrl = options.primaryUrl ?? ((ip) => `https://ipwho.is/${encodeURIComponent(ip)}`);
   const fallbackUrl = options.fallbackUrl ?? ((ip) => `https://ipapi.co/${encodeURIComponent(ip)}/json/`);
   const cache = new Map<string, GeoIpResult & { expiresAt: number }>();
   const pending = new Map<string, Promise<GeoIpResult>>();
+  const providerWaiters: Array<() => void> = [];
+  let activeProviderRequests = 0;
+  let providerCooldownUntil = 0;
+
+  async function acquireProviderSlot(): Promise<() => void> {
+    if (activeProviderRequests >= providerConcurrency) {
+      await new Promise<void>((resolve) => providerWaiters.push(resolve));
+    } else {
+      activeProviderRequests += 1;
+    }
+    return () => {
+      const next = providerWaiters.shift();
+      if (next) next();
+      else activeProviderRequests -= 1;
+    };
+  }
 
   async function request(url: string, provider: 'primary' | 'fallback'): Promise<{ country: string | null; retryAfterMs: number }> {
     try {
@@ -153,6 +171,9 @@ export function createGeoIpLookup(options: GeoIpLookupOptions = {}): (address: s
     } catch {
       return { country: null, retryAfterMs: 0 };
     }
+    const release = await acquireProviderSlot();
+    const cooldownMs = providerCooldownUntil - now();
+    if (cooldownMs > 0) await sleep(cooldownMs);
     const controller = new AbortController();
     const timer = setTimer(() => controller.abort(), timeoutMs);
     try {
@@ -160,6 +181,7 @@ export function createGeoIpLookup(options: GeoIpLookupOptions = {}): (address: s
       const retryAfterMs = response.status === 429
         ? retryAfterMilliseconds(response.headers.get('retry-after'), now(), maxRetryAfterMs)
         : 0;
+      if (retryAfterMs > 0) providerCooldownUntil = Math.max(providerCooldownUntil, now() + retryAfterMs);
       if (!response.ok) return { country: null, retryAfterMs };
       const payload = await response.json() as Record<string, unknown>;
       if (provider === 'primary' && payload.success !== true) return { country: null, retryAfterMs: 0 };
@@ -169,6 +191,7 @@ export function createGeoIpLookup(options: GeoIpLookupOptions = {}): (address: s
       return { country: null, retryAfterMs: 0 };
     } finally {
       clearTimer(timer);
+      release();
     }
   }
 
@@ -180,7 +203,6 @@ export function createGeoIpLookup(options: GeoIpLookupOptions = {}): (address: s
     const operation = (async () => {
       const primary = await request(primaryUrl(ip), 'primary');
       if (primary.country) return { country: primary.country, detected: true };
-      if (primary.retryAfterMs > 0) await sleep(primary.retryAfterMs);
       const fallback = await request(fallbackUrl(ip), 'fallback');
       return fallback.country
         ? { country: fallback.country, detected: true }
