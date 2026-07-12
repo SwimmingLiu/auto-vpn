@@ -406,6 +406,41 @@ test('settings page renders deploy helper copy and results page renders deployme
   assert.match(resultsMarkup, /manifest\.json/);
 });
 
+test('subscription QR states render actionable errors and accessible format selection', () => {
+  const messages = getMessages('zh-CN');
+  const base = {
+    profile: { sources: {}, deploy: { subscription_url: 'https://vpn.example/secret' } },
+    subscriptionFormat: 'Clash Meta'
+  };
+
+  const errorMarkup = buildPageMarkup('subscriptions', buildViewModel({
+    ...base,
+    qr: { status: 'error', dataUrl: '', message: '生成失败' }
+  }, messages, 'zh-CN'), messages, 'zh-CN');
+  assert.match(errorMarkup, /生成失败/);
+  assert.match(errorMarkup, /data-action="retry-qr"/);
+  assert.match(errorMarkup, /data-subscription-format="Clash Meta"[^>]*aria-pressed="true"/);
+
+  const unavailableMarkup = buildPageMarkup('subscriptions', buildViewModel({
+    ...base,
+    qr: { status: 'unavailable', dataUrl: '', message: '' }
+  }, messages, 'zh-CN'), messages, 'zh-CN');
+  assert.match(unavailableMarkup, /当前环境不支持二维码生成/);
+  assert.match(unavailableMarkup, /复制链接/);
+});
+
+test('result node rows expose one mobile label for each value', () => {
+  const messages = getMessages('zh-CN');
+  const vm = buildViewModel({
+    nodeRows: [{ name: '东京超长节点', address: '1.2.3.4', protocol: 'vmess', path: '/edge' }]
+  }, messages, 'zh-CN');
+  const markup = buildPageMarkup('results', vm, messages, 'zh-CN');
+
+  assert.equal((markup.match(/class="node-card-field"/g) ?? []).length, 5);
+  assert.equal((markup.match(/东京超长节点/g) ?? []).length, 1);
+  assert.match(markup, /node-card-field">节点名称/);
+});
+
 test('extractSourceUrlFromCurl returns the first request URL from a pasted curl command', () => {
   const value = extractSourceUrlFromCurl(
     "curl 'https://www.xnfvjf.info:20000/api/evmess?&proto=v6&platform=ios&ver=5.8.55347&unicode=CDC37303-6CEC-4AB2-AAD9-AE88DEF1CF10&deviceid=CDC37303-6CEC-4AB2-AAD9-AE88DEF1CF10&code=ZRGOIXI&recomm_code=&device_token=&f=2026-04-23&install=2026-04-23&xf_fans=0&token=ZGSNZ19nnZqSl2VobGppZZOWaGZonHGRYWeVk5lu&t=1777190098.382194&width=375.0&height=812.0&area=999' -H 'Host: www.xnfvjf.info:20000'"

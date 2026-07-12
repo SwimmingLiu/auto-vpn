@@ -140,7 +140,7 @@ export function buildViewModel(state, messages, language) {
     counts,
     subscriptionUrl,
     subscriptionFormat: state.subscriptionFormat ?? 'Clash',
-    qrDataUrl: state.qrDataUrl ?? '',
+    qr: state.qr ?? { status: state.qrDataUrl ? 'success' : 'idle', dataUrl: state.qrDataUrl ?? '', message: '' },
     displayLogs,
     logFilter,
     logRows: buildLogRows(filterLogEntries(displayLogs, logFilter)),
@@ -524,11 +524,11 @@ function buildResultsPage(vm, messages) {
             <tbody>
               ${vm.nodeRows.length ? vm.nodeRows.map((row, index) => `
                 <tr>
-                  <td>${index + 1}</td>
-                  <td>${escapeHtml(row.name || '—')}</td>
-                  <td>${escapeHtml(row.address || '—')}</td>
-                  <td>${escapeHtml(row.protocol || '—')}</td>
-                  <td class="mono">${escapeHtml(row.path || '—')}</td>
+                  <td><span class="node-card-field">序号</span><span>${index + 1}</span></td>
+                  <td><span class="node-card-field">节点名称</span><span>${escapeHtml(row.name || '—')}</span></td>
+                  <td><span class="node-card-field">IP地址</span><span>${escapeHtml(row.address || '—')}</span></td>
+                  <td><span class="node-card-field">协议</span><span>${escapeHtml(row.protocol || '—')}</span></td>
+                  <td class="mono"><span class="node-card-field">path</span><span>${escapeHtml(row.path || '—')}</span></td>
                 </tr>
               `).join('') : '<tr><td colspan="5">暂无节点，运行完成后显示。</td></tr>'}
             </tbody>
@@ -551,6 +551,7 @@ function buildSubscriptionsPage(vm, messages) {
               <button
                 class="subtab ${vm.subscriptionFormat === format ? 'active' : ''}"
                 data-subscription-format="${escapeHtml(format)}"
+                aria-pressed="${vm.subscriptionFormat === format}"
                 type="button"
               >${escapeHtml(format)}</button>
             `).join('')}
@@ -565,7 +566,7 @@ function buildSubscriptionsPage(vm, messages) {
 
       <article class="panel slim-panel">
         <div class="panel-headline"><h3>订阅二维码</h3></div>
-        <div class="qr-block">${renderQr(vm.qrDataUrl)}</div>
+        <div class="qr-block">${renderQr(vm.qr)}</div>
         <p class="panel-subcopy center-copy">扫码导入订阅</p>
       </article>
 
@@ -842,11 +843,17 @@ function renderBadge(text, tone) {
   return `<span class="badge ${tone}">${escapeHtml(text)}</span>`;
 }
 
-function renderQr(dataUrl) {
-  if (!dataUrl) {
-    return '<div class="qr-loading">二维码生成中</div>';
+function renderQr(qr) {
+  if (qr.status === 'success' && qr.dataUrl) {
+    return `<img class="qr-image" alt="订阅二维码" src="${escapeHtml(qr.dataUrl)}" />`;
   }
-  return `<img class="qr-image" alt="订阅二维码" src="${escapeHtml(dataUrl)}" />`;
+  if (qr.status === 'loading' || qr.status === 'idle') {
+    return '<div class="qr-loading" role="status">二维码生成中</div>';
+  }
+  if (qr.status === 'unavailable') {
+    return '<div class="qr-status"><strong>当前环境不支持二维码生成</strong><span>请使用上方“复制链接”导入订阅。</span></div>';
+  }
+  return `<div class="qr-status" role="alert"><strong>${escapeHtml(qr.message || '二维码生成失败')}</strong><button class="btn btn-secondary small" data-action="retry-qr" type="button">重试生成</button></div>`;
 }
 
 function buildShortcutDescriptors(messages) {

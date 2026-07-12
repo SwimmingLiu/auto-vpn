@@ -1762,6 +1762,19 @@ body[data-page="logs"] #logCenterTable {
   font-weight: 650;
 }
 
+.qr-status {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  max-width: 260px;
+  text-align: center;
+  color: var(--text-soft);
+}
+
+.node-card-field {
+  display: none;
+}
+
 .qr-grid {
   width: 162px;
   display: grid;
@@ -2066,6 +2079,46 @@ body[data-page="logs"] #logCenterTable {
 }
 
 @media (max-width: 720px) {
+
+  .decoded-node-table thead {
+    display: none;
+  }
+
+  .decoded-node-table,
+  .decoded-node-table tbody,
+  .decoded-node-table tr,
+  .decoded-node-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .decoded-node-table {
+    min-width: 0;
+  }
+
+  .decoded-node-table tr {
+    display: grid;
+    gap: 10px;
+    padding: 14px;
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    overflow-wrap: anywhere;
+  }
+
+  .decoded-node-table td {
+    display: grid;
+    grid-template-columns: minmax(72px, 0.35fr) minmax(0, 1fr);
+    gap: 10px;
+    padding: 0;
+    border: 0;
+  }
+
+  .node-card-field {
+    display: inline;
+    color: var(--text-soft);
+    font-family: inherit;
+    font-weight: 700;
+  }
   html,
   body,
   .app-frame,

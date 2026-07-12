@@ -73,6 +73,10 @@ export function resolveRunControlState(runState = 'idle') {
   };
 }
 
+export function createQrState(status = 'idle', dataUrl = '', message = '') {
+  return { status, dataUrl, message };
+}
+
 export function toMetricItems(counts = {}) {
   return Object.entries(counts).map(([label, value]) => ({
     label: METRIC_LABELS[label] ?? label,

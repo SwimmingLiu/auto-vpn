@@ -974,7 +974,19 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     assert.equal(await runStart.isDisabled(), false);
     assert.equal(await runStop.isDisabled(), true);
 
+    await page.locator('#navResults').click();
+    await page.waitForSelector('#resultsWorkspace');
+    assert.equal(await page.locator('.decoded-node-table').count(), 1);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
+
+    await page.locator('#navSubscriptions').click();
+    await page.waitForSelector('#subscriptionCards');
+    await page.getByRole('button', { name: 'Clash Meta' }).click();
+    assert.equal(await page.getByRole('button', { name: 'Clash Meta' }).getAttribute('aria-pressed'), 'true');
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
+
     await page.setViewportSize({ width: 1280, height: 820 });
+    await page.locator('#navRuns').click();
     await page.waitForFunction(() => document.querySelector('details.run-secondary-controls')?.open);
 
     await page.locator('#navLogs').click();

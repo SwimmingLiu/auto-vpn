@@ -1,5 +1,5 @@
 import { getMessages, formatMessage } from './i18n.js';
-import { resolveRunControlState } from './state.js';
+import { createQrState, resolveRunControlState } from './state.js';
 import {
   addAvailabilityTargetDraft,
   applyAvailabilityTargetDraft,
@@ -125,7 +125,7 @@ const state = {
   outputFiles: [],
   nodeRows: [],
   toast: null,
-  qrDataUrl: '',
+  qr: createQrState(),
   runStartedAt: null,
   lastUpdateAt: null,
   modalTransform: ''
@@ -383,7 +383,7 @@ async function handleDocumentClick(event) {
 
   const copyButton = event.target.closest('[data-copy-text]');
   if (copyButton) {
-    copyText(copyButton.dataset.copyText);
+    copyText(copyButton.dataset.copyText, { control: copyButton, successLog: '已复制订阅链接' });
     return;
   }
 
@@ -425,8 +425,13 @@ async function handleDocumentClick(event) {
       successToast: formatMessage(messages.copiedNodesToastMessage, { count: nodeLinks.length }),
       successLog: formatMessage(messages.copiedNodesLogMessage, { count: nodeLinks.length }),
       failureToast: formatMessage(messages.copyFailedToastMessage, { error: '{error}' }),
-      failureLog: formatMessage(messages.copyFailedLogMessage, { error: '{error}' })
+      failureLog: formatMessage(messages.copyFailedLogMessage, { error: '{error}' }),
+      control: action
     });
+    return;
+  }
+  if (action?.dataset.action === 'retry-qr') {
+    refreshQrCode();
     return;
   }
   if (action?.dataset.action === 'retry-stage') {
@@ -732,10 +737,16 @@ async function copyText(value, options = {}) {
     return;
   }
 
+  const control = options.control;
+  if (control?.getAttribute('aria-busy') === 'true') return;
+  if (control) {
+    control.disabled = true;
+    control.setAttribute('aria-busy', 'true');
+  }
   try {
     await writeClipboardText(text);
     showToast({ tone: 'success', message: options.successToast ?? messages.copiedToastMessage });
-    appendLog(options.successLog ?? formatMessage(messages.copiedMessage, { value: text }));
+    appendLog(options.successLog ?? '已复制内容');
   } catch (error) {
     const detail = resolveErrorMessage(error);
     showToast({
@@ -745,6 +756,11 @@ async function copyText(value, options = {}) {
     appendLog(
       (options.failureLog ?? formatMessage(messages.copyFailedLogMessage, { error: detail })).replace('{error}', detail)
     );
+  } finally {
+    if (control?.isConnected) {
+      control.disabled = false;
+      control.setAttribute('aria-busy', 'false');
+    }
   }
 }
 
@@ -792,17 +808,22 @@ async function openCurrentLogFile() {
 async function refreshQrCode() {
   const subscriptionUrl = resolveActiveSubscriptionUrl();
   if (!subscriptionUrl || !window.vpnAutomation?.generateQr) {
-    state.qrDataUrl = '';
+    state.qr = createQrState('unavailable', '', '当前环境不支持二维码生成');
+    renderAll();
     return;
   }
 
+  state.qr = createQrState('loading');
+  renderAll();
   try {
     const result = await window.vpnAutomation.generateQr(subscriptionUrl);
-    state.qrDataUrl = result?.dataUrl ?? '';
-    renderAll();
-  } catch {
-    state.qrDataUrl = '';
+    state.qr = result?.dataUrl
+      ? createQrState('success', result.dataUrl)
+      : createQrState('unavailable', '', '二维码服务未返回图片');
+  } catch (error) {
+    state.qr = createQrState('error', '', resolveErrorMessage(error));
   }
+  renderAll();
 }
 
 function resolveActiveSubscriptionUrl() {
