@@ -57,3 +57,11 @@ Follow-up verification:
 `rtk npm run build && rtk node --test test/pipeline/run-store.test.mjs test/pipeline/orchestrator.test.mjs ../../electron/tests/ui-state.test.mjs && rtk git diff --check`
 
 Result: exit 0; 107 tests passed, 0 failed; build and diff check passed.
+
+## Concurrent extraction review follow-up
+
+The extraction fan-out now retains concurrent startup but awaits `Promise.allSettled` before propagating the first source failure. This prevents a fast rejection from entering the outer failure handler while a slower sibling can still stream SQLite writes. Only after every extractor settles does the existing failure sequence drain speed/availability pools, refresh SQLite-authoritative counts, write the report, emit terminal events, and close the store.
+
+The RED regression uses two sources: `fast` rejects immediately while `slow` waits and then streams a node. Before the fix the failed summary reported zero nodes and the slow source raced the closed store. After the fix, report and summary include the slow source's final raw/canonical count, explicit zeros for the failed source, and no late rejection.
+
+Final verification retained successful concurrent extraction coverage and passed 108/108 focused tests plus build and `git diff --check`.

@@ -1137,6 +1137,74 @@ test('runNodePipeline writes real zero source counts before reporting zero-link 
   assert.deepEqual(report.source_counts, summary.source_counts);
 });
 
+test('runNodePipeline settles sibling extractors before failed counts and store close', async () => {
+  const projectRoot = await makeProject();
+  const profilePath = path.join(projectRoot, 'state', 'profile.toml');
+  await writeFile(profilePath, `
+[sources.fast]
+url = "https://fixture.example/fast"
+key = "abcdabcdabcdabcd"
+enabled = true
+max_iterations = 1
+min_iterations = 0
+plateau_limit = 1
+failure_limit = 1
+max_runtime_seconds = 0
+[sources.slow]
+url = "https://fixture.example/slow"
+key = "abcdabcdabcdabcd"
+enabled = true
+max_iterations = 1
+min_iterations = 0
+plateau_limit = 1
+failure_limit = 1
+max_runtime_seconds = 0
+[speed_test]
+min_download_mb_s = 1
+timeout_seconds = 20
+concurrency = 1
+[deploy]
+project_name = "fixture-project"
+subscription_url = "https://sub.example.invalid/"
+pages_project_url = "https://fixture-project.pages.dev"
+secret_query = "key=fixture"
+min_final_links = 0
+[worker_build]
+entry_filename = "_worker.js"
+bundle_subdir = "pages_bundle"
+manifest_filename = "manifest.json"
+emit_sidecar_modules = false
+`, 'utf8');
+  const slowLink = vmessLink('slow-final', 'slow.example');
+  const events = [];
+
+  await assert.rejects(() => runNodePipeline({ projectRoot, skipDeploy: true, skipVerify: true, output: 'jsonl' }, {
+    env: { VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'), VPN_AUTOMATION_PROFILE_PATH: profilePath },
+    emit: (event) => events.push(event),
+    stages: {
+      extract: async ({ source_name }, stream) => {
+        if (source_name === 'fast') throw new Error('fast failed');
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        await stream.onLinks([slowLink]);
+        return { source_name, requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [slowLink] };
+      },
+      speedtestProbe: async (links) => links.map((link) => ({ link, reachable: false, latency_ms: 0, error: 'offline' })),
+      speedtestLink: async () => { throw new Error('unreachable'); },
+      availability: async () => []
+    }
+  }), /fast failed/);
+
+  const summary = events.at(-2);
+  assert.equal(summary.type, 'summary');
+  assert.equal(summary.counts.raw_links, 1);
+  assert.equal(summary.counts.deduped_links, 1);
+  assert.deepEqual(summary.source_counts.fast, { raw_links: 0, deduped_links: 0 });
+  assert.deepEqual(summary.source_counts.slow, { raw_links: 1, successful_iterations: 1, failed_iterations: 0, deduped_links: 1 });
+  const report = JSON.parse(await readFile(path.join(events.find((event) => event.type === 'run_started').artifact_dir, 'pipeline_report.json'), 'utf8'));
+  assert.deepEqual(report.counts, summary.counts);
+  assert.deepEqual(report.source_counts, summary.source_counts);
+});
+
 test('runNodePipeline extracts enabled sources concurrently while preserving profile order', async () => {
   const projectRoot = await makeProject();
   const profilePath = path.join(projectRoot, 'state', 'profile.toml');

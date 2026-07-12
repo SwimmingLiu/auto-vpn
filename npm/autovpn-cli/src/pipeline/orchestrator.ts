@@ -342,7 +342,8 @@ function pipelineSummaryFromReport(artifactDir: string, report: Record<string, u
 function refreshSourceCounts(summary: PipelineSummary, store: RunStore): void {
   const rawCounts = store.sourceRawCounts();
   const dedupedCounts = store.sourceDedupedCounts();
-  for (const source of new Set([...Object.keys(summary.source_counts), ...Object.keys(rawCounts), ...Object.keys(dedupedCounts)])) {
+  const progressSources = store.sourceProgress().map((progress) => progress.source);
+  for (const source of new Set([...Object.keys(summary.source_counts), ...progressSources, ...Object.keys(rawCounts), ...Object.keys(dedupedCounts)])) {
     summary.source_counts[source] = {
       ...(summary.source_counts[source] ?? {}),
       raw_links: rawCounts[source] ?? 0,
@@ -651,7 +652,7 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
       emit('speedtest_runtime', { runtime_core: requestedRuntime === 'direct' ? 'direct' : 'mihomo', probe_url: speedConfig.probe_url, urls: [...speedConfig.urls] });
       emit('log', { message: `[speedtest] runtime_core=${requestedRuntime === 'direct' ? 'direct' : 'mihomo'} probe_url=${speedConfig.probe_url}` });
     }
-    const extractResults: ExtractedSourceResult[] = await Promise.all(sourcesToRun.map(async ([sourceName, source]) => {
+    const extractSettled = await Promise.allSettled(sourcesToRun.map(async ([sourceName, source]) => {
       runStore.recordSourceProgress(sourceName, { processed: 0, total: 0, status: 'running' });
       const streamedLinks = new Set<string>();
       const stream = useStreamingStages
@@ -696,6 +697,9 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
       });
       return result;
     }));
+    const failedExtraction = extractSettled.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+    if (failedExtraction) throw failedExtraction.reason;
+    const extractResults = extractSettled.map((result) => (result as PromiseFulfilledResult<ExtractedSourceResult>).value);
     if (!useStreamingStages) {
       rawLinks = extractResults.flatMap((result) => result.links);
       for (const result of extractResults) {
