@@ -109,7 +109,7 @@ test('resolveLanguage ignores saved and system language and always returns zh-CN
 test('getMessages exposes Chinese-only copy', () => {
   assert.equal(getMessages().appTitle, 'AutoVPN');
   assert.equal(getMessages().sidebarTitle, 'AutoVPN');
-  assert.equal(getMessages().sidebarVersion, 'v.1.7.0');
+  assert.equal(getMessages().sidebarVersion, 'v.1.8.0');
   assert.equal(getMessages().runButton, '立即运行');
   assert.equal(getMessages('en-US').pageTitles.results, '结果');
   assert.equal(
