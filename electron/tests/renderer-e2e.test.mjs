@@ -708,6 +708,13 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     assert.equal(await page.locator('[data-drawer-save="save"]').isVisible(), true);
     assert.equal(await page.locator('[data-drawer-close="cancel"]').last().isVisible(), true);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
+    for (const selector of [
+      '[data-drawer-source="leiting"][data-drawer-key="enabled"]',
+      '[data-drawer-source="leiting"][data-drawer-key="key"]'
+    ]) {
+      const box = await page.locator(selector).boundingBox();
+      assert.ok(box && box.width >= 44 && box.height >= 44, `${selector} must be at least 44×44, got ${box?.width}×${box?.height}`);
+    }
     await page.setViewportSize({ width: 1440, height: 960 });
     assert.match(await page.locator('#settingsDrawerTitle').innerText(), /数据源配置/);
     assert.equal(await page.locator('[data-source-max-iterations]').inputValue(), '40');
@@ -756,6 +763,15 @@ test('renderer matches the six-page canvas redesign and supports page navigation
 
     await page.locator('[data-settings-card="availability_targets"]').click();
     await page.waitForSelector('#settingsDrawer[data-open="true"]');
+    await page.setViewportSize({ width: 390, height: 844 });
+    for (const selector of [
+      '[data-availability-index="0"][data-availability-key="enabled"]',
+      '[data-availability-index="0"][data-availability-key="name"]'
+    ]) {
+      const box = await page.locator(selector).boundingBox();
+      assert.ok(box && box.width >= 44 && box.height >= 44, `${selector} must be at least 44×44, got ${box?.width}×${box?.height}`);
+    }
+    await page.setViewportSize({ width: 1440, height: 960 });
     assert.match(await page.locator('#settingsDrawerTitle').innerText(), /AI可达性检测/);
     assert.equal(await page.locator('.availability-target-table tbody tr').count(), 4);
     await page.locator('[data-availability-action="add"]').click();

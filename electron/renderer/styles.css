@@ -2175,6 +2175,20 @@ body[data-page="logs"] #logCenterTable {
   .availability-target-table button {
     width: 100%;
     max-width: 100%;
+    min-height: 44px;
+  }
+
+  .settings-source-table input,
+  .availability-target-table input {
+    min-height: 44px;
+  }
+
+  .settings-source-table input[type="checkbox"],
+  .availability-target-table input[type="checkbox"] {
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
   }
 
   .app-frame {

@@ -876,7 +876,6 @@ async function saveSettingsDrawer() {
   if (section !== 'about') {
     state.profile[section] = resolveSettingsDraftPayload(section, draft);
   }
-  closeSettingsDrawer({ restoreFocus: true });
   touchUpdate();
   if (section === 'deploy') {
     await refreshQrCode();
@@ -893,9 +892,10 @@ async function saveSettingsDrawer() {
         `[settings] deploy saved project=${state.profile.deploy.project_name} url=${state.profile.deploy.pages_project_url}`
       );
     }
+    closeSettingsDrawer({ restoreFocus: true });
     return;
   }
-  renderAll();
+  closeSettingsDrawer({ restoreFocus: true });
 }
 
 async function saveProfile({ silent = false } = {}) {

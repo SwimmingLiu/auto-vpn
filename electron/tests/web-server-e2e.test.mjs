@@ -697,11 +697,16 @@ test('served web ui handles visible browser controls across all pages', async ()
     await page.waitForSelector('#settingsWorkspace');
 
     for (const section of ['sources', 'speed_test', 'availability_targets', 'deploy']) {
+      await page.setViewportSize({ width: 390, height: 844 });
       const opener = page.locator(`[data-settings-card="${section}"]`);
       await opener.click();
       await page.waitForSelector(`#settingsDrawer[data-open="true"][data-section="${section}"]`);
       await page.waitForSelector('[data-settings-dialog]');
       assert.equal(await page.evaluate(() => document.querySelector('[data-settings-dialog]')?.contains(document.activeElement)), true);
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
+      assert.equal(await page.locator('[data-drawer-save="save"]').isVisible(), true);
+      await page.setViewportSize({ width: 844, height: 390 });
+      assert.equal(await page.locator('[data-drawer-save="save"]').isVisible(), true);
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
       if (section === 'availability_targets') {
         await page.locator('[data-availability-action="add"]').click();

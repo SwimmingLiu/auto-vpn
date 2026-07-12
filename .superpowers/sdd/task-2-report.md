@@ -34,3 +34,22 @@
 ## Concerns
 
 - Mobile visual regression baseline remains red for pre-existing Task 1 shell hash changes. The focused Task 2 behavior suite is fully green.
+
+## Spec-review follow-up: 44×44 mobile controls and orientation coverage
+
+### RED evidence
+
+- Added real Playwright `boundingBox()` assertions for the source enabled checkbox/key input and availability enabled checkbox/name input at phone width.
+- `rtk node --test --test-name-pattern="six-page canvas redesign" electron/tests/renderer-e2e.test.mjs` failed as expected: the source checkbox rendered at `13×13`, below the required `44×44` target.
+
+### Fix
+
+- Phone-only CSS now gives source/availability text inputs a minimum height of 44px and their checkboxes an explicit 44×44 rendered box. Desktop rules are unchanged.
+- Moved save-path focus restoration after asynchronous profile/QR rendering so the restored opener is not replaced by a later render.
+- H5 coverage now opens all four settings sections at 390×844, rotates each open sheet to 844×390, and verifies Save visibility and absence of root horizontal overflow in both orientations.
+
+### Verification
+
+- `rtk node --test --test-name-pattern="six-page canvas redesign" electron/tests/renderer-e2e.test.mjs` — PASS, 1/1 after the CSS fix.
+- `rtk npm run build --prefix npm/autovpn-cli && rtk node --test electron/tests/ui-state.test.mjs electron/tests/renderer-e2e.test.mjs electron/tests/web-server-e2e.test.mjs` — PASS, 40/40, 0 failed.
+- Remaining concern is unchanged: the unrelated Task 1 mobile shell visual hashes need a separate baseline synchronization.
