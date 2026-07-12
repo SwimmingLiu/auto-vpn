@@ -11,7 +11,8 @@ import { PNG } from 'pngjs';
 import { createAutoVpnServer } from '../../npm/autovpn-cli/dist/server/http.js';
 
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
-const MOBILE_BASELINE_DIR = path.join(TEST_DIR, 'visual-baselines/mobile');
+const VISUAL_BASELINE_PLATFORM = process.env.VISUAL_BASELINE_PLATFORM || process.platform;
+const MOBILE_BASELINE_DIR = path.join(TEST_DIR, 'visual-baselines/h5', VISUAL_BASELINE_PLATFORM);
 const MOBILE_ARTIFACT_DIR = path.join(TEST_DIR, 'visual-artifacts/mobile');
 const PIXEL_CHANNEL_THRESHOLD = 12;
 const MAX_DIFFERENT_PIXEL_RATIO = 0.002;
@@ -81,6 +82,12 @@ test('pixel comparison tolerates raster noise but rejects visible changes', () =
   assert.equal(comparePng(PNG.sync.write(noisy), PNG.sync.write(expected)).ratio, 0);
   for (let pixel = 0; pixel < 25; pixel += 1) noisy.data[pixel * 4] = 0;
   assert.ok(comparePng(PNG.sync.write(noisy), PNG.sync.write(expected)).ratio > MAX_DIFFERENT_PIXEL_RATIO);
+});
+
+test('visual baselines are selected by operating system without weakening pixel thresholds', () => {
+  assert.equal(path.basename(MOBILE_BASELINE_DIR), VISUAL_BASELINE_PLATFORM);
+  assert.equal(MAX_DIFFERENT_PIXEL_RATIO, 0.002);
+  assert.equal(PIXEL_CHANNEL_THRESHOLD, 12);
 });
 
 test('served web ui desktop PNGs match browser baselines', async () => {
