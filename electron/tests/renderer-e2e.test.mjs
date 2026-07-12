@@ -506,7 +506,14 @@ test('renderer matches the six-page canvas redesign and supports page navigation
         stopPipeline: async () => ({ ok: true, requested: true }),
         openUrl: async () => ({ ok: true }),
         openPath: async () => ({ ok: true }),
-        generateQr: async (text) => ({ ok: true, dataUrl: `data:image/mock;value=${encodeURIComponent(text)}` }),
+        generateQr: async (text) => {
+          if (window.__controlledQr) {
+            return new Promise((resolve, reject) => {
+              window.__qrRequests = [...(window.__qrRequests ?? []), { text, resolve, reject }];
+            });
+          }
+          return { ok: true, dataUrl: `data:image/mock;value=${encodeURIComponent(text)}` };
+        },
         previewArtifact: async () => ({
           ok: true,
           outputFiles: [],
@@ -621,6 +628,52 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     assert.doesNotMatch(logText, /隐藏|占位|合并/);
     assert.match(logText, /extract started/);
 
+    await page.evaluate(() => {
+      for (let index = 0; index < 80; index += 1) {
+        window.__emitPipelineEvent({ type: 'log', message: `[INFO] scroll sample ${index}` });
+      }
+      for (let index = 0; index < 400; index += 1) {
+        window.__emitPipelineEvent({ type: 'log', message: '[INFO] repeated heartbeat' });
+      }
+    });
+    await page.locator('#logCenterTable').evaluate((element) => {
+      element.scrollTop = element.scrollHeight;
+      element.dispatchEvent(new Event('scroll'));
+    });
+    await page.evaluate(() => window.__emitPipelineEvent({ type: 'log', message: '[INFO] followed latest' }));
+    assert.equal(await page.locator('#logCenterTable').evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight <= 32), true);
+
+    await page.locator('#logCenterTable').evaluate((element) => { element.scrollTop = 0; });
+    const anchorLine = page.locator('#logCenterTable .log-line').nth(8);
+    const anchorId = await anchorLine.getAttribute('data-log-id');
+    assert.ok(anchorId);
+    const retainedAnchorTop = await anchorLine.evaluate((element) => element.getBoundingClientRect().top);
+    await page.evaluate(() => window.__emitPipelineEvent({ type: 'log', message: '[INFO] unseen latest' }));
+    const unseenAnchorTop = await page.locator(`[data-log-id="${anchorId}"]`).evaluate((element) => element.getBoundingClientRect().top);
+    assert.ok(Math.abs(unseenAnchorTop - retainedAnchorTop) <= 2, JSON.stringify({ retainedAnchorTop, unseenAnchorTop }));
+    assert.match(await page.locator('[data-log-jump-latest]').innerText(), /1 条新消息/);
+    const anchorBefore = await page.locator(`[data-log-id="${anchorId}"]`).evaluate((element) => element.getBoundingClientRect().top);
+    await page.evaluate(() => {
+      window.__emitPipelineEvent({ type: 'log', message: '[INFO] anchor append one' });
+      window.__emitPipelineEvent({ type: 'log', message: '[INFO] anchor append two' });
+    });
+    const anchorAfter = await page.locator(`[data-log-id="${anchorId}"]`).evaluate((element) => element.getBoundingClientRect().top);
+    assert.ok(Math.abs(anchorAfter - anchorBefore) <= 2, JSON.stringify({ anchorBefore, anchorAfter }));
+    assert.ok(await page.locator('#logCenterTable .log-line').count() <= 120);
+
+    await page.locator('#navSubscriptions').click();
+    await page.evaluate(() => window.__emitPipelineEvent({ type: 'log', message: '[INFO] while logs hidden' }));
+    await page.locator('#navLogs').click();
+    assert.match(await page.locator('[data-log-jump-latest]').innerText(), /4 条新消息/);
+
+    await page.locator('#logCenterTable').evaluate((element) => {
+      element.scrollTop = element.scrollHeight;
+      element.dispatchEvent(new Event('scroll'));
+    });
+    assert.equal(await page.locator('[data-log-jump-latest]').count(), 0);
+    await page.evaluate(() => window.__emitPipelineEvent({ type: 'log', message: '[INFO] followed after manual scroll' }));
+    assert.equal(await page.locator('#logCenterTable').evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight <= 32), true);
+
     await page.getByRole('button', { name: '错误' }).click();
     const errorText = await page.locator('#logCenterTable').innerText();
     assert.match(errorText, /availability failed/);
@@ -628,16 +681,19 @@ test('renderer matches the six-page canvas redesign and supports page navigation
 
     await page.getByRole('button', { name: '运行日志' }).click();
     const runtimeText = await page.locator('#logCenterTable').innerText();
-    assert.match(runtimeText, /extract started/);
+    assert.match(runtimeText, /repeated heartbeat|followed after manual scroll/);
     assert.doesNotMatch(runtimeText, /availability failed/);
 
     await page.getByRole('button', { name: '按阶段' }).click();
     const groupedText = await page.locator('#logCenterTable').innerText();
-    assert.match(groupedText, /extract/);
-    assert.match(groupedText, /其他|availability/);
+    assert.match(groupedText, /repeated heartbeat|followed after manual scroll/);
+    assert.match(groupedText, /其他/);
 
     await page.getByRole('button', { name: '清空显示' }).click();
     assert.match(await page.locator('#logCenterTable').innerText(), /暂无日志|暂无可显示日志/);
+    assert.ok(await page.locator('[data-log-undo-clear]').count() >= 1);
+    await page.locator('[data-log-undo-clear]').first().click();
+    assert.match(await page.locator('#logCenterTable').innerText(), /unseen latest/);
 
     await page.locator('#navSubscriptions').click();
     await page.waitForSelector('#subscriptionCards');
@@ -660,6 +716,45 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     assert.notEqual(clashMetaCopyTarget, defaultCopyTarget);
     assert.equal(clashMetaCopyTarget, clashMetaSubscription);
     assert.equal(clashMetaOpenTarget, clashMetaSubscription);
+
+    const secretPayload = 'https://private.example/sub?token=TOP-SECRET';
+    await page.evaluate((payload) => {
+      window.vpnAutomation.copyText = async () => ({ ok: false, error: `clipboard failed for ${payload}` });
+    }, secretPayload);
+    await page.getByRole('button', { name: '复制链接' }).click();
+    await page.waitForSelector('[data-toast][data-toast-tone="danger"]');
+    assert.doesNotMatch(await page.locator('[data-toast]').innerText(), /TOP-SECRET|private\.example/);
+    await page.locator('#navLogs').click();
+    assert.doesNotMatch(await page.locator('#logsWorkspace').innerText(), /TOP-SECRET|private\.example/);
+    await page.evaluate(() => {
+      window.vpnAutomation.copyText = async (value) => {
+        window.__copiedTexts = [...(window.__copiedTexts ?? []), value];
+        return { ok: true };
+      };
+    });
+
+    await page.locator('#navSubscriptions').click();
+    await page.evaluate(() => { window.__controlledQr = true; window.__qrRequests = []; });
+    await page.getByRole('button', { name: 'Sing-box' }).click();
+    await page.getByRole('button', { name: 'Surge' }).click();
+    await page.waitForFunction(() => window.__qrRequests.length === 2);
+    await page.evaluate(() => window.__qrRequests[1].resolve({ dataUrl: 'data:image/mock;base64,newest' }));
+    await page.waitForFunction(() => document.querySelector('.qr-image')?.src.includes('newest'));
+    await page.evaluate(() => window.__qrRequests[0].resolve({ dataUrl: 'data:image/mock;base64,stale' }));
+    await page.waitForTimeout(20);
+    assert.match(await page.locator('.qr-image').getAttribute('src'), /newest/);
+
+    await page.evaluate(() => { window.__qrRequests = []; });
+    await page.getByRole('button', { name: 'Clash', exact: true }).click();
+    await page.getByRole('button', { name: 'Clash Meta' }).click();
+    await page.waitForFunction(() => window.__qrRequests.length === 2);
+    await page.evaluate(() => window.__qrRequests[1].resolve({ dataUrl: 'data:image/mock;base64,newest-after-error' }));
+    await page.waitForFunction(() => document.querySelector('.qr-image')?.src.includes('newest-after-error'));
+    await page.evaluate(() => window.__qrRequests[0].reject(new Error('stale QR failure')));
+    await page.waitForTimeout(20);
+    assert.match(await page.locator('.qr-image').getAttribute('src'), /newest-after-error/);
+    assert.equal(await page.locator('[data-action="retry-qr"]').count(), 0);
+    await page.evaluate(() => { window.__controlledQr = false; });
 
     await page.locator('#navSettings').click();
     await page.waitForSelector('#settingsWorkspace');
@@ -691,6 +786,31 @@ test('renderer matches the six-page canvas redesign and supports page navigation
 
     await page.locator('[data-settings-card="sources"]').click();
     await page.waitForSelector('#settingsDrawer[data-open="true"]');
+    assert.equal(await page.locator('[data-settings-dialog]').count(), 1);
+    assert.equal(await page.evaluate(() => document.querySelector('[data-settings-dialog]')?.contains(document.activeElement)), true);
+    const dialogFocusable = page.locator('[data-settings-dialog] button, [data-settings-dialog] input, [data-settings-dialog] textarea, [data-settings-dialog] select');
+    await dialogFocusable.last().focus();
+    await page.keyboard.press('Tab');
+    assert.equal(await page.evaluate(() => document.activeElement === document.querySelector('[data-settings-dialog] button, [data-settings-dialog] input, [data-settings-dialog] textarea, [data-settings-dialog] select')), true);
+    await page.keyboard.press('Shift+Tab');
+    assert.equal(await dialogFocusable.last().evaluate((node) => node === document.activeElement), true);
+    await page.keyboard.press('Escape');
+    await page.waitForSelector('#settingsDrawer[hidden]');
+    assert.equal(await page.evaluate(() => document.activeElement?.matches('[data-settings-card="sources"]')), true);
+    await page.locator('[data-settings-card="sources"]').click();
+    await page.waitForSelector('#settingsDrawer[data-open="true"]');
+    await page.setViewportSize({ width: 390, height: 520 });
+    assert.equal(await page.locator('[data-drawer-save="save"]').isVisible(), true);
+    assert.equal(await page.locator('[data-drawer-close="cancel"]').last().isVisible(), true);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
+    for (const selector of [
+      '[data-drawer-source="leiting"][data-drawer-key="enabled"]',
+      '[data-drawer-source="leiting"][data-drawer-key="key"]'
+    ]) {
+      const box = await page.locator(selector).boundingBox();
+      assert.ok(box && box.width >= 44 && box.height >= 44, `${selector} must be at least 44×44, got ${box?.width}×${box?.height}`);
+    }
+    await page.setViewportSize({ width: 1440, height: 960 });
     assert.match(await page.locator('#settingsDrawerTitle').innerText(), /数据源配置/);
     assert.equal(await page.locator('[data-source-max-iterations]').inputValue(), '40');
     const sourceSettingTops = await page.locator('.source-drawer-settings .field').evaluateAll((nodes) =>
@@ -738,6 +858,15 @@ test('renderer matches the six-page canvas redesign and supports page navigation
 
     await page.locator('[data-settings-card="availability_targets"]').click();
     await page.waitForSelector('#settingsDrawer[data-open="true"]');
+    await page.setViewportSize({ width: 390, height: 844 });
+    for (const selector of [
+      '[data-availability-index="0"][data-availability-key="enabled"]',
+      '[data-availability-index="0"][data-availability-key="name"]'
+    ]) {
+      const box = await page.locator(selector).boundingBox();
+      assert.ok(box && box.width >= 44 && box.height >= 44, `${selector} must be at least 44×44, got ${box?.width}×${box?.height}`);
+    }
+    await page.setViewportSize({ width: 1440, height: 960 });
     assert.match(await page.locator('#settingsDrawerTitle').innerText(), /AI可达性检测/);
     assert.equal(await page.locator('.availability-target-table tbody tr').count(), 4);
     await page.locator('[data-availability-action="add"]').click();
@@ -849,6 +978,18 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     });
     assert.equal(sameButtonAfterLogs, true);
 
+    await page.locator('#navLogs').focus();
+    const focusedNavSurvivesRuntimeEvents = await page.evaluate(() => {
+      const focused = document.activeElement;
+      for (const runState of ['running', 'stopping', 'failed', 'idle']) {
+        window.__emitPipelineEvent({ type: 'server_state', run_state: runState });
+        window.__emitPipelineEvent({ type: 'log', message: `[INFO] focus ${runState}` });
+        if (document.activeElement !== focused) return false;
+      }
+      return focused === document.querySelector('#navLogs');
+    });
+    assert.equal(focusedNavSurvivesRuntimeEvents, true);
+
     await page.locator('#navDashboard').click();
     await page.waitForSelector('#dashboardOverview');
     const sameDashboardButtonAfterStages = await page.locator('#pageActions [data-run-action="start"]').evaluate((button) => {
@@ -861,6 +1002,91 @@ test('renderer matches the six-page canvas redesign and supports page navigation
 
     await page.locator('#navRuns').click();
     await page.waitForSelector('#runsWorkspace');
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.waitForFunction(() => !document.querySelector('details.run-secondary-controls')?.open);
+    assert.equal(await page.locator('[data-mobile-run-bar] [data-run-action]').count(), 2);
+    assert.deepEqual(
+      await page.locator('[data-mobile-run-bar] > [data-run-action]').evaluateAll((buttons) => buttons.map((button) => button.dataset.runAction)),
+      ['start', 'stop']
+    );
+    assert.equal(await page.locator('[data-mobile-run-bar] select, [data-mobile-run-bar] [data-run-option]').count(), 0);
+    assert.equal(await page.locator('details.run-secondary-controls').getAttribute('open'), null);
+    assert.equal(await page.locator('[data-mobile-run-bar]').evaluate((element) => getComputedStyle(element).position), 'fixed');
+    assert.notEqual(await page.locator('.run-control-panel').evaluate((element) => getComputedStyle(element).position), 'sticky');
+
+    const initialRunGeometry = await page.evaluate(() => {
+      const bar = document.querySelector('[data-mobile-run-bar]').getBoundingClientRect();
+      const nav = document.querySelector('.sidebar').getBoundingClientRect();
+      const summary = document.querySelector('details.run-secondary-controls > summary').getBoundingClientRect();
+      const stages = document.querySelector('#runsStageProgress').getBoundingClientRect();
+      const shell = document.querySelector('#runsWorkspace').getBoundingClientRect();
+      return {
+        barBottom: bar.bottom,
+        navTop: nav.top,
+        shellTop: shell.top,
+        firstContentTop: Math.min(summary.top, stages.top),
+        bottomPadding: Number.parseFloat(getComputedStyle(document.querySelector('#runsWorkspace')).paddingBottom)
+      };
+    });
+    assert.ok(initialRunGeometry.barBottom <= initialRunGeometry.navTop + 1, JSON.stringify(initialRunGeometry));
+    assert.ok(initialRunGeometry.navTop - initialRunGeometry.barBottom <= 32, JSON.stringify(initialRunGeometry));
+    assert.ok(initialRunGeometry.firstContentTop < initialRunGeometry.navTop, JSON.stringify(initialRunGeometry));
+    assert.ok(initialRunGeometry.firstContentTop <= initialRunGeometry.shellTop + 120, JSON.stringify(initialRunGeometry));
+    assert.ok(initialRunGeometry.bottomPadding >= 160, JSON.stringify(initialRunGeometry));
+
+    const details = page.locator('details.run-secondary-controls');
+    await details.evaluate((element) => { element.open = true; });
+    await page.setViewportSize({ width: 400, height: 760 });
+    assert.equal(await details.evaluate((element) => element.open), true);
+    await details.evaluate((element) => { element.open = false; });
+    await page.setViewportSize({ width: 390, height: 800 });
+    assert.equal(await details.evaluate((element) => element.open), false);
+
+    await page.evaluate(() => document.querySelector('#runsCurrentStage')?.scrollIntoView({ block: 'end' }));
+    const stickyGeometry = await page.evaluate(() => {
+      const bar = document.querySelector('[data-mobile-run-bar]').getBoundingClientRect();
+      const nav = document.querySelector('.sidebar').getBoundingClientRect();
+      const current = document.querySelector('#runsCurrentStage').getBoundingClientRect();
+      const shell = document.querySelector('#runsWorkspace').getBoundingClientRect();
+      return { barTop: bar.top, barBottom: bar.bottom, navTop: nav.top, currentBottom: current.bottom, shellBottom: shell.bottom, scrollY };
+    });
+    assert.ok(stickyGeometry.barBottom <= stickyGeometry.navTop + 1, JSON.stringify(stickyGeometry));
+    assert.ok(stickyGeometry.currentBottom <= stickyGeometry.barTop + 1, JSON.stringify(stickyGeometry));
+
+    const runStart = page.locator('[data-mobile-run-bar] [data-run-action="start"]');
+    const runStop = page.locator('[data-mobile-run-bar] [data-run-action="stop"]');
+    await page.evaluate(() => window.__emitPipelineEvent({ type: 'server_state', run_state: 'running' }));
+    assert.equal(await runStart.innerText(), '运行中');
+    assert.equal(await runStart.isDisabled(), true);
+    assert.equal(await runStop.isDisabled(), false);
+    await page.evaluate(() => window.__emitPipelineEvent({ type: 'server_state', run_state: 'stopping' }));
+    assert.equal(await runStart.innerText(), '停止中');
+    assert.equal(await runStart.isDisabled(), true);
+    assert.equal(await runStop.isDisabled(), true);
+    await page.evaluate(() => window.__emitPipelineEvent({ type: 'server_state', run_state: 'idle' }));
+    assert.equal(await runStart.innerText(), '立即运行');
+    assert.equal(await runStart.isDisabled(), false);
+    assert.equal(await runStop.isDisabled(), true);
+
+    await page.locator('#navResults').click();
+    await page.waitForSelector('#resultsWorkspace');
+    assert.equal(await page.locator('.decoded-node-table').count(), 1);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
+
+    await page.locator('#navSubscriptions').click();
+    await page.waitForSelector('#subscriptionCards');
+    for (const name of ['复制链接', '打开订阅']) {
+      const box = await page.getByRole('button', { name }).boundingBox();
+      assert.ok(box && box.height >= 48, `${name} must be at least 48px tall, got ${box?.height}`);
+    }
+    await page.getByRole('button', { name: 'Clash Meta' }).click();
+    assert.equal(await page.getByRole('button', { name: 'Clash Meta' }).getAttribute('aria-pressed'), 'true');
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
+
+    await page.setViewportSize({ width: 1280, height: 820 });
+    await page.locator('#navRuns').click();
+    await page.waitForFunction(() => document.querySelector('details.run-secondary-controls')?.open);
 
     await page.locator('#navLogs').click();
     await page.waitForSelector('#logCenterTable');

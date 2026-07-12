@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { load as parseYaml } from 'js-yaml';
 
 const projectRoot = process.cwd();
 
@@ -30,6 +31,56 @@ function extractWorkflowSegment(workflow, startMarker, endMarker) {
   assert.notEqual(end, -1, `workflow should contain ${endMarker} after ${startMarker}`);
 
   return workflow.slice(start, end);
+}
+
+function extractNamedStep(workflow, name) {
+  const marker = `      - name: ${name}\n`;
+  const start = workflow.indexOf(marker);
+  assert.notEqual(start, -1, `workflow should contain step ${name}`);
+  const end = workflow.indexOf('\n      - name:', start + marker.length);
+  return workflow.slice(start, end === -1 ? workflow.length : end);
+}
+
+function testFilesFromScript(script) {
+  return [...script.matchAll(/electron\/tests\/([\w-]+\.test\.mjs)/g)].map((match) => match[1]);
+}
+
+function assertWorkflowTestGates(workflow, packageJson, allFiles) {
+  const scripts = packageJson.scripts;
+  const normalizeCommand = (command) => command.trim().replace(/\s+/g, ' ');
+  const h5FilesExpected = [
+    'mobile-layout-contract.test.mjs',
+    'web-server-e2e.test.mjs',
+    'web-server-visual.test.mjs'
+  ];
+  const nativeFilesExpected = allFiles.filter((file) => !h5FilesExpected.includes(file));
+  const commandFor = (files) => `node --test --test-concurrency=1 ${files.map((file) => `electron/tests/${file}`).join(' ')}`;
+  assert.equal(normalizeCommand(scripts['test:h5']), commandFor(h5FilesExpected), 'H5 script must match the exact approved command');
+  assert.equal(normalizeCommand(scripts['test:electron-native']), commandFor(nativeFilesExpected), 'native script must match the exact approved command');
+  const parsedWorkflow = parseYaml(workflow);
+  const rejectVisualBaselineUpdateEnv = (node) => {
+    if (!node || typeof node !== 'object') return;
+    if (!Array.isArray(node) && node.env && typeof node.env === 'object') {
+      assert.equal(Object.hasOwn(node.env, 'UPDATE_VISUAL_BASELINES'), false, 'CI must never update reviewed visual baselines');
+    }
+    for (const value of Array.isArray(node) ? node : Object.values(node)) rejectVisualBaselineUpdateEnv(value);
+  };
+  rejectVisualBaselineUpdateEnv(parsedWorkflow);
+
+  const h5Files = testFilesFromScript(scripts['test:h5']);
+  const nativeFiles = testFilesFromScript(scripts['test:electron-native']);
+  assert.deepEqual([...new Set([...h5Files, ...nativeFiles])].sort(), allFiles, 'gate scripts must cover every Electron test');
+  assert.equal(new Set([...h5Files, ...nativeFiles]).size, h5Files.length + nativeFiles.length, 'gate scripts must cover tests exactly once');
+
+  for (const [name, exactCommand] of [
+    ['Run H5 mobile Chromium and WebKit gate', 'npm run test:h5'],
+    ['Run Electron native and desktop gate', 'npm run test:electron-native']
+  ]) {
+    const step = extractNamedStep(workflow, name);
+    const runLines = [...step.matchAll(/^\s+run:\s*(.*?)\s*$/gm)].map((match) => match[1]);
+    assert.deepEqual(runLines, [exactCommand], `${name} must run only ${exactCommand}`);
+    assert.doesNotMatch(step, /^\s+(?:continue-on-error|if):/m, `${name} must be unconditional and fail closed`);
+  }
 }
 
 function runReleaseTagValidation(script, { version, tagName }) {
@@ -185,16 +236,12 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
     'scripts/ci/retry-command.sh "npm ci --prefix npm/autovpn-cli"',
     'Build npm CLI web server',
     'npm run build --prefix npm/autovpn-cli',
-    'const testFiles = fs.readdirSync(\'electron/tests\')',
-    'const excluded = new Set([',
-    "'app-launch.test.mjs'",
-    "'renderer-e2e.test.mjs'",
-    "'renderer-visual.test.mjs'",
-    "'web-server-e2e.test.mjs'",
-    "'web-server-visual.test.mjs'",
-    "spawnSync(process.execPath, ['--test', '--test-timeout=600000', ...testFiles]",
-    'timeout: 600000',
-    'Electron tests timed out after 600 seconds.',
+    'Install pinned Playwright Chromium and WebKit runtimes',
+    'npx playwright install --with-deps chromium-headless-shell webkit',
+    'npm run test:h5',
+    'npm run test:electron-native',
+    'Upload renderer visual diffs',
+    'electron/tests/visual-artifacts/**',
     'npm run package:electron',
     'bash -eo pipefail -c',
     'AUTOVPN_PACKAGE_PLATFORM: ${{ matrix.package_platform }}',
@@ -287,7 +334,8 @@ test('active CI and release workflows are Node-only and publish only npm and Ele
   }
 
   assert.match(headless, /node -e .*JSON\.parse/);
-  assert.match(headless, /node --test --test-concurrency=1/);
+  assert.match(headless, /npm run test:h5/);
+  assert.match(headless, /npm run test:electron-native/);
   assert.match(release, /npm pack --json --pack-destination \.\.\/\.\.\/dist/);
   assert.match(release, /dist\/swimmingliu-autovpn-\$\{PKG_VERSION\}\.tgz/);
   assert.doesNotMatch(release, /find dist .*\.tar\.gz/);
@@ -345,16 +393,103 @@ test('release package version matches the next release tag', () => {
   assert.equal(packageLock.packages[''].version, packageJson.version);
 });
 
-test('release renderer tests avoid forcing full Chromium in CI', () => {
-  const workflow = readProjectFile('.github', 'workflows', 'release-electron.yml');
-  assert.doesNotMatch(workflow, /Install Playwright browsers for tests/);
-  assert.doesNotMatch(workflow, /command = \["npx", "playwright", "install", "chromium-headless-shell"\]/);
-  assert.doesNotMatch(workflow, /command = \["npx", "playwright", "install", "chromium", "--no-shell"\]/);
+test('PR and release gates run the complete mobile Chromium/WebKit and visual matrix', () => {
+  const packageJson = JSON.parse(readProjectFile('package.json'));
+  const h5Files = testFilesFromScript(packageJson.scripts['test:h5']);
+  const nativeFiles = testFilesFromScript(packageJson.scripts['test:electron-native']);
+  const allFiles = fs.readdirSync(path.join(projectRoot, 'electron', 'tests'))
+    .filter((file) => file.endsWith('.test.mjs'))
+    .sort();
 
-  for (const testFile of ['renderer-e2e.test.mjs', 'renderer-visual.test.mjs']) {
-    const source = readProjectFile('electron', 'tests', testFile);
-    assert.doesNotMatch(source, /channel: 'chromium'/, `${testFile} should not force full Chromium`);
-    assert.match(source, /chromium\.launch\(\)/, `${testFile} should rely on the installed headless shell`);
+  assert.deepEqual(h5Files, [
+    'mobile-layout-contract.test.mjs',
+    'web-server-e2e.test.mjs',
+    'web-server-visual.test.mjs'
+  ]);
+  assert.ok(nativeFiles.includes('app-launch.test.mjs'), 'native gate must include app launch');
+  assert.ok(nativeFiles.includes('renderer-e2e.test.mjs'), 'native gate must include desktop E2E');
+  assert.ok(nativeFiles.includes('renderer-visual.test.mjs'), 'native gate must include desktop visual');
+  assert.deepEqual([...new Set([...h5Files, ...nativeFiles])].sort(), allFiles, 'H5/native scripts must cover every Electron test exactly once');
+  assert.equal(new Set([...h5Files, ...nativeFiles]).size, h5Files.length + nativeFiles.length, 'H5/native scripts must not overlap');
+  assert.equal(packageJson.scripts['test:electron'], 'npm run test:h5 && npm run test:electron-native');
+
+  for (const workflowPath of ['headless-cli.yml', 'release-electron.yml']) {
+    const workflow = readProjectFile('.github', 'workflows', workflowPath);
+    assertWorkflowTestGates(workflow, packageJson, allFiles);
+    const h5Step = extractNamedStep(workflow, 'Run H5 mobile Chromium and WebKit gate');
+    const nativeStep = extractNamedStep(workflow, 'Run Electron native and desktop gate');
+    assert.match(workflow, /name: Install pinned Playwright Chromium and WebKit runtimes/);
+    assert.match(workflow, /npx playwright install --with-deps chromium-headless-shell webkit/);
+    assert.ok(workflow.indexOf('Run H5 mobile Chromium and WebKit gate') < workflow.indexOf('Run Electron native and desktop gate'));
+    assert.match(h5Step, /run: npm run test:h5/);
+    assert.match(nativeStep, /run: npm run test:electron-native/);
+    assert.match(workflow, /name: Upload renderer visual diffs/);
+    assert.match(workflow, /if: failure\(\)/);
+    assert.match(workflow, /uses: actions\/upload-artifact@v4/);
+    assert.match(workflow, /electron\/tests\/visual-artifacts\/\*\*/);
+    assert.doesNotMatch(`${h5Step}\n${nativeStep}`, /excluded|exclude|--test-name-pattern/i);
+  }
+});
+
+test('gate contract rejects package-script and workflow shell bypasses', () => {
+  const packageJson = JSON.parse(readProjectFile('package.json'));
+  const workflow = readProjectFile('.github', 'workflows', 'headless-cli.yml');
+  const allFiles = fs.readdirSync(path.join(projectRoot, 'electron', 'tests'))
+    .filter((file) => file.endsWith('.test.mjs'))
+    .sort();
+  assertWorkflowTestGates(workflow, packageJson, allFiles);
+
+  for (const bypass of [
+    '--test-name-pattern mobile',
+    '--exclude renderer-visual',
+    '| grep -v visual',
+    '|| true',
+    '; true',
+    '| cat',
+    '|| :',
+    '; exit 0',
+    '> /tmp/autovpn-test.log',
+    '--unknown-flag',
+    'electron/tests/mobile-layout-contract.test.mjs'
+  ]) {
+    const mutated = structuredClone(packageJson);
+    mutated.scripts['test:h5'] += ` ${bypass}`;
+    assert.throws(() => assertWorkflowTestGates(workflow, mutated, allFiles), undefined, `should reject ${bypass}`);
+  }
+
+  const missingFile = structuredClone(packageJson);
+  missingFile.scripts['test:h5'] = missingFile.scripts['test:h5']
+    .replace(' electron/tests/web-server-visual.test.mjs', '');
+  assert.throws(
+    () => assertWorkflowTestGates(workflow, missingFile, allFiles),
+    undefined,
+    'should reject an H5 gate with a missing test file'
+  );
+
+  for (const replacement of [
+    'run: UPDATE_VISUAL_BASELINES=1 npm run test:h5',
+    'run: npm run test:h5 || true',
+    'run: npm run test:h5 -- --test-name-pattern mobile',
+    'if: github.event_name == \'push\'\n        run: npm run test:h5',
+    'continue-on-error: true\n        run: npm run test:h5'
+  ]) {
+    const mutated = workflow.replace('run: npm run test:h5', replacement);
+    assert.throws(() => assertWorkflowTestGates(mutated, packageJson, allFiles), undefined, `should reject ${replacement}`);
+  }
+
+  for (const [scope, mutated] of [
+    ['workflow env', workflow.replace('env:\n', 'env:\n  UPDATE_VISUAL_BASELINES: "1"\n')],
+    ['job env', workflow.replace('    name: Linux headless CLI\n', '    name: Linux headless CLI\n    env:\n      UPDATE_VISUAL_BASELINES: "1"\n')],
+    ['step env', workflow.replace('      - name: Run H5 mobile Chromium and WebKit gate\n', '      - name: Run H5 mobile Chromium and WebKit gate\n        env:\n          UPDATE_VISUAL_BASELINES: "1"\n')]
+  ]) {
+    assert.throws(() => assertWorkflowTestGates(mutated, packageJson, allFiles), undefined, `should reject ${scope}`);
+  }
+
+  for (const [syntax, mutated] of [
+    ['inline env map', workflow.replace('      - name: Run H5 mobile Chromium and WebKit gate\n', '      - name: Run H5 mobile Chromium and WebKit gate\n        env: { UPDATE_VISUAL_BASELINES: "1" }\n')],
+    ['quoted env key', workflow.replace('      - name: Run H5 mobile Chromium and WebKit gate\n', '      - name: Run H5 mobile Chromium and WebKit gate\n        env:\n          "UPDATE_VISUAL_BASELINES": "1"\n')]
+  ]) {
+    assert.throws(() => assertWorkflowTestGates(mutated, packageJson, allFiles), undefined, `should reject ${syntax}`);
   }
 });
 

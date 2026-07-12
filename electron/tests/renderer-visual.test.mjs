@@ -11,13 +11,23 @@ import { chromium } from 'playwright';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const EXPECTED_DIGESTS = {
-  dashboard: '7e413e86d733238ca53a2b06577d2edeaf1253a16e8a92a4972db86a4ad41875',
-  runs: 'b0cbec28e45fd44a3a025ec4aef159d350edf87d8a836309c64306ea1478d353',
-  results: '68dd49e778e74223c346a0eb2515e2cc2ace8a3051a38df44fd35ddcb6a4b4d6',
-  subscriptions: '53a4b19b870124028169ccc0e5d2cea19e4a9771ff45de96c7f46169b1d15449',
-  logs: '5a8fb03f4cb268506cd16f948baf98ebaa5ccbec0a61dab2f69aa07fa4472985',
-  settings: 'f9f143698cede1832e2907f3f793257d4dcdd5cc1434ac12b8df98022ceb482e'
+const EXPECTED_DIGESTS_BY_PLATFORM = {
+  darwin: {
+    dashboard: '467b324e8d4b9abc77e4148bb9ac891f6df41433c8b796453d9eb27e6587a842',
+    runs: 'c76a4add50065ba121a0cb8175fa7be6370b9e2ccb50c694f2f34fcab6b22ac9',
+    results: '68dd49e778e74223c346a0eb2515e2cc2ace8a3051a38df44fd35ddcb6a4b4d6',
+    subscriptions: '53a4b19b870124028169ccc0e5d2cea19e4a9771ff45de96c7f46169b1d15449',
+    logs: '91aa2f3a9ac32e1f5823f44900f0783eb2a7f1cdf85137ec2699f4067db83061',
+    settings: 'f9f143698cede1832e2907f3f793257d4dcdd5cc1434ac12b8df98022ceb482e'
+  },
+  linux: {
+    dashboard: '945060b5405a680c1c4c6993c522cbc483f1c3df39597b661c2b8012274d6e56',
+    runs: 'ba825da9946a876ec4cb0e781d1a4a874460d0e9fe66f3a67ba39b6b552b7dad',
+    results: '0b5b3dbf09902f3761b99dfee55d49e3e128fb6b96c88af70ae6eeb842f43d1b',
+    subscriptions: 'be35d2220f6a35096901b8e420f1318553dcab4a1975e609df6052716c4bdaf4',
+    logs: 'd4b0e5912c5916c32197815972ae24b30e4bf48b009ba7989c37f713c650a938',
+    settings: '786761cebfbca0799ef48e4ab1723cc103293e8d1239df8d5176ec9a03046d3f'
+  }
 };
 
 const VISUAL_CASES = [
@@ -30,6 +40,8 @@ const VISUAL_CASES = [
 ];
 
 test('renderer visual hashes match the full mockup-driven workspace', async () => {
+  const expectedDigests = EXPECTED_DIGESTS_BY_PLATFORM[process.platform];
+  assert.ok(expectedDigests, `renderer visual baselines are not reviewed for ${process.platform}`);
   const server = await startStaticServer(path.join(__dirname, '..', 'renderer'));
   let browser;
   try {
@@ -60,7 +72,7 @@ test('renderer visual hashes match the full mockup-driven workspace', async () =
       digests[name] = crypto.createHash('sha256').update(buffer).digest('hex');
     }
 
-    assert.deepEqual(digests, EXPECTED_DIGESTS);
+    assert.deepEqual(digests, expectedDigests);
   } finally {
     await browser?.close();
     await server.close();

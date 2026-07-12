@@ -23,12 +23,18 @@ test('decorateNodeName prefixes emoji and replaces existing country prefix', () 
   assert.equal(decorateNodeName('US 772', 'US', '🇺🇸'), '🇺🇸 US 772');
 });
 
-test('decorateLinkWithCountry normalizes invalid country codes to US', () => {
+test('decorateLinkWithCountry defaults unknown and invalid country codes to US', () => {
   const updated = decorateLinkWithCountry(sampleLink, 'ZZ');
   const encoded = updated.slice('vmess://'.length);
   const payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
 
   assert.equal(payload.ps, '🇺🇸 US old-name');
+
+  for (const country of ['', 'USA', '1A', 'QQ', 'XX', 'AA']) {
+    const invalid = decorateLinkWithCountry(sampleLink, country);
+    const invalidPayload = JSON.parse(Buffer.from(invalid.slice('vmess://'.length), 'base64url').toString('utf8'));
+    assert.equal(invalidPayload.ps, '🇺🇸 US old-name');
+  }
 });
 
 test('selectLinksByCountryLimit excludes configured countries and applies per-country limits', () => {

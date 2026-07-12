@@ -16,6 +16,7 @@ import {
   buildAvailabilityTargetDraft,
   buildDashboardMetricsMarkup,
   buildPageMarkup,
+  buildSidebarNav,
   buildViewModel,
   buildRegionStats,
   buildSourceIterationDraft,
@@ -26,6 +27,13 @@ import {
   removeAvailabilityTargetDraft
 } from '../renderer/views.js';
 
+test('buildSidebarNav marks only the active page as current', () => {
+  const nav = buildSidebarNav(getMessages('zh-CN'), 'runs');
+
+  assert.match(nav, /id="navRuns"[^>]*aria-current="page"/);
+  assert.doesNotMatch(nav, /id="navDashboard"[^>]*aria-current/);
+});
+
 test('buildStageModel marks stages in configured order', () => {
   const rows = buildStageModel({ doctor: 'success', availability: 'running', deploy: 'running' });
   assert.equal(rows[0].name, 'doctor');
@@ -33,6 +41,20 @@ test('buildStageModel marks stages in configured order', () => {
   assert.equal(rows[4].name, 'availability');
   assert.equal(rows[4].status, 'running');
   assert.equal(rows.at(-1).name, 'verify');
+});
+
+test('runs workspace exposes secondary controls and textual stage status', () => {
+  const messages = getMessages('zh-CN');
+  const vm = buildViewModel({
+    runState: 'idle',
+    stageStatus: { doctor: 'success', extract: 'running' },
+    retryArtifacts: []
+  }, messages, 'zh-CN');
+  const markup = buildPageMarkup('runs', vm, messages, 'zh-CN');
+
+  assert.match(markup, /<details[^>]+class="[^"]*run-secondary-controls/);
+  assert.match(markup, /doctor[\s\S]*?完成/);
+  assert.match(markup, /extract[\s\S]*?运行中/);
 });
 
 test('toMetricItems maps summary counts to Chinese labels', () => {
@@ -169,6 +191,32 @@ test('groupLogEntriesByStage groups unknown lines into 其他', () => {
   assert.equal(groups.at(-1).label, '其他');
 });
 
+test('logs workspace exposes an accessible stream and separated destructive action', () => {
+  const messages = getMessages('zh-CN');
+  const vm = buildViewModel({
+    runtime: 'web',
+    logFilter: '错误',
+    logEntries: ['[ERROR] availability failed'],
+    logView: { follow: false, unseenCount: 3, clearedSnapshot: null }
+  }, messages, 'zh-CN');
+  const markup = buildPageMarkup('logs', vm, messages, 'zh-CN');
+
+  assert.match(markup, /id="logCenterTable"[^>]*role="log"/);
+  assert.match(markup, /data-log-filter="错误"[^>]*aria-pressed="true"/);
+  assert.match(markup, /data-log-filter="全部"[^>]*aria-pressed="false"/);
+  assert.match(markup, /class="[^"]*log-destructive-actions[^"]*"[\s\S]*data-action="clear-log"/);
+  assert.match(markup, /data-log-jump-latest[\s\S]*3 条新消息/);
+});
+
+test('logs workspace hides latest and undo actions without pending state', () => {
+  const messages = getMessages('zh-CN');
+  const vm = buildViewModel({ logEntries: [], logView: { follow: true, unseenCount: 0, clearedSnapshot: null } }, messages, 'zh-CN');
+  const markup = buildPageMarkup('logs', vm, messages, 'zh-CN');
+
+  assert.doesNotMatch(markup, /data-log-jump-latest/);
+  assert.doesNotMatch(markup, /data-log-undo-clear/);
+});
+
 test('buildRegionStats counts decoded vmess rows by region prefix', () => {
   const stats = buildRegionStats([
     { name: '🇺🇸 US alpha' },
@@ -178,10 +226,39 @@ test('buildRegionStats counts decoded vmess rows by region prefix', () => {
   ]);
 
   assert.deepEqual(stats, [
-    { region: 'US', count: 2 },
-    { region: 'JP', count: 1 },
-    { region: '其他', count: 1 }
+    { region: 'US', count: 3 },
+    { region: 'JP', count: 1 }
   ]);
+});
+
+test('buildRegionStats trusts preview regionCode and defaults unknown regions to US', () => {
+  const stats = buildRegionStats([
+    { name: '🏳️ ZZ first', regionCode: 'OTHER' },
+    { name: '🏳️ ZZ second', regionCode: 'ZZ' },
+    { name: '🇺🇸 US real', regionCode: 'US' },
+    { name: '🇯🇵 JP stale name', regionCode: 'US' }
+  ]);
+
+  assert.deepEqual(stats, [
+    { region: 'US', count: 4 }
+  ]);
+});
+
+test('results page renders unknown preview regions as US', () => {
+  const messages = getMessages('zh-CN');
+  const vm = buildViewModel({
+    runState: 'success',
+    artifactDir: '/tmp/artifact',
+    nodeRows: [
+      { name: '🏳️ ZZ node', regionCode: 'OTHER' },
+      { name: '🇺🇸 US node', regionCode: 'US' }
+    ]
+  }, messages, 'zh-CN');
+  const markup = buildPageMarkup('results', vm, messages, 'zh-CN');
+
+  assert.match(markup, />US<\/span>[\s\S]*?<strong>2<\/strong>/);
+  assert.doesNotMatch(markup, />其他<\/span>/);
+  assert.doesNotMatch(markup, />ZZ<\/span>/);
 });
 
 test('source iteration draft applies one max_iterations, plateau limit, and area range to all sources', () => {
@@ -274,6 +351,29 @@ test('settings page renders AI availability target card and drawer table', () =>
   assert.doesNotMatch(markup, /data-availability-key="negative_phrases"/);
   assert.doesNotMatch(markup, /屏蔽短语/);
   assert.match(markup, /gemini\.google\.com/);
+  assert.match(markup, /<aside[^>]*data-settings-dialog[^>]*role="dialog"[^>]*aria-modal="true"[^>]*aria-labelledby="settingsDrawerTitle"/);
+  assert.match(markup, /aria-label="Gemini：URL"/);
+});
+
+test('settings drawer is inert and has no actions while closed, with explicit source field names when open', () => {
+  const messages = getMessages('zh-CN');
+  const profile = {
+    sources: { leiting: { url: 'https://example.com', key: 'secret', enabled: true } },
+    availability_targets: {},
+    speed_test: { min_download_mb_s: 1, timeout_seconds: 20, concurrency: 3 },
+    deploy: { subscription_url: '' }
+  };
+  const closedMarkup = buildPageMarkup('settings', buildViewModel({ profile }, messages, 'zh-CN'), messages, 'zh-CN');
+  assert.match(closedMarkup, /id="settingsDrawer"[^>]*hidden[^>]*inert/);
+  assert.doesNotMatch(closedMarkup, /data-drawer-close="cancel"|data-drawer-save="save"/);
+
+  const openState = {
+    profile,
+    settingsDrawer: { section: 'sources', draft: { sources: profile.sources } }
+  };
+  const openMarkup = buildPageMarkup('settings', buildViewModel(openState, messages, 'zh-CN'), messages, 'zh-CN');
+  assert.match(openMarkup, /aria-label="雷霆：地址"/);
+  assert.match(openMarkup, /aria-label="雷霆：密钥"/);
 });
 
 test('settings page renders deploy card and drawer fields', () => {
@@ -361,6 +461,41 @@ test('settings page renders deploy helper copy and results page renders deployme
   assert.match(resultsMarkup, /manifest\.json/);
 });
 
+test('subscription QR states render actionable errors and accessible format selection', () => {
+  const messages = getMessages('zh-CN');
+  const base = {
+    profile: { sources: {}, deploy: { subscription_url: 'https://vpn.example/secret' } },
+    subscriptionFormat: 'Clash Meta'
+  };
+
+  const errorMarkup = buildPageMarkup('subscriptions', buildViewModel({
+    ...base,
+    qr: { status: 'error', dataUrl: '', message: '生成失败' }
+  }, messages, 'zh-CN'), messages, 'zh-CN');
+  assert.match(errorMarkup, /生成失败/);
+  assert.match(errorMarkup, /data-action="retry-qr"/);
+  assert.match(errorMarkup, /data-subscription-format="Clash Meta"[^>]*aria-pressed="true"/);
+
+  const unavailableMarkup = buildPageMarkup('subscriptions', buildViewModel({
+    ...base,
+    qr: { status: 'unavailable', dataUrl: '', message: '' }
+  }, messages, 'zh-CN'), messages, 'zh-CN');
+  assert.match(unavailableMarkup, /当前环境不支持二维码生成/);
+  assert.match(unavailableMarkup, /复制链接/);
+});
+
+test('result node rows expose one mobile label for each value', () => {
+  const messages = getMessages('zh-CN');
+  const vm = buildViewModel({
+    nodeRows: [{ name: '东京超长节点', address: '1.2.3.4', protocol: 'vmess', path: '/edge' }]
+  }, messages, 'zh-CN');
+  const markup = buildPageMarkup('results', vm, messages, 'zh-CN');
+
+  assert.equal((markup.match(/class="node-card-field"/g) ?? []).length, 5);
+  assert.equal((markup.match(/东京超长节点/g) ?? []).length, 1);
+  assert.match(markup, /node-card-field">节点名称/);
+});
+
 test('extractSourceUrlFromCurl returns the first request URL from a pasted curl command', () => {
   const value = extractSourceUrlFromCurl(
     "curl 'https://www.xnfvjf.info:20000/api/evmess?&proto=v6&platform=ios&ver=5.8.55347&unicode=CDC37303-6CEC-4AB2-AAD9-AE88DEF1CF10&deviceid=CDC37303-6CEC-4AB2-AAD9-AE88DEF1CF10&code=ZRGOIXI&recomm_code=&device_token=&f=2026-04-23&install=2026-04-23&xf_fans=0&token=ZGSNZ19nnZqSl2VobGppZZOWaGZonHGRYWeVk5lu&t=1777190098.382194&width=375.0&height=812.0&area=999' -H 'Host: www.xnfvjf.info:20000'"
@@ -410,4 +545,20 @@ test('dashboard metrics show deduped node copy and per-source dedupe counts', ()
   assert.match(markup, /雷霆 5/);
   assert.match(markup, /黑洞 4/);
   assert.doesNotMatch(markup, /去重后/);
+});
+
+test('dashboard metrics render missing legacy per-source dedupe counts as unknown instead of zero', () => {
+  const messages = getMessages('zh-CN');
+  const vm = buildViewModel({
+    profile: {
+      sources: { leiting: { url: 'https://a.example', key: 'a', enabled: true } },
+      availability_targets: {},
+      speed_test: {},
+      deploy: {}
+    },
+    counts: { raw_links: 7, deduped_links: 5 },
+    sourceCounts: { leiting: { raw_links: 7 } }
+  }, messages, 'zh-CN');
+
+  assert.match(buildDashboardMetricsMarkup(vm), /雷霆 —/);
 });

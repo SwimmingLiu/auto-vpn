@@ -66,6 +66,7 @@ test('served web ui loads profile and starts a run through the web adapter', asy
 
     await page.locator('#navRuns').click();
     await page.waitForSelector('#runsWorkspace');
+    await page.locator('.run-secondary-controls').evaluate((node) => { node.open = true; });
     await page.locator('#runsWorkspace [data-run-action="start"]').click();
     await page.waitForTimeout(150);
 
@@ -605,7 +606,7 @@ test('served web adapter saves profile, generates QR, and starts retry stage', a
   }
 });
 
-test('served web ui handles visible browser controls across all pages', async () => {
+test('served web ui handles visible browser controls across all pages', { timeout: 12000 }, async () => {
   const calls = [];
   let subscriber;
   const service = await createAutoVpnServer({
@@ -689,7 +690,7 @@ test('served web ui handles visible browser controls across all pages', async ()
   let browser;
   try {
     browser = await chromium.launch();
-    const page = await browser.newPage({ viewport: { width: 1360, height: 900 } });
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true });
     await page.goto(`${service.origin}/`);
     await page.waitForSelector('#dashboardOverview');
 
@@ -697,22 +698,64 @@ test('served web ui handles visible browser controls across all pages', async ()
     await page.waitForSelector('#settingsWorkspace');
 
     for (const section of ['sources', 'speed_test', 'availability_targets', 'deploy']) {
-      await page.locator(`[data-settings-card="${section}"]`).click();
+      await page.setViewportSize({ width: 390, height: 844 });
+      const opener = page.locator(`[data-settings-card="${section}"]`);
+      await opener.click();
       await page.waitForSelector(`#settingsDrawer[data-open="true"][data-section="${section}"]`);
-      if (section === 'availability_targets') {
+      await page.waitForSelector('[data-settings-dialog]');
+      assert.equal(await page.evaluate(() => document.querySelector('[data-settings-dialog]')?.contains(document.activeElement)), true);
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
+      assert.equal(await page.locator('[data-drawer-save="save"]').isVisible(), true);
+      if (section === 'sources') {
+        await page.locator('[data-drawer-path="sources.maxIterations"]').fill('41');
+      } else if (section === 'speed_test') {
+        await page.locator('[data-drawer-path="speed_test.concurrency"]').fill('4');
+      } else if (section === 'availability_targets') {
         await page.locator('[data-availability-action="add"]').click();
         await page.locator('[data-availability-key="name"]').last().fill('custom');
-      }
-      if (section === 'deploy') {
+        await page.locator('[data-availability-key="url"]').last().fill('https://custom.example.test');
+      } else if (section === 'deploy') {
         await page.locator('[data-drawer-path="deploy.project_name"]').fill('web-sub-nodes');
       }
       await page.locator('[data-drawer-save="save"]').click();
-      await page.waitForSelector('#settingsDrawer[data-open="false"]');
+      await page.waitForSelector('#settingsDrawer[hidden]');
+      assert.equal(await opener.evaluate((node) => node === document.activeElement), true);
+
+      await opener.click();
+      if (section === 'sources') {
+        assert.equal(await page.locator('[data-drawer-path="sources.maxIterations"]').inputValue(), '41');
+      } else if (section === 'speed_test') {
+        assert.equal(await page.locator('[data-drawer-path="speed_test.concurrency"]').inputValue(), '4');
+      } else if (section === 'availability_targets') {
+        assert.ok((await page.locator('[data-availability-key="name"]').evaluateAll((nodes) => nodes.map((node) => node.value))).includes('custom'));
+      } else if (section === 'deploy') {
+        assert.equal(await page.locator('[data-drawer-path="deploy.project_name"]').inputValue(), 'web-sub-nodes');
+      }
+      await page.setViewportSize({ width: 844, height: 390 });
+      assert.equal(await page.locator('[data-drawer-save="save"]').isVisible(), true);
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
+      await page.locator('[data-drawer-close="cancel"]').last().click();
+      await page.waitForSelector('#settingsDrawer[hidden]');
+      assert.equal(await opener.evaluate((node) => node === document.activeElement), true);
     }
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    const deployOpener = page.locator('[data-settings-card="deploy"]');
+    await deployOpener.click();
+    await page.locator('[data-drawer-dismiss="backdrop"]').dispatchEvent('click');
+    await page.waitForSelector('#settingsDrawer[hidden]');
+    await deployOpener.click();
+    assert.equal(await page.locator('[data-drawer-save="save"]').isVisible(), true);
+    assert.equal(await page.locator('[data-drawer-close="cancel"]').last().isVisible(), true);
+    await page.locator('[data-drawer-close="cancel"]').last().click();
+    await page.waitForSelector('#settingsDrawer[hidden]');
+    assert.equal(await deployOpener.evaluate((node) => node === document.activeElement), true);
 
     await page.locator('#navRuns').click();
     await page.waitForSelector('#runsWorkspace');
+    await page.locator('.run-secondary-controls').evaluate((node) => { node.open = true; });
     await page.locator('[data-run-retry-stage]').selectOption('deploy');
+    await page.locator('.run-secondary-controls').evaluate((node) => { node.open = true; });
     await page.locator('[data-action="retry-stage"]').click();
     await page.waitForFunction(() => !document.querySelector('#runsWorkspace [data-run-action="start"]')?.disabled);
 
@@ -727,9 +770,20 @@ test('served web ui handles visible browser controls across all pages', async ()
     assert.match(await page.locator('[data-toast]').innerText(), /复制|已复制/);
     await page.getByRole('button', { name: '打开目录' }).click();
 
+    await page.evaluate(() => {
+      let attempts = 0;
+      window.vpnAutomation.generateQr = async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error('mobile QR failure');
+        return { ok: true, dataUrl: 'data:image/mock;base64,mobile-retry' };
+      };
+    });
     await page.locator('#navSubscriptions').click();
     await page.waitForSelector('#subscriptionCards');
     await page.getByRole('button', { name: 'Clash Meta' }).click();
+    await page.waitForSelector('[data-action="retry-qr"]');
+    await page.locator('[data-action="retry-qr"]').click();
+    await page.waitForSelector('.qr-image');
     assert.match(await page.locator('#subscriptionCards [data-copy-text]').first().getAttribute('data-copy-text'), /format=clash-meta/);
     await page.getByRole('button', { name: '复制链接' }).click();
     await page.waitForSelector('[data-toast]');
@@ -743,6 +797,13 @@ test('served web ui handles visible browser controls across all pages', async ()
     await page.getByRole('button', { name: '复制日志' }).click();
     await page.waitForSelector('[data-toast]');
     await page.getByRole('button', { name: '清空显示' }).click();
+    await page.waitForSelector('[data-log-undo-clear]');
+    await page.locator('[data-log-undo-clear]').first().click();
+    for (let index = 0; index < 40; index += 1) subscriber?.({ type: 'log', message: `[mobile] line ${index}` });
+    await page.locator('#logCenterTable').evaluate((node) => { node.scrollTop = 0; node.dispatchEvent(new Event('scroll')); });
+    subscriber?.({ type: 'log', message: '[mobile] followed latest' });
+    await page.waitForSelector('[data-log-jump-latest]');
+    await page.locator('[data-log-jump-latest]').click();
     assert.equal(await page.getByRole('button', { name: '打开日志文件' }).count(), 0);
 
     assert.ok(calls.some(([name]) => name === 'retry'));
@@ -821,16 +882,59 @@ test('served web ui supports mobile bottom navigation and run controls', async (
     assert.ok(navBox);
     assert.ok(navBox.y > 760);
 
+    const navItems = page.locator('#sidebarNav .nav-item');
+    assert.equal(await navItems.count(), 6);
+    for (let index = 0; index < 6; index += 1) {
+      const item = navItems.nth(index);
+      assert.ok(await item.isVisible());
+      const box = await item.boundingBox();
+      assert.ok(box && box.width >= 44 && box.height >= 44);
+    }
+    assert.equal(await page.locator('#navDashboard').getAttribute('aria-current'), 'page');
+    for (const action of await page.locator('#pageActions .btn').all()) {
+      const box = await action.boundingBox();
+      assert.ok(box && box.height >= 48, `mobile primary action height was ${box?.height}`);
+    }
+
     await page.locator('#navRuns').click();
     await page.waitForSelector('#runsWorkspace');
+    assert.equal(await page.locator('#navRuns').getAttribute('aria-current'), 'page');
+    assert.equal(await page.locator('#navDashboard').getAttribute('aria-current'), null);
+    await page.locator('.run-secondary-controls').evaluate((node) => { node.open = true; });
+    for (const control of await page.locator('#runsWorkspace select, #runsWorkspace .retry-stage-button, #runsWorkspace .checkbox-chip').all()) {
+      const box = await control.boundingBox();
+      assert.ok(box && box.width >= 44 && box.height >= 44, `mobile run control was ${JSON.stringify(box)}`);
+    }
     await page.locator('#runsWorkspace [data-run-action="start"]').click();
     await page.waitForFunction(() => document.querySelector('#runsWorkspace [data-run-action="start"]')?.disabled);
     await page.locator('#runsWorkspace [data-run-action="stop"]').click();
 
     await page.locator('#navLogs').click();
     await page.waitForSelector('#logsWorkspace');
+    for (const control of await page.locator('#logsWorkspace .btn.small, #logsWorkspace .subtab').all()) {
+      const box = await control.boundingBox();
+      assert.ok(box && box.width >= 44 && box.height >= 44, `mobile log control was ${JSON.stringify(box)}`);
+    }
     assert.match(await page.locator('#logsWorkspace').innerText(), /extract|leiting/);
     assert.equal(await page.locator('[data-action="open-log-file"]').count(), 0);
+    await page.locator('#navSettings').click();
+    await page.waitForSelector('#settingsWorkspace');
+    const finalControl = page.locator('#settingsWorkspace .settings-overview-card').last();
+    await finalControl.evaluate((element) => element.scrollIntoView({ block: 'center' }));
+    const finalControlBox = await finalControl.boundingBox();
+    const bottomNavBox = await page.locator('.sidebar').boundingBox();
+    assert.ok(finalControlBox && bottomNavBox && finalControlBox.y + finalControlBox.height <= bottomNavBox.y,
+      JSON.stringify({ finalControlBox, bottomNavBox }));
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth));
+    const iconButtonBox = await page.evaluate(() => {
+      const button = document.createElement('button');
+      button.className = 'icon-btn';
+      document.body.append(button);
+      const box = button.getBoundingClientRect();
+      button.remove();
+      return { width: box.width, height: box.height };
+    });
+    assert.ok(iconButtonBox.width >= 44 && iconButtonBox.height >= 44, `mobile icon button was ${JSON.stringify(iconButtonBox)}`);
     assert.ok(calls.some(([name]) => name === 'start'));
     assert.ok(calls.some(([name]) => name === 'stop'));
   } finally {

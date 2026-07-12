@@ -62,16 +62,22 @@ jobs:
           bash scripts/ci/retry-command.sh "npm ci --prefix npm/autovpn-cli" -- \
             npm ci --prefix npm/autovpn-cli --prefer-offline --no-audit --fund=false
 
-      - name: Run Electron headless Node tests
-        run: |
-          node --test --test-concurrency=1 \
-            electron/tests/backend.test.mjs \
-            electron/tests/package-build.test.mjs \
-            electron/tests/process-lifecycle.test.mjs \
-            electron/tests/release-docs-workflow.test.mjs \
-            electron/tests/release-notes.test.mjs \
-            electron/tests/ui-state.test.mjs \
-            electron/tests/window-config.test.mjs
+      - name: Install pinned Playwright Chromium and WebKit runtimes
+        run: npx playwright install --with-deps chromium-headless-shell webkit
+
+      - name: Run H5 mobile Chromium and WebKit gate
+        run: npm run test:h5
+
+      - name: Run Electron native and desktop gate
+        run: npm run test:electron-native
+
+      - name: Upload renderer visual diffs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-renderer-visual-diffs
+          path: electron/tests/visual-artifacts/**
+          if-no-files-found: ignore
 
       - name: Run npm CLI wrapper tests
         run: |

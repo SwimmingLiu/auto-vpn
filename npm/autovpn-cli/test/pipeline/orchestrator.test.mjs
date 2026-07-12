@@ -7,7 +7,7 @@ import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 
-import { resumeNodePipeline, retryNodePipelineStage, runNodePipeline, validateSpeedResumeProbeBatch } from '../../dist/pipeline/orchestrator.js';
+import { refreshSourceCounts, resumeNodePipeline, retryNodePipelineStage, runNodePipeline, validateSpeedResumeProbeBatch } from '../../dist/pipeline/orchestrator.js';
 import { RunStore, readLatestStageStatuses, readRunStatus } from '../../dist/pipeline/run-store.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -35,6 +35,79 @@ function vmessLink(name, address) {
 function vmessName(link) {
   return JSON.parse(Buffer.from(link.replace(/^vmess:\/\//, ''), 'base64url').toString('utf8')).ps;
 }
+
+function geoIpOptions(countryCode = 'AU', seenAddresses = []) {
+  return {
+    resolve: async (address) => {
+      seenAddresses.push(address);
+      return [{ address: '1.1.1.40', family: 4 }];
+    },
+    fetch: async () => ({
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+      json: async () => ({ success: true, country_code: countryCode })
+    })
+  };
+}
+
+test('source count refresh leaves deduped counts unknown until all node ownership is authoritative', () => {
+  const summary = {
+    source_counts: {
+      known: { raw_links: 9, deduped_links: 7 },
+      unknown: { raw_links: 4, deduped_links: 0 }
+    }
+  };
+  refreshSourceCounts(summary, {
+    sourceRawCounts: () => ({ known: 2, unknown: 1 }),
+    sourceDedupedCounts: () => ({ known: 1 }),
+    sourceProgress: () => [],
+    hasCompleteSourceOwnership: () => false
+  });
+  assert.deepEqual(summary.source_counts, {
+    known: { raw_links: 2, deduped_links: 1 },
+    unknown: { raw_links: 1 }
+  });
+});
+
+test('source count refresh removes a stale report zero when sqlite still has an unowned node', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'autovpn-stale-source-zero-'));
+  const dbPath = path.join(root, 'run.db');
+  const link = vmessLink('unowned', 'unowned.example');
+  const db = new DatabaseSync(dbPath);
+  try {
+    db.exec(`
+      CREATE TABLE runs (run_id INTEGER PRIMARY KEY, status TEXT NOT NULL, error TEXT NOT NULL DEFAULT '');
+      CREATE TABLE pipeline_nodes (node_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id INTEGER NOT NULL, canonical_key TEXT NOT NULL, link TEXT NOT NULL, sequence INTEGER NOT NULL, first_source TEXT, UNIQUE(run_id, canonical_key), UNIQUE(run_id, sequence));
+      INSERT INTO runs VALUES (1, 'running', '');
+    `);
+    db.prepare('INSERT INTO pipeline_nodes(run_id, canonical_key, link, sequence, first_source) VALUES (1, ?, ?, 1, NULL)')
+      .run(`legacy:${link}`, link);
+  } finally {
+    db.close();
+  }
+
+  try {
+    const store = RunStore.open(dbPath);
+    const summary = { source_counts: { legacy: { raw_links: 1, deduped_links: 0 } } };
+    refreshSourceCounts(summary, store);
+    assert.deepEqual(summary.source_counts.legacy, { raw_links: 0 });
+    store.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('source count refresh emits real zeroes when all node ownership is authoritative', () => {
+  const summary = { source_counts: { empty: { raw_links: 5 } } };
+  refreshSourceCounts(summary, {
+    sourceRawCounts: () => ({ empty: 0 }),
+    sourceDedupedCounts: () => ({}),
+    sourceProgress: () => [],
+    hasCompleteSourceOwnership: () => true
+  });
+  assert.deepEqual(summary.source_counts.empty, { raw_links: 0, deduped_links: 0 });
+});
 
 test('speed resume bulk probe requires exactly one matching result per requested link', () => {
   const first = vmessLink('first', 'one.example');
@@ -113,6 +186,8 @@ test('runNodePipeline emits compatible events and writes non-deploy artifacts', 
   assert.equal(result.counts.speedtest_links, 2);
   assert.equal(result.counts.availability_links, 2);
   assert.equal(result.counts.final_links, 2);
+  assert.equal(result.source_counts.fixture.raw_links, 3);
+  assert.equal(result.source_counts.fixture.deduped_links, 2);
   assert.deepEqual(events.map((event) => event.type).filter((type) => type === 'summary'), ['summary']);
 
   const artifactDir = result.artifact_dir;
@@ -122,7 +197,9 @@ test('runNodePipeline emits compatible events and writes non-deploy artifacts', 
   assert.equal((await readFile(path.join(artifactDir, 'vpn_node_availability.txt'), 'utf8')).trim().split(/\n/).length, 2);
   const decoratedNames = (await readFile(path.join(artifactDir, 'vpn_node_emoji.txt'), 'utf8')).trim().split(/\n/).map(vmessName);
   assert.deepEqual(decoratedNames, ['\u{1F1FA}\u{1F1F8} US first', '\u{1F1FA}\u{1F1F8} US second']);
-  assert.equal(JSON.parse(await readFile(path.join(artifactDir, 'pipeline_report.json'), 'utf8')).run_status, 'success');
+  const pipelineReport = JSON.parse(await readFile(path.join(artifactDir, 'pipeline_report.json'), 'utf8'));
+  assert.equal(pipelineReport.run_status, 'success');
+  assert.equal(pipelineReport.source_counts.fixture.deduped_links, 2);
   const store = RunStore.open(path.join(artifactDir, 'run.db'));
   try {
     assert.deepEqual(store.counts(), { raw: 3, deduped: 2, probes: 2, speed: 2, availability: 2 });
@@ -131,6 +208,24 @@ test('runNodePipeline emits compatible events and writes non-deploy artifacts', 
   } finally {
     store.close();
   }
+});
+
+test('runNodePipeline uses production GeoIP lookup for the VMess server address', async () => {
+  const projectRoot = await makeProject();
+  const link = vmessLink('first', 'au-node.example');
+  const seen = [];
+  const result = await runNodePipeline({ projectRoot, skipDeploy: true, skipVerify: true }, {
+    env: { VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'), VPN_AUTOMATION_PROFILE_PATH: path.join(projectRoot, 'state', 'profile.toml') },
+    geoIp: geoIpOptions('AU', seen),
+    stages: {
+      extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [link] }),
+      speedtest: async (links) => links.map((item) => ({ link: item, reachable: true, average_download_mb_s: 3, latency_ms: 20, error: '' })),
+      availability: async (results) => results.map((entry) => ({ ...entry, all_passed: true, provider_results: {} })),
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
+    }
+  });
+  assert.deepEqual(seen, ['au-node.example']);
+  assert.equal(vmessName((await readFile(path.join(result.artifact_dir, 'vpn_node_emoji.txt'), 'utf8')).trim()), '🇦🇺 AU first');
 });
 
 test('runNodePipeline closes RunStore exactly once when event handling throws', async () => {
@@ -1082,6 +1177,125 @@ test('runNodePipeline fails extract when configured sources produce no links', a
   assert.equal(events.at(-1).type, 'run_failed');
 });
 
+test('runNodePipeline refreshes failed summary counts after a partial streaming extractor failure', async () => {
+  const projectRoot = await makeProject();
+  const first = vmessLink('partial-first', 'partial-one.example');
+  const duplicate = vmessLink('partial-duplicate', 'partial-one.example');
+  const second = vmessLink('partial-second', 'partial-two.example');
+  const events = [];
+
+  await assert.rejects(() => runNodePipeline({ projectRoot, skipDeploy: true, skipVerify: true, output: 'jsonl' }, {
+    env: { VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'), VPN_AUTOMATION_PROFILE_PATH: path.join(projectRoot, 'state', 'profile.toml') },
+    emit: (event) => events.push(event),
+    stages: {
+      extract: async (_source, stream) => {
+        await stream.onLinks([first, duplicate, second]);
+        throw new Error('stream interrupted');
+      },
+      speedtestProbe: async (links) => links.map((link) => ({ link, reachable: false, latency_ms: 0, error: 'offline' })),
+      speedtestLink: async () => { throw new Error('unreachable'); },
+      availability: async () => []
+    }
+  }), /stream interrupted/);
+
+  const summary = events.at(-2);
+  assert.equal(summary.type, 'summary');
+  assert.deepEqual(summary.counts, { raw_links: 3, deduped_links: 2 });
+  assert.deepEqual(summary.source_counts.fixture, { raw_links: 3, deduped_links: 2 });
+  const report = JSON.parse(await readFile(path.join(events.find((event) => event.type === 'run_started').artifact_dir, 'pipeline_report.json'), 'utf8'));
+  assert.deepEqual(report.counts, summary.counts);
+  assert.deepEqual(report.source_counts, summary.source_counts);
+});
+
+test('runNodePipeline writes real zero source counts before reporting zero-link failure', async () => {
+  const projectRoot = await makeProject();
+  const events = [];
+
+  await assert.rejects(() => runNodePipeline({ projectRoot, skipDeploy: true, skipVerify: true, output: 'jsonl' }, {
+    env: { VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'), VPN_AUTOMATION_PROFILE_PATH: path.join(projectRoot, 'state', 'profile.toml') },
+    emit: (event) => events.push(event),
+    stages: {
+      extract: async ({ source_name }) => ({ source_name, requested_iterations: 1, successful_iterations: 0, failed_iterations: 1, links: [] })
+    }
+  }), /No links extracted/);
+
+  const summary = events.at(-2);
+  assert.equal(summary.type, 'summary');
+  assert.deepEqual(summary.counts, { raw_links: 0, deduped_links: 0 });
+  assert.deepEqual(summary.source_counts.fixture, { raw_links: 0, successful_iterations: 0, failed_iterations: 1, deduped_links: 0 });
+  const report = JSON.parse(await readFile(path.join(events.find((event) => event.type === 'run_started').artifact_dir, 'pipeline_report.json'), 'utf8'));
+  assert.deepEqual(report.counts, summary.counts);
+  assert.deepEqual(report.source_counts, summary.source_counts);
+});
+
+test('runNodePipeline settles sibling extractors before failed counts and store close', async () => {
+  const projectRoot = await makeProject();
+  const profilePath = path.join(projectRoot, 'state', 'profile.toml');
+  await writeFile(profilePath, `
+[sources.fast]
+url = "https://fixture.example/fast"
+key = "abcdabcdabcdabcd"
+enabled = true
+max_iterations = 1
+min_iterations = 0
+plateau_limit = 1
+failure_limit = 1
+max_runtime_seconds = 0
+[sources.slow]
+url = "https://fixture.example/slow"
+key = "abcdabcdabcdabcd"
+enabled = true
+max_iterations = 1
+min_iterations = 0
+plateau_limit = 1
+failure_limit = 1
+max_runtime_seconds = 0
+[speed_test]
+min_download_mb_s = 1
+timeout_seconds = 20
+concurrency = 1
+[deploy]
+project_name = "fixture-project"
+subscription_url = "https://sub.example.invalid/"
+pages_project_url = "https://fixture-project.pages.dev"
+secret_query = "key=fixture"
+min_final_links = 0
+[worker_build]
+entry_filename = "_worker.js"
+bundle_subdir = "pages_bundle"
+manifest_filename = "manifest.json"
+emit_sidecar_modules = false
+`, 'utf8');
+  const slowLink = vmessLink('slow-final', 'slow.example');
+  const events = [];
+
+  await assert.rejects(() => runNodePipeline({ projectRoot, skipDeploy: true, skipVerify: true, output: 'jsonl' }, {
+    env: { VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'), VPN_AUTOMATION_PROFILE_PATH: profilePath },
+    emit: (event) => events.push(event),
+    stages: {
+      extract: async ({ source_name }, stream) => {
+        if (source_name === 'fast') throw new Error('fast failed');
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        await stream.onLinks([slowLink]);
+        return { source_name, requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [slowLink] };
+      },
+      speedtestProbe: async (links) => links.map((link) => ({ link, reachable: false, latency_ms: 0, error: 'offline' })),
+      speedtestLink: async () => { throw new Error('unreachable'); },
+      availability: async () => []
+    }
+  }), /fast failed/);
+
+  const summary = events.at(-2);
+  assert.equal(summary.type, 'summary');
+  assert.equal(summary.counts.raw_links, 1);
+  assert.equal(summary.counts.deduped_links, 1);
+  assert.deepEqual(summary.source_counts.fast, { raw_links: 0, deduped_links: 0 });
+  assert.deepEqual(summary.source_counts.slow, { raw_links: 1, successful_iterations: 1, failed_iterations: 0, deduped_links: 1 });
+  const report = JSON.parse(await readFile(path.join(events.find((event) => event.type === 'run_started').artifact_dir, 'pipeline_report.json'), 'utf8'));
+  assert.deepEqual(report.counts, summary.counts);
+  assert.deepEqual(report.source_counts, summary.source_counts);
+});
+
 test('runNodePipeline extracts enabled sources concurrently while preserving profile order', async () => {
   const projectRoot = await makeProject();
   const profilePath = path.join(projectRoot, 'state', 'profile.toml');
@@ -1563,21 +1777,19 @@ test('retryNodePipelineStage postprocesses only availability winners', async () 
   }, {
     env,
     now: () => new Date('2026-06-29T01:02:04Z'),
+    geoIp: geoIpOptions('AU', postprocessInputs),
     stages: {
       availability: async (results) => results.map((speedResult, index) => ({ ...speedResult, all_passed: index === 0, provider_results: {} })),
-      countryLookup: (link) => {
-        postprocessInputs.push(link);
-        return 'US';
-      },
       obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } }),
       deploy: async () => ({ returncode: 0, stdout: '', stderr: '', attempts: [] }),
       verify: async () => ({ pages_domain_ok: true, secret_ok: true, subscription_ok: true })
     }
   });
 
-  assert.deepEqual(postprocessInputs, [firstLink]);
+  assert.deepEqual(postprocessInputs, ['one.example']);
   assert.equal(retry.counts.availability_links, 1);
   assert.equal(retry.counts.final_links, 1);
+  assert.equal(vmessName((await readFile(path.join(retry.artifact_dir, 'vpn_node_emoji.txt'), 'utf8')).trim()), '🇦🇺 AU first');
 });
 
 test('retryNodePipelineStage rejects and emits run_failed when retry stage has no winners', async () => {
@@ -1727,12 +1939,12 @@ test('resumeNodePipeline continues pipeline sessions in the original artifact', 
   }, {
     env,
     emit: (event) => events.push(event),
+    geoIp: geoIpOptions('AU'),
     stages: {
       availability: async (results) => {
         assert.deepEqual(results.map((result) => vmessName(result.link)), ['second', 'first']);
         return results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} }));
       },
-      countryLookup: () => 'US',
       obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } }),
       deploy: async ({ bundleDir }) => ({ returncode: 0, stdout: `deployed ${bundleDir}`, stderr: '', attempts: [{ mode: 'direct', returncode: 0 }] }),
       verify: async () => ({ pages_domain_ok: true, secret_ok: true, subscription_ok: true })
@@ -1740,6 +1952,7 @@ test('resumeNodePipeline continues pipeline sessions in the original artifact', 
   });
 
   assert.equal(resumed.artifact_dir, source.artifact_dir);
+  assert.ok((await readFile(path.join(resumed.artifact_dir, 'vpn_node_emoji.txt'), 'utf8')).trim().split(/\n/).every((link) => vmessName(link).includes('AU')));
   assert.equal(resumed.run_status, 'success');
   assert.equal(resumed.stage_status.availability, 'success');
   assert.equal(resumed.stage_status.deploy, 'success');
@@ -1748,7 +1961,7 @@ test('resumeNodePipeline continues pipeline sessions in the original artifact', 
   assert.equal(events[0].speedtest_links, 2);
   assert.equal(events.at(-1).type, 'summary');
   assert.equal(JSON.parse(await readFile(path.join(source.artifact_dir, 'pipeline_report.json'), 'utf8')).run_status, 'success');
-  assert.deepEqual((await readFile(path.join(source.artifact_dir, 'vpn_node_emoji.txt'), 'utf8')).trim().split(/\n/).map(vmessName), ['\u{1F1FA}\u{1F1F8} US first', '\u{1F1FA}\u{1F1F8} US second']);
+  assert.deepEqual((await readFile(path.join(source.artifact_dir, 'vpn_node_emoji.txt'), 'utf8')).trim().split(/\n/).map(vmessName), ['\u{1F1E6}\u{1F1FA} AU first', '\u{1F1E6}\u{1F1FA} AU second']);
   assert.equal((await readFile(eventLog, 'utf8')).trim().split(/\n/).at(-1), JSON.stringify(events.at(-1)));
   assert.match(await readFile(humanLog, 'utf8'), /\[summary\] run_status=success/);
 });
@@ -2369,6 +2582,8 @@ test('resumeNodePipeline resets interrupted sqlite nodes and schedules only inco
   assert.equal(resumed.run_status, 'success');
   assert.equal(resumed.counts.raw_links, 3);
   assert.equal(resumed.counts.deduped_links, 3);
+  assert.deepEqual(resumed.source_counts.source, { raw_links: 2, deduped_links: 2 });
+  assert.equal(resumed.source_counts.fixture.deduped_links, 1);
   assert.deepEqual(extractCalls, ['fixture']);
   assert.deepEqual(speedCalls.sort(), [interrupted, extractedAfterResume].sort());
   assert.deepEqual(availabilityCalls.sort(), [interrupted, passed, extractedAfterResume].sort());
@@ -2390,6 +2605,9 @@ test('resumeNodePipeline resets interrupted sqlite nodes and schedules only inco
   assert.deepEqual(sourceStore.incompleteSourceProgress(), []);
   assert.deepEqual(sourceStore.sourceProgress().find((row) => row.source === 'fixture'), { source: 'fixture', processed: 1, total: 1, status: 'success', error: '' });
   sourceStore.close();
+  const resumedReport = JSON.parse(await readFile(path.join(artifactDir, 'pipeline_report.json'), 'utf8'));
+  assert.equal(resumedReport.source_counts.source.deduped_links, 2);
+  assert.equal(resumedReport.source_counts.fixture.deduped_links, 1);
   const dbStages = readLatestStageStatuses(path.join(artifactDir, 'run.db'));
   assert.equal(Object.values(dbStages).includes('stopped'), false);
   assert.equal(dbStages.speedtest, resumed.stage_status.speedtest);

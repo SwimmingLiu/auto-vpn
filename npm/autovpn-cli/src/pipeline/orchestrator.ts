@@ -27,6 +27,7 @@ import { deployPagesWithBackend, isVerifySuccess, verifyDeploymentWithBackend } 
 import { safeDeployment } from '../runtime/redaction.js';
 import { RunStore, readLatestStageStatuses } from './run-store.js';
 import { AsyncPermitPool, BoundedWorkerPool } from './streaming-coordinator.js';
+import { createGeoIpLookup, GeoIpLookupOptions } from './geoip.js';
 
 type StageName = 'doctor' | 'extract' | 'dedupe' | 'speedtest' | 'availability' | 'postprocess' | 'render' | 'obfuscate' | 'deploy' | 'verify';
 type StageStatus = 'pending' | 'running' | 'success' | 'failed' | 'skipped';
@@ -77,7 +78,7 @@ export interface NodePipelineStageOverrides {
   speedtestProbe?: (links: string[], config: Record<string, unknown>, runtimePath: string) => ProbeResult[] | Promise<ProbeResult[]>;
   speedtestLink?: (link: string, config: Record<string, unknown>, runtimePath: string) => SpeedTestResult | Promise<SpeedTestResult>;
   availability?: (results: SpeedTestResult[], config: Record<string, unknown>, runtimePath: string, targets: unknown) => AvailabilityResultDict[] | Promise<AvailabilityResultDict[]>;
-  countryLookup?: (link: string, speedResult: SpeedTestResult, availabilityResult: AvailabilityResultDict) => string;
+  countryLookup?: (link: string, speedResult: SpeedTestResult, availabilityResult: AvailabilityResultDict) => string | Promise<string>;
   obfuscate?: (input: { transformedSource: string; config: Record<string, unknown>; secretQuery: string }) => WorkerBuildArtifacts | Promise<WorkerBuildArtifacts>;
   deploy?: (input: { projectRoot: string; bundleDir: string; profile: PipelineProfile }) => Record<string, unknown> | Promise<Record<string, unknown>>;
   verify?: (input: { projectRoot: string; profile: PipelineProfile; deployment: Record<string, unknown> }) => Record<string, unknown> | Promise<Record<string, unknown>>;
@@ -88,6 +89,7 @@ export interface RunNodePipelineContext {
   now?: () => Date;
   emit?: (event: AutoVpnEvent) => void;
   stages?: NodePipelineStageOverrides;
+  geoIp?: GeoIpLookupOptions;
 }
 
 interface PipelineProfile {
@@ -260,8 +262,16 @@ function defaultRuntimeStageEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return { ...env };
 }
 
-function defaultCountryFor(_link: string, _speedResult: SpeedTestResult, _availabilityResult: AvailabilityResultDict): string {
-  return 'US';
+function createCountryLookup(context: RunNodePipelineContext): NodePipelineStageOverrides['countryLookup'] {
+  if (context.stages?.countryLookup) return context.stages.countryLookup;
+  const lookup = createGeoIpLookup(context.geoIp);
+  return async (link) => {
+    try {
+      return lookup(String(parseVmessLink(link).add ?? ''));
+    } catch {
+      return 'US';
+    }
+  };
 }
 
 function normalizeRetryStage(stage: string): StageName {
@@ -337,6 +347,27 @@ function pipelineSummaryFromReport(artifactDir: string, report: Record<string, u
       : 'running',
     error: String(report.error ?? '')
   };
+}
+
+export function refreshSourceCounts(summary: PipelineSummary, store: Pick<RunStore,
+  'sourceRawCounts' | 'sourceDedupedCounts' | 'sourceProgress' | 'hasCompleteSourceOwnership'>): void {
+  const rawCounts = store.sourceRawCounts();
+  const dedupedCounts = store.sourceDedupedCounts();
+  const completeOwnership = store.hasCompleteSourceOwnership();
+  const progressSources = store.sourceProgress().map((progress) => progress.source);
+  for (const source of new Set([...Object.keys(summary.source_counts), ...progressSources, ...Object.keys(rawCounts), ...Object.keys(dedupedCounts)])) {
+    const previous = { ...(summary.source_counts[source] ?? {}) };
+    if (!completeOwnership && !Object.hasOwn(dedupedCounts, source)) delete previous.deduped_links;
+    summary.source_counts[source] = {
+      ...previous,
+      raw_links: rawCounts[source] ?? 0,
+      ...(Object.hasOwn(dedupedCounts, source)
+        ? { deduped_links: dedupedCounts[source] }
+        : completeOwnership
+          ? { deduped_links: 0 }
+          : {})
+    };
+  }
 }
 
 function passedSpeedResults(allResults: SpeedTestResult[], passedLinks: string[]): SpeedTestResult[] {
@@ -639,7 +670,7 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
       emit('speedtest_runtime', { runtime_core: requestedRuntime === 'direct' ? 'direct' : 'mihomo', probe_url: speedConfig.probe_url, urls: [...speedConfig.urls] });
       emit('log', { message: `[speedtest] runtime_core=${requestedRuntime === 'direct' ? 'direct' : 'mihomo'} probe_url=${speedConfig.probe_url}` });
     }
-    const extractResults: ExtractedSourceResult[] = await Promise.all(sourcesToRun.map(async ([sourceName, source]) => {
+    const extractSettled = await Promise.allSettled(sourcesToRun.map(async ([sourceName, source]) => {
       runStore.recordSourceProgress(sourceName, { processed: 0, total: 0, status: 'running' });
       const streamedLinks = new Set<string>();
       const stream = useStreamingStages
@@ -684,6 +715,9 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
       });
       return result;
     }));
+    const failedExtraction = extractSettled.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+    if (failedExtraction) throw failedExtraction.reason;
+    const extractResults = extractSettled.map((result) => (result as PromiseFulfilledResult<ExtractedSourceResult>).value);
     if (!useStreamingStages) {
       rawLinks = extractResults.flatMap((result) => result.links);
       for (const result of extractResults) {
@@ -709,6 +743,7 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
     if (!dedupeStageStart) await setStage('dedupe', 'skipped', false);
     dedupedLinks = runStore.dedupedLinks();
     summary.counts.deduped_links = runStore.counts().deduped;
+    refreshSourceCounts(summary, runStore);
     await writeLines(artifactDir, 'vpn_node_deduped.txt', dedupedLinks);
     if (summary.stage_status.dedupe !== 'skipped') await setStage('dedupe', 'success', !useStreamingStages);
 
@@ -801,12 +836,12 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
     if (summary.stage_status.availability !== 'skipped') await setStage('availability', 'success', !useStreamingStages);
 
     await setStage('postprocess', 'running');
-    const countryLookup = context.stages?.countryLookup ?? defaultCountryFor;
+    const countryLookup = createCountryLookup(context);
     const availabilityByLink = new Map(availabilityResults.map((result) => [result.link, result]));
-    const rankedLinks = availableLinks.map((link) => ({
+    const rankedLinks = await Promise.all(availableLinks.map(async (link) => ({
       link,
-      country_code: countryLookup(link, speedResultByLink.get(link) as SpeedTestResult, availabilityByLink.get(link) as AvailabilityResultDict)
-    }));
+      country_code: await countryLookup!(link, speedResultByLink.get(link) as SpeedTestResult, availabilityByLink.get(link) as AvailabilityResultDict)
+    })));
     const postprocessed = context.stages?.countryLookup
       ? { links: rankedLinks.map((item) => decorateLinkWithCountry(item.link, item.country_code)) }
       : await postprocessLinksWithBackend({ ranked_links: rankedLinks, filters: profile.filters as any }, { cwd: projectRoot, env });
@@ -866,6 +901,10 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
     activeSpeedPool?.abort(error);
     activeAvailabilityPool?.abort(error);
     await Promise.allSettled([activeSpeedPool?.drain(), activeAvailabilityPool?.drain()].filter((task): task is Promise<void> => Boolean(task)));
+    const failedCounts = runStore.counts();
+    summary.counts.raw_links = failedCounts.raw;
+    summary.counts.deduped_links = failedCounts.deduped;
+    refreshSourceCounts(summary, runStore);
     summary.run_status = 'failed';
     summary.error = errorMessage(error);
     runStore.setRunStatus('failed', summary.error);
@@ -916,6 +955,7 @@ export async function retryNodePipelineStage(options: NodeRetryStageOptions, con
     String(profile.worker_build?.bundle_subdir ?? 'pages_bundle')
   );
   const retryStore = RunStore.seedRetry(sourceArtifactDir, retryArtifactDir, stage);
+  refreshSourceCounts(summary, retryStore);
   try {
 
   const emit = (type: string, payload: Record<string, unknown> = {}) => {
@@ -1030,11 +1070,11 @@ export async function retryNodePipelineStage(options: NodeRetryStageOptions, con
       }
       await setStage('postprocess', 'running');
       const speedResultByLink = new Map(speedResults.map((result) => [result.link, result]));
-      const countryLookup = context.stages?.countryLookup ?? defaultCountryFor;
-      const rankedLinks = availabilityResults.map((availabilityResult) => ({
+      const countryLookup = createCountryLookup(context);
+      const rankedLinks = await Promise.all(availabilityResults.map(async (availabilityResult) => ({
         link: availabilityResult.link,
-        country_code: countryLookup(availabilityResult.link, speedResultByLink.get(availabilityResult.link) ?? availabilityResult, availabilityResult)
-      }));
+        country_code: await countryLookup!(availabilityResult.link, speedResultByLink.get(availabilityResult.link) ?? availabilityResult, availabilityResult)
+      })));
       const postprocessed = context.stages?.countryLookup
         ? { links: rankedLinks.map((item) => decorateLinkWithCountry(item.link, item.country_code)) }
         : await postprocessLinksWithBackend({ ranked_links: rankedLinks, filters: profile.filters as any }, { cwd: projectRoot, env });
@@ -1168,6 +1208,7 @@ async function resumeNodeSpeedtest(options: NodeResumeOptions, context: RunNodeP
   try {
   runStore.reopenForResume();
   runStore.resetInterruptedRunning();
+  refreshSourceCounts(summary, runStore);
 
   const emit = (type: string, payload: Record<string, unknown> = {}) => {
     const event = { type, ...payload } as AutoVpnEvent;
@@ -1376,6 +1417,7 @@ export async function resumeNodePipeline(options: NodeResumeOptions, context: Ru
   const storeCounts = runStore.counts();
   summary.counts.raw_links = storeCounts.raw;
   summary.counts.deduped_links = storeCounts.deduped;
+  refreshSourceCounts(summary, runStore);
   summary.counts.speedtest_links = speedResults.length;
 
   try {
@@ -1480,6 +1522,7 @@ export async function resumeNodePipeline(options: NodeResumeOptions, context: Ru
     }
     summary.counts.raw_links = runStore.counts().raw;
     summary.counts.deduped_links = runStore.counts().deduped;
+    refreshSourceCounts(summary, runStore);
     await writeLines(artifactDir, 'vpn_node_raw.txt', runStore.rawLinks());
     await writeLines(artifactDir, 'vpn_node_deduped.txt', runStore.dedupedLinks());
     const storedPassedSpeedResults = runStore.speedResults().filter((result) => result.status === 'speed_passed');
@@ -1523,11 +1566,11 @@ export async function resumeNodePipeline(options: NodeResumeOptions, context: Ru
     await setStage('postprocess', 'running');
     const speedResultByLink = new Map(speedResults.map((result) => [result.link, result]));
     const availabilityByLink = new Map(availabilityResults.map((result) => [result.link, result]));
-    const countryLookup = context.stages?.countryLookup ?? defaultCountryFor;
-    const rankedLinks = availableLinks.map((link) => ({
+    const countryLookup = createCountryLookup(context);
+    const rankedLinks = await Promise.all(availableLinks.map(async (link) => ({
       link,
-      country_code: countryLookup(link, speedResultByLink.get(link) as SpeedTestResult, availabilityByLink.get(link) as AvailabilityResultDict)
-    }));
+      country_code: await countryLookup!(link, speedResultByLink.get(link) as SpeedTestResult, availabilityByLink.get(link) as AvailabilityResultDict)
+    })));
     const postprocessed = context.stages?.countryLookup
       ? { links: rankedLinks.map((item) => decorateLinkWithCountry(item.link, item.country_code)) }
       : await postprocessLinksWithBackend({ ranked_links: rankedLinks, filters: profile.filters as any }, { cwd: projectRoot, env });

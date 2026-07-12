@@ -116,8 +116,13 @@ export function buildViewModel(state, messages, language) {
   const subscriptionUrl = profile.deploy.subscription_url || FALLBACK_PROFILE.deploy.subscription_url;
   const subscriptionCards = buildSubscriptionCards(subscriptionUrl);
   const currentSubscription = subscriptionCards.find((card) => card.title === state.subscriptionFormat) ?? subscriptionCards[0];
-  const displayLogs = (state.logEntries ?? []).map((entry) => classifyLogEntry(entry));
+  const displayLogs = (state.logEntries ?? []).map((entry, index) => ({
+    logId: entry?.logId ?? `history-${index}`,
+    ...classifyLogEntry(entry)
+  }));
   const logFilter = state.logFilter ?? '全部';
+  const filteredLogs = filterLogEntries(displayLogs, logFilter);
+  const logWindow = selectLogWindow(filteredLogs, state.logView);
   const stageRows = normalizeStageRows(state.stageStatus, state.runState);
   const currentStage = stageRows.find((row) => row.status === 'running') ?? stageRows.find((row) => row.status === 'success') ?? stageRows[0];
   const artifactDir = state.artifactDir ?? '';
@@ -140,11 +145,12 @@ export function buildViewModel(state, messages, language) {
     counts,
     subscriptionUrl,
     subscriptionFormat: state.subscriptionFormat ?? 'Clash',
-    qrDataUrl: state.qrDataUrl ?? '',
+    qr: state.qr ?? { status: state.qrDataUrl ? 'success' : 'idle', dataUrl: state.qrDataUrl ?? '', message: '' },
     displayLogs,
     logFilter,
-    logRows: buildLogRows(filterLogEntries(displayLogs, logFilter)),
-    logGroups: groupLogEntriesByStage(filterLogEntries(displayLogs, logFilter)),
+    logView: state.logView ?? { follow: true, unseenCount: 0, clearedSnapshot: null },
+    logRows: buildLogRows(logWindow, false),
+    logGroups: groupLogEntriesByStage(logWindow, false),
     stageRows,
     currentStage,
     artifactDir,
@@ -194,6 +200,7 @@ export function buildSidebarNav(messages, activePage) {
       class="nav-item ${activePage === page ? 'active' : ''}"
       data-page-target="${page}"
       type="button"
+      ${activePage === page ? 'aria-current="page"' : ''}
     >
       <span class="nav-icon">${NAV_ICONS[page]}</span>
       <span class="nav-copy">${escapeHtml(messages.nav[page])}</span>
@@ -252,7 +259,7 @@ export function buildSidebarStatus(viewModel, messages, state, language) {
 
 export function buildPageMarkup(activePage, viewModel, messages, language, subtabs = {}) {
   return `
-    <section class="page-shell" data-page-shell="${activePage}">
+    <section ${activePage === 'runs' ? 'id="runsWorkspace"' : ''} class="page-shell" data-page-shell="${activePage}">
       ${buildPageInner(activePage, viewModel, messages, language, subtabs)}
     </section>
   `;
@@ -358,11 +365,15 @@ function buildRunsPage(vm, messages) {
   const stageDisabled = vm.runControlState.isBusy || !vm.retryStageOptions.length ? 'disabled' : '';
   const retryDisabled = vm.runControlState.isBusy || !vm.selectedRetryArtifactDir || !vm.selectedRetryStage ? 'disabled' : '';
   return `
-    <div id="runsWorkspace" class="page-grid runs-grid">
-      <article class="panel wide-panel run-control-panel">
+    <div class="mobile-run-bar" data-mobile-run-bar>
         <button class="btn btn-primary run-big" data-run-action="start" type="button" ${runDisabled}>▶ 开始运行</button>
         <button class="btn btn-secondary run-big" data-run-action="stop" type="button" ${vm.runControlState.stopDisabled ? 'disabled' : ''}>■ 停止运行</button>
-        <div class="retry-control-card">
+    </div>
+    <div class="page-grid runs-grid">
+      <article class="panel wide-panel run-control-panel">
+        <details class="run-secondary-controls">
+          <summary>重试历史、阶段与运行选项</summary>
+          <div class="retry-control-card">
           <div class="field compact retry-field retry-artifact-field">
             <span>历史 run</span>
             <select data-run-retry-artifact ${artifactDisabled}>
@@ -405,8 +416,8 @@ function buildRunsPage(vm, messages) {
               : '<div class="empty-state">暂无可重试 run</div>'}
           </div>
           <p class="retry-help">阶段重试会新建 artifact，并从所选阶段继续执行到 verify。</p>
-        </div>
-        <div class="run-options">
+          </div>
+          <div class="run-options">
           ${[
             ['跳过部署', 'skipDeploy', false],
             ['跳过验证', 'skipVerify', false],
@@ -414,7 +425,8 @@ function buildRunsPage(vm, messages) {
           ].map(([label, key, checked]) => `
             <label class="checkbox-chip"><input data-run-option="${escapeHtml(key)}" type="checkbox" ${checked ? 'checked' : ''} />${escapeHtml(label)}</label>
           `).join('')}
-        </div>
+          </div>
+        </details>
       </article>
 
       ${buildRunsStageProgressMarkup(vm)}
@@ -518,11 +530,11 @@ function buildResultsPage(vm, messages) {
             <tbody>
               ${vm.nodeRows.length ? vm.nodeRows.map((row, index) => `
                 <tr>
-                  <td>${index + 1}</td>
-                  <td>${escapeHtml(row.name || '—')}</td>
-                  <td>${escapeHtml(row.address || '—')}</td>
-                  <td>${escapeHtml(row.protocol || '—')}</td>
-                  <td class="mono">${escapeHtml(row.path || '—')}</td>
+                  <td><span class="node-card-field">序号</span><span>${index + 1}</span></td>
+                  <td><span class="node-card-field">节点名称</span><span>${escapeHtml(row.name || '—')}</span></td>
+                  <td><span class="node-card-field">IP地址</span><span>${escapeHtml(row.address || '—')}</span></td>
+                  <td><span class="node-card-field">协议</span><span>${escapeHtml(row.protocol || '—')}</span></td>
+                  <td class="mono"><span class="node-card-field">path</span><span>${escapeHtml(row.path || '—')}</span></td>
                 </tr>
               `).join('') : '<tr><td colspan="5">暂无节点，运行完成后显示。</td></tr>'}
             </tbody>
@@ -545,6 +557,7 @@ function buildSubscriptionsPage(vm, messages) {
               <button
                 class="subtab ${vm.subscriptionFormat === format ? 'active' : ''}"
                 data-subscription-format="${escapeHtml(format)}"
+                aria-pressed="${vm.subscriptionFormat === format}"
                 type="button"
               >${escapeHtml(format)}</button>
             `).join('')}
@@ -559,7 +572,7 @@ function buildSubscriptionsPage(vm, messages) {
 
       <article class="panel slim-panel">
         <div class="panel-headline"><h3>订阅二维码</h3></div>
-        <div class="qr-block">${renderQr(vm.qrDataUrl)}</div>
+        <div class="qr-block">${renderQr(vm.qr)}</div>
         <p class="panel-subcopy center-copy">扫码导入订阅</p>
       </article>
 
@@ -581,17 +594,24 @@ function buildLogsPage(vm, messages) {
               <button
                 class="subtab ${vm.logFilter === filter ? 'active' : ''}"
                 data-log-filter="${escapeHtml(filter)}"
+                aria-pressed="${vm.logFilter === filter ? 'true' : 'false'}"
                 type="button"
               >${escapeHtml(filter)}</button>
             `).join('')}
           </div>
           <div class="toolbar-right">
-            <button class="btn btn-secondary small" data-action="copy-log" type="button">复制日志</button>
-            <button class="btn btn-secondary small" data-action="clear-log" type="button">清空显示</button>
-            ${vm.runtime === 'web' ? '' : '<button class="btn btn-primary small" data-action="open-log-file" type="button">打开日志文件</button>'}
+            <div class="log-utility-actions">
+              <button class="btn btn-secondary small" data-action="copy-log" type="button">复制日志</button>
+              ${vm.runtime === 'web' ? '' : '<button class="btn btn-primary small" data-action="open-log-file" type="button">打开日志文件</button>'}
+            </div>
+            <div class="log-destructive-actions">
+              <button class="btn btn-secondary small" data-action="clear-log" type="button">清空显示</button>
+            </div>
           </div>
         </div>
-        <div id="logCenterTable" class="terminal-output log-stream">
+        ${!vm.logView.follow && vm.logView.unseenCount > 0 ? `<button class="btn btn-primary small log-jump-latest" data-log-jump-latest type="button">回到底部 · ${vm.logView.unseenCount} 条新消息</button>` : ''}
+        ${vm.logView.clearedSnapshot ? '<button class="btn btn-secondary small log-undo-clear" data-log-undo-clear type="button">撤销清空</button>' : ''}
+        <div id="logCenterTable" class="terminal-output log-stream" role="log" aria-live="polite">
           ${buildLogCenterMarkup(vm)}
         </div>
       </article>
@@ -672,15 +692,20 @@ function buildSettingsDrawer(vm) {
 
   const style = vm.modalTransform ? `style="transform: ${escapeHtml(vm.modalTransform)};"` : '';
 
+  if (!isOpen) {
+    return '<div id="settingsDrawer" class="settings-drawer-shell" data-open="false" data-section="" hidden inert></div>';
+  }
+
   return `
     <div id="settingsDrawer" class="settings-drawer-shell" data-open="${isOpen ? 'true' : 'false'}" data-section="${escapeHtml(section)}">
       <button class="settings-drawer-backdrop" data-drawer-dismiss="backdrop" type="button" aria-label="关闭设置弹窗"></button>
-      <aside class="settings-drawer-panel" ${style}>
+      <aside data-settings-dialog role="dialog" aria-modal="true" aria-labelledby="settingsDrawerTitle" class="settings-drawer-panel" ${style}>
         <div class="settings-drawer-head">
           <div>
             <span class="settings-card-kicker">编辑配置</span>
             <h3 id="settingsDrawerTitle">${escapeHtml(title)}</h3>
           </div>
+          <button class="icon-btn settings-drawer-close" data-drawer-close="cancel" type="button" aria-label="关闭${escapeHtml(title)}">×</button>
         </div>
         <div class="settings-drawer-body">
           ${isOpen ? buildSettingsDrawerBody(section, drawer.draft) : ''}
@@ -725,18 +750,19 @@ function buildSettingsDrawerBody(section, draft) {
           <thead><tr><th>启用</th><th>名称</th><th>地址</th><th>密钥</th></tr></thead>
           <tbody>
             ${Object.entries(sourceDraft).map(([name, source]) => `
-              <tr>
-                <td><input type="checkbox" data-drawer-source="${escapeHtml(name)}" data-drawer-key="enabled" ${source.enabled ? 'checked' : ''} /></td>
-                <td><strong class="settings-source-name">${escapeHtml(SOURCE_NAMES[name] || name)}</strong></td>
-                <td>
+              <tr data-settings-field-group>
+                <td data-field-label="启用"><input aria-label="${escapeHtml(SOURCE_NAMES[name] || name)}：启用" type="checkbox" data-drawer-source="${escapeHtml(name)}" data-drawer-key="enabled" ${source.enabled ? 'checked' : ''} /></td>
+                <td data-field-label="名称"><strong class="settings-source-name">${escapeHtml(SOURCE_NAMES[name] || name)}</strong></td>
+                <td data-field-label="地址">
                   <textarea
                     class="table-textarea mono"
                     rows="3"
+                    aria-label="${escapeHtml(SOURCE_NAMES[name] || name)}：地址"
                     data-drawer-source="${escapeHtml(name)}"
                     data-drawer-key="url"
                   >${escapeHtml(source.url ?? '')}</textarea>
                 </td>
-                <td><input data-drawer-source="${escapeHtml(name)}" data-drawer-key="key" value="${escapeHtml(source.key ?? '')}" /></td>
+                <td data-field-label="密钥"><input aria-label="${escapeHtml(SOURCE_NAMES[name] || name)}：密钥" data-drawer-source="${escapeHtml(name)}" data-drawer-key="key" value="${escapeHtml(source.key ?? '')}" /></td>
               </tr>
             `).join('')}
           </tbody>
@@ -771,13 +797,13 @@ function buildSettingsDrawerBody(section, draft) {
           <thead><tr><th>启用</th><th>名称</th><th>URL</th><th>操作</th></tr></thead>
           <tbody>
             ${(draft?.targets ?? []).map((target, index) => `
-              <tr>
-                <td><input type="checkbox" data-availability-index="${index}" data-availability-key="enabled" ${target.enabled ? 'checked' : ''} /></td>
-                <td><input data-availability-index="${index}" data-availability-key="name" value="${escapeHtml(target.name ?? '')}" /></td>
-                <td>
-                  <textarea class="table-textarea mono" rows="3" data-availability-index="${index}" data-availability-key="url">${escapeHtml(target.url ?? '')}</textarea>
+              <tr data-settings-field-group>
+                <td data-field-label="启用"><input aria-label="${escapeHtml(formatAvailabilityName(target.name))}：启用" type="checkbox" data-availability-index="${index}" data-availability-key="enabled" ${target.enabled ? 'checked' : ''} /></td>
+                <td data-field-label="名称"><input aria-label="${escapeHtml(formatAvailabilityName(target.name))}：名称" data-availability-index="${index}" data-availability-key="name" value="${escapeHtml(target.name ?? '')}" /></td>
+                <td data-field-label="URL">
+                  <textarea aria-label="${escapeHtml(formatAvailabilityName(target.name))}：URL" class="table-textarea mono" rows="3" data-availability-index="${index}" data-availability-key="url">${escapeHtml(target.url ?? '')}</textarea>
                 </td>
-                <td><button class="btn btn-secondary small" data-availability-action="remove" data-availability-index="${index}" type="button">删除</button></td>
+                <td data-field-label="操作"><button class="btn btn-secondary small destructive" data-availability-action="remove" data-availability-index="${index}" type="button">删除</button></td>
               </tr>
             `).join('')}
           </tbody>
@@ -812,6 +838,11 @@ function buildSettingsDrawerBody(section, draft) {
   `;
 }
 
+function formatAvailabilityName(name) {
+  const labels = { gemini: 'Gemini', chatgpt: 'ChatGPT', claude: 'Claude' };
+  return labels[String(name ?? '').toLowerCase()] ?? String(name || '网站');
+}
+
 function renderDrawerField(label, type, value, path, isCompact = false, extraAttrs = '') {
   return `
     <label class="field ${isCompact ? 'compact' : ''}">
@@ -825,11 +856,17 @@ function renderBadge(text, tone) {
   return `<span class="badge ${tone}">${escapeHtml(text)}</span>`;
 }
 
-function renderQr(dataUrl) {
-  if (!dataUrl) {
-    return '<div class="qr-loading">二维码生成中</div>';
+function renderQr(qr) {
+  if (qr.status === 'success' && qr.dataUrl) {
+    return `<img class="qr-image" alt="订阅二维码" src="${escapeHtml(qr.dataUrl)}" />`;
   }
-  return `<img class="qr-image" alt="订阅二维码" src="${escapeHtml(dataUrl)}" />`;
+  if (qr.status === 'loading' || qr.status === 'idle') {
+    return '<div class="qr-loading" role="status">二维码生成中</div>';
+  }
+  if (qr.status === 'unavailable') {
+    return '<div class="qr-status"><strong>当前环境不支持二维码生成</strong><span>请使用上方“复制链接”导入订阅。</span></div>';
+  }
+  return `<div class="qr-status" role="alert"><strong>${escapeHtml(qr.message || '二维码生成失败')}</strong><button class="btn btn-secondary small" data-action="retry-qr" type="button">重试生成</button></div>`;
 }
 
 function buildShortcutDescriptors(messages) {
@@ -899,11 +936,6 @@ function buildSourceMetricRows(profile, sourceCounts = {}, countKey = 'raw_links
     ...Object.keys(profile.sources ?? {}),
     ...Object.keys(sourceCounts ?? {})
   ]);
-  const hasRequestedValues = countKey === 'raw_links'
-    || Object.values(sourceCounts ?? {}).some((counts) => counts && countKey in counts);
-  if (!hasRequestedValues) {
-    return [];
-  }
   return Array.from(sourceNames)
     .sort((left, right) => {
       const leftIndex = SOURCE_DISPLAY_ORDER.indexOf(left);
@@ -913,7 +945,9 @@ function buildSourceMetricRows(profile, sourceCounts = {}, countKey = 'raw_links
     .map((name) => ({
       name,
       label: SOURCE_NAMES[name] || name,
-      count: Number(sourceCounts[name]?.[countKey] ?? 0)
+      count: countKey !== 'raw_links' && !Object.hasOwn(sourceCounts[name] ?? {}, countKey)
+        ? '—'
+        : Number(sourceCounts[name]?.[countKey] ?? 0)
     }));
 }
 
@@ -938,7 +972,9 @@ export function extractSourceUrlFromCurl(value = '') {
 export function buildRegionStats(nodeRows = []) {
   const counts = new Map();
   for (const row of nodeRows) {
-    const region = inferNodeRegion(row?.name);
+    const previewRegion = String(row?.regionCode ?? '').trim().toUpperCase();
+    const inferredRegion = previewRegion || inferNodeRegion(row?.name);
+    const region = inferredRegion === 'ZZ' || inferredRegion === 'OTHER' || inferredRegion === '其他' ? 'US' : inferredRegion;
     counts.set(region, (counts.get(region) ?? 0) + 1);
   }
   return Array.from(counts.entries()).map(([region, count]) => ({ region, count }));
@@ -1029,7 +1065,7 @@ export function applySourceIterationDraft(sources = {}, draft = {}) {
 function inferNodeRegion(name = '') {
   const normalized = String(name).replace(/^[^\p{L}\p{N}]+/u, '').trim();
   const match = normalized.match(/^([A-Z]{2})(?:\b|[\s_-])/);
-  return match ? match[1] : '其他';
+  return match ? match[1] : 'US';
 }
 
 function coercePositiveInteger(value, fallback) {
@@ -1048,18 +1084,27 @@ function coerceAreaValue(value, fallback) {
   return Math.trunc(parsed);
 }
 
-function buildLogRows(displayLogs) {
-  return displayLogs.slice(-28).map((entry) => ({
+function buildLogRows(displayLogs, trimWindow = true) {
+  return (trimWindow ? displayLogs.slice(-28) : displayLogs).map((entry) => ({
     ...entry,
     levelClass: entry.level === 'error' ? 'danger' : entry.level === 'warning' ? 'warning' : 'success'
   }));
+}
+
+function selectLogWindow(entries, logView) {
+  if (logView?.follow !== false) return entries.slice(-28);
+  const anchorIndex = entries.findIndex((entry) => entry.logId === logView.anchorId);
+  const start = anchorIndex >= 0
+    ? Math.max(0, Math.min(anchorIndex - 8, Math.max(0, entries.length - 120)))
+    : Math.max(0, entries.length - 120);
+  return entries.slice(start, start + 120);
 }
 
 function renderLogRows(rows) {
   if (!rows.length) {
     return '<div class="empty-state log-empty-state">暂无可显示日志</div>';
   }
-  return rows.map((row) => `<div class="log-line ${row.levelClass}">${escapeHtml(row.line)}</div>`).join('');
+  return rows.map((row) => `<div class="log-line ${row.levelClass}" data-log-id="${escapeHtml(row.logId)}">${escapeHtml(row.line)}</div>`).join('');
 }
 
 function renderLogGroups(groups) {
@@ -1069,7 +1114,7 @@ function renderLogGroups(groups) {
   return groups.map((group) => `
     <section class="log-group">
       <div class="log-group-title">${escapeHtml(group.label)}</div>
-      ${group.rows.map((row) => `<div class="log-line ${row.levelClass}">${escapeHtml(row.line)}</div>`).join('')}
+      ${group.rows.map((row) => `<div class="log-line ${row.levelClass}" data-log-id="${escapeHtml(row.logId)}">${escapeHtml(row.line)}</div>`).join('')}
     </section>
   `).join('');
 }
@@ -1103,9 +1148,9 @@ export function filterLogEntries(entries, filter = '全部') {
   return entries;
 }
 
-export function groupLogEntriesByStage(entries) {
+export function groupLogEntriesByStage(entries, trimWindow = true) {
   const groups = new Map();
-  for (const row of buildLogRows(entries)) {
+  for (const row of buildLogRows(entries, trimWindow)) {
     const label = row.stage || '其他';
     if (!groups.has(label)) {
       groups.set(label, { label, rows: [] });

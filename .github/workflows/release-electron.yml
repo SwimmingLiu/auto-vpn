@@ -106,34 +106,22 @@ jobs:
       - name: Build npm CLI web server
         run: npm run build --prefix npm/autovpn-cli
 
-      - name: Run Electron tests
-        run: |
-          node --input-type=module <<'NODE'
-          import fs from 'node:fs';
-          import path from 'node:path';
-          import { spawnSync } from 'node:child_process';
+      - name: Install pinned Playwright Chromium and WebKit runtimes
+        run: npx playwright install --with-deps chromium-headless-shell webkit
 
-          const excluded = new Set([
-            'app-launch.test.mjs',
-            'renderer-e2e.test.mjs',
-            'renderer-visual.test.mjs',
-            'web-server-e2e.test.mjs',
-            'web-server-visual.test.mjs'
-          ]);
-          const testFiles = fs.readdirSync('electron/tests')
-            .filter((file) => file.endsWith('.test.mjs') && !excluded.has(file))
-            .sort()
-            .map((file) => path.join('electron/tests', file));
-          const result = spawnSync(process.execPath, ['--test', '--test-timeout=600000', ...testFiles], {
-            stdio: 'inherit',
-            timeout: 600000
-          });
-          if (result.error?.code === 'ETIMEDOUT') {
-            console.error('Electron tests timed out after 600 seconds.');
-            process.exit(124);
-          }
-          process.exit(result.status ?? 1);
-          NODE
+      - name: Run H5 mobile Chromium and WebKit gate
+        run: npm run test:h5
+
+      - name: Run Electron native and desktop gate
+        run: npm run test:electron-native
+
+      - name: Upload renderer visual diffs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-renderer-visual-diffs
+          path: electron/tests/visual-artifacts/**
+          if-no-files-found: ignore
 
       - name: Run npm CLI wrapper tests
         run: |

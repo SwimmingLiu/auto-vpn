@@ -7,6 +7,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { RunStore, readLatestStageStatuses, readRunStatus } from '../../dist/pipeline/run-store.js';
+import { canonicalVmessKey, parseVmessLink } from '../../dist/pipeline/dedupe.js';
 
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require('node:sqlite');
@@ -79,6 +80,77 @@ test('preserves raw observations while deduping canonical vmess endpoints in dis
     assert.deepEqual(ctx.store.sourceProgress(), [{ source: 'source-a', processed: 4, total: 4, status: 'success', error: '' }]);
   } finally {
     await ctx.cleanup();
+  }
+});
+
+test('persists first-seen canonical ownership and reports authoritative per-source counts after reopen', async () => {
+  const ctx = await fixture();
+  try {
+    ctx.store.initializeRun();
+    const sharedA = vmessLink('shared-a', 'shared.example');
+    const sharedB = vmessLink('shared-b', 'shared.example');
+    const uniqueA = vmessLink('unique-a', 'a.example');
+    const uniqueB = vmessLink('unique-b', 'b.example');
+
+    ctx.store.recordExtractedNode('A', sharedA);
+    ctx.store.recordExtractedNode('A', uniqueA);
+    ctx.store.recordExtractedNode('B', sharedB);
+    ctx.store.recordExtractedNode('B', uniqueB);
+
+    assert.deepEqual(ctx.store.sourceDedupedCounts(), { A: 2, B: 1 });
+    assert.equal(ctx.store.hasCompleteSourceOwnership(), true);
+    assert.equal(Object.values(ctx.store.sourceDedupedCounts()).reduce((sum, count) => sum + count, 0), ctx.store.counts().deduped);
+
+    ctx.store.close();
+    ctx.store = RunStore.open(ctx.dbPath);
+    assert.deepEqual(ctx.store.sourceDedupedCounts(), { A: 2, B: 1 });
+  } finally {
+    await ctx.cleanup();
+  }
+});
+
+test('reports incomplete ownership when a partially migrated database cannot map every node', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'autovpn-partial-ownership-'));
+  const dbPath = path.join(root, 'run.db');
+  const known = vmessLink('known', 'known.example');
+  const unknown = vmessLink('unknown', 'unknown.example');
+  const db = new DatabaseSync(dbPath);
+  try {
+    db.exec(`
+      CREATE TABLE runs (run_id INTEGER PRIMARY KEY, status TEXT NOT NULL, error TEXT NOT NULL DEFAULT '');
+      CREATE TABLE stage_events (run_id INTEGER, stage_name TEXT NOT NULL, status TEXT NOT NULL, error TEXT NOT NULL DEFAULT '');
+      CREATE TABLE raw_observations (observation_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id INTEGER NOT NULL, source TEXT NOT NULL, link TEXT NOT NULL);
+      CREATE TABLE pipeline_nodes (node_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id INTEGER NOT NULL, canonical_key TEXT NOT NULL, link TEXT NOT NULL, sequence INTEGER NOT NULL, UNIQUE(run_id, canonical_key), UNIQUE(run_id, sequence));
+      INSERT INTO runs VALUES (1, 'running', '');
+    `);
+    db.prepare('INSERT INTO raw_observations(run_id, source, link) VALUES (1, ?, ?)').run('known-source', known);
+    const insertNode = db.prepare('INSERT INTO pipeline_nodes(run_id, canonical_key, link, sequence) VALUES (1, ?, ?, ?)');
+    insertNode.run(canonicalVmessKey(parseVmessLink(known)), known, 1);
+    insertNode.run(canonicalVmessKey(parseVmessLink(unknown)), unknown, 2);
+  } finally {
+    db.close();
+  }
+
+  try {
+    const store = RunStore.open(dbPath);
+    assert.deepEqual(store.sourceDedupedCounts(), { 'known-source': 1 });
+    assert.equal(store.hasCompleteSourceOwnership(), false);
+    store.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('reports unknown ownership for a pure legacy deduped artifact without raw provenance', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'autovpn-legacy-ownership-'));
+  try {
+    await writeFile(path.join(root, 'vpn_node_deduped.txt'), `${vmessLink('legacy-only', 'legacy.example')}\n`);
+    const store = RunStore.openOrImport(root);
+    assert.deepEqual(store.sourceDedupedCounts(), {});
+    assert.equal(store.hasCompleteSourceOwnership(), false);
+    store.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });
 
@@ -318,11 +390,47 @@ test('openOrImport migrates historical minimal schema and imports raw-only artif
     assert.deepEqual(store.dedupedLinks(), [link]);
     store.close();
     const migrated = new DatabaseSync(dbPath);
-    assert.equal(migrated.prepare('PRAGMA user_version').get().user_version, 2);
+    assert.equal(migrated.prepare('PRAGMA user_version').get().user_version, 3);
     assert.ok(migrated.prepare('PRAGMA table_info(runs)').all().some((row) => row.name === 'error'));
     assert.ok(migrated.prepare('PRAGMA table_info(stage_events)').all().some((row) => row.name === 'run_id'));
+    assert.ok(migrated.prepare('PRAGMA table_info(pipeline_nodes)').all().some((row) => row.name === 'first_source'));
+    assert.equal(migrated.prepare('SELECT first_source FROM pipeline_nodes').get().first_source, 'legacy');
     migrated.close();
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('v3 migration backfills a large ownership fixture from earliest observations', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'autovpn-v3-backfill-'));
+  const dbPath = path.join(root, 'run.db');
+  const db = new DatabaseSync(dbPath);
+  try {
+    db.exec(`
+      CREATE TABLE runs (run_id INTEGER PRIMARY KEY, status TEXT NOT NULL, error TEXT NOT NULL DEFAULT '');
+      CREATE TABLE stage_events (run_id INTEGER, stage_name TEXT NOT NULL, status TEXT NOT NULL, error TEXT NOT NULL DEFAULT '');
+      CREATE TABLE raw_observations (observation_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id INTEGER NOT NULL, source TEXT NOT NULL, link TEXT NOT NULL);
+      CREATE TABLE pipeline_nodes (node_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id INTEGER NOT NULL, canonical_key TEXT NOT NULL, link TEXT NOT NULL, sequence INTEGER NOT NULL, UNIQUE(run_id, canonical_key), UNIQUE(run_id, sequence));
+      INSERT INTO runs VALUES (1, 'running', '');
+    `);
+    const rawInsert = db.prepare('INSERT INTO raw_observations(run_id, source, link) VALUES (1, ?, ?)');
+    const nodeInsert = db.prepare('INSERT INTO pipeline_nodes(run_id, canonical_key, link, sequence) VALUES (1, ?, ?, ?)');
+    for (let index = 0; index < 200; index += 1) {
+      const first = vmessLink(`first-${index}`, `node-${index}.example`);
+      const duplicate = vmessLink(`duplicate-${index}`, `node-${index}.example`);
+      rawInsert.run(index % 2 === 0 ? 'A' : 'B', first);
+      rawInsert.run('later', duplicate);
+      nodeInsert.run(canonicalVmessKey(parseVmessLink(first)), first, index + 1);
+    }
+  } finally {
+    db.close();
+  }
+
+  try {
+    const store = RunStore.open(dbPath);
+    assert.deepEqual(store.sourceDedupedCounts(), { A: 100, B: 100 });
+    store.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test('reopenForResume explicitly reopens failed run and failed stages', async () => {

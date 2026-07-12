@@ -1,5 +1,5 @@
 import { getMessages, formatMessage } from './i18n.js';
-import { resolveRunControlState } from './state.js';
+import { createLogViewState, createQrState, resolveRunControlState } from './state.js';
 import {
   addAvailabilityTargetDraft,
   applyAvailabilityTargetDraft,
@@ -115,6 +115,7 @@ const state = {
   runState: 'idle',
   runResult: 'idle',
   logEntries: [],
+  logView: createLogViewState(),
   extractDedupedFingerprints: new Set(),
   artifactDir: '',
   retryArtifacts: [],
@@ -125,11 +126,15 @@ const state = {
   outputFiles: [],
   nodeRows: [],
   toast: null,
-  qrDataUrl: '',
+  qr: createQrState(),
   runStartedAt: null,
   lastUpdateAt: null,
   modalTransform: ''
 };
+
+let settingsDrawerOpener = null;
+let runDetailsMobileBreakpoint = null;
+let nextLogSequence = 0;
 
 const elements = {
   sidebarTitle: document.querySelector('#sidebarTitle'),
@@ -144,6 +149,7 @@ const elements = {
 };
 
 let toastTimer = null;
+let qrRequestId = 0;
 
 async function bootstrap() {
   state.language = 'zh-CN';
@@ -216,6 +222,9 @@ function bindActions() {
   document.addEventListener('click', handleDocumentClick);
   document.addEventListener('input', handleDocumentInput);
   document.addEventListener('change', handleDocumentInput);
+  document.addEventListener('keydown', handleSettingsDrawerKeydown);
+  document.addEventListener('scroll', handleLogScroll, true);
+  window.addEventListener('resize', syncRunDetailsPresentation);
   
   document.addEventListener('mousedown', (e) => {
     const header = e.target.closest('.settings-drawer-head');
@@ -268,18 +277,30 @@ function renderAll() {
     state.language,
     state.subtabs
   );
+  syncRunDetailsPresentation();
+  updateChromeState(messages);
   renderToast();
 }
 
+function syncRunDetailsPresentation() {
+  const details = document.querySelector('details.run-secondary-controls');
+  if (!details) return;
+  const mobile = window.matchMedia('(max-width: 720px)').matches;
+  const isNewDetails = details.dataset.breakpointInitialized !== 'true';
+  if (isNewDetails || mobile !== runDetailsMobileBreakpoint) {
+    details.open = !mobile;
+    details.dataset.breakpointInitialized = 'true';
+  }
+  runDetailsMobileBreakpoint = mobile;
+}
+
 function renderChrome(messages, viewModel) {
-  const controlState = resolveRunControlState(state.runState);
   elements.sidebarTitle.textContent = messages.sidebarTitle;
   elements.sidebarVersion.textContent = messages.sidebarVersion;
   elements.pageTitle.textContent = messages.pageTitles[state.activePage];
   elements.pageSubtitle.textContent = messages.pageSubtitles[state.activePage];
-  elements.runStateBadge.textContent = messages.runStateLabels[state.runState] ?? messages.runStateLabels.idle;
-  elements.runStateBadge.className = `badge ${runTone()}`;
   elements.sidebarNav.innerHTML = buildSidebarNav(messages, state.activePage);
+  const controlState = resolveRunControlState(state.runState);
   elements.pageActions.innerHTML = buildTopbarActions(state.activePage, viewModel, messages, {
     runDisabled: controlState.runDisabled,
     stopDisabled: controlState.stopDisabled,
@@ -287,6 +308,25 @@ function renderChrome(messages, viewModel) {
     stopLabel: messages.stopButton,
     saveLabel: messages.saveButton
   });
+  updateChromeState(messages);
+}
+
+function updateChromeState(messages = getMessages(state.language)) {
+  const controlState = resolveRunControlState(state.runState);
+  elements.runStateBadge.textContent = messages.runStateLabels[state.runState] ?? messages.runStateLabels.idle;
+  elements.runStateBadge.className = `badge ${runTone()}`;
+  for (const button of document.querySelectorAll('[data-run-action="start"]')) {
+    button.disabled = controlState.runDisabled;
+    button.setAttribute('aria-busy', String(controlState.isBusy));
+    button.textContent = resolveRunButtonLabel(messages);
+  }
+  for (const button of document.querySelectorAll('[data-run-action="stop"]')) {
+    button.disabled = controlState.stopDisabled;
+    button.setAttribute('aria-busy', String(state.runState === 'stopping'));
+  }
+  for (const button of document.querySelectorAll('[data-action="retry-stage"]')) {
+    button.disabled = controlState.isBusy || !state.selectedRetryArtifactDir || !state.selectedRetryStage;
+  }
 }
 
 function resolveRunButtonLabel(messages) {
@@ -316,6 +356,26 @@ function runTone() {
 }
 
 async function handleDocumentClick(event) {
+  const jumpLatest = event.target.closest('[data-log-jump-latest]');
+  if (jumpLatest) {
+    state.logView.follow = true;
+    state.logView.unseenCount = 0;
+    renderAll();
+    scrollLogToLatest();
+    return;
+  }
+
+  const undoClear = event.target.closest('[data-log-undo-clear]');
+  if (undoClear && state.logView.clearedSnapshot) {
+    state.logEntries = state.logView.clearedSnapshot;
+    state.logView.clearedSnapshot = null;
+    state.logView.follow = true;
+    state.logView.unseenCount = 0;
+    state.toast = null;
+    renderAll();
+    scrollLogToLatest();
+    return;
+  }
   const navButton = event.target.closest('[data-page-target]');
   if (navButton) {
     state.activePage = navButton.dataset.pageTarget;
@@ -347,7 +407,7 @@ async function handleDocumentClick(event) {
 
   const copyButton = event.target.closest('[data-copy-text]');
   if (copyButton) {
-    copyText(copyButton.dataset.copyText);
+    copyText(copyButton.dataset.copyText, { control: copyButton, successLog: '已复制订阅链接' });
     return;
   }
 
@@ -389,8 +449,13 @@ async function handleDocumentClick(event) {
       successToast: formatMessage(messages.copiedNodesToastMessage, { count: nodeLinks.length }),
       successLog: formatMessage(messages.copiedNodesLogMessage, { count: nodeLinks.length }),
       failureToast: formatMessage(messages.copyFailedToastMessage, { error: '{error}' }),
-      failureLog: formatMessage(messages.copyFailedLogMessage, { error: '{error}' })
+      failureLog: formatMessage(messages.copyFailedLogMessage, { error: '{error}' }),
+      control: action
     });
+    return;
+  }
+  if (action?.dataset.action === 'retry-qr') {
+    refreshQrCode();
     return;
   }
   if (action?.dataset.action === 'retry-stage') {
@@ -402,8 +467,12 @@ async function handleDocumentClick(event) {
     return;
   }
   if (action?.dataset.action === 'clear-log') {
+    state.logView.clearedSnapshot = [...state.logEntries];
     state.logEntries = [];
+    state.logView.follow = true;
+    state.logView.unseenCount = 0;
     renderAll();
+    showToast({ tone: 'neutral', message: '日志已清空', durationMs: 5000, action: 'undo-clear' });
     return;
   }
   if (action?.dataset.action === 'open-log-file') {
@@ -413,7 +482,7 @@ async function handleDocumentClick(event) {
 
   const settingsCard = event.target.closest('[data-settings-card]');
   if (settingsCard) {
-    openSettingsDrawer(settingsCard.dataset.settingsCard);
+    openSettingsDrawer(settingsCard.dataset.settingsCard, settingsCard);
     return;
   }
 
@@ -424,16 +493,12 @@ async function handleDocumentClick(event) {
   }
 
   if (event.target.closest('[data-drawer-dismiss="backdrop"]')) {
-    state.settingsDrawer = null;
-    state.modalTransform = '';
-    renderAll();
+    closeSettingsDrawer({ restoreFocus: true });
     return;
   }
 
   if (event.target.closest('[data-drawer-close="cancel"]')) {
-    state.settingsDrawer = null;
-    state.modalTransform = '';
-    renderAll();
+    closeSettingsDrawer({ restoreFocus: true });
     return;
   }
 
@@ -661,16 +726,20 @@ async function writeClipboardText(text) {
   throw new Error('clipboard_unavailable');
 }
 
-function showToast({ tone = 'neutral', message, durationMs = 2400 }) {
+function showToast({ tone = 'neutral', message, durationMs = 2400, action = null }) {
   if (!message) {
     return;
   }
-  state.toast = { tone, message };
+  state.toast = { tone, message, action };
   renderToast();
   if (toastTimer) {
     clearTimeout(toastTimer);
   }
   toastTimer = window.setTimeout(() => {
+    if (state.toast?.action === 'undo-clear') {
+      state.logView.clearedSnapshot = null;
+      renderActiveRuntimeSections(buildViewModel(state, getMessages(state.language), state.language));
+    }
     state.toast = null;
     renderToast();
     toastTimer = null;
@@ -688,6 +757,7 @@ function renderToast() {
   elements.toastRoot.innerHTML = `
     <div class="toast ${escapeHtml(state.toast.tone || 'neutral')}" data-toast data-toast-tone="${escapeHtml(state.toast.tone || 'neutral')}">
       ${escapeHtml(state.toast.message)}
+      ${state.toast.action === 'undo-clear' ? '<button class="btn small" data-log-undo-clear type="button">撤销</button>' : ''}
     </div>
   `;
 }
@@ -700,19 +770,27 @@ async function copyText(value, options = {}) {
     return;
   }
 
+  const control = options.control;
+  if (control?.getAttribute('aria-busy') === 'true') return;
+  if (control) {
+    control.disabled = true;
+    control.setAttribute('aria-busy', 'true');
+  }
   try {
     await writeClipboardText(text);
     showToast({ tone: 'success', message: options.successToast ?? messages.copiedToastMessage });
-    appendLog(options.successLog ?? formatMessage(messages.copiedMessage, { value: text }));
+    appendLog(options.successLog ?? '已复制内容');
   } catch (error) {
-    const detail = resolveErrorMessage(error);
     showToast({
       tone: 'danger',
-      message: (options.failureToast ?? formatMessage(messages.copyFailedToastMessage, { error: detail })).replace('{error}', detail)
+      message: options.safeFailureToast ?? '复制失败，请重试'
     });
-    appendLog(
-      (options.failureLog ?? formatMessage(messages.copyFailedLogMessage, { error: detail })).replace('{error}', detail)
-    );
+    appendLog(options.safeFailureLog ?? '复制操作失败');
+  } finally {
+    if (control?.isConnected) {
+      control.disabled = false;
+      control.setAttribute('aria-busy', 'false');
+    }
   }
 }
 
@@ -758,19 +836,27 @@ async function openCurrentLogFile() {
 }
 
 async function refreshQrCode() {
+  const requestId = ++qrRequestId;
   const subscriptionUrl = resolveActiveSubscriptionUrl();
   if (!subscriptionUrl || !window.vpnAutomation?.generateQr) {
-    state.qrDataUrl = '';
+    state.qr = createQrState('unavailable', '', '当前环境不支持二维码生成');
+    renderAll();
     return;
   }
 
+  state.qr = createQrState('loading');
+  renderAll();
   try {
     const result = await window.vpnAutomation.generateQr(subscriptionUrl);
-    state.qrDataUrl = result?.dataUrl ?? '';
-    renderAll();
-  } catch {
-    state.qrDataUrl = '';
+    if (requestId !== qrRequestId || subscriptionUrl !== resolveActiveSubscriptionUrl()) return;
+    state.qr = result?.dataUrl
+      ? createQrState('success', result.dataUrl)
+      : createQrState('unavailable', '', '二维码服务未返回图片');
+  } catch (error) {
+    if (requestId !== qrRequestId || subscriptionUrl !== resolveActiveSubscriptionUrl()) return;
+    state.qr = createQrState('error', '', resolveErrorMessage(error));
   }
+  renderAll();
 }
 
 function resolveActiveSubscriptionUrl() {
@@ -786,7 +872,7 @@ function resolveActiveSubscriptionUrl() {
   return `${baseUrl}?format=${encodeURIComponent(format.toLowerCase().replaceAll(' ', '-'))}`;
 }
 
-function openSettingsDrawer(section) {
+function openSettingsDrawer(section, opener = document.activeElement) {
   if (!state.profile) {
     return;
   }
@@ -797,8 +883,52 @@ function openSettingsDrawer(section) {
   }
 
   state.modalTransform = '';
+  settingsDrawerOpener = opener?.matches?.('[data-settings-card]')
+    ? `[data-settings-card="${CSS.escape(opener.dataset.settingsCard)}"]`
+    : opener?.id
+      ? `#${CSS.escape(opener.id)}`
+      : null;
   state.settingsDrawer = { section, draft };
   renderAll();
+  queueMicrotask(() => {
+    const dialog = document.querySelector('[data-settings-dialog]');
+    const focusTarget = dialog?.querySelector('input:not([disabled]), textarea:not([disabled]), select:not([disabled]), button:not([disabled])');
+    focusTarget?.focus();
+  });
+}
+
+function closeSettingsDrawer({ restoreFocus = true } = {}) {
+  const openerSelector = settingsDrawerOpener;
+  state.settingsDrawer = null;
+  state.modalTransform = '';
+  settingsDrawerOpener = null;
+  renderAll();
+  if (restoreFocus && openerSelector) {
+    queueMicrotask(() => document.querySelector(openerSelector)?.focus());
+  }
+}
+
+function handleSettingsDrawerKeydown(event) {
+  const dialog = document.querySelector('[data-settings-dialog]');
+  if (!dialog) return;
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    closeSettingsDrawer({ restoreFocus: true });
+    return;
+  }
+  if (event.key !== 'Tab') return;
+  const focusable = [...dialog.querySelectorAll('button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])')]
+    .filter((element) => !element.hidden && element.getClientRects().length > 0);
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable.at(-1);
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
 }
 
 function buildSettingsDraft(section) {
@@ -833,8 +963,6 @@ async function saveSettingsDrawer() {
   if (section !== 'about') {
     state.profile[section] = resolveSettingsDraftPayload(section, draft);
   }
-  state.settingsDrawer = null;
-  state.modalTransform = '';
   touchUpdate();
   if (section === 'deploy') {
     await refreshQrCode();
@@ -851,9 +979,10 @@ async function saveSettingsDrawer() {
         `[settings] deploy saved project=${state.profile.deploy.project_name} url=${state.profile.deploy.pages_project_url}`
       );
     }
+    closeSettingsDrawer({ restoreFocus: true });
     return;
   }
-  renderAll();
+  closeSettingsDrawer({ restoreFocus: true });
 }
 
 async function saveProfile({ silent = false } = {}) {
@@ -957,7 +1086,7 @@ async function runPipeline() {
   state.selectedRetryStage = '';
   state.runStartedAt = Date.now();
   touchUpdate();
-  renderAll();
+  renderRuntimeOnly();
   appendLog(messages.pipelineStarted);
 
   if (runOptions.saveBeforeRun) {
@@ -968,7 +1097,7 @@ async function runPipeline() {
     state.runState = 'idle';
     state.runResult = 'demo';
     touchUpdate();
-    renderAll();
+    renderRuntimeOnly();
     appendLog(formatMessage(messages.pipelineFinished, { code: 'demo' }));
     return;
   }
@@ -983,7 +1112,7 @@ async function runPipeline() {
     state.runResult = 'failed';
     state.runStartedAt = null;
     touchUpdate();
-    renderAll();
+    renderRuntimeOnly();
     appendLog(formatMessage(messages.pipelineFailed, { error: error.message }));
   }
 }
@@ -1006,7 +1135,7 @@ async function retryStage() {
   state.nodeRows = [];
   state.runStartedAt = Date.now();
   touchUpdate();
-  renderAll();
+  renderRuntimeOnly();
   appendLog(`[retry] artifact=${state.selectedRetryArtifactDir} stage=${state.selectedRetryStage}`);
 
   const runOptions = collectRunOptions();
@@ -1019,7 +1148,7 @@ async function retryStage() {
     state.runResult = 'failed';
     state.runStartedAt = null;
     touchUpdate();
-    renderAll();
+    renderRuntimeOnly();
     appendLog(formatMessage(messages.pipelineFailed, { error: 'retry bridge unavailable' }));
     return;
   }
@@ -1038,7 +1167,7 @@ async function retryStage() {
     state.runResult = 'failed';
     state.runStartedAt = null;
     touchUpdate();
-    renderAll();
+    renderRuntimeOnly();
     appendLog(formatMessage(messages.pipelineFailed, { error: error.message }));
   }
 }
@@ -1085,7 +1214,7 @@ async function stopPipeline() {
 
   state.runState = 'stopping';
   touchUpdate();
-  renderAll();
+  renderRuntimeOnly();
   appendLog(messages.pipelineStopping);
 
   try {
@@ -1101,7 +1230,7 @@ async function stopPipeline() {
         state.runState = 'idle';
         state.runStartedAt = null;
         touchUpdate();
-        renderAll();
+        renderRuntimeOnly();
         appendLog(messages.stopUnavailable);
       }
       return;
@@ -1122,7 +1251,7 @@ function finishRun(result = {}) {
     state.runState = 'idle';
     state.runResult = 'stopped';
     touchUpdate();
-    renderAll();
+    renderRuntimeOnly();
     appendLog(messages.pipelineStopped);
     void hydrateRetryArtifacts();
     return;
@@ -1132,7 +1261,7 @@ function finishRun(result = {}) {
     state.runState = 'success';
     state.runResult = 'success';
     touchUpdate();
-    renderAll();
+    renderRuntimeOnly();
     appendLog(formatMessage(messages.pipelineFinished, { code: result.code ?? 0 }));
     void hydrateRetryArtifacts();
     return;
@@ -1141,7 +1270,7 @@ function finishRun(result = {}) {
   state.runState = 'failed';
   state.runResult = 'failed';
   touchUpdate();
-  renderAll();
+  renderRuntimeOnly();
   if (result.error) {
     appendLog(formatMessage(messages.pipelineFailed, { error: result.error }));
   } else {
@@ -1165,7 +1294,7 @@ function handlePipelineEvent(event, options = {}) {
         state.runResult = 'success';
       }
       touchUpdate();
-      renderAll();
+      renderRuntimeOnly();
     }
     return;
   }
@@ -1381,7 +1510,9 @@ function normalizeSourceCounts(sourceCounts = {}) {
       {
         ...counts,
         raw_links: Number(counts?.raw_links ?? 0),
-        deduped_links: Number(counts?.deduped_links ?? 0)
+        ...(counts && Object.hasOwn(counts, 'deduped_links')
+          ? { deduped_links: Number(counts.deduped_links) }
+          : {})
       }
     ])
   );
@@ -1530,7 +1661,23 @@ function resolveDefaultRetryStage(artifact) {
 }
 
 function appendLog(message, overrides = {}) {
-  state.logEntries.push(classifyLogEntry(message, overrides));
+  const logCenter = document.querySelector('#logCenterTable');
+  if (logCenter) {
+    state.logView.follow = logCenter.scrollHeight - logCenter.scrollTop - logCenter.clientHeight <= 32;
+    if (!state.logView.follow) {
+      const streamTop = logCenter.getBoundingClientRect().top;
+      state.logView.anchorId = [...logCenter.querySelectorAll('.log-line')]
+        .find((line) => line.getBoundingClientRect().bottom >= streamTop)
+        ?.dataset.logId ?? state.logView.anchorId;
+    }
+  }
+  if (!state.logView.follow) {
+    state.logView.unseenCount += 1;
+  }
+  state.logEntries.push({
+    ...classifyLogEntry(message, overrides),
+    logId: `live-${++nextLogSequence}`
+  });
   touchUpdate();
   renderRuntimeOnly({ chrome: false });
 }
@@ -1539,7 +1686,7 @@ function renderRuntimeOnly({ chrome = true } = {}) {
   const messages = getMessages(state.language);
   const viewModel = buildViewModel(state, messages, state.language);
   if (chrome) {
-    renderChrome(messages, viewModel);
+    updateChromeState(messages);
   }
   renderActiveRuntimeSections(viewModel);
   renderToast();
@@ -1548,7 +1695,29 @@ function renderRuntimeOnly({ chrome = true } = {}) {
 function renderActiveRuntimeSections(viewModel) {
   const logCenter = document.querySelector('#logCenterTable');
   if (logCenter) {
+    const previousScrollTop = logCenter.scrollTop;
+    const streamTop = logCenter.getBoundingClientRect().top;
+    const anchor = [...logCenter.querySelectorAll('.log-line')]
+      .find((line) => line.getBoundingClientRect().bottom >= streamTop);
+    const anchorId = anchor?.dataset.logId;
+    const anchorViewportTop = anchor?.getBoundingClientRect().top;
     logCenter.innerHTML = buildLogCenterMarkup(viewModel);
+    const workspace = logCenter.closest('#logsWorkspace');
+    workspace?.querySelectorAll('[data-log-jump-latest], [data-log-undo-clear]').forEach((node) => node.remove());
+    if (!state.logView.follow && state.logView.unseenCount > 0) {
+      logCenter.insertAdjacentHTML('beforebegin', `<button class="btn btn-primary small log-jump-latest" data-log-jump-latest type="button">回到底部 · ${state.logView.unseenCount} 条新消息</button>`);
+    }
+    if (state.logView.clearedSnapshot) {
+      logCenter.insertAdjacentHTML('beforebegin', '<button class="btn btn-secondary small log-undo-clear" data-log-undo-clear type="button">撤销清空</button>');
+    }
+    if (state.logView.follow) {
+      logCenter.scrollTop = logCenter.scrollHeight;
+    } else if (anchorId) {
+      const restoredAnchor = logCenter.querySelector(`[data-log-id="${CSS.escape(anchorId)}"]`);
+      logCenter.scrollTop += (restoredAnchor?.getBoundingClientRect().top ?? anchorViewportTop) - anchorViewportTop;
+    } else {
+      logCenter.scrollTop = previousScrollTop;
+    }
   }
 
   const stageProgress = document.querySelector('#runsStageProgress');
@@ -1565,6 +1734,21 @@ function renderActiveRuntimeSections(viewModel) {
   if (dashboardMetrics) {
     dashboardMetrics.outerHTML = buildDashboardMetricsMarkup(viewModel);
   }
+}
+
+function handleLogScroll(event) {
+  if (event.target?.id !== 'logCenterTable') return;
+  const distance = event.target.scrollHeight - event.target.scrollTop - event.target.clientHeight;
+  state.logView.follow = distance <= 32;
+  if (state.logView.follow) {
+    state.logView.unseenCount = 0;
+    event.target.closest('#logsWorkspace')?.querySelectorAll('[data-log-jump-latest]').forEach((node) => node.remove());
+  }
+}
+
+function scrollLogToLatest() {
+  const logCenter = document.querySelector('#logCenterTable');
+  if (logCenter) logCenter.scrollTop = logCenter.scrollHeight;
 }
 
 function resolveVisibleLogEntries() {

@@ -10,14 +10,18 @@ const __dirname = path.dirname(__filename);
 const projectRoot = path.join(__dirname, '..', '..');
 const launchArgs = [projectRoot, '--ozone-platform=headless', '--disable-gpu', '--no-sandbox'];
 
+async function waitForRendererBootstrap(page) {
+  await page.waitForFunction(() => document.querySelector('#pageContent')?.childElementCount > 0);
+}
+
 test('electron app exposes preload bridge and renders the real saved profile', async () => {
   const app = await electron.launch({ args: launchArgs });
 
   try {
     const page = await app.firstWindow();
-    await page.waitForSelector('#pageContent');
+    await waitForRendererBootstrap(page);
     await page.evaluate(() => document.querySelector('#navSettings')?.click());
-    await page.waitForSelector('[data-settings-card="sources"]');
+    await page.waitForSelector('[data-settings-card="sources"]', { state: 'attached' });
 
     const hasBridge = await page.evaluate(() => Boolean(window.vpnAutomation));
     const hasStopBridge = await page.evaluate(() => typeof window.vpnAutomation?.stopPipeline === 'function');
@@ -54,12 +58,12 @@ test('electron app can close the only window and reopen on macOS activate', { sk
 
   try {
     const page = await app.firstWindow();
-    await page.waitForSelector('#pageContent');
+    await waitForRendererBootstrap(page);
     await page.close();
 
     await app.evaluate(({ app }) => app.emit('activate'));
     const reopenedPage = await app.firstWindow();
-    await reopenedPage.waitForSelector('#pageContent');
+    await waitForRendererBootstrap(reopenedPage);
 
     assert.equal(await reopenedPage.locator('#pageTitle').innerText(), '概览');
   } finally {

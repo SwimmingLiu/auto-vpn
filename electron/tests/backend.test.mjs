@@ -427,7 +427,7 @@ test('previewArtifactDirectory prefers final emoji nodes and decodes vmess rows'
   ]);
 });
 
-test('previewArtifactDirectory groups nodes by region and falls back to OTHER', () => {
+test('previewArtifactDirectory groups nodes by region and falls back to US', () => {
   const artifactDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vpn-artifact-preview-regions-'));
   const firstUsPayload = Buffer.from(JSON.stringify({
     ps: '🇺🇸 US first-node',
@@ -456,11 +456,10 @@ test('previewArtifactDirectory groups nodes by region and falls back to OTHER', 
   assert.equal(preview.finalNodeCount, 3);
   assert.deepEqual(
     preview.nodeRows.map((row) => row.regionCode),
-    ['US', 'US', 'OTHER']
+    ['US', 'US', 'US']
   );
   assert.deepEqual(preview.regionCards, [
-    { regionCode: 'OTHER', count: 1 },
-    { regionCode: 'US', count: 2 }
+    { regionCode: 'US', count: 3 }
   ]);
 });
 

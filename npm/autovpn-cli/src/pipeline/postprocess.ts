@@ -1,3 +1,5 @@
+import { isIsoAlpha2CountryCode } from './country-codes.js';
+
 interface RankedLink {
   link: string;
   country_code?: string;
@@ -60,7 +62,6 @@ const EMOJI_MAP: Record<string, string> = {
 };
 
 const FALLBACK_COUNTRY_CODE = 'US';
-const UNKNOWN_COUNTRY_CODE = 'ZZ';
 const DEFAULT_FILTERS: Required<PostprocessFilters> = {
   excluded_country_codes: ['CN'],
   per_country_limit: {}
@@ -81,7 +82,7 @@ export function generateVmessLink(payload: Record<string, unknown>): string {
 
 export function normalizeCountryCode(countryCode: string): string {
   const normalized = String(countryCode || '').trim().toUpperCase();
-  if (normalized.length !== 2 || !/^[A-Z]{2}$/.test(normalized) || normalized === UNKNOWN_COUNTRY_CODE) {
+  if (!isIsoAlpha2CountryCode(normalized)) {
     return FALLBACK_COUNTRY_CODE;
   }
   return normalized;

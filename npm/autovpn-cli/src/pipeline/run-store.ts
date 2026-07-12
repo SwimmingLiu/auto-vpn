@@ -151,6 +151,7 @@ export class RunStore {
         canonical_key TEXT NOT NULL,
         link TEXT NOT NULL,
         sequence INTEGER NOT NULL,
+        first_source TEXT,
         UNIQUE (run_id, canonical_key),
         UNIQUE (run_id, sequence)
       );
@@ -227,12 +228,12 @@ export class RunStore {
         const inserted = destination!.statement('INSERT INTO runs(status) VALUES (?)').run('running');
         destination!.runId = Number(inserted.lastInsertRowid);
         const runId = destination!.currentRunId();
-        for (const link of source.rawLinks()) {
-          destination!.statement('INSERT INTO raw_observations(run_id, source, link) VALUES (?, ?, ?)').run(runId, 'retry-seed', link);
+        for (const observation of source.rawObservations()) {
+          destination!.statement('INSERT INTO raw_observations(run_id, source, link) VALUES (?, ?, ?)').run(runId, observation.source, observation.link);
         }
-        source.dedupedLinks().forEach((link, index) => {
-          destination!.statement('INSERT INTO pipeline_nodes(run_id, canonical_key, link, sequence) VALUES (?, ?, ?, ?)')
-            .run(runId, canonicalVmessKey(parseVmessLink(link)), link, index + 1);
+        source.dedupedNodeOwnership().forEach(({ link, first_source }, index) => {
+          destination!.statement('INSERT INTO pipeline_nodes(run_id, canonical_key, link, sequence, first_source) VALUES (?, ?, ?, ?, ?)')
+            .run(runId, canonicalVmessKey(parseVmessLink(link)), link, index + 1, first_source);
         });
         const preserveSpeed = boundary !== 'speedtest';
         const preserveAvailability = !['speedtest', 'availability'].includes(boundary);
@@ -394,8 +395,8 @@ export class RunStore {
       if (existing) return { inserted: false, sequence: existing.sequence };
       const row = this.statement('SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence FROM pipeline_nodes WHERE run_id = ?')
         .get(runId) as { sequence: number };
-      this.statement('INSERT INTO pipeline_nodes(run_id, canonical_key, link, sequence) VALUES (?, ?, ?, ?)')
-        .run(runId, key, link, row.sequence);
+      this.statement('INSERT INTO pipeline_nodes(run_id, canonical_key, link, sequence, first_source) VALUES (?, ?, ?, ?, ?)')
+        .run(runId, key, link, row.sequence, source);
       return { inserted: true, sequence: row.sequence };
     });
   }
@@ -411,6 +412,27 @@ export class RunStore {
 
   dedupedLinks(): string[] {
     return (this.statement('SELECT link FROM pipeline_nodes WHERE run_id = ? ORDER BY sequence').all(this.currentRunId()) as Array<{ link: string }>).map((row) => row.link);
+  }
+
+  sourceDedupedCounts(): Record<string, number> {
+    const rows = this.statement(`SELECT first_source AS source, COUNT(*) AS count FROM pipeline_nodes
+      WHERE run_id = ? AND first_source IS NOT NULL GROUP BY first_source ORDER BY MIN(sequence)`)
+      .all(this.currentRunId()) as Array<{ source: string; count: number }>;
+    return Object.fromEntries(rows.map((row) => [row.source, Number(row.count)]));
+  }
+
+  hasCompleteSourceOwnership(): boolean {
+    const row = this.statement(`SELECT NOT EXISTS(
+      SELECT 1 FROM pipeline_nodes WHERE run_id = ? AND first_source IS NULL
+    ) AS complete`).get(this.currentRunId()) as { complete: number };
+    return Boolean(row.complete);
+  }
+
+  sourceRawCounts(): Record<string, number> {
+    const rows = this.statement(`SELECT source, COUNT(*) AS count FROM raw_observations
+      WHERE run_id = ? GROUP BY source ORDER BY MIN(observation_id)`)
+      .all(this.currentRunId()) as Array<{ source: string; count: number }>;
+    return Object.fromEntries(rows.map((row) => [row.source, Number(row.count)]));
   }
 
   markSpeedRunning(link: string): void {
@@ -526,8 +548,9 @@ export class RunStore {
     const speedRows = readLegacyReport(path.join(artifactDir, 'vpn_node_speedtest_report.json'));
     const availabilityRows = readLegacyReport(path.join(artifactDir, 'vpn_node_availability_report.json'));
     this.transaction(() => {
+      const rawCanonicalKeys = new Set<string>();
       for (const link of rawLinks) {
-        parseVmessLink(link);
+        rawCanonicalKeys.add(canonicalVmessKey(parseVmessLink(link)));
         this.statement('INSERT INTO raw_observations(run_id, source, link) VALUES (?, ?, ?)').run(runId, 'legacy', link);
       }
       const nodeLinks = dedupedLinks.length > 0 ? dedupedLinks : rawLinks;
@@ -536,8 +559,8 @@ export class RunStore {
         const key = canonicalVmessKey(parseVmessLink(link));
         if (seen.has(key)) continue;
         seen.add(key);
-        this.statement('INSERT INTO pipeline_nodes(run_id, canonical_key, link, sequence) VALUES (?, ?, ?, ?)')
-          .run(runId, key, link, seen.size);
+        this.statement('INSERT INTO pipeline_nodes(run_id, canonical_key, link, sequence, first_source) VALUES (?, ?, ?, ?, ?)')
+          .run(runId, key, link, seen.size, rawCanonicalKeys.has(key) ? 'legacy' : null);
       }
       for (const row of speedRows) {
         const link = String(row.link ?? '');
@@ -569,12 +592,43 @@ export class RunStore {
     return { runId, key };
   }
 
+  private rawObservations(): Array<{ source: string; link: string }> {
+    return this.statement('SELECT source, link FROM raw_observations WHERE run_id = ? ORDER BY observation_id')
+      .all(this.currentRunId()) as Array<{ source: string; link: string }>;
+  }
+
+  private dedupedNodeOwnership(): Array<{ link: string; first_source: string | null }> {
+    return this.statement('SELECT link, first_source FROM pipeline_nodes WHERE run_id = ? ORDER BY sequence')
+      .all(this.currentRunId()) as Array<{ link: string; first_source: string | null }>;
+  }
+
   private migrateSchema(): void {
     const columns = (table: string) => new Set((this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((row) => row.name));
     this.db.exec('PRAGMA foreign_keys=OFF; PRAGMA legacy_alter_table=ON;');
     this.db.exec('BEGIN IMMEDIATE');
     try {
       if (!columns('runs').has('error')) this.db.exec("ALTER TABLE runs ADD COLUMN error TEXT NOT NULL DEFAULT ''");
+      if (!columns('pipeline_nodes').has('first_source')) {
+        this.db.exec('ALTER TABLE pipeline_nodes ADD COLUMN first_source TEXT');
+        const earliestSources = new Map<string, string>();
+        const observations = this.db.prepare('SELECT run_id, source, link FROM raw_observations ORDER BY run_id, observation_id')
+          .all() as Array<{ run_id: number; source: string; link: string }>;
+        for (const observation of observations) {
+          try {
+            const identity = `${observation.run_id}\0${canonicalVmessKey(parseVmessLink(observation.link))}`;
+            if (!earliestSources.has(identity)) earliestSources.set(identity, observation.source);
+          } catch {
+            // Historical malformed observations cannot establish canonical ownership.
+          }
+        }
+        const nodes = this.db.prepare('SELECT node_id, run_id, canonical_key FROM pipeline_nodes ORDER BY run_id, sequence')
+          .all() as Array<{ node_id: number; run_id: number; canonical_key: string }>;
+        const update = this.db.prepare('UPDATE pipeline_nodes SET first_source = ? WHERE node_id = ? AND first_source IS NULL');
+        for (const node of nodes) {
+          const source = earliestSources.get(`${node.run_id}\0${node.canonical_key}`);
+          if (source !== undefined) update.run(source, node.node_id);
+        }
+      }
       const stageColumns = columns('stage_events');
       if (!stageColumns.has('run_id')) {
         this.db.exec('ALTER TABLE stage_events ADD COLUMN run_id INTEGER');
@@ -604,7 +658,7 @@ export class RunStore {
           DROP TABLE runs_v1;
         `);
       }
-      this.db.exec('PRAGMA user_version=2; COMMIT');
+      this.db.exec('PRAGMA user_version=3; COMMIT');
       this.db.exec('PRAGMA legacy_alter_table=OFF; PRAGMA foreign_keys=ON;');
     } catch (error) {
       this.db.exec('ROLLBACK');

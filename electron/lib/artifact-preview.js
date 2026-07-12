@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { isIsoAlpha2CountryCode } from './country-codes.js';
 
 const FINAL_NODE_FILES = [
   'vpn_node_emoji.txt',
@@ -82,8 +83,8 @@ export function parseVmessLinkForPreview(link) {
 
 function extractRegionCode(name) {
   const text = String(name ?? '').trim().toUpperCase();
-  const match = text.match(/\b([A-Z]{2})\b/);
-  return match ? match[1] : 'OTHER';
+  const match = text.match(/^[\u{1F1E6}-\u{1F1FF}]{2}\s+([A-Z]{2})(?:\s|$)/u);
+  return match && isIsoAlpha2CountryCode(match[1]) ? match[1] : 'US';
 }
 
 function buildRegionCards(nodeRows) {
