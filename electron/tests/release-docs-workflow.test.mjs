@@ -457,6 +457,7 @@ test('gate contract rejects package-script and workflow shell bypasses', () => {
   );
 
   for (const replacement of [
+    'run: UPDATE_VISUAL_BASELINES=1 npm run test:h5',
     'run: npm run test:h5 || true',
     'run: npm run test:h5 -- --test-name-pattern mobile',
     'if: github.event_name == \'push\'\n        run: npm run test:h5',

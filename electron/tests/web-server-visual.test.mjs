@@ -90,6 +90,17 @@ test('visual baselines are selected by operating system without weakening pixel 
   assert.equal(PIXEL_CHANNEL_THRESHOLD, 12);
 });
 
+test('macOS and Linux visual baseline sets cover the same reviewed screenshots', async () => {
+  const baselineRoot = path.join(TEST_DIR, 'visual-baselines/h5');
+  const filesFor = async (platform) => (await fs.readdir(path.join(baselineRoot, platform)))
+    .filter((name) => name.endsWith('.png'))
+    .sort();
+  const darwin = await filesFor('darwin');
+  const linux = await filesFor('linux');
+  assert.deepEqual(linux, darwin);
+  assert.equal(linux.length, 14, 'every H5 screenshot fixture must have both OS baselines');
+});
+
 test('served web ui desktop PNGs match browser baselines', async () => {
   const service = await createAutoVpnServer({
     host: '127.0.0.1',
