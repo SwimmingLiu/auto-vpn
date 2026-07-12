@@ -55,7 +55,7 @@ test('source count refresh leaves deduped counts unknown until all node ownershi
   const summary = {
     source_counts: {
       known: { raw_links: 9, deduped_links: 7 },
-      unknown: { raw_links: 4 }
+      unknown: { raw_links: 4, deduped_links: 0 }
     }
   };
   refreshSourceCounts(summary, {
@@ -68,6 +68,34 @@ test('source count refresh leaves deduped counts unknown until all node ownershi
     known: { raw_links: 2, deduped_links: 1 },
     unknown: { raw_links: 1 }
   });
+});
+
+test('source count refresh removes a stale report zero when sqlite still has an unowned node', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'autovpn-stale-source-zero-'));
+  const dbPath = path.join(root, 'run.db');
+  const link = vmessLink('unowned', 'unowned.example');
+  const db = new DatabaseSync(dbPath);
+  try {
+    db.exec(`
+      CREATE TABLE runs (run_id INTEGER PRIMARY KEY, status TEXT NOT NULL, error TEXT NOT NULL DEFAULT '');
+      CREATE TABLE pipeline_nodes (node_id INTEGER PRIMARY KEY AUTOINCREMENT, run_id INTEGER NOT NULL, canonical_key TEXT NOT NULL, link TEXT NOT NULL, sequence INTEGER NOT NULL, first_source TEXT, UNIQUE(run_id, canonical_key), UNIQUE(run_id, sequence));
+      INSERT INTO runs VALUES (1, 'running', '');
+    `);
+    db.prepare('INSERT INTO pipeline_nodes(run_id, canonical_key, link, sequence, first_source) VALUES (1, ?, ?, 1, NULL)')
+      .run(`legacy:${link}`, link);
+  } finally {
+    db.close();
+  }
+
+  try {
+    const store = RunStore.open(dbPath);
+    const summary = { source_counts: { legacy: { raw_links: 1, deduped_links: 0 } } };
+    refreshSourceCounts(summary, store);
+    assert.deepEqual(summary.source_counts.legacy, { raw_links: 0 });
+    store.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test('source count refresh emits real zeroes when all node ownership is authoritative', () => {

@@ -356,8 +356,10 @@ export function refreshSourceCounts(summary: PipelineSummary, store: Pick<RunSto
   const completeOwnership = store.hasCompleteSourceOwnership();
   const progressSources = store.sourceProgress().map((progress) => progress.source);
   for (const source of new Set([...Object.keys(summary.source_counts), ...progressSources, ...Object.keys(rawCounts), ...Object.keys(dedupedCounts)])) {
+    const previous = { ...(summary.source_counts[source] ?? {}) };
+    if (!completeOwnership && !Object.hasOwn(dedupedCounts, source)) delete previous.deduped_links;
     summary.source_counts[source] = {
-      ...(summary.source_counts[source] ?? {}),
+      ...previous,
       raw_links: rawCounts[source] ?? 0,
       ...(Object.hasOwn(dedupedCounts, source)
         ? { deduped_links: dedupedCounts[source] }
