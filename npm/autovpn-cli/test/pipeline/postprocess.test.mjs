@@ -30,7 +30,7 @@ test('decorateLinkWithCountry defaults unknown and invalid country codes to US',
 
   assert.equal(payload.ps, '🇺🇸 US old-name');
 
-  for (const country of ['', 'USA', '1A']) {
+  for (const country of ['', 'USA', '1A', 'QQ', 'XX', 'AA']) {
     const invalid = decorateLinkWithCountry(sampleLink, country);
     const invalidPayload = JSON.parse(Buffer.from(invalid.slice('vmess://'.length), 'base64url').toString('utf8'));
     assert.equal(invalidPayload.ps, '🇺🇸 US old-name');

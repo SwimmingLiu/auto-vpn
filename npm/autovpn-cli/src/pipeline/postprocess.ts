@@ -1,3 +1,5 @@
+import { isIsoAlpha2CountryCode } from './country-codes.js';
+
 interface RankedLink {
   link: string;
   country_code?: string;
@@ -80,7 +82,7 @@ export function generateVmessLink(payload: Record<string, unknown>): string {
 
 export function normalizeCountryCode(countryCode: string): string {
   const normalized = String(countryCode || '').trim().toUpperCase();
-  if (normalized.length !== 2 || !/^[A-Z]{2}$/.test(normalized) || normalized === 'ZZ') {
+  if (!isIsoAlpha2CountryCode(normalized)) {
     return FALLBACK_COUNTRY_CODE;
   }
   return normalized;

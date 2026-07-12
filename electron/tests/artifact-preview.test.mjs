@@ -15,3 +15,10 @@ test('unknown and invalid country labels default to US', () => {
 test('real US labels remain US', () => {
   assert.equal(parseVmessLinkForPreview(vmess('🇺🇸 US node')).regionCode, 'US');
 });
+
+test('preview only trusts an explicit flag and ISO country prefix', () => {
+  assert.equal(parseVmessLinkForPreview(vmess('🇩🇪 DE Frankfurt')).regionCode, 'DE');
+  assert.equal(parseVmessLinkForPreview(vmess('DE Frankfurt')).regionCode, 'US');
+  assert.equal(parseVmessLinkForPreview(vmess('node JP premium')).regionCode, 'US');
+  assert.equal(parseVmessLinkForPreview(vmess('🇶🇶 QQ fake')).regionCode, 'US');
+});

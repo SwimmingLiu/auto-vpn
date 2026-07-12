@@ -96,3 +96,9 @@ Follow-up verification:
 - Internal `{ country, detected }` metadata distinguishes a successfully detected real US result from a failure fallback, preserving short negative TTL and multi-address continuation behavior.
 - Successful provider detection still emits the actual country code (including non-US countries); only exhausted, invalid, rejected, or unresolved lookups fall back to US.
 - Verification: Task 9 CLI/Electron focused suite 138 passed, renderer Playwright and pixel/visual suite 6 passed, and full CLI 358 passed; all had zero failures.
+
+## ISO and preview-prefix review follow-up
+
+- GeoIP provider payloads and postprocess inputs now validate against a built-in static ISO 3166-1 alpha-2 set; alphabetic but non-ISO values such as `QQ`, `XX`, and `AA` fall back to US.
+- Electron artifact preview no longer searches arbitrary two-letter tokens in raw node names. It trusts only the explicit postprocess form `flag-emoji + ISO code + name`; raw names such as `DE Frankfurt` and `node JP premium` fall back to US.
+- Verification: Task 9 focused CLI/Electron suite 140 passed and renderer Playwright/pixel suite 6 passed; all had zero failures.

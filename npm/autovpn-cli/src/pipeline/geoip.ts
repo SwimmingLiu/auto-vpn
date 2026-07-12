@@ -1,5 +1,6 @@
 import { isIP } from 'node:net';
 import { lookup as dnsLookup } from 'node:dns/promises';
+import { isIsoAlpha2CountryCode } from './country-codes.js';
 
 type ResolveResult = { address: string; family: number };
 type FetchLike = (input: string, init?: RequestInit) => Promise<{ ok: boolean; status: number; headers: Headers; json: () => Promise<unknown> }>;
@@ -24,11 +25,9 @@ interface GeoIpResult {
   detected: boolean;
 }
 
-const ISO_ALPHA_2 = /^[A-Z]{2}$/;
-
 function countryCode(value: unknown): string | null {
   const normalized = typeof value === 'string' ? value.trim().toUpperCase() : '';
-  return ISO_ALPHA_2.test(normalized) && normalized !== 'ZZ' ? normalized : null;
+  return isIsoAlpha2CountryCode(normalized) ? normalized : null;
 }
 
 function retryAfterMilliseconds(value: string | null, now: number, maximum: number): number {

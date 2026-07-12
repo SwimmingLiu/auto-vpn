@@ -109,6 +109,17 @@ test('rejects malformed primary schema and falls back', async () => {
   assert.equal(await lookup('1.1.1.11'), 'NZ');
 });
 
+test('rejects alphabetic non-ISO provider country codes and falls back to US', async () => {
+  let calls = 0;
+  const lookup = createGeoIpLookup({
+    fetch: async () => ++calls === 1
+      ? response(200, { success: true, country_code: 'QQ' })
+      : response(200, { country_code: 'XX' })
+  });
+  assert.equal(await lookup('1.1.1.14'), 'US');
+  assert.equal(calls, 2);
+});
+
 test('times out primary requests and uses fallback', async () => {
   let calls = 0;
   const lookup = createGeoIpLookup({
