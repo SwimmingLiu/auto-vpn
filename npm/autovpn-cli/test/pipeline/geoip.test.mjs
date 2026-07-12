@@ -36,6 +36,26 @@ test('resolves domains using injected A and AAAA resolver results', async () => 
   assert.deepEqual(resolved, ['node.example']);
 });
 
+test('tries resolved addresses in stable order until one has a country', async () => {
+  const requested = [];
+  const lookup = createGeoIpLookup({
+    resolve: async () => [
+      { address: '10.0.0.8', family: 4 },
+      { address: '203.0.113.31', family: 4 },
+      { address: '2001:db8::31', family: 6 }
+    ],
+    fetch: async (url) => {
+      requested.push(url);
+      if (url.includes('203.0.113.31')) return response(503, {});
+      if (url.includes('2001%3Adb8%3A%3A31')) return response(200, { success: true, country_code: 'CA' });
+      return response(503, {});
+    }
+  });
+  assert.equal(await lookup('multi.example'), 'CA');
+  assert.equal(requested.some((url) => url.includes('10.0.0.8')), false);
+  assert.deepEqual(requested.map((url) => new URL(url).hostname), ['ipwho.is', 'ipapi.co', 'ipwho.is']);
+});
+
 test('honors bounded Retry-After before using fallback provider', async () => {
   const sleeps = [];
   let calls = 0;
@@ -48,6 +68,35 @@ test('honors bounded Retry-After before using fallback provider', async () => {
   });
   assert.equal(await lookup('203.0.113.10'), 'SG');
   assert.deepEqual(sleeps, [1500]);
+});
+
+test('parses HTTP-date Retry-After using the injected clock and clamps it', async () => {
+  const sleeps = [];
+  let calls = 0;
+  const now = Date.parse('2026-07-12T00:00:00.000Z');
+  const lookup = createGeoIpLookup({
+    now: () => now,
+    fetch: async () => ++calls === 1
+      ? response(429, {}, { 'retry-after': 'Sun, 12 Jul 2026 00:00:10 GMT' })
+      : response(200, { country_code: 'SG' }),
+    sleep: async (milliseconds) => { sleeps.push(milliseconds); },
+    maxRetryAfterMs: 1200
+  });
+  assert.equal(await lookup('203.0.113.32'), 'SG');
+  assert.deepEqual(sleeps, [1200]);
+});
+
+test('rejects unsafe provider builder URLs without fetching them', async () => {
+  for (const unsafeUrl of ['http://ipwho.is/1.1.1.1', 'https://evil.example/1.1.1.1']) {
+    let calls = 0;
+    const lookup = createGeoIpLookup({
+      primaryUrl: () => unsafeUrl,
+      fallbackUrl: () => unsafeUrl,
+      fetch: async () => { calls += 1; return response(200, { success: true, country_code: 'US' }); }
+    });
+    assert.equal(await lookup('1.1.1.1'), 'ZZ');
+    assert.equal(calls, 0);
+  }
 });
 
 test('rejects malformed primary schema and falls back', async () => {

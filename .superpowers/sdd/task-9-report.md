@@ -56,3 +56,19 @@ All GeoIP tests use injected `fetch`, resolver, timer/clock, and sleep functions
 
 - The full Electron suite remains externally blocked by the local Electron binary installation and unrelated visual baselines described above.
 - Provider URLs are configurable through `createGeoIpLookup` options; production defaults are HTTPS `ipwho.is` and `ipapi.co`.
+
+## Review follow-up
+
+Addressed the P1 and three P2 review findings with new RED/GREEN coverage:
+
+- Renderer `buildRegionStats` now prioritizes preview `row.regionCode`; `ZZ` and `OTHER` merge into the user-visible “其他” bucket, while a real `US` remains US. Both region-stat model and rendered results markup are covered.
+- Domain lookup preserves resolver order, skips obvious private/loopback/link-local addresses, and tries each unique resolved IP until one returns a non-`ZZ` country. Per-IP positive/negative caches and in-flight deduplication remain unchanged.
+- `Retry-After` accepts both delta-seconds and HTTP-date values, evaluates HTTP dates against the injected clock, and clamps both formats to `maxRetryAfterMs`.
+- Provider URL builders are validated before fetch: HTTPS only, exact `ipwho.is`/`ipapi.co` host, no credentials or explicit port. HTTP and foreign-host outputs return provider failure without any fetch call.
+
+Follow-up verification:
+
+- Focused GeoIP/pipeline/artifact/renderer contracts: 106 passed, 0 failed.
+- Full CLI: 355 passed, 0 failed.
+- Focused Electron artifact/UI/Playwright: 66 passed, 1 unrelated visual aggregate failure. Results-page visual hash matched exactly; only the previously noted dashboard/runs/logs hashes differ.
+- `rtk git diff --check`: clean.

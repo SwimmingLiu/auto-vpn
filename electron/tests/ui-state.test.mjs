@@ -232,6 +232,37 @@ test('buildRegionStats counts decoded vmess rows by region prefix', () => {
   ]);
 });
 
+test('buildRegionStats trusts preview regionCode and normalizes unknown regions', () => {
+  const stats = buildRegionStats([
+    { name: '🏳️ ZZ first', regionCode: 'OTHER' },
+    { name: '🏳️ ZZ second', regionCode: 'ZZ' },
+    { name: '🇺🇸 US real', regionCode: 'US' },
+    { name: '🇯🇵 JP stale name', regionCode: 'US' }
+  ]);
+
+  assert.deepEqual(stats, [
+    { region: '其他', count: 2 },
+    { region: 'US', count: 2 }
+  ]);
+});
+
+test('results page renders unknown preview regions as 其他 and keeps real US', () => {
+  const messages = getMessages('zh-CN');
+  const vm = buildViewModel({
+    runState: 'success',
+    artifactDir: '/tmp/artifact',
+    nodeRows: [
+      { name: '🏳️ ZZ node', regionCode: 'OTHER' },
+      { name: '🇺🇸 US node', regionCode: 'US' }
+    ]
+  }, messages, 'zh-CN');
+  const markup = buildPageMarkup('results', vm, messages, 'zh-CN');
+
+  assert.match(markup, />其他<\/span>[\s\S]*?<strong>1<\/strong>/);
+  assert.match(markup, />US<\/span>[\s\S]*?<strong>1<\/strong>/);
+  assert.doesNotMatch(markup, />ZZ<\/span>/);
+});
+
 test('source iteration draft applies one max_iterations, plateau limit, and area range to all sources', () => {
   const sources = {
     leiting: { url: 'https://a.example', key: 'a', enabled: true, max_iterations: 12, min_iterations: 12, plateau_limit: 11, area_min: 10, area_max: 90 },

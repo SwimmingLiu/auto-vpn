@@ -26,6 +26,28 @@ function countryCode(value: unknown): string | null {
   return ISO_ALPHA_2.test(normalized) && normalized !== 'ZZ' ? normalized : null;
 }
 
+function retryAfterMilliseconds(value: string | null, now: number, maximum: number): number {
+  if (!value) return 0;
+  const seconds = Number(value);
+  const delay = Number.isFinite(seconds)
+    ? seconds * 1000
+    : Date.parse(value) - now;
+  return Number.isFinite(delay) && delay > 0 ? Math.min(delay, maximum) : 0;
+}
+
+function isPrivateAddress(address: string): boolean {
+  if (address.includes(':')) {
+    const normalized = address.toLowerCase();
+    return normalized === '::' || normalized === '::1' || normalized.startsWith('fc') || normalized.startsWith('fd') || /^fe[89ab]/.test(normalized);
+  }
+  const octets = address.split('.').map(Number);
+  return octets[0] === 10
+    || octets[0] === 127
+    || (octets[0] === 169 && octets[1] === 254)
+    || (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31)
+    || (octets[0] === 192 && octets[1] === 168);
+}
+
 export function createGeoIpLookup(options: GeoIpLookupOptions = {}): (address: string) => Promise<string> {
   const fetchFn = options.fetch ?? (globalThis.fetch as FetchLike);
   const resolve = options.resolve ?? ((hostname) => dnsLookup(hostname, { all: true, verbatim: true }));
@@ -43,12 +65,23 @@ export function createGeoIpLookup(options: GeoIpLookupOptions = {}): (address: s
   const pending = new Map<string, Promise<string>>();
 
   async function request(url: string, provider: 'primary' | 'fallback'): Promise<{ country: string | null; retryAfterMs: number }> {
+    try {
+      const parsed = new URL(url);
+      const expectedHost = provider === 'primary' ? 'ipwho.is' : 'ipapi.co';
+      if (parsed.protocol !== 'https:' || parsed.hostname !== expectedHost || parsed.port || parsed.username || parsed.password) {
+        return { country: null, retryAfterMs: 0 };
+      }
+    } catch {
+      return { country: null, retryAfterMs: 0 };
+    }
     const controller = new AbortController();
     const timer = setTimer(() => controller.abort(), timeoutMs);
     try {
       const response = await fetchFn(url, { signal: controller.signal, headers: { accept: 'application/json' } });
-      const retryAfter = response.status === 429 ? Number(response.headers.get('retry-after')) : 0;
-      if (!response.ok) return { country: null, retryAfterMs: Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(retryAfter * 1000, maxRetryAfterMs) : 0 };
+      const retryAfterMs = response.status === 429
+        ? retryAfterMilliseconds(response.headers.get('retry-after'), now(), maxRetryAfterMs)
+        : 0;
+      if (!response.ok) return { country: null, retryAfterMs };
       const payload = await response.json() as Record<string, unknown>;
       if (provider === 'primary' && payload.success !== true) return { country: null, retryAfterMs: 0 };
       if (provider === 'fallback' && payload.error === true) return { country: null, retryAfterMs: 0 };
@@ -87,8 +120,14 @@ export function createGeoIpLookup(options: GeoIpLookupOptions = {}): (address: s
     if (!address) return 'ZZ';
     try {
       const results = isIP(address) ? [{ address, family: isIP(address) }] : await resolve(address);
-      const resolved = results.find((entry) => isIP(entry.address));
-      return resolved ? lookupIp(resolved.address) : 'ZZ';
+      const seen = new Set<string>();
+      for (const result of results) {
+        if (!isIP(result.address) || isPrivateAddress(result.address) || seen.has(result.address)) continue;
+        seen.add(result.address);
+        const resultCountry = await lookupIp(result.address);
+        if (resultCountry !== 'ZZ') return resultCountry;
+      }
+      return 'ZZ';
     } catch {
       return 'ZZ';
     }

@@ -972,7 +972,9 @@ export function extractSourceUrlFromCurl(value = '') {
 export function buildRegionStats(nodeRows = []) {
   const counts = new Map();
   for (const row of nodeRows) {
-    const region = inferNodeRegion(row?.name);
+    const previewRegion = String(row?.regionCode ?? '').trim().toUpperCase();
+    const inferredRegion = previewRegion || inferNodeRegion(row?.name);
+    const region = inferredRegion === 'ZZ' || inferredRegion === 'OTHER' ? '其他' : inferredRegion;
     counts.set(region, (counts.get(region) ?? 0) + 1);
   }
   return Array.from(counts.entries()).map(([region, count]) => ({ region, count }));
