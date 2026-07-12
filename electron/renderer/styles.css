@@ -809,10 +809,21 @@ body[data-page="logs"] .page-content {
 }
 
 .run-control-panel {
+  display: block;
+}
+
+.mobile-run-bar {
   display: grid;
-  grid-template-columns: repeat(3, minmax(160px, 1fr));
-  align-items: center;
+  grid-template-columns: repeat(2, minmax(160px, 1fr));
   gap: 14px;
+}
+
+.run-secondary-controls > summary {
+  display: none;
+}
+
+.run-secondary-controls:not([open]) > :not(summary) {
+  display: block;
 }
 
 .retry-control-card {
@@ -885,7 +896,6 @@ body[data-page="logs"] .page-content {
 
 .run-options,
 .format-row {
-  grid-column: 1 / -1;
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -2393,14 +2403,36 @@ body[data-page="logs"] #logCenterTable {
   }
 
   .run-control-panel {
+    position: static;
+  }
+
+  .mobile-run-bar {
     position: sticky;
     bottom: calc(76px + env(safe-area-inset-bottom));
     z-index: var(--z-sticky);
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 10px;
+    padding: 10px;
     background: rgba(255, 255, 255, 0.98);
     backdrop-filter: blur(16px);
+    border: 1px solid var(--border);
+    border-radius: 16px;
   }
+
+  .run-secondary-controls > summary {
+    display: list-item;
+    min-height: 44px;
+    margin-top: 12px;
+    padding: 12px;
+    cursor: pointer;
+    font-weight: 750;
+  }
+
+  .run-secondary-controls:not([open]) > :not(summary) {
+    display: none;
+  }
+
+  .timeline { display: grid; grid-template-columns: 1fr; }
 
   .run-big {
     min-height: 50px;

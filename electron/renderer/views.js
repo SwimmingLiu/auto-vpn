@@ -361,9 +361,13 @@ function buildRunsPage(vm, messages) {
   return `
     <div id="runsWorkspace" class="page-grid runs-grid">
       <article class="panel wide-panel run-control-panel">
-        <button class="btn btn-primary run-big" data-run-action="start" type="button" ${runDisabled}>▶ 开始运行</button>
-        <button class="btn btn-secondary run-big" data-run-action="stop" type="button" ${vm.runControlState.stopDisabled ? 'disabled' : ''}>■ 停止运行</button>
-        <div class="retry-control-card">
+        <div class="mobile-run-bar" data-mobile-run-bar>
+          <button class="btn btn-primary run-big" data-run-action="start" type="button" ${runDisabled}>▶ 开始运行</button>
+          <button class="btn btn-secondary run-big" data-run-action="stop" type="button" ${vm.runControlState.stopDisabled ? 'disabled' : ''}>■ 停止运行</button>
+        </div>
+        <details class="run-secondary-controls">
+          <summary>重试历史、阶段与运行选项</summary>
+          <div class="retry-control-card">
           <div class="field compact retry-field retry-artifact-field">
             <span>历史 run</span>
             <select data-run-retry-artifact ${artifactDisabled}>
@@ -406,8 +410,8 @@ function buildRunsPage(vm, messages) {
               : '<div class="empty-state">暂无可重试 run</div>'}
           </div>
           <p class="retry-help">阶段重试会新建 artifact，并从所选阶段继续执行到 verify。</p>
-        </div>
-        <div class="run-options">
+          </div>
+          <div class="run-options">
           ${[
             ['跳过部署', 'skipDeploy', false],
             ['跳过验证', 'skipVerify', false],
@@ -415,7 +419,8 @@ function buildRunsPage(vm, messages) {
           ].map(([label, key, checked]) => `
             <label class="checkbox-chip"><input data-run-option="${escapeHtml(key)}" type="checkbox" ${checked ? 'checked' : ''} />${escapeHtml(label)}</label>
           `).join('')}
-        </div>
+          </div>
+        </details>
       </article>
 
       ${buildRunsStageProgressMarkup(vm)}

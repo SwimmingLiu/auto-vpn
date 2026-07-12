@@ -883,6 +883,18 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     });
     assert.equal(sameButtonAfterLogs, true);
 
+    await page.locator('#navLogs').focus();
+    const focusedNavSurvivesRuntimeEvents = await page.evaluate(() => {
+      const focused = document.activeElement;
+      for (const runState of ['running', 'stopping', 'failed', 'idle']) {
+        window.__emitPipelineEvent({ type: 'server_state', run_state: runState });
+        window.__emitPipelineEvent({ type: 'log', message: `[INFO] focus ${runState}` });
+        if (document.activeElement !== focused) return false;
+      }
+      return focused === document.querySelector('#navLogs');
+    });
+    assert.equal(focusedNavSurvivesRuntimeEvents, true);
+
     await page.locator('#navDashboard').click();
     await page.waitForSelector('#dashboardOverview');
     const sameDashboardButtonAfterStages = await page.locator('#pageActions [data-run-action="start"]').evaluate((button) => {
@@ -895,6 +907,16 @@ test('renderer matches the six-page canvas redesign and supports page navigation
 
     await page.locator('#navRuns').click();
     await page.waitForSelector('#runsWorkspace');
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.waitForFunction(() => !document.querySelector('details.run-secondary-controls')?.open);
+    assert.equal(await page.locator('[data-mobile-run-bar] [data-run-action]').count(), 2);
+    assert.equal(await page.locator('[data-mobile-run-bar] select, [data-mobile-run-bar] [data-run-option]').count(), 0);
+    assert.equal(await page.locator('details.run-secondary-controls').getAttribute('open'), null);
+    assert.equal(await page.locator('[data-mobile-run-bar]').evaluate((element) => getComputedStyle(element).position), 'sticky');
+    assert.notEqual(await page.locator('.run-control-panel').evaluate((element) => getComputedStyle(element).position), 'sticky');
+    await page.setViewportSize({ width: 1280, height: 820 });
+    await page.waitForFunction(() => document.querySelector('details.run-secondary-controls')?.open);
 
     await page.locator('#navLogs').click();
     await page.waitForSelector('#logCenterTable');

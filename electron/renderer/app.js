@@ -219,6 +219,7 @@ function bindActions() {
   document.addEventListener('input', handleDocumentInput);
   document.addEventListener('change', handleDocumentInput);
   document.addEventListener('keydown', handleSettingsDrawerKeydown);
+  window.addEventListener('resize', syncRunDetailsPresentation);
   
   document.addEventListener('mousedown', (e) => {
     const header = e.target.closest('.settings-drawer-head');
@@ -271,18 +272,22 @@ function renderAll() {
     state.language,
     state.subtabs
   );
+  syncRunDetailsPresentation();
   renderToast();
 }
 
+function syncRunDetailsPresentation() {
+  const details = document.querySelector('details.run-secondary-controls');
+  if (details) details.open = !window.matchMedia('(max-width: 720px)').matches;
+}
+
 function renderChrome(messages, viewModel) {
-  const controlState = resolveRunControlState(state.runState);
   elements.sidebarTitle.textContent = messages.sidebarTitle;
   elements.sidebarVersion.textContent = messages.sidebarVersion;
   elements.pageTitle.textContent = messages.pageTitles[state.activePage];
   elements.pageSubtitle.textContent = messages.pageSubtitles[state.activePage];
-  elements.runStateBadge.textContent = messages.runStateLabels[state.runState] ?? messages.runStateLabels.idle;
-  elements.runStateBadge.className = `badge ${runTone()}`;
   elements.sidebarNav.innerHTML = buildSidebarNav(messages, state.activePage);
+  const controlState = resolveRunControlState(state.runState);
   elements.pageActions.innerHTML = buildTopbarActions(state.activePage, viewModel, messages, {
     runDisabled: controlState.runDisabled,
     stopDisabled: controlState.stopDisabled,
@@ -290,6 +295,25 @@ function renderChrome(messages, viewModel) {
     stopLabel: messages.stopButton,
     saveLabel: messages.saveButton
   });
+  updateChromeState(messages);
+}
+
+function updateChromeState(messages = getMessages(state.language)) {
+  const controlState = resolveRunControlState(state.runState);
+  elements.runStateBadge.textContent = messages.runStateLabels[state.runState] ?? messages.runStateLabels.idle;
+  elements.runStateBadge.className = `badge ${runTone()}`;
+  for (const button of document.querySelectorAll('[data-run-action="start"]')) {
+    button.disabled = controlState.runDisabled;
+    button.setAttribute('aria-busy', String(controlState.isBusy));
+    if (button.closest('#pageActions')) button.textContent = resolveRunButtonLabel(messages);
+  }
+  for (const button of document.querySelectorAll('[data-run-action="stop"]')) {
+    button.disabled = controlState.stopDisabled;
+    button.setAttribute('aria-busy', String(state.runState === 'stopping'));
+  }
+  for (const button of document.querySelectorAll('[data-action="retry-stage"]')) {
+    button.disabled = controlState.isBusy || !state.selectedRetryArtifactDir || !state.selectedRetryStage;
+  }
 }
 
 function resolveRunButtonLabel(messages) {
@@ -999,7 +1023,7 @@ async function runPipeline() {
   state.selectedRetryStage = '';
   state.runStartedAt = Date.now();
   touchUpdate();
-  renderAll();
+  renderRuntimeOnly();
   appendLog(messages.pipelineStarted);
 
   if (runOptions.saveBeforeRun) {
@@ -1010,7 +1034,7 @@ async function runPipeline() {
     state.runState = 'idle';
     state.runResult = 'demo';
     touchUpdate();
-    renderAll();
+    renderRuntimeOnly();
     appendLog(formatMessage(messages.pipelineFinished, { code: 'demo' }));
     return;
   }
@@ -1025,7 +1049,7 @@ async function runPipeline() {
     state.runResult = 'failed';
     state.runStartedAt = null;
     touchUpdate();
-    renderAll();
+    renderRuntimeOnly();
     appendLog(formatMessage(messages.pipelineFailed, { error: error.message }));
   }
 }
@@ -1048,7 +1072,7 @@ async function retryStage() {
   state.nodeRows = [];
   state.runStartedAt = Date.now();
   touchUpdate();
-  renderAll();
+  renderRuntimeOnly();
   appendLog(`[retry] artifact=${state.selectedRetryArtifactDir} stage=${state.selectedRetryStage}`);
 
   const runOptions = collectRunOptions();
@@ -1061,7 +1085,7 @@ async function retryStage() {
     state.runResult = 'failed';
     state.runStartedAt = null;
     touchUpdate();
-    renderAll();
+    renderRuntimeOnly();
     appendLog(formatMessage(messages.pipelineFailed, { error: 'retry bridge unavailable' }));
     return;
   }
@@ -1080,7 +1104,7 @@ async function retryStage() {
     state.runResult = 'failed';
     state.runStartedAt = null;
     touchUpdate();
-    renderAll();
+    renderRuntimeOnly();
     appendLog(formatMessage(messages.pipelineFailed, { error: error.message }));
   }
 }
@@ -1127,7 +1151,7 @@ async function stopPipeline() {
 
   state.runState = 'stopping';
   touchUpdate();
-  renderAll();
+  renderRuntimeOnly();
   appendLog(messages.pipelineStopping);
 
   try {
@@ -1143,7 +1167,7 @@ async function stopPipeline() {
         state.runState = 'idle';
         state.runStartedAt = null;
         touchUpdate();
-        renderAll();
+        renderRuntimeOnly();
         appendLog(messages.stopUnavailable);
       }
       return;
@@ -1164,7 +1188,7 @@ function finishRun(result = {}) {
     state.runState = 'idle';
     state.runResult = 'stopped';
     touchUpdate();
-    renderAll();
+    renderRuntimeOnly();
     appendLog(messages.pipelineStopped);
     void hydrateRetryArtifacts();
     return;
@@ -1174,7 +1198,7 @@ function finishRun(result = {}) {
     state.runState = 'success';
     state.runResult = 'success';
     touchUpdate();
-    renderAll();
+    renderRuntimeOnly();
     appendLog(formatMessage(messages.pipelineFinished, { code: result.code ?? 0 }));
     void hydrateRetryArtifacts();
     return;
@@ -1183,7 +1207,7 @@ function finishRun(result = {}) {
   state.runState = 'failed';
   state.runResult = 'failed';
   touchUpdate();
-  renderAll();
+  renderRuntimeOnly();
   if (result.error) {
     appendLog(formatMessage(messages.pipelineFailed, { error: result.error }));
   } else {
@@ -1207,7 +1231,7 @@ function handlePipelineEvent(event, options = {}) {
         state.runResult = 'success';
       }
       touchUpdate();
-      renderAll();
+      renderRuntimeOnly();
     }
     return;
   }
@@ -1581,7 +1605,7 @@ function renderRuntimeOnly({ chrome = true } = {}) {
   const messages = getMessages(state.language);
   const viewModel = buildViewModel(state, messages, state.language);
   if (chrome) {
-    renderChrome(messages, viewModel);
+    updateChromeState(messages);
   }
   renderActiveRuntimeSections(viewModel);
   renderToast();
