@@ -153,7 +153,7 @@ Commit: `feat: rebuild settings as accessible mobile sheets`
 
 - [ ] **Step 1: Add failing tests for compact run controls**
 
-Assert mobile markup separates the two primary actions from retry history/options and that only `[data-mobile-run-bar]` is sticky. Assert each pipeline stage exposes textual status.
+Assert mobile markup separates the two primary actions from retry history/options and that only `[data-mobile-run-bar]` is a `position: fixed` bottom action surface above bottom navigation. Assert the run workspace uses bottom padding/scroll-margin avoidance, shows secondary or stage content in the initial viewport without a large normal-flow gap, and keeps final content reachable above the action surface. Assert each pipeline stage exposes textual status.
 
 - [ ] **Step 2: Add failing high-frequency focus test**
 

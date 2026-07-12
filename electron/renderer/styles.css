@@ -2441,10 +2441,8 @@ body[data-page="logs"] #logCenterTable {
     scroll-margin-bottom: 170px;
   }
 
-  #runsWorkspace::after {
-    content: '';
-    display: block;
-    height: 170px;
+  #runsWorkspace {
+    padding-bottom: 170px;
   }
 
   .run-secondary-controls > summary {
