@@ -706,31 +706,50 @@ test('served web ui handles visible browser controls across all pages', { timeou
       assert.equal(await page.evaluate(() => document.querySelector('[data-settings-dialog]')?.contains(document.activeElement)), true);
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
       assert.equal(await page.locator('[data-drawer-save="save"]').isVisible(), true);
-      await page.setViewportSize({ width: 844, height: 390 });
-      assert.equal(await page.locator('[data-drawer-save="save"]').isVisible(), true);
-      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
-      if (section === 'availability_targets') {
+      if (section === 'sources') {
+        await page.locator('[data-drawer-path="sources.maxIterations"]').fill('41');
+      } else if (section === 'speed_test') {
+        await page.locator('[data-drawer-path="speed_test.concurrency"]').fill('4');
+      } else if (section === 'availability_targets') {
         await page.locator('[data-availability-action="add"]').click();
         await page.locator('[data-availability-key="name"]').last().fill('custom');
-      }
-      if (section === 'deploy') {
+        await page.locator('[data-availability-key="url"]').last().fill('https://custom.example.test');
+      } else if (section === 'deploy') {
         await page.locator('[data-drawer-path="deploy.project_name"]').fill('web-sub-nodes');
       }
       await page.locator('[data-drawer-save="save"]').click();
       await page.waitForSelector('#settingsDrawer[hidden]');
       assert.equal(await opener.evaluate((node) => node === document.activeElement), true);
+
+      await opener.click();
+      if (section === 'sources') {
+        assert.equal(await page.locator('[data-drawer-path="sources.maxIterations"]').inputValue(), '41');
+      } else if (section === 'speed_test') {
+        assert.equal(await page.locator('[data-drawer-path="speed_test.concurrency"]').inputValue(), '4');
+      } else if (section === 'availability_targets') {
+        assert.ok((await page.locator('[data-availability-key="name"]').evaluateAll((nodes) => nodes.map((node) => node.value))).includes('custom'));
+      } else if (section === 'deploy') {
+        assert.equal(await page.locator('[data-drawer-path="deploy.project_name"]').inputValue(), 'web-sub-nodes');
+      }
+      await page.setViewportSize({ width: 844, height: 390 });
+      assert.equal(await page.locator('[data-drawer-save="save"]').isVisible(), true);
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
+      await page.locator('[data-drawer-close="cancel"]').last().click();
+      await page.waitForSelector('#settingsDrawer[hidden]');
+      assert.equal(await opener.evaluate((node) => node === document.activeElement), true);
     }
 
-    await page.locator('[data-settings-card="deploy"]').click();
+    await page.setViewportSize({ width: 390, height: 844 });
+    const deployOpener = page.locator('[data-settings-card="deploy"]');
+    await deployOpener.click();
     await page.locator('[data-drawer-dismiss="backdrop"]').dispatchEvent('click');
     await page.waitForSelector('#settingsDrawer[hidden]');
-    await page.setViewportSize({ width: 390, height: 520 });
-    await page.locator('[data-settings-card="deploy"]').click();
+    await deployOpener.click();
     assert.equal(await page.locator('[data-drawer-save="save"]').isVisible(), true);
     assert.equal(await page.locator('[data-drawer-close="cancel"]').last().isVisible(), true);
     await page.locator('[data-drawer-close="cancel"]').last().click();
     await page.waitForSelector('#settingsDrawer[hidden]');
-    await page.setViewportSize({ width: 390, height: 844 });
+    assert.equal(await deployOpener.evaluate((node) => node === document.activeElement), true);
 
     await page.locator('#navRuns').click();
     await page.waitForSelector('#runsWorkspace');

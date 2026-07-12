@@ -50,3 +50,11 @@
 - Cleanup timeouts now reject with `cleanup timed out...` and always clear their timer instead of silently continuing.
 - Baseline/artifact paths now resolve from `import.meta.url`. Runs has separate `runs-idle-390x844.png` and `runs-running-390x844.png` evidence; both were manually reviewed after regeneration.
 - Final requested matrix after remediation: 19/19 PASS in 17.96 s.
+
+## Settings phone-flow follow-up
+
+- RED: the new persisted-value contract caught that the availability row is normalized/reordered after save (`gemini` was last rather than the newly added `custom` row). The test now supplies a valid custom URL and verifies the saved row by membership rather than incidental ordering.
+- At 390×844, every Sources, Speed Test, Availability Targets, and Deploy sheet now edits a representative field, saves, closes, restores focus to its opener, reopens, and verifies the persisted value.
+- Each sheet additionally reopens at 844×390 for the landscape visibility/overflow check, then cancels and restores opener focus; landscape remains additive rather than replacing phone editing.
+- A distinct 390×844 Deploy Cancel path verifies visibility, closure, and opener focus restoration.
+- Final complete matrix: 19/19 PASS in 14.60 s.
