@@ -1,77 +1,90 @@
-# 官网 + 账号 数据源
+# Official-site credential sources
 
-数据源有两种模式。老的 `url` 模式要求手工粘贴一条已经带 token 的请求地址，token 一过期就得重新抓；`credential` 模式只要求官网地址和账号密码，其余每次运行时现取。
+A source has two modes. The older `url` mode requires pasting a request URL that
+already carries a session token, so every token expiry forces a fresh capture.
+The `credential` mode only needs an official site and an account; everything
+else is discovered on each run.
 
-## 配置
+## Configuration
 
 ```toml
 [sources]
-[sources.leiting]
+[sources.brand_a]
 mode = "credential"
-official_site = "https://www.68123836.com"
-account = "你的账号"
-password = "你的密码"
+official_site = "https://<OFFICIAL_SITE>"
+account = "<ACCOUNT>"
+password = "<PASSWORD>"
 platform = "android"
 enabled = true
 ```
 
-| 字段 | 必填 | 说明 |
+| Field | Required | Meaning |
 |---|---|---|
-| `mode` | 是 | `credential` 或 `url` |
-| `official_site` | 是 | 官网地址；从这里定位当前 APK |
-| `account` / `password` | 是 | 登录凭据 |
-| `platform` | 否 | `android`（默认）或 `ios` |
-| `max_areas` | 否 | 最多请求几条线路；不填为全部 |
-| `device_id` | 否 | 固定设备号；不填用内置默认值 |
-| `key` | 否 | 控制面 AES 密钥；不填自动探测 |
-| `code` | 否 | 邀请码；不填用 App 的默认值 |
+| `mode` | yes | `credential` or `url` |
+| `official_site` | yes | Official site; the current APK is located from here |
+| `account` / `password` | yes | Login credentials |
+| `platform` | no | `android` (default) or `ios` |
+| `max_areas` | no | Maximum routes to request; all routes when omitted |
+| `device_id` | no | Fixed device id; a built-in default when omitted |
+| `key` | no | Control-plane AES key; discovered automatically when omitted |
+| `code` | no | Invite code; the client's default when omitted |
 
-也可以直接指定 `apk_url` 或 `apk_path` 跳过官网发现。
+`apk_url` or `apk_path` can be set instead of `official_site` to skip discovery.
 
-## 运行时序
+## Run sequence
 
 ```
-官网首页 → 下载页 chunk → cdn.js
-        → 候选 APK 地址（按发布间隔回退几个槽位）
-        → APK：包名 / 版本 / 签名证书 / 种子域名
-        → /api/eversion       控制面密钥、api_links、api_lines
-        → /myapi/eapilogin    会话 token
-        → /myapi/eapiuserinfo 会员等级、unlimited 标志
-        → /myapi/apinodelist  可点击的线路 id
-        → /api/evmess?area=ID 每条线路一个 vmess 链接
+official site -> download page chunk -> cdn.js
+              -> candidate APK URLs (walking back a few publish slots)
+              -> APK: package / version / signing cert / seed domains
+              -> /api/eversion       control-plane key, api_links, api_lines
+              -> /myapi/eapilogin    session token
+              -> /myapi/eapiuserinfo membership level, unlimited flag
+              -> /myapi/apinodelist  clickable route ids
+              -> /api/evmess?area=ID one vmess link per route
 ```
 
-`/myapi/apinodelist` 是唯一明文返回的接口，其余都是 AES-CBC（key 与 IV 相同）。
+`/myapi/apinodelist` is the only endpoint that answers in plain JSON; the rest
+are AES-CBC with key == IV.
 
-## APK 不是每次都取
+## The APK is not fetched on every run
 
-包名、版本、证书、种子域名只在厂商发新版时变化，所以第一次运行后会把这份指纹写入
-`$HOME/.auto-vpn/brand-fingerprints/`。之后运行先拿缓存里的种子做 `/api/eversion`：
+Package, version, certificate and seed domains only change when the vendor
+publishes a build, so the first run writes them under the runtime root's
+`brand-fingerprints/`. Later runs verify the cached seeds against
+`/api/eversion` first:
 
-- 通了 → 不下载 APK，只走登录和节点流程
-- 全都不通 → 说明厂商换了域名，这时才重新下载并解析 APK，然后覆盖缓存
+- answers -> no APK download, only login and the node flow
+- nothing answers -> the vendor rotated domains, so the APK is re-downloaded,
+  re-inspected and the cache is replaced
 
-实测同一台机器：首次约 13 秒（含 22 MB 下载），命中缓存约 6 秒。
+Measured on one machine: about 13s for a first run (including a 22 MB
+download) and about 6s on a cache hit. Sources of the same brand share one
+inspection within a run.
 
-## 平台差异
+## Platform differences
 
 | | Android | iOS |
 |---|---|---|
-| 响应 | `vmess://<base64>` | `ps\|<v2ray 配置>` |
-| 单条体积 | 约 384 B | 约 2944 B |
-| `kbox` | APK 里无条件拼上 | 不带 |
+| Response | `vmess://<base64>` | `ps\|<v2ray config>` |
+| Size per node | ~384 B | ~2944 B |
+| `kbox` | always appended by the APK | not sent |
 
-`kbox` 是白盒 AES 产出的防篡改参数，本实现不带它也能拿到节点：缺少 `kbox` 时服务端
-仍按 `apps`（`MD5(证书 SHA1 + 设备号)`）签发真实节点。这样 Node 侧不必移植白盒算法。
+`kbox` is a tamper-resistance parameter produced by white-box AES. This
+implementation does not send it and still receives real nodes: without it the
+server issues nodes from `apps`, which is `MD5(cert SHA1 + device id)`. That is
+why no white-box AES port was needed on the Node side.
 
-## 已知限制
+## Known limitation
 
-**黑洞的 Android 通道返回占位节点。** `/api/evmess` 对 `platform=android` 一律返回
-`1.1.1.1:443` 模板，`area` 被忽略；同一账号的 iOS 通道正常。同一台服务器上
-`/api/rules` 和 `/myapi/apinodelist` 对相同的 Android 参数完全正常，所以降级只发生在这一个接口。
-需要黑洞节点时把该 source 的 `platform` 设成 `ios`。
+One brand's Android channel returns a placeholder node. `/api/evmess` answers
+with a fixed `1.1.1.1:443` template and ignores `area`, while the same account
+works on the iOS channel. On the same host, `/api/rules` and
+`/myapi/apinodelist` answer normally with identical Android parameters, so the
+downgrade is scoped to that one endpoint rather than the client being rejected.
+Profiles for that brand should set `platform = "ios"`.
 
-## 与旧模式的兼容
+## Compatibility with the URL mode
 
-没有 `mode` 字段的 source 仍按 `url` 模式处理；带 `account` 而没有 `url` 的 source 自动按
-`credential` 模式处理。旧 profile 不需要改。
+A source without `mode` is still treated as `url`. A source carrying `account`
+but no `url` is treated as `credential`. Existing profiles need no changes.
