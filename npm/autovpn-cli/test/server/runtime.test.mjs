@@ -571,3 +571,17 @@ test('server runtime state includes latest artifact preview and retry artifacts'
   assert.match(stateText, /"key":"secret"/);
   assert.equal(state.deployment?.subscription_url, 'set');
 });
+
+test('a credential source password is redacted before it reaches the client', () => {
+  // The state endpoint must not echo a real account password back to the UI.
+  const profile = sanitizeProfileForServer({
+    sources: {
+      brand_a: { mode: 'credential', official_site: 'https://site.example', account: 'user1', password: 'secret-pass' },
+      brand_b: { mode: 'credential', official_site: 'https://other.example', account: 'user2', password: '' }
+    }
+  });
+  assert.equal(profile.sources.brand_a.password, '<redacted>');
+  assert.equal(profile.sources.brand_b.password, '');
+  assert.equal(profile.sources.brand_a.account, 'user1');
+  assert.equal(profile.sources.brand_a.official_site, 'https://site.example');
+});

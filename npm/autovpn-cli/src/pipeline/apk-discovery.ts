@@ -129,7 +129,7 @@ export function readZipEntries(zip: Buffer, wanted: (name: string) => boolean): 
       out.set(name, Buffer.from(raw));
     } else if (method === 8) {
       try {
-        const inflated = zlib.inflateRawSync(raw);
+        const inflated = zlib.inflateRawSync(raw, { maxOutputLength: Math.max(uncompressedSize, 1) });
         if (inflated.length === uncompressedSize) {
           out.set(name, inflated);
         }
@@ -158,10 +158,19 @@ export function axmlStrings(data: Buffer): string[] {
   const stringsStart = readU32(data, poolOffset + 20);
   const isUtf8 = (flags & 0x100) !== 0;
   const base = poolOffset + stringsStart;
+  // `stringCount` comes from an untrusted file: a corrupt or hostile manifest
+  // can declare 0xFFFFFFFF entries and spin the loop for billions of
+  // iterations, which is synchronous and cannot be interrupted. The offset
+  // table is the real bound, so both must fit inside the buffer.
+  const maxStrings = Math.max(0, Math.floor((data.length - (poolOffset + 28)) / 4));
+  const boundedCount = Math.min(Number.isFinite(stringCount) ? stringCount : 0, maxStrings);
   const out: string[] = [];
-  for (let index = 0; index < stringCount; index += 1) {
+  for (let index = 0; index < boundedCount; index += 1) {
     const relative = readU32(data, poolOffset + 28 + index * 4);
     let cursor = base + relative;
+    if (cursor >= data.length) {
+      continue;
+    }
     try {
       if (isUtf8) {
         cursor = decodeUleb128(data, cursor).next;
@@ -249,45 +258,94 @@ export function certificateSha1(certificateDer: Buffer): string {
   return crypto.createHash('sha1').update(certificateDer).digest('hex').toUpperCase();
 }
 
+/** Reads a DER TLV header, returning the value range and the total length. */
+function derTlv(buffer: Buffer, offset: number): { tag: number; valueStart: number; valueEnd: number; next: number } | null {
+  if (offset + 2 > buffer.length) {
+    return null;
+  }
+  const tag = buffer[offset];
+  let length = buffer[offset + 1];
+  let cursor = offset + 2;
+  if (length & 0x80) {
+    const lengthBytes = length & 0x7f;
+    if (lengthBytes === 0 || lengthBytes > 4 || cursor + lengthBytes > buffer.length) {
+      return null;
+    }
+    length = 0;
+    for (let index = 0; index < lengthBytes; index += 1) {
+      length = length * 256 + buffer[cursor + index];
+    }
+    cursor += lengthBytes;
+  }
+  const valueEnd = cursor + length;
+  if (valueEnd > buffer.length) {
+    return null;
+  }
+  return { tag, valueStart: cursor, valueEnd, next: valueEnd };
+}
+
+/**
+ * True when the DER value is structurally an X.509 Certificate:
+ *   Certificate ::= SEQUENCE { tbsCertificate SEQUENCE, signatureAlgorithm, signatureValue }
+ */
+function looksLikeX509(der: Buffer): boolean {
+  const outer = derTlv(der, 0);
+  if (!outer || outer.tag !== 0x30 || outer.valueEnd !== der.length) {
+    return false;
+  }
+  const tbs = derTlv(der, outer.valueStart);
+  if (!tbs || tbs.tag !== 0x30) {
+    return false;
+  }
+  // tbsCertificate is itself a SEQUENCE of at least version/serial/validity.
+  const first = derTlv(der, tbs.valueStart);
+  if (!first || tbs.valueEnd <= tbs.valueStart) {
+    return false;
+  }
+  // After tbsCertificate there must be two more elements (algorithm, signature).
+  const algorithm = derTlv(der, tbs.next);
+  const signature = algorithm ? derTlv(der, algorithm.next) : null;
+  return Boolean(algorithm && signature);
+}
+
 /**
  * Extracts the signer certificate from a PKCS#7 SignedData blob.
  *
  * The blob nests several SEQUENCEs (SignedData, its `certificates` set, then the
- * certificate itself), so "the first large SEQUENCE" picks the wrong one. The
- * certificate is the SEQUENCE whose structure parses as an X.509 TBSCertificate:
- * it must start with another `30 82`, be at least a few hundred bytes, and fit
- * exactly inside the blob. The deepest such candidate is the certificate.
+ * certificate itself), so picking by size is unreliable: at RSA-3072/4096 the
+ * SubjectPublicKeyInfo nested inside the certificate is longer than a smaller
+ * certificate and wins a "shortest" rule. The certificate is instead identified
+ * structurally — a DER SEQUENCE that parses exactly as `Certificate` with a
+ * TBSCertificate, an algorithm and a signature, all consuming the whole value.
+ * `certificates [0] IMPLICIT` means the set holds the certificates directly, so
+ * the first structural match in document order is the signer.
  */
 export function firstCertificateFromPkcs7(pkcs7: Buffer): Buffer | null {
   const candidates: Buffer[] = [];
   const walk = (buffer: Buffer, depth: number): void => {
-    for (let offset = 0; offset + 4 <= buffer.length; offset += 1) {
-      if (buffer[offset] !== 0x30 || buffer[offset + 1] !== 0x82) {
+    if (depth > 8) {
+      return;
+    }
+    for (let offset = 0; offset + 2 <= buffer.length; offset += 1) {
+      const tag = buffer[offset];
+      // Certificates are SEQUENCEs; skip everything else but keep scanning.
+      if (tag !== 0x30) {
         continue;
       }
-      const length = buffer.readUInt16BE(offset + 2);
-      const end = offset + 4 + length;
-      if (length < 0x180 || end > buffer.length) {
+      const header = derTlv(buffer, offset);
+      if (!header || header.valueEnd <= header.valueStart) {
         continue;
       }
-      const inner = buffer.subarray(offset, end);
-      // An X.509 certificate's first child is its TBSCertificate SEQUENCE.
-      if (inner[4] !== 0x30) {
-        continue;
+      const candidate = buffer.subarray(offset, header.valueEnd);
+      if (candidate.length >= 0x80 && looksLikeX509(candidate)) {
+        candidates.push(Buffer.from(candidate));
       }
-      candidates.push(Buffer.from(inner));
-      if (depth < 6) {
-        walk(inner.subarray(4), depth + 1);
-      }
+      walk(buffer.subarray(header.valueStart, header.valueEnd), depth + 1);
+      offset = header.valueEnd - 1;
     }
   };
   walk(pkcs7, 0);
-  if (candidates.length === 0) {
-    return null;
-  }
-  // The certificate is the innermost candidate, i.e. the shortest one that
-  // still spans a full X.509 structure.
-  return candidates.sort((left, right) => left.length - right.length)[0];
+  return candidates[0] ?? null;
 }
 
 /** Hosts shipped as documentation samples, never a control-plane seed. */
@@ -324,7 +382,11 @@ export function apkDiscoveryFromBytes(apk: Buffer, apkUrl: string): ApkDiscovery
   const strings: string[] = [];
   for (const [name, data] of entries) {
     if (name.endsWith('.dex')) {
-      strings.push(...dexStrings(data));
+      // A spread here overflows the call stack: one dex routinely carries more
+      // literals than the argument limit allows.
+      for (const value of dexStrings(data)) {
+        strings.push(value);
+      }
     }
   }
   const identity = manifest

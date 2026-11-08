@@ -7,11 +7,14 @@ import { fileURLToPath } from 'node:url';
 import {
   apkDiscoveryFromBytes,
   apkFileName,
+  axmlStrings,
+  certificateSha1,
   controlPlaneKeyCandidates,
   apkSlot,
   candidateApkUrls,
   cdnConfigUrls,
   dexStrings,
+  firstCertificateFromPkcs7,
   inlineDownloadSpec,
   manifestIdentity,
   parseCdnConfig,
@@ -226,3 +229,133 @@ function buildAxmlStrings(values) {
   fileHeader.writeUInt32LE(8 + chunkSize, 4);
   return Buffer.concat([fileHeader, header, indexTable, stringData]);
 }
+
+/** Builds a DER SEQUENCE around a payload, using the long form above 127 bytes. */
+function derSequence(payload) {
+  if (payload.length < 0x80) {
+    return Buffer.concat([Buffer.from([0x30, payload.length]), payload]);
+  }
+  const length = Buffer.alloc(3);
+  length[0] = 0x82;
+  length.writeUInt16BE(payload.length, 1);
+  return Buffer.concat([Buffer.from([0x30]), length, payload]);
+}
+
+/**
+ * Builds a structurally valid X.509-shaped certificate of a given size.
+ * `firstCertificateFromPkcs7` identifies the certificate by structure, not by
+ * a field the tests care about, so the body only has to be well formed.
+ */
+function fakeCertificate(totalLength) {
+  const body = Buffer.alloc(Math.max(totalLength - 6, 16), 0x41);
+  const tbs = derSequence(body);
+  // signatureAlgorithm and signatureValue, both minimally encoded SEQUENCEs.
+  const algorithm = derSequence(Buffer.alloc(8, 0x06));
+  const signature = derSequence(Buffer.alloc(16, 0x42));
+  return derSequence(Buffer.concat([tbs, algorithm, signature]));
+}
+
+/** Wraps certificates the way PKCS#7 SignedData does: SEQUENCE { OID, [0] certs }. */
+function fakePkcs7(certificates) {
+  const signedData = Buffer.concat([
+    derSequence(Buffer.alloc(34, 0x2a)),          // SignedData body stand-in
+    Buffer.concat([Buffer.from([0xa0]), ...certsPayload(certificates)])
+  ]);
+  return derSequence(signedData);
+}
+
+function certsPayload(certificates) {
+  const joined = Buffer.concat(certificates);
+  if (joined.length < 0x80) {
+    return [Buffer.from([joined.length]), joined];
+  }
+  const length = Buffer.alloc(3);
+  length[0] = 0x82;
+  length.writeUInt16BE(joined.length, 1);
+  return [Buffer.from([0x82]), length, joined];
+}
+
+test('the certificate is chosen by structure, not by size', () => {
+  // An RSA-4096 certificate nests a large SubjectPublicKeyInfo; a "shortest
+  // SEQUENCE" rule picked that instead. The structural rule ignores size.
+  const small = fakeCertificate(400);
+  const large = fakeCertificate(1600);
+  const blob = fakePkcs7([small, large]);
+  const found = firstCertificateFromPkcs7(blob);
+  assert.ok(found);
+  assert.equal(found.length, small.length);
+  assert.equal(certificateSha1(found), certificateSha1(small));
+});
+
+test('a certificate carrying a long length encoding is read in full', () => {
+  const cert = fakeCertificate(1400);
+  const found = firstCertificateFromPkcs7(fakePkcs7([cert]));
+  assert.ok(found);
+  assert.deepEqual(found, cert);
+});
+
+test('a blob without a certificate yields null', () => {
+  assert.equal(firstCertificateFromPkcs7(Buffer.from([0x30, 0x03, 0x02, 0x01, 0x00])), null);
+  assert.equal(firstCertificateFromPkcs7(Buffer.alloc(0)), null);
+});
+
+test('a declared string count beyond the buffer is bounded', () => {
+  // A corrupt manifest can declare 0xFFFFFFFF entries; before the bound this
+  // looped for billions of iterations and pinned the process.
+  const pool = Buffer.alloc(64);
+  pool.writeUInt16LE(0x0003, 0);
+  pool.writeUInt16LE(0x0001, 8);
+  pool.writeUInt32LE(0xFFFFFFFF, 16);
+  pool.writeUInt32LE(0x200, 24);
+  const started = Date.now();
+  const values = axmlStrings(pool);
+  assert.ok(Array.isArray(values));
+  assert.ok(Date.now() - started < 1000);
+});
+
+test('an APK whose dex carries a very large string table still parses', () => {
+  // `strings.push(...dexStrings(...))` threw RangeError past ~124k literals,
+  // which real APKs exceed. The parser now appends instead of spreading.
+  const literals = Array.from({ length: 200000 }, (_, index) => `literal_${index}`);
+  const ulebSize = (value) => {
+    let size = 1;
+    let rest = value;
+    while (rest >= 0x80) {
+      rest = Math.floor(rest / 0x80);
+      size += 1;
+    }
+    return size;
+  };
+  const writeUleb = (buffer, offset, value) => {
+    let cursor = offset;
+    let rest = value;
+    while (rest >= 0x80) {
+      buffer.writeUInt8((rest & 0x7f) | 0x80, cursor);
+      rest = Math.floor(rest / 0x80);
+      cursor += 1;
+    }
+    buffer.writeUInt8(rest, cursor);
+    return cursor + 1;
+  };
+  const dataSize = literals.reduce((total, value) => total + ulebSize(value.length) + value.length + 1, 0);
+  const dataOffset = 112 + literals.length * 4;
+  const dex = Buffer.alloc(dataOffset + dataSize);
+  dex.write('dex\n035\0', 0, 'latin1');
+  dex.writeUInt32LE(literals.length, 56);       // string_ids_size
+  dex.writeUInt32LE(112, 60);                   // string_ids_off
+  dex.writeUInt32LE(dataOffset, 104);           // data_off
+  let cursor = dataOffset;
+  literals.forEach((value, index) => {
+    // string_data_off is an absolute file offset, as the parser reads it.
+    dex.writeUInt32LE(cursor, 112 + index * 4);
+    cursor = writeUleb(dex, cursor, value.length);
+    dex.write(value, cursor, 'latin1');
+    cursor += value.length;
+    dex.writeUInt8(0, cursor);
+    cursor += 1;
+  });
+  const parsed = dexStrings(dex);
+  assert.equal(parsed.length, literals.length);
+  assert.equal(parsed[0], 'literal_0');
+  assert.equal(parsed[literals.length - 1], `literal_${literals.length - 1}`);
+});

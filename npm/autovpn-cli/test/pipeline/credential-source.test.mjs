@@ -16,6 +16,7 @@ import {
 import {
   apiLineValue,
   apiLinkValues,
+  credentialBrandKey,
   loginSignature,
   parseRouteGroups,
   resolveBrandLayout,
@@ -251,4 +252,17 @@ test('the plateau stop waits for the floor rounds', () => {
   assert.equal(shouldStopOnPlateau(5, 2, policy), true);
   // One dry round is below the limit.
   assert.equal(shouldStopOnPlateau(9, 1, policy), false);
+});
+
+test('one brand reached by two profile entries shares a cache key', () => {
+  // The APK, certificate and seeds do not depend on the profile entry name, so
+  // `leiting` and `leiting_backup` must resolve to the same fingerprint.
+  const site = { official_site: 'https://www.68123836.com' };
+  assert.equal(credentialBrandKey('leiting', site), credentialBrandKey('leiting_backup', site));
+});
+
+test('the brand key falls back to the source name without a site', () => {
+  assert.equal(credentialBrandKey('leiting', {}), 'lt');
+  assert.equal(credentialBrandKey('custom_brand', {}), 'custom_brand');
+  assert.equal(credentialBrandKey('', {}), 'unknown');
 });

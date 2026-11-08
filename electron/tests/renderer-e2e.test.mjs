@@ -856,6 +856,33 @@ test('renderer matches the six-page canvas redesign and supports page navigation
       [20, 60]
     );
 
+    // Credential mode: the official site shows as a placeholder until typed,
+    // the password keeps its exact bytes, and saving does not stamp the
+    // url-mode round settings onto the source.
+    await page.locator('[data-settings-card="sources"]').click();
+    await page.waitForSelector('#settingsDrawer[data-open="true"]');
+    await page.locator('[data-drawer-source="leiting"][data-drawer-mode]').selectOption('credential');
+    const siteInput = page.locator('[data-drawer-source="leiting"][data-drawer-key="official_site"]');
+    assert.equal(await siteInput.inputValue(), '');
+    assert.match(await siteInput.getAttribute('placeholder'), /^https:\/\//);
+    await siteInput.fill('https://site.example');
+    await page.locator('[data-drawer-source="leiting"][data-drawer-key="account"]').fill('acct1');
+    await page.locator('[data-drawer-source="leiting"][data-drawer-key="password"]').fill(' pass with space ');
+    assert.equal(
+      await page.locator('[data-drawer-source="leiting"][data-drawer-key="password"]').inputValue(),
+      ' pass with space '
+    );
+    await page.locator('[data-drawer-save="save"]').click();
+    await page.waitForSelector('#settingsDrawer[data-open="false"]');
+    const savedCredential = await page.evaluate(() => window.__savedProfiles.at(-1).sources.leiting);
+    assert.equal(savedCredential.official_site, 'https://site.example');
+    assert.equal(savedCredential.account, 'acct1');
+    assert.equal(savedCredential.password, ' pass with space ');
+    assert.equal(savedCredential.max_iterations, 25);
+    assert.equal(savedCredential.plateau_limit, 20);
+    // The url field must not survive a switch to credential mode.
+    assert.equal(savedCredential.url, undefined);
+
     await page.locator('[data-settings-card="availability_targets"]').click();
     await page.waitForSelector('#settingsDrawer[data-open="true"]');
     await page.setViewportSize({ width: 390, height: 844 });

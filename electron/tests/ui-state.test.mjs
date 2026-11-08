@@ -562,3 +562,18 @@ test('dashboard metrics render missing legacy per-source dedupe counts as unknow
 
   assert.match(buildDashboardMetricsMarkup(vm), /雷霆 —/);
 });
+
+test('saving the iteration drawer leaves credential sources on their own rounds', () => {
+  // These fields describe the url-mode fetch. A credential source re-requests
+  // every route per round, so stamping 40 rounds onto it multiplies real API
+  // traffic; it keeps its own values instead.
+  const sources = {
+    leiting: { mode: 'credential', official_site: 'https://site.example', max_iterations: 3, plateau_limit: 2 },
+    legacy: { url: 'https://provider.example/list', key: 'k' }
+  };
+  const saved = applySourceIterationDraft(sources, { maxIterations: 40, plateauLimit: 20, areaMin: 0, areaMax: 100 });
+  assert.equal(saved.leiting.max_iterations, 3);
+  assert.equal(saved.leiting.plateau_limit, 2);
+  assert.equal(saved.legacy.max_iterations, 40);
+  assert.equal(saved.legacy.plateau_limit, 20);
+});

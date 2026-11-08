@@ -540,6 +540,18 @@ function handleDocumentInput(event) {
       return;
     }
     sourceDraft[sourceName].mode = target.value === 'credential' ? 'credential' : 'url';
+    // The two modes carry different fields. Leaving the other mode's address in
+    // the draft keeps a stale value in the saved profile, which the runner then
+    // reads depending on how the source is classified.
+    if (sourceDraft[sourceName].mode === 'credential') {
+      delete sourceDraft[sourceName].url;
+    } else {
+      delete sourceDraft[sourceName].official_site;
+      delete sourceDraft[sourceName].account;
+      delete sourceDraft[sourceName].password;
+      delete sourceDraft[sourceName].platform;
+      delete sourceDraft[sourceName].max_areas;
+    }
     renderAll();
     return;
   }
@@ -554,14 +566,18 @@ function handleDocumentInput(event) {
     if (!sourceDraft?.[sourceName]) {
       return;
     }
-    const rawValue = target.type === 'checkbox' ? target.checked : target.value.trim();
+    // A password is taken verbatim: a leading or trailing space is part of the
+    // credential, and trimming it turns a valid login into an opaque rejection.
+    const rawValue = target.type === 'checkbox'
+      ? target.checked
+      : (key === 'password' ? target.value : target.value.trim());
     // Credential-mode addresses are official sites, not pasted request URLs, so
     // they must not be run through the curl/URL normaliser.
     const normalizeUrl = key === 'url' && sourceDraft[sourceName].mode !== 'credential';
     const normalizedValue = normalizeUrl && typeof rawValue === 'string'
       ? normalizeSourceUrlInput(rawValue)
       : rawValue;
-    if (target.type !== 'checkbox' && normalizedValue !== target.value) {
+    if (normalizeUrl && target.type !== 'checkbox' && normalizedValue !== target.value) {
       target.value = normalizedValue;
     }
     sourceDraft[sourceName][key] =

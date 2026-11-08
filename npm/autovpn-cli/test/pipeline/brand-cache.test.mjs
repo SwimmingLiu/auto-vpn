@@ -85,3 +85,43 @@ test('the cache directory sits beside the profile under the runtime root', () =>
     path.join('/home/user/.auto-vpn', 'brand-fingerprints')
   );
 });
+
+test('a cache entry with malformed seed domains is rejected', () => {
+  // A parseable but invalid entry used to reach `base.replace` and crash every
+  // run before any network call, with no way to recover but deleting the file.
+  const { store, cacheDir } = tempStore();
+  fs.mkdirSync(cacheDir, { recursive: true });
+  fs.writeFileSync(path.join(cacheDir, 'brand-x.json'), JSON.stringify({ brand: 'x', seed_domains: [12345] }), 'utf8');
+  assert.equal(store.read('x'), null);
+});
+
+test('a cache entry missing a required field is rejected', () => {
+  const { store, cacheDir } = tempStore();
+  fs.mkdirSync(cacheDir, { recursive: true });
+  fs.writeFileSync(path.join(cacheDir, 'brand-y.json'), JSON.stringify({ brand: 'y', seed_domains: ['https://a.example:20000'] }), 'utf8');
+  assert.equal(store.read('y'), null);
+});
+
+test('clear drops the entry so the next run re-inspects', () => {
+  const { store } = tempStore();
+  store.write('雷霆', fingerprint);
+  assert.ok(store.read('雷霆'));
+  store.clear('雷霆');
+  assert.equal(store.read('雷霆'), null);
+});
+
+test('clear on a missing entry is a no-op', () => {
+  const { store } = tempStore();
+  assert.doesNotThrow(() => store.clear('不存在'));
+});
+
+test('a write failure does not propagate', () => {
+  // The cache is an optimisation; a read-only directory must not fail a run
+  // that already holds a working fingerprint.
+  const blocker = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-ro-'));
+  const filePath = path.join(blocker, 'not-a-dir');
+  fs.writeFileSync(filePath, 'x', 'utf8');
+  const store = new FingerprintStore({ cacheDir: path.join(filePath, 'nested') });
+  assert.doesNotThrow(() => store.write('雷霆', fingerprint));
+  assert.equal(store.read('雷霆'), null);
+});

@@ -56,6 +56,8 @@ export interface ExtractedSourceResult {
   successful_iterations: number;
   failed_iterations: number;
   links: string[];
+  /** Human-readable failures from a credential source, for the event log. */
+  errors?: string[];
 }
 
 export interface ExtractBackendOptions {
@@ -463,14 +465,21 @@ export async function fetchSourceLinksWithBackend(input: ExtractInput, options: 
       eventCallback: options.eventCallback,
       linksCallback: options.linksCallback,
       fingerprintStore: options.fingerprintStore,
-      memo: options.fingerprintMemo
+      memo: options.fingerprintMemo,
+      // The credential flow talks to the same hosts as the url flow, so it
+      // needs the same egress handling: an injected fetch for tests, the
+      // configured upstream proxy, and the curl TLS fallback.
+      fetchImpl: options.fetch,
+      env: options.env,
+      curlFetch: options.curlFetch
     });
     return {
       source_name: result.source_name,
       requested_iterations: result.requested_iterations,
       successful_iterations: result.successful_iterations,
       failed_iterations: result.failed_iterations,
-      links: result.links
+      links: result.links,
+      errors: result.diagnostics.errors
     };
   }
   return fetchSourceLinksInNode(input, options);

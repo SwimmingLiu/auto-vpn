@@ -36,7 +36,9 @@ export function profileSummary(projectRoot: string, env: NodeJS.ProcessEnv = pro
         enabled: Boolean(config?.enabled ?? true),
         mode,
         url: mode === 'url' ? state(config?.url) : state(config?.official_site ?? config?.apk_url),
-        key: state(config?.key),
+        // A credential source has no control-plane key in the profile; the key
+        // is discovered from the APK, so the check must not require one.
+        key: mode === 'url' ? state(config?.key) : state(config?.key ?? 'discovered'),
         account: state(config?.account),
         platform: String(config?.platform ?? 'android')
       }

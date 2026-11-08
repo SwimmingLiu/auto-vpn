@@ -79,8 +79,26 @@ export interface BrandCredentialSource {
   timeout_ms?: number;
 }
 
+export type CredentialFetchLike = (url: string, init?: Record<string, unknown>) => Promise<{
+  ok?: boolean;
+  status?: number;
+  text(): Promise<string>;
+  arrayBuffer(): Promise<ArrayBuffer>;
+}>;
+
+/**
+ * The extract backend's own fetch shape, which does not promise `arrayBuffer`.
+ * The APK download needs it; the text calls do not.
+ */
+export type CredentialTextFetch = (url: string, init?: Record<string, unknown>) => Promise<{
+  ok?: boolean;
+  status?: number;
+  text(): Promise<string>;
+}>;
+
 export interface CredentialExtractOptions {
-  fetchImpl?: typeof fetch;
+  /** Injectable for tests; production passes `globalThis.fetch`. */
+  fetchImpl?: CredentialTextFetch | CredentialFetchLike;
   now?: () => Date;
   eventCallback?: (type: string, payload: Record<string, unknown>) => void;
   linksCallback?: (links: string[]) => void | Promise<void>;
@@ -90,6 +108,12 @@ export interface CredentialExtractOptions {
   fingerprintStore?: FingerprintStore;
   /** Shared in-memory fingerprint, so several sources of one brand inspect once. */
   memo?: FingerprintMemo;
+  /**
+   * Egress settings, forwarded from the extract backend so a credential source
+   * behaves like a url source on networks that need a proxy or a TLS fallback.
+   */
+  env?: NodeJS.ProcessEnv;
+  curlFetch?: (url: string, proxyUrl: string) => Promise<string>;
 }
 
 export interface CredentialDiagnostics {
@@ -175,6 +199,27 @@ function siteHost(site: string): string {
   } catch {
     return '';
   }
+}
+
+/**
+ * Stable key for a brand's fingerprint.
+ *
+ * A profile may name two sources of the same brand (`leiting`, `leiting_ios`),
+ * and both resolve to the same APK: the package, certificate and seeds do not
+ * depend on the profile entry. Keying the cache and the in-run memo by that
+ * identity means one download and one inspection per brand, and one cache file
+ * that both sources share. Falls back to the source name when the brand can't
+ * be established, which keeps custom entries working.
+ */
+export function credentialBrandKey(sourceName: string, source: BrandCredentialSource): string {
+  const site = String(source.official_site ?? '').trim();
+  const host = siteHost(site);
+  if (host) {
+    return BRAND_APK_PREFIXES[host] ?? host;
+  }
+  const name = String(sourceName ?? '').trim().toLowerCase();
+  const prefix = BRAND_APK_PREFIXES[sourceName] ?? BRAND_APK_PREFIXES[name];
+  return prefix ?? (name || 'unknown');
 }
 
 /** A fingerprint shared across the sources of one pipeline run. */
@@ -285,10 +330,35 @@ interface FetchTextResult {
   ok: boolean;
 }
 
+/**
+ * Egress settings shared by every request the credential flow makes.
+ *
+ * A TLS-intercepting network or a configured upstream proxy breaks plain
+ * `fetch`, and the url mode already falls back to curl for exactly that case;
+ * both modes must agree, so the settings travel with the context.
+ */
+interface Egress {
+  env?: NodeJS.ProcessEnv;
+  curlFetch?: (url: string, proxyUrl: string) => Promise<string>;
+}
+
+function isEnabled(value: unknown): boolean {
+  return ['1', 'true', 'yes', 'on'].includes(String(value ?? '').trim().toLowerCase());
+}
+
+function upstreamProxyUrl(env: NodeJS.ProcessEnv | undefined): string {
+  if (!env || !isEnabled(env.VPN_AUTOMATION_USE_UPSTREAM_PROXY)) {
+    return '';
+  }
+  const value = String(env.VPN_AUTOMATION_UPSTREAM_PROXY ?? 'http://127.0.0.1:7897').trim();
+  return ['', 'off', 'none', 'false', '0'].includes(value.toLowerCase()) ? '' : value;
+}
+
 async function fetchText(
-  fetchImpl: typeof fetch,
+  fetchImpl: CredentialTextFetch,
   url: string,
-  timeoutMs: number
+  timeoutMs: number,
+  egress?: Egress
 ): Promise<FetchTextResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -299,7 +369,18 @@ async function fetchText(
     }
     return { text: await response.text(), url, ok: true };
   } catch {
-    return { text: '', url, ok: false };
+    // Same fallback the url mode applies: curl handles a proxy or a
+    // self-signed/intercepted TLS chain that Node's fetch rejects.
+    const proxyUrl = upstreamProxyUrl(egress?.env);
+    if (!egress?.curlFetch) {
+      return { text: '', url, ok: false };
+    }
+    try {
+      const text = await egress.curlFetch(url, proxyUrl);
+      return text.trim() ? { text, url, ok: true } : { text: '', url, ok: false };
+    } catch {
+      return { text: '', url, ok: false };
+    }
   } finally {
     clearTimeout(timer);
   }
@@ -329,8 +410,9 @@ interface CommContext {
   /** `last_active_domain` — the host that last answered successfully. */
   lastActiveDomain: string;
   key: string;
-  fetchImpl: typeof fetch;
+  fetchImpl: CredentialTextFetch;
   timeoutMs: number;
+  egress?: Egress;
 }
 
 function buildComm(ctx: CommContext, timestampMs: number): string {
@@ -370,7 +452,7 @@ async function getCommStr(
   for (const base of candidates) {
     // `build_url()` is domain + uri + comm params + the call's own params.
     const url = buildUrl(`${base.replace(/\/+$/, '')}${uri}`, buildComm(ctx, Date.now()) + params);
-    const response = await fetchText(ctx.fetchImpl, url, ctx.timeoutMs);
+    const response = await fetchText(ctx.fetchImpl, url, ctx.timeoutMs, ctx.egress);
     const decrypted = decodeControlPlane(response.text, ctx.key ?? '');
     if (decrypted) {
       ctx.lastActiveDomain = base;
@@ -403,7 +485,7 @@ async function getRawCommStr(
   }
   for (const base of candidates) {
     const url = buildUrl(`${base.replace(/\/+$/, '')}${uri}`, buildComm(ctx, Date.now()) + params);
-    const response = await fetchText(ctx.fetchImpl, url, ctx.timeoutMs);
+    const response = await fetchText(ctx.fetchImpl, url, ctx.timeoutMs, ctx.egress);
     if (response.text.trim()) {
       ctx.lastActiveDomain = base;
       return response.text;
@@ -427,15 +509,16 @@ export interface EversionResult {
  * JSON. Candidates come from the configured value and the two known constants.
  */
 export async function resolveEversion(
-  fetchImpl: typeof fetch,
+  fetchImpl: CredentialTextFetch,
   seedDomains: string[],
   comm: (ts: number) => string,
   keyCandidates: string[],
-  timeoutMs: number
+  timeoutMs: number,
+  egress?: Egress
 ): Promise<EversionResult | null> {
   for (const base of seedDomains) {
     const url = buildUrl(`${base.replace(/\/+$/, '')}/api/eversion`, comm(Date.now()));
-    const response = await fetchText(fetchImpl, url, timeoutMs);
+    const response = await fetchText(fetchImpl, url, timeoutMs, egress);
     if (!response.text) {
       continue;
     }
@@ -545,13 +628,31 @@ function event(options: CredentialExtractOptions, type: string, payload: Record<
   options.eventCallback?.(type, payload);
 }
 
+/**
+ * A real APK is 20-30 MB. The download host is scraped from vendor JS rather
+ * than pinned, so an oversized body (or a redirect to one) must be refused
+ * instead of buffered into memory.
+ */
+const MAX_APK_BYTES = 96 * 1024 * 1024;
+
+/** Refuses a response whose declared size already exceeds the cap. */
+function declaredSizeTooLarge(response: unknown): boolean {
+  const raw = (response as { headers?: { get?(name: string): string | null } })?.headers?.get?.('content-length');
+  if (!raw) {
+    return false;
+  }
+  const length = Number(raw);
+  return Number.isFinite(length) && length > MAX_APK_BYTES;
+}
+
 async function defaultLoadApk(
   source: BrandCredentialSource,
-  fetchImpl: typeof fetch,
+  fetchImpl: CredentialFetchLike,
   timeoutMs: number,
   now: Date,
   log: (message: string) => void,
-  brandName = ''
+  brandName = '',
+  egress?: Egress
 ): Promise<Buffer | null> {
   if (source.apk_path) {
     try {
@@ -566,10 +667,15 @@ async function defaultLoadApk(
     const timer = setTimeout(() => controller.abort(), Math.max(timeoutMs, 120_000));
     try {
       const response = await fetchImpl(source.apk_url, { signal: controller.signal });
-      if (!response.ok) {
+      if (!response.ok || typeof response.arrayBuffer !== 'function') {
         return null;
       }
-      return Buffer.from(await response.arrayBuffer());
+      if (declaredSizeTooLarge(response)) {
+        log(`[extract] apk at ${source.apk_url} exceeds ${MAX_APK_BYTES} bytes; refusing`);
+        return null;
+      }
+      const bytes = Buffer.from(await response.arrayBuffer());
+      return bytes.length > MAX_APK_BYTES ? null : bytes;
     } catch {
       return null;
     } finally {
@@ -584,7 +690,7 @@ async function defaultLoadApk(
 
   // The site names its download chunk; that chunk points at a cdn.js which
   // declares the download hosts and the archive cadence.
-  const home = await fetchText(fetchImpl, `${site}/`, timeoutMs);
+  const home = await fetchText(fetchImpl, `${site}/`, timeoutMs, egress);
   if (!home.text) {
     log(`[extract] official site unreachable: ${site}`);
     return null;
@@ -597,8 +703,10 @@ async function defaultLoadApk(
     // Some brands hardcode the download origin and slot formula in the chunk.
     // The filename is assembled at runtime (`'…_mf'+index+'apk'`), so the host
     // and the interval are read separately rather than from one literal path.
-    const hostsInChunk = [...chunkText.matchAll(/https?:\/\/([a-z0-9.-]+)\/apks64\//gi)]
-      .map((match) => `https://${match[1]}`);
+    // The scheme and port are kept: a brand that publishes `http://cdn:8080/`
+    // would otherwise be rewritten to `https://cdn` and every request would 404.
+    const hostsInChunk = [...chunkText.matchAll(/(https?):\/\/([a-z0-9.-]+(?::\d+)?)\/apks64\//gi)]
+      .map((match) => `${match[1].toLowerCase()}://${match[2]}`);
     if (hostsInChunk.length > 0) {
       hosts.push(...hostsInChunk);
       const prefixInChunk = /apks64\/[^"'`+]*_([a-z]{2,6})["'`+]?\s*\+\s*index/i.exec(chunkText)
@@ -622,7 +730,7 @@ async function defaultLoadApk(
       } catch {
         continue;
       }
-      const cdn = await fetchText(fetchImpl, cdnUrl, timeoutMs);
+      const cdn = await fetchText(fetchImpl, cdnUrl, timeoutMs, egress);
       if (!cdn.text) {
         continue;
       }
@@ -644,7 +752,7 @@ async function defaultLoadApk(
       continue;
     }
     seenChunks.add(chunkUrl);
-    const chunk = await fetchText(fetchImpl, chunkUrl, timeoutMs);
+    const chunk = await fetchText(fetchImpl, chunkUrl, timeoutMs, egress);
     if (!chunk.text) {
       continue;
     }
@@ -667,7 +775,7 @@ async function defaultLoadApk(
   // Fall back to the root `cdn.js`, which two of the brands serve directly.
   if (hosts.length === 0) {
     for (const cdnUrl of cdnConfigUrls(site, now.getTime())) {
-      const cdn = await fetchText(fetchImpl, cdnUrl, timeoutMs);
+      const cdn = await fetchText(fetchImpl, cdnUrl, timeoutMs, egress);
       if (!cdn.text) {
         continue;
       }
@@ -700,10 +808,16 @@ async function defaultLoadApk(
     const timer = setTimeout(() => controller.abort(), Math.max(timeoutMs, 120_000));
     try {
       const response = await fetchImpl(candidate, { signal: controller.signal });
-      if (!response.ok) {
+      if (!response.ok || typeof response.arrayBuffer !== 'function') {
+        continue;
+      }
+      if (declaredSizeTooLarge(response)) {
         continue;
       }
       const bytes = Buffer.from(await response.arrayBuffer());
+      if (bytes.length > MAX_APK_BYTES) {
+        continue;
+      }
       if (bytes.length > 1_000_000 && bytes[0] === 0x50 && bytes[1] === 0x4b) {
         log(`[extract] apk ${candidate} (${(bytes.length / 1_048_576).toFixed(1)} MB)`);
         return bytes;
@@ -787,16 +901,25 @@ export async function fetchCredentialSourceLinks(
   // These only change when the vendor publishes a new build, so a cached entry
   // is used first and the APK is inspected only when the cached seeds all stop
   // answering. That keeps a normal run to a handful of HTTP calls.
+  const brandKey = credentialBrandKey(input.source_name, source);
   const store = options.fingerprintStore ?? null;
-  const memo = options.memo ?? createFingerprintMemo(store, input.source_name);
-  const cached = memo.get();
+  const memo = options.memo ?? createFingerprintMemo(store, brandKey);
+  // A fingerprint past its trust window is still used when its seeds answer,
+  // but it is re-verified against the APK rather than trusted indefinitely: a
+  // vendor can rotate the signing certificate while the old seeds still serve
+  // `/api/eversion`, and then every login fails on a stale certificate.
+  const fresh = store?.readFresh(brandKey) ?? null;
+  const storedEntry = store?.read(brandKey) ?? null;
+  const staleButUsable = Boolean(storedEntry) && !fresh;
+  const cached = staleButUsable ? storedEntry : memo.get();
+  const egress: Egress = { env: options.env, curlFetch: options.curlFetch };
 
   const inspectApk = async (): Promise<ApkDiscovery | null> => {
     let apkBytes: Buffer | null = null;
     try {
       apkBytes = options.loadApk
         ? await options.loadApk(source)
-        : await defaultLoadApk(source, fetchImpl, timeoutMs, now, log, input.source_name);
+        : await defaultLoadApk(source, fetchImpl as CredentialFetchLike, timeoutMs, now, log, input.source_name, egress);
     } catch (error) {
       errors.push(`apk: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -809,15 +932,44 @@ export async function fetchCredentialSourceLinks(
     return discovered.seed_domains.length > 0 ? discovered : null;
   };
 
-  let discovery: ApkDiscovery | null = cached;
-  let keyCandidates = credentialKeyCandidates(source, cached ?? undefined);
+  // `apk_url` / `apk_path` are an explicit override: when either is set the
+  // caller is asserting a specific build, so a cached fingerprint must not
+  // shadow it. Otherwise the cache would make the override a no-op.
+  const hasApkOverride = Boolean(String(source.apk_url ?? '').trim() || String(source.apk_path ?? '').trim());
+  let discovery: ApkDiscovery | null = hasApkOverride ? null : cached;
+  let keyCandidates = credentialKeyCandidates(source, discovery ?? undefined);
   let eversion: EversionResult | null = null;
+  let cachedInUse = false;
 
   if (discovery) {
     log(`[extract] cached fingerprint ${discovery.package_name} ${discovery.version_name}`);
     eversion = await tryEversion(discovery, keyCandidates);
     if (eversion) {
-      store?.touch(input.source_name);
+      // An entry past its trust window is re-verified against the APK even
+      // though its seeds answered: the vendor can rotate the signing
+      // certificate while the old seeds keep serving `/api/eversion`, and a
+      // stale certificate fails every login with no other signal.
+      if (staleButUsable) {
+        log('[extract] cached fingerprint is past its trust window; re-inspecting the APK');
+        const refreshed = await inspectApk();
+        if (refreshed) {
+          const refreshedEversion = await tryEversion(refreshed, credentialKeyCandidates(source, refreshed));
+          if (refreshedEversion) {
+            discovery = refreshed;
+            eversion = refreshedEversion;
+            keyCandidates = credentialKeyCandidates(source, refreshed);
+            memo.set(refreshed);
+            store?.write(brandKey, refreshed);
+          }
+        }
+        if (discovery === cached) {
+          store?.touch(brandKey);
+        }
+        cachedInUse = true;
+      } else {
+        store?.touch(brandKey);
+        cachedInUse = true;
+      }
     } else {
       log('[extract] cached seeds stopped answering; re-inspecting the APK');
       discovery = null;
@@ -837,7 +989,7 @@ export async function fetchCredentialSourceLinks(
       return { ...empty, failed_iterations: 1 };
     }
     memo.set(discovery);
-    store?.write(input.source_name, discovery);
+    store?.write(brandKey, discovery);
   }
 
   diagnostics.apk_url = discovery.apk_url;
@@ -883,7 +1035,9 @@ export async function fetchCredentialSourceLinks(
       timeoutMs
     );
   }
-  log(`[extract] eversion ok key=${eversion.key.slice(0, 6)}*** api_links=${eversion.api_links.length}`);
+  // Event lines are not passed through the text redactor, so nothing derived
+  // from the key may reach them — not even a prefix.
+  log(`[extract] eversion ok key=<redacted> api_links=${eversion.api_links.length}`);
 
   const ctx: CommContext = {
     identity,
@@ -917,6 +1071,12 @@ export async function fetchCredentialSourceLinks(
     const payload = JSON.parse(loginPlain) as Record<string, unknown>;
     if (Number(payload.code) !== 0) {
       errors.push(`login rejected: code=${String(payload.code)} msg=${String(payload.msg ?? '')}`);
+      // A cached fingerprint whose seeds answer eversion but whose signing
+      // cert the vendor rotated keeps failing here on every run. Drop the
+      // cache so the next run re-inspects the APK instead of repeating this.
+      if (cachedInUse) {
+        store?.clear(brandKey);
+      }
       return { ...empty, failed_iterations: 1 };
     }
     token = String(payload.token ?? '');
@@ -1013,7 +1173,15 @@ export async function fetchCredentialSourceLinks(
         continue;
       }
       answeredInRound += 1;
-      const decoded = extractLinksFromPlaintext(`${route.region}-${route.name}`, plain);
+      // A malformed body must cost this route, not the run: the URL mode wraps
+      // the identical call per iteration for the same reason.
+      let decoded: string[] = [];
+      try {
+        decoded = extractLinksFromPlaintext(`${route.region}-${route.name}`, plain);
+      } catch (error) {
+        errors.push(`route ${route.area}: ${error instanceof Error ? error.message : String(error)}`);
+        continue;
+      }
       for (const link of decoded) {
         if (isPlaceholderLink(link)) {
           placeholders += 1;

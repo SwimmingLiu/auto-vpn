@@ -72,6 +72,14 @@ export function sanitizeProfileForServer(profile: Record<string, any>): Record<s
       safe.deploy[key] = redactIfSet(key, value);
     }
   }
+  // Credential sources carry a real account password; `/api/state` must not
+  // echo it back to the client. The renderer round-trips `<redacted>` through
+  // `preserveRedactedSecrets` on save, so the stored value is untouched.
+  for (const source of Object.values((safe.sources ?? {}) as Record<string, any>)) {
+    if (source && typeof source === 'object' && String(source.password ?? '').trim()) {
+      source.password = '<redacted>';
+    }
+  }
   return safe;
 }
 
@@ -81,7 +89,7 @@ function preserveRedactedSecrets(incoming: Record<string, any>, current: Record<
   for (const [name, source] of Object.entries((merged.sources ?? {}) as Record<string, any>)) {
     const currentSource = currentSources[name] ?? {};
     if (source && typeof source === 'object') {
-      for (const key of ['url', 'key']) {
+      for (const key of ['url', 'key', 'password']) {
         if (source[key] === '<redacted>') {
           source[key] = currentSource[key] ?? '';
         }

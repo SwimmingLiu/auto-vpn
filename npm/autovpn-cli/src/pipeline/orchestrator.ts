@@ -29,7 +29,7 @@ import { RunStore, readLatestStageStatuses } from './run-store.js';
 import { AsyncPermitPool, BoundedWorkerPool } from './streaming-coordinator.js';
 import { createGeoIpLookup, GeoIpLookupOptions } from './geoip.js';
 import { FingerprintStore, resolveFingerprintCacheDir } from './brand-cache.js';
-import { createFingerprintMemo, type FingerprintMemo } from './credential-source.js';
+import { createFingerprintMemo, credentialBrandKey, type FingerprintMemo } from './credential-source.js';
 
 type StageName = 'doctor' | 'extract' | 'dedupe' | 'speedtest' | 'availability' | 'postprocess' | 'render' | 'obfuscate' | 'deploy' | 'verify';
 type StageStatus = 'pending' | 'running' | 'success' | 'failed' | 'skipped';
@@ -145,10 +145,15 @@ function enabledSources(profile: PipelineProfile): Array<[string, SourceConfigIn
       return false;
     }
     // Credential sources carry a site plus an account instead of a request URL.
+    // The first non-empty of the three is enough: `??` would let an empty
+    // `official_site` shadow a working `apk_url` and drop the source.
     if (source.mode === 'credential') {
+      const location = [source.official_site, source.apk_url, source.apk_path]
+        .map((value) => String(value ?? '').trim())
+        .find((value) => value.length > 0);
       return Boolean(String(source.account ?? '').trim())
         && Boolean(String(source.password ?? '').trim())
-        && Boolean(String(source.official_site ?? source.apk_url ?? source.apk_path ?? '').trim());
+        && Boolean(location);
     }
     return Boolean(String(source.url ?? '').trim()) && Boolean(String(source.key ?? '').trim());
   });
@@ -578,6 +583,11 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
       cacheDir: resolveFingerprintCacheDir(resolveUserRuntimeRoot(env)),
       now: context.now ?? (() => new Date())
     });
+    // Keyed by brand, not by profile entry name: two sources of one brand must
+    // share both the in-run memo and the on-disk fingerprint.
+    const brandKeyFor = (sourceName: string, source: SourceConfigInput): string => (
+      String(source.account ?? '').trim() ? credentialBrandKey(sourceName, source) : sourceName
+    );
     const fingerprintMemos = new Map<string, FingerprintMemo>();
     const fingerprintMemoFor = (brand: string): FingerprintMemo => {
       let memo = fingerprintMemos.get(brand);
@@ -717,7 +727,7 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
             eventCallback: (type, payload) => emit(type, payload),
             linksCallback: stream?.onLinks,
             fingerprintStore,
-            fingerprintMemo: fingerprintMemoFor(sourceName)
+            fingerprintMemo: fingerprintMemoFor(brandKeyFor(sourceName, source))
           });
       } catch (error) {
         runStore.recordSourceProgress(sourceName, { processed: 0, total: 0, status: 'failed', error: errorMessage(error) });
@@ -734,10 +744,20 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
         successful_iterations: result.successful_iterations,
         failed_iterations: result.failed_iterations
       };
+      // A credential source reports its own failures (rejected login, APK not
+      // located) as zero links rather than an exception. Recording that as
+      // `success` hides the reason, so the source is marked failed and the
+      // text is emitted where an operator can read it.
+      const sourceErrors = (result.errors ?? []).filter((line) => String(line ?? '').trim());
+      const sourceFailed = result.links.length === 0 && sourceErrors.length > 0;
+      if (sourceFailed) {
+        emit('log', { message: `[extract] ${result.source_name} produced no links: ${sourceErrors.join('; ')}` });
+      }
       runStore.recordSourceProgress(sourceName, {
         processed: result.requested_iterations,
         total: result.requested_iterations,
-        status: 'success'
+        status: sourceFailed ? 'failed' : 'success',
+        ...(sourceFailed ? { error: sourceErrors.join('; ') } : {})
       });
       return result;
     }));
@@ -1415,6 +1435,24 @@ export async function resumeNodePipeline(options: NodeResumeOptions, context: Ru
   const report = await readJson<Record<string, unknown>>(path.join(artifactDir, 'pipeline_report.json'), {});
   const summary = pipelineSummaryFromReport(artifactDir, report);
   const runtimePath = path.join(artifactDir, 'runtime');
+  // A resumed run must reuse the fingerprint cache too: re-extracting a
+  // credential source would otherwise re-download and re-parse the full APK.
+  const resumeFingerprintStore = new FingerprintStore({
+    cacheDir: resolveFingerprintCacheDir(resolveUserRuntimeRoot(env)),
+    now: context.now ?? (() => new Date())
+  });
+  const resumeMemos = new Map<string, FingerprintMemo>();
+  const resumeMemoFor = (brand: string): FingerprintMemo => {
+    let memo = resumeMemos.get(brand);
+    if (!memo) {
+      memo = createFingerprintMemo(resumeFingerprintStore, brand);
+      resumeMemos.set(brand, memo);
+    }
+    return memo;
+  };
+  const resumeBrandKeyFor = (sourceName: string, source: SourceConfigInput): string => (
+    String(source.account ?? '').trim() ? credentialBrandKey(sourceName, source) : sourceName
+  );
 
   const emit = (type: string, payload: Record<string, unknown> = {}) => {
     const event = { type, ...payload } as AutoVpnEvent;
@@ -1524,9 +1562,25 @@ export async function resumeNodePipeline(options: NodeResumeOptions, context: Ru
         try {
           const result = context.stages?.extract
             ? await context.stages.extract({ source_name: sourceName, source }, { onLinks })
-            : await fetchSourceLinksWithBackend({ source_name: sourceName, source }, { cwd: projectRoot, env: runtimeStageEnv, linksCallback: onLinks });
+            : await fetchSourceLinksWithBackend({ source_name: sourceName, source }, {
+              cwd: projectRoot,
+              env: runtimeStageEnv,
+              linksCallback: onLinks,
+              fingerprintStore: resumeFingerprintStore,
+              fingerprintMemo: resumeMemoFor(resumeBrandKeyFor(sourceName, source))
+            });
           await onLinks(result.links.filter((link) => !streamed.has(link)));
-          runStore.recordSourceProgress(sourceName, { processed: result.requested_iterations, total: result.requested_iterations, status: 'success' });
+          const resumeErrors = (result.errors ?? []).filter((line) => String(line ?? '').trim());
+          const resumeFailed = result.links.length === 0 && resumeErrors.length > 0;
+          if (resumeFailed) {
+            emit('log', { message: `[extract] ${result.source_name} produced no links: ${resumeErrors.join('; ')}` });
+          }
+          runStore.recordSourceProgress(sourceName, {
+            processed: result.requested_iterations,
+            total: result.requested_iterations,
+            status: resumeFailed ? 'failed' : 'success',
+            ...(resumeFailed ? { error: resumeErrors.join('; ') } : {})
+          });
           summary.source_counts[sourceName] = { raw_links: result.links.length, successful_iterations: result.successful_iterations, failed_iterations: result.failed_iterations };
         } catch (error) {
           runStore.recordSourceProgress(sourceName, { processed: 0, total: 0, status: 'failed', error: errorMessage(error) });

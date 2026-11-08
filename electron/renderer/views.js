@@ -776,7 +776,7 @@ function buildSettingsDrawerBody(section, draft) {
                 </td>
                 <td data-field-label="官网 / 地址">
                   ${isCredential
-                    ? `<input aria-label="${label}：官网地址" data-drawer-source="${escapeHtml(name)}" data-drawer-key="official_site" value="${escapeHtml(source.official_site ?? OFFICIAL_SITES[name] ?? '')}" />`
+                    ? `<input aria-label="${label}：官网地址" data-drawer-source="${escapeHtml(name)}" data-drawer-key="official_site" placeholder="${escapeHtml(OFFICIAL_SITES[name] ?? '')}" value="${escapeHtml(source.official_site ?? '')}" />`
                     : `<textarea class="table-textarea mono" rows="3" aria-label="${label}：地址" data-drawer-source="${escapeHtml(name)}" data-drawer-key="url">${escapeHtml(source.url ?? '')}</textarea>`}
                 </td>
                 <td data-field-label="账号">
@@ -964,7 +964,7 @@ function buildSourceRows(profile) {
     enabled: Boolean(source.enabled),
     mode: source.mode === 'credential' ? 'credential' : 'url',
     url: source.url ?? '',
-    officialSite: source.official_site ?? OFFICIAL_SITES[name] ?? '',
+    officialSite: source.official_site ?? '',
     account: source.account ?? '',
     password: source.password ?? '',
     platform: source.platform === 'ios' ? 'ios' : 'android',
@@ -1089,17 +1089,26 @@ export function applySourceIterationDraft(sources = {}, draft = {}) {
   const areaMin = coerceAreaValue(draft.areaMin, 0);
   const areaMax = coerceAreaValue(draft.areaMax, 100);
   return Object.fromEntries(
-    Object.entries(sources).map(([name, source]) => [
-      name,
-      {
-        ...source,
-        max_iterations: maxIterations,
-        min_iterations: Math.min(coercePositiveInteger(source.min_iterations, 0), maxIterations),
-        plateau_limit: plateauLimit,
-        area_min: Math.min(areaMin, areaMax),
-        area_max: Math.max(areaMin, areaMax)
+    Object.entries(sources).map(([name, source]) => {
+      // These fields describe the url-mode fetch: 40 rounds against a list you
+      // already hold. A credential source re-requests every route per round,
+      // so writing them here would multiply real API traffic many times over.
+      // It keeps its own values, which default to a single round.
+      if (source.mode === 'credential') {
+        return [name, { ...source }];
       }
-    ])
+      return [
+        name,
+        {
+          ...source,
+          max_iterations: maxIterations,
+          min_iterations: Math.min(coercePositiveInteger(source.min_iterations, 0), maxIterations),
+          plateau_limit: plateauLimit,
+          area_min: Math.min(areaMin, areaMax),
+          area_max: Math.max(areaMin, areaMax)
+        }
+      ];
+    })
   );
 }
 
