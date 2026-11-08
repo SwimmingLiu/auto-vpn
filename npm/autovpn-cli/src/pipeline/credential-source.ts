@@ -67,6 +67,14 @@ export interface BrandCredentialSource {
   code?: string;
   /** Maximum routes to request; all routes when omitted. */
   max_areas?: number;
+  /** Upper bound on request rounds; each round asks every enabled route once. */
+  max_iterations?: number;
+  /** Rounds that always run before a plateau may stop the run. */
+  min_iterations?: number;
+  /** Consecutive rounds without a new link that stop the run. */
+  plateau_limit?: number;
+  /** Wall-clock budget in seconds; 0 means unlimited. */
+  max_runtime_seconds?: number;
   /** Per-request timeout in milliseconds. */
   timeout_ms?: number;
 }
@@ -95,6 +103,10 @@ export interface CredentialDiagnostics {
   route_count: number;
   node_count: number;
   placeholder_count: number;
+  /** Rounds actually executed (one request per enabled route per round). */
+  rounds: number;
+  /** Total `/api/evmess` requests issued. */
+  requests: number;
   errors: string[];
 }
 
@@ -210,9 +222,56 @@ export function credentialKeyCandidates(source: BrandCredentialSource, discovery
 const DEFAULT_DEVICE_ID = '6C3B3033-4FAD-42FA-B8AD-DF3EDBCFA872';
 const DEFAULT_TIMEOUT_MS = 20_000;
 
+function numberOrDefault(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 function today(now: Date): string {
   const pad = (value: number) => String(value).padStart(2, '0');
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+}
+
+/**
+ * Round control for the repeated `/api/evmess` fetch.
+ *
+ * The server answers the same `area` with a different landing host on each
+ * request, so one pass over the route list only sees one host per route. The
+ * settings below decide how many passes run before the pool stops growing.
+ */
+export interface RoundPolicy {
+  max_iterations: number;
+  min_iterations: number;
+  plateau_limit: number;
+  max_runtime_seconds: number;
+}
+
+export function resolveRoundPolicy(source: { max_iterations?: number; min_iterations?: number; plateau_limit?: number; max_runtime_seconds?: number }): RoundPolicy {
+  const maxIterations = Math.max(1, Math.trunc(numberOrDefault(source.max_iterations, 1)));
+  const configuredMin = Math.max(0, Math.trunc(numberOrDefault(source.min_iterations, 0)));
+  return {
+    max_iterations: maxIterations,
+    // A minimum above the maximum would otherwise make the cap unreachable.
+    min_iterations: Math.min(configuredMin, maxIterations),
+    plateau_limit: Math.max(1, Math.trunc(numberOrDefault(source.plateau_limit, 2))),
+    max_runtime_seconds: Math.max(0, numberOrDefault(source.max_runtime_seconds, 0))
+  };
+}
+
+/** The floor always runs; past it, the runtime budget can stop the loop. */
+export function shouldStartRound(round: number, policy: RoundPolicy, elapsedSeconds: number): boolean {
+  if (round > policy.max_iterations) {
+    return false;
+  }
+  if (policy.max_runtime_seconds <= 0 || round <= policy.min_iterations) {
+    return true;
+  }
+  return elapsedSeconds < policy.max_runtime_seconds;
+}
+
+/** Stops only once the floor has run and the pool has plateaued. */
+export function shouldStopOnPlateau(round: number, plateau: number, policy: RoundPolicy): boolean {
+  return plateau >= policy.plateau_limit && round >= policy.min_iterations;
 }
 
 /** `doLogin()` signs `account + password + salt`. */
@@ -691,6 +750,8 @@ export async function fetchCredentialSourceLinks(
     route_count: 0,
     node_count: 0,
     placeholder_count: 0,
+    rounds: 0,
+    requests: 0,
     errors
   };
 
@@ -910,52 +971,95 @@ export async function fetchCredentialSourceLinks(
   }
   log(`[extract] routes=${routes.length}`);
 
-  // 5) `/api/evmess?area=ID` per clickable route.
+  // 5) `/api/evmess?area=ID`, repeated.
+  //
+  // The server picks a landing host per request, so asking the same `area` again
+  // usually returns a different machine: the route id chooses the region, not
+  // the host. A single pass therefore sees only one host per route, and the
+  // rounds below are what turn a handful of routes into a full node pool.
+  //
+  // Round control mirrors the URL mode's iteration semantics:
+  //   max_iterations   upper bound on rounds (default 1)
+  //   min_iterations   rounds that always run before early stopping is allowed
+  //   plateau_limit    consecutive rounds with no new link that stop the run
   const links: string[] = [];
   const seen = new Set<string>();
   let placeholders = 0;
-  for (const route of routes) {
-    if (!route.enabled) {
-      continue;
+  let requests = 0;
+  const activeRoutes = routes.filter((route) => route.enabled);
+
+  const policy = resolveRoundPolicy(source);
+  const maxIterations = policy.max_iterations;
+  const minIterations = policy.min_iterations;
+  const plateauLimit = policy.plateau_limit;
+  const startedAt = Date.now();
+  let plateau = 0;
+  let rounds = 0;
+  let successfulRounds = 0;
+  let failedRounds = 0;
+
+  for (let round = 1; round <= maxIterations; round += 1) {
+    if (!shouldStartRound(round, policy, (Date.now() - startedAt) / 1000)) {
+      break;
     }
-    const plain = await getCommStr(
-      ctx, eversionFields.apiLinks, apiDomain, '/api/evmess', `&area=${route.area}`, discovery.seed_domains
-    );
-    if (!plain) {
-      continue;
-    }
-    const decoded = extractLinksFromPlaintext(`${route.region}-${route.name}`, plain);
-    for (const link of decoded) {
-      if (isPlaceholderLink(link)) {
-        placeholders += 1;
+    let newInRound = 0;
+    let answeredInRound = 0;
+    for (const route of activeRoutes) {
+      const plain = await getCommStr(
+        ctx, eversionFields.apiLinks, apiDomain, '/api/evmess', `&area=${route.area}`, discovery.seed_domains
+      );
+      requests += 1;
+      if (!plain) {
         continue;
       }
-      if (!seen.has(link)) {
-        seen.add(link);
-        links.push(link);
+      answeredInRound += 1;
+      const decoded = extractLinksFromPlaintext(`${route.region}-${route.name}`, plain);
+      for (const link of decoded) {
+        if (isPlaceholderLink(link)) {
+          placeholders += 1;
+          continue;
+        }
+        if (!seen.has(link)) {
+          seen.add(link);
+          links.push(link);
+          newInRound += 1;
+        }
       }
     }
-    if (links.length > 0 && links.length % 8 === 0) {
-      await options.linksCallback?.(links.slice(-8));
+    rounds = round;
+    if (answeredInRound > 0) {
+      successfulRounds += 1;
+    } else {
+      failedRounds += 1;
+    }
+    if (newInRound > 0) {
+      await options.linksCallback?.(links.slice(-newInRound));
+    }
+    log(`[extract] round ${round}/${maxIterations} +${newInRound} new (total ${links.length})`);
+
+    plateau = newInRound === 0 ? plateau + 1 : 0;
+    if (shouldStopOnPlateau(round, plateau, policy)) {
+      break;
     }
   }
   diagnostics.placeholder_count = placeholders;
   diagnostics.node_count = links.length;
-  await options.linksCallback?.(links);
+  diagnostics.rounds = rounds;
+  diagnostics.requests = requests;
 
   event(options, 'extract_source_completed', {
     source_name: input.source_name,
-    requested_iterations: routes.length,
-    successful_iterations: routes.length - errors.length,
-    failed_iterations: errors.length,
+    requested_iterations: maxIterations,
+    successful_iterations: successfulRounds,
+    failed_iterations: failedRounds,
     raw_links: links.length
   });
 
   return {
     source_name: input.source_name,
-    requested_iterations: routes.length,
-    successful_iterations: routes.length,
-    failed_iterations: 0,
+    requested_iterations: maxIterations,
+    successful_iterations: successfulRounds,
+    failed_iterations: failedRounds,
     links,
     diagnostics
   };

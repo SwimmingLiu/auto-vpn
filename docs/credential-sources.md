@@ -25,6 +25,10 @@ enabled = true
 | `account` / `password` | yes | Login credentials |
 | `platform` | no | `android` (default) or `ios` |
 | `max_areas` | no | Maximum routes to request; all routes when omitted |
+| `max_iterations` | no | Upper bound on fetch rounds; `1` when omitted |
+| `min_iterations` | no | Rounds that always run before early stopping; `0` when omitted |
+| `plateau_limit` | no | Consecutive rounds with no new node that stop the run; `2` when omitted |
+| `max_runtime_seconds` | no | Wall-clock budget past `min_iterations`; `0` means unlimited |
 | `device_id` | no | Fixed device id; a built-in default when omitted |
 | `key` | no | Control-plane AES key; discovered automatically when omitted |
 | `code` | no | Invite code; the client's default when omitted |
@@ -46,6 +50,38 @@ official site -> download page chunk -> cdn.js
 
 `/myapi/apinodelist` is the only endpoint that answers in plain JSON; the rest
 are AES-CBC with key == IV.
+
+## The same route returns a different node each time
+
+`area` selects a region, not a machine. The server picks a landing host per
+request, so asking the same route again usually yields a different node — the
+route list bounds the regions you can reach, not the number of nodes.
+
+One pass over all routes therefore collects only one host per route. `max_iterations`
+repeats the pass, merging each round into the pool and skipping links already
+seen:
+
+| Setting | Effect |
+|---|---|
+| `max_iterations` | Upper bound on rounds |
+| `min_iterations` | Rounds that always run, even after the pool stops growing |
+| `plateau_limit` | Consecutive dry rounds that end the run, once past `min_iterations` |
+| `max_runtime_seconds` | Wall-clock budget, likewise only after `min_iterations` |
+
+Defaults are a single round, so a profile that does not set these behaves as
+before. Raising them trades run time for pool size; the gain is front-loaded.
+
+Measured on one account, all routes, one machine:
+
+| Rounds | Unique nodes | Gain | Time |
+|---|---|---|---|
+| 1 | 42 | — | 37s |
+| 3 | 57 | +36% | 93s |
+| 8 | 78 | +86% | 234s |
+
+Each round costs roughly 30s, and the per-round gain falls from +15 to +2 by the
+sixth. `max_iterations = 4` with `plateau_limit = 2` is a reasonable default for
+a scheduled run; raise it when a wider pool matters more than the wait.
 
 ## The APK is not fetched on every run
 

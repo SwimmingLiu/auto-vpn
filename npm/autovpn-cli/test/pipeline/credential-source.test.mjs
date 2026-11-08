@@ -18,7 +18,10 @@ import {
   apiLinkValues,
   loginSignature,
   parseRouteGroups,
-  resolveBrandLayout
+  resolveBrandLayout,
+  resolveRoundPolicy,
+  shouldStartRound,
+  shouldStopOnPlateau
 } from '../../dist/pipeline/credential-source.js';
 import { isCredentialSource } from '../../dist/pipeline/extract.js';
 
@@ -198,4 +201,54 @@ test('isCredentialSource prefers mode and falls back to the field shape', () => 
   assert.equal(isCredentialSource({ url: 'https://x', key: 'k', mode: 'url' }), false);
   assert.equal(isCredentialSource({ url: '', key: '', account: 'a', password: 'p' }), true);
   assert.equal(isCredentialSource({ url: 'https://x', key: 'k', account: 'a' }), false);
+});
+
+test('the round policy defaults to a single pass', () => {
+  const policy = resolveRoundPolicy({});
+  assert.equal(policy.max_iterations, 1);
+  assert.equal(policy.min_iterations, 0);
+  assert.equal(policy.plateau_limit, 2);
+  assert.equal(policy.max_runtime_seconds, 0);
+});
+
+test('min_iterations is clamped to max_iterations', () => {
+  const policy = resolveRoundPolicy({ max_iterations: 3, min_iterations: 99 });
+  assert.equal(policy.max_iterations, 3);
+  assert.equal(policy.min_iterations, 3);
+});
+
+test('a non-positive or malformed cap still runs one round', () => {
+  assert.equal(resolveRoundPolicy({ max_iterations: 0 }).max_iterations, 1);
+  assert.equal(resolveRoundPolicy({ max_iterations: -5 }).max_iterations, 1);
+  assert.equal(resolveRoundPolicy({ max_iterations: Number.NaN }).max_iterations, 1);
+  assert.equal(resolveRoundPolicy({ plateau_limit: 0 }).plateau_limit, 1);
+});
+
+test('rounds past the cap never start', () => {
+  const policy = resolveRoundPolicy({ max_iterations: 4 });
+  assert.equal(shouldStartRound(4, policy, 0), true);
+  assert.equal(shouldStartRound(5, policy, 0), false);
+});
+
+test('the runtime budget cannot cut the floor rounds', () => {
+  const policy = resolveRoundPolicy({ max_iterations: 10, min_iterations: 3, max_runtime_seconds: 60 });
+  // Already over budget, but the floor still runs.
+  assert.equal(shouldStartRound(1, policy, 999), true);
+  assert.equal(shouldStartRound(3, policy, 999), true);
+  assert.equal(shouldStartRound(4, policy, 999), false);
+  assert.equal(shouldStartRound(4, policy, 59), true);
+});
+
+test('a zero runtime budget means unlimited', () => {
+  const policy = resolveRoundPolicy({ max_iterations: 10, min_iterations: 0, max_runtime_seconds: 0 });
+  assert.equal(shouldStartRound(10, policy, 1e9), true);
+});
+
+test('the plateau stop waits for the floor rounds', () => {
+  const policy = resolveRoundPolicy({ max_iterations: 20, min_iterations: 5, plateau_limit: 2 });
+  // Two dry rounds in a row, but the floor has not run yet.
+  assert.equal(shouldStopOnPlateau(3, 2, policy), false);
+  assert.equal(shouldStopOnPlateau(5, 2, policy), true);
+  // One dry round is below the limit.
+  assert.equal(shouldStopOnPlateau(9, 1, policy), false);
 });
