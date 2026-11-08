@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import {
   apkDiscoveryFromBytes,
   apkFileName,
+  controlPlaneKeyCandidates,
   apkSlot,
   candidateApkUrls,
   cdnConfigUrls,
@@ -135,6 +136,31 @@ test('manifestIdentity falls back to a dex literal shaped like a package', () =>
     'com.blackhole.hd1794094649.action.service'
   ]);
   assert.equal(identity.package_name, 'com.blackhole.hd1794094649');
+});
+
+test('controlPlaneKeyCandidates collects every printable 16-character literal', () => {
+  const strings = [
+    'ks9KUrbWJj46AftX',
+    'awdtif20190619ti',
+    'too-short',
+    'this-one-is-way-too-long-to-be-a-key',
+    'ks9KUrbWJj46AftX',
+    'has space in it',
+    '1234567890123456'
+  ];
+  assert.deepEqual(controlPlaneKeyCandidates(strings), [
+    'ks9KUrbWJj46AftX',
+    'awdtif20190619ti',
+    '1234567890123456'
+  ]);
+});
+
+test('controlPlaneKeyCandidates rejects control and non-ASCII characters', () => {
+  // A NUL inside the literal, and a 16-character CJK string.
+  const withControl = `abcdefghijklmno\u0000`;
+  const withWideChars = 'abcdefghijklmnop'.split('').map(() => '\u4e2d').join('').slice(0, 16);
+  assert.deepEqual(controlPlaneKeyCandidates([withControl]), []);
+  assert.deepEqual(controlPlaneKeyCandidates([withWideChars]), []);
 });
 
 test('dexStrings returns an empty list for a non-dex buffer', () => {

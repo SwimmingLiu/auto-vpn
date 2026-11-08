@@ -189,12 +189,22 @@ export function createFingerprintMemo(store: FingerprintStore | null, brand: str
  * decides which one is right.
  */
 export function credentialKeyCandidates(source: BrandCredentialSource, discovery?: ApkDiscovery): string[] {
-  void discovery;
-  return [
-    String(source.key ?? '').trim(),
-    'ks9KUrbWJj46AftX',
-    'awdtif20190619ti'
-  ].filter(Boolean);
+  const out: string[] = [];
+  const add = (value: string | undefined) => {
+    const trimmed = String(value ?? '').trim();
+    if (trimmed && !out.includes(trimmed)) {
+      out.push(trimmed);
+    }
+  };
+  // A configured key wins; the dex pool is what makes rotation survivable,
+  // and the two shared constants cover a cache written before the pool existed.
+  add(source.key);
+  for (const candidate of discovery?.key_candidates ?? []) {
+    add(candidate);
+  }
+  add('ks9KUrbWJj46AftX');
+  add('awdtif20190619ti');
+  return out;
 }
 
 const DEFAULT_DEVICE_ID = '6C3B3033-4FAD-42FA-B8AD-DF3EDBCFA872';
@@ -739,7 +749,7 @@ export async function fetchCredentialSourceLinks(
   };
 
   let discovery: ApkDiscovery | null = cached;
-  let keyCandidates = credentialKeyCandidates(source);
+  let keyCandidates = credentialKeyCandidates(source, cached ?? undefined);
   let eversion: EversionResult | null = null;
 
   if (discovery) {

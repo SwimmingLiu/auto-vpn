@@ -12,6 +12,8 @@ import zlib from 'node:zlib';
 
 export interface ApkDiscovery {
   apk_url: string;
+  /** Candidate control-plane keys found in the dex string pool. */
+  key_candidates: string[];
   package_name: string;
   version_name: string;
   cert_sha1: string;
@@ -218,6 +220,31 @@ export function manifestIdentity(axml: Buffer, dexLiterals: string[] = []): { pa
   return { package_name: manifestCandidates[0] ?? '', version_name: versionName };
 }
 
+/**
+ * Every 16-character ASCII literal in the dex is a control-plane key candidate.
+ *
+ * The key is not stored in plaintext (it is reassembled at runtime), but the
+ * constant it is assembled from is in the string pool, so the response itself
+ * decides which candidate is right: only the correct key turns the ciphertext
+ * into JSON. Trying the pool keeps discovery working when a vendor rotates the
+ * key, instead of relying on a hardcoded constant.
+ */
+export function controlPlaneKeyCandidates(strings: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const value of strings) {
+    if (value.length !== 16 || seen.has(value)) {
+      continue;
+    }
+    if (!/^[\x20-\x7e]{16}$/.test(value)) {
+      continue;
+    }
+    seen.add(value);
+    out.push(value);
+  }
+  return out;
+}
+
 export function certificateSha1(certificateDer: Buffer): string {
   return crypto.createHash('sha1').update(certificateDer).digest('hex').toUpperCase();
 }
@@ -319,6 +346,7 @@ export function apkDiscoveryFromBytes(apk: Buffer, apkUrl: string): ApkDiscovery
 
   return {
     apk_url: apkUrl,
+    key_candidates: controlPlaneKeyCandidates(strings),
     package_name: identity.package_name,
     version_name: identity.version_name,
     cert_sha1: certSha1,
