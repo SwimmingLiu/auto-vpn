@@ -5,7 +5,7 @@ import { parse } from '@iarna/toml';
 
 import { AutoVpnEvent } from '../events/schema.js';
 import { mergeProjectEnv } from '../runtime/env.js';
-import { resolveArtifactsRoot, resolveProfilePath } from '../runtime/paths.js';
+import { resolveArtifactsRoot, resolveProfilePath, resolveUserRuntimeRoot } from '../runtime/paths.js';
 import { redactText } from '../runtime/redaction.js';
 import { resolveWorkerTemplatePath } from '../runtime/templates.js';
 import { fetchSourceLinksWithBackend, ExtractedSourceResult, SourceConfigInput } from './extract.js';
@@ -28,6 +28,8 @@ import { safeDeployment } from '../runtime/redaction.js';
 import { RunStore, readLatestStageStatuses } from './run-store.js';
 import { AsyncPermitPool, BoundedWorkerPool } from './streaming-coordinator.js';
 import { createGeoIpLookup, GeoIpLookupOptions } from './geoip.js';
+import { FingerprintStore, resolveFingerprintCacheDir } from './brand-cache.js';
+import { createFingerprintMemo, type FingerprintMemo } from './credential-source.js';
 
 type StageName = 'doctor' | 'extract' | 'dedupe' | 'speedtest' | 'availability' | 'postprocess' | 'render' | 'obfuscate' | 'deploy' | 'verify';
 type StageStatus = 'pending' | 'running' | 'success' | 'failed' | 'skipped';
@@ -138,11 +140,18 @@ async function readProfile(projectRoot: string, env: NodeJS.ProcessEnv): Promise
 }
 
 function enabledSources(profile: PipelineProfile): Array<[string, SourceConfigInput]> {
-  return Object.entries(profile.sources ?? {}).filter(([, source]) => (
-    source.enabled !== false
-    && String(source.url ?? '').trim()
-    && String(source.key ?? '').trim()
-  ));
+  return Object.entries(profile.sources ?? {}).filter(([, source]) => {
+    if (source.enabled === false) {
+      return false;
+    }
+    // Credential sources carry a site plus an account instead of a request URL.
+    if (source.mode === 'credential') {
+      return Boolean(String(source.account ?? '').trim())
+        && Boolean(String(source.password ?? '').trim())
+        && Boolean(String(source.official_site ?? source.apk_url ?? source.apk_path ?? '').trim());
+    }
+    return Boolean(String(source.url ?? '').trim()) && Boolean(String(source.key ?? '').trim());
+  });
 }
 
 function linesText(lines: string[]): string {
@@ -563,6 +572,21 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
     const profile = await readProfile(projectRoot, env);
 
     const sourcesToRun = enabledSources(profile);
+    // Brand fingerprints are shared by every source of the same brand so one
+    // run downloads and inspects each APK at most once.
+    const fingerprintStore = new FingerprintStore({
+      cacheDir: resolveFingerprintCacheDir(resolveUserRuntimeRoot(env)),
+      now: context.now ?? (() => new Date())
+    });
+    const fingerprintMemos = new Map<string, FingerprintMemo>();
+    const fingerprintMemoFor = (brand: string): FingerprintMemo => {
+      let memo = fingerprintMemos.get(brand);
+      if (!memo) {
+        memo = createFingerprintMemo(fingerprintStore, brand);
+        fingerprintMemos.set(brand, memo);
+      }
+      return memo;
+    };
     const runtimePath = path.join(artifactDir, 'runtime');
     const speedConfig = normalizeSpeedTestConfig(profile.speed_test as any);
     // Preserve cross-stage streaming even for concurrency=1 while preventing
@@ -691,7 +715,9 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
             cwd: projectRoot,
             env: runtimeStageEnv,
             eventCallback: (type, payload) => emit(type, payload),
-            linksCallback: stream?.onLinks
+            linksCallback: stream?.onLinks,
+            fingerprintStore,
+            fingerprintMemo: fingerprintMemoFor(sourceName)
           });
       } catch (error) {
         runStore.recordSourceProgress(sourceName, { processed: 0, total: 0, status: 'failed', error: errorMessage(error) });

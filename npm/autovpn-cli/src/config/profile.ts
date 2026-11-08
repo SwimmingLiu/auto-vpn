@@ -29,12 +29,16 @@ export function profileSummary(projectRoot: string, env: NodeJS.ProcessEnv = pro
   const sources = Object.fromEntries(
     sourceNames.map((name) => {
       const config = rawSources[name] ?? {};
+      const mode = config?.mode === 'credential' ? 'credential' : 'url';
       return [
       name,
       {
         enabled: Boolean(config?.enabled ?? true),
-        url: state(config?.url),
-        key: state(config?.key)
+        mode,
+        url: mode === 'url' ? state(config?.url) : state(config?.official_site ?? config?.apk_url),
+        key: state(config?.key),
+        account: state(config?.account),
+        platform: String(config?.platform ?? 'android')
       }
     ];
     })

@@ -729,6 +729,14 @@ const SOURCE_NAMES = {
   'custom': '自定义'
 };
 
+/** Credential sources are also configured by their official site. */
+const OFFICIAL_SITES = {
+  leiting: 'https://www.68123836.com',
+  xuanfeng: 'https://www.16863988.com',
+  heidong: 'https://www.67986457.com',
+  mifeng: 'https://www.86933221.com'
+};
+
 function buildSettingsDrawerBody(section, draft) {
   if (section === 'sources') {
     const sourceDraft = draft?.sources ?? {};
@@ -744,27 +752,55 @@ function buildSettingsDrawerBody(section, draft) {
           <colgroup>
             <col class="settings-col-enabled" />
             <col class="settings-col-name" />
+            <col class="settings-col-mode" />
             <col class="settings-col-url" />
+            <col class="settings-col-account" />
+            <col class="settings-col-password" />
+            <col class="settings-col-platform" />
             <col class="settings-col-key" />
           </colgroup>
-          <thead><tr><th>启用</th><th>名称</th><th>地址</th><th>密钥</th></tr></thead>
+          <thead><tr><th>启用</th><th>名称</th><th>模式</th><th>官网 / 地址</th><th>账号</th><th>密码</th><th>平台</th><th>密钥</th></tr></thead>
           <tbody>
-            ${Object.entries(sourceDraft).map(([name, source]) => `
+            ${Object.entries(sourceDraft).map(([name, source]) => {
+              const isCredential = source.mode === 'credential';
+              const label = escapeHtml(SOURCE_NAMES[name] || name);
+              return `
               <tr data-settings-field-group>
-                <td data-field-label="启用"><input aria-label="${escapeHtml(SOURCE_NAMES[name] || name)}：启用" type="checkbox" data-drawer-source="${escapeHtml(name)}" data-drawer-key="enabled" ${source.enabled ? 'checked' : ''} /></td>
-                <td data-field-label="名称"><strong class="settings-source-name">${escapeHtml(SOURCE_NAMES[name] || name)}</strong></td>
-                <td data-field-label="地址">
-                  <textarea
-                    class="table-textarea mono"
-                    rows="3"
-                    aria-label="${escapeHtml(SOURCE_NAMES[name] || name)}：地址"
-                    data-drawer-source="${escapeHtml(name)}"
-                    data-drawer-key="url"
-                  >${escapeHtml(source.url ?? '')}</textarea>
+                <td data-field-label="启用"><input aria-label="${label}：启用" type="checkbox" data-drawer-source="${escapeHtml(name)}" data-drawer-key="enabled" ${source.enabled ? 'checked' : ''} /></td>
+                <td data-field-label="名称"><strong class="settings-source-name">${label}</strong></td>
+                <td data-field-label="模式">
+                  <select aria-label="${label}：模式" data-drawer-source="${escapeHtml(name)}" data-drawer-mode="true">
+                    <option value="credential" ${isCredential ? 'selected' : ''}>官网 + 账号</option>
+                    <option value="url" ${isCredential ? '' : 'selected'}>自定义地址</option>
+                  </select>
                 </td>
-                <td data-field-label="密钥"><input aria-label="${escapeHtml(SOURCE_NAMES[name] || name)}：密钥" data-drawer-source="${escapeHtml(name)}" data-drawer-key="key" value="${escapeHtml(source.key ?? '')}" /></td>
+                <td data-field-label="官网 / 地址">
+                  ${isCredential
+                    ? `<input aria-label="${label}：官网地址" data-drawer-source="${escapeHtml(name)}" data-drawer-key="official_site" value="${escapeHtml(source.official_site ?? OFFICIAL_SITES[name] ?? '')}" />`
+                    : `<textarea class="table-textarea mono" rows="3" aria-label="${label}：地址" data-drawer-source="${escapeHtml(name)}" data-drawer-key="url">${escapeHtml(source.url ?? '')}</textarea>`}
+                </td>
+                <td data-field-label="账号">
+                  ${isCredential
+                    ? `<input type="text" aria-label="${label}：账号" data-drawer-source="${escapeHtml(name)}" data-drawer-key="account" value="${escapeHtml(source.account ?? '')}" />`
+                    : '<span class="settings-source-empty">—</span>'}
+                </td>
+                <td data-field-label="密码">
+                  ${isCredential
+                    ? `<input type="password" autocomplete="off" aria-label="${label}：密码" data-drawer-source="${escapeHtml(name)}" data-drawer-key="password" value="${escapeHtml(source.password ?? '')}" />`
+                    : '<span class="settings-source-empty">—</span>'}
+                </td>
+                <td data-field-label="平台">
+                  ${isCredential
+                    ? `<select aria-label="${label}：平台" data-drawer-source="${escapeHtml(name)}" data-drawer-key="platform">
+                        <option value="android" ${source.platform === 'ios' ? '' : 'selected'}>Android</option>
+                        <option value="ios" ${source.platform === 'ios' ? 'selected' : ''}>iOS</option>
+                      </select>`
+                    : '<span class="settings-source-empty">—</span>'}
+                </td>
+                <td data-field-label="密钥"><input type="password" aria-label="${label}：密钥" data-drawer-source="${escapeHtml(name)}" data-drawer-key="key" value="${escapeHtml(source.key ?? '')}" autocomplete="off" /></td>
               </tr>
-            `).join('')}
+            `;
+            }).join('')}
           </tbody>
         </table>
       </div>
@@ -926,7 +962,12 @@ function buildSourceRows(profile) {
     name,
     primary: index === 0,
     enabled: Boolean(source.enabled),
+    mode: source.mode === 'credential' ? 'credential' : 'url',
     url: source.url ?? '',
+    officialSite: source.official_site ?? OFFICIAL_SITES[name] ?? '',
+    account: source.account ?? '',
+    password: source.password ?? '',
+    platform: source.platform === 'ios' ? 'ios' : 'android',
     key: source.key ?? ''
   }));
 }

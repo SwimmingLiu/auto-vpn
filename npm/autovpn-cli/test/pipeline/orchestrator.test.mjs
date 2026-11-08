@@ -1177,6 +1177,79 @@ test('runNodePipeline fails extract when configured sources produce no links', a
   assert.equal(events.at(-1).type, 'run_failed');
 });
 
+test('runNodePipeline runs a credential source without a request URL', async () => {
+  const projectRoot = await makeProject();
+  const profilePath = path.join(projectRoot, 'state', 'profile.toml');
+  await writeFile(profilePath, [
+    '[sources]',
+    '[sources.leiting]',
+    'mode = "credential"',
+    'official_site = "https://fixture.example"',
+    'account = "fixture-account"',
+    'password = "fixture-password"',
+    'platform = "android"',
+    'enabled = true',
+    '',
+    '[sources.disabled]',
+    'url = "https://fixture.example/source"',
+    'key = "abcdabcdabcdabcd"',
+    'enabled = false',
+    '',
+    '[speed_test]',
+    'min_download_mb_s = 0',
+    'timeout_seconds = 5',
+    'concurrency = 1',
+    '',
+    '[deploy]',
+    'project_name = "fixture-project"',
+    'subscription_url = "https://sub.example.invalid/?serect_key=fixture"',
+    'pages_project_url = "https://fixture-project.pages.dev"',
+    'secret_query = "serect_key=fixture"',
+    '',
+    '[worker_build]',
+    'entry_filename = "_worker.js"',
+    'bundle_subdir = "pages_bundle"',
+    'manifest_filename = "manifest.json"',
+    'emit_sidecar_modules = false',
+    ''
+  ].join('\n'), 'utf8');
+  const extractCalls = [];
+
+  const result = await runNodePipeline({
+    projectRoot,
+    skipDeploy: true,
+    skipVerify: true,
+    output: 'jsonl'
+  }, {
+    env: {
+      VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'),
+      VPN_AUTOMATION_PROFILE_PATH: profilePath
+    },
+    now: () => new Date('2026-06-29T01:02:03Z'),
+    stages: {
+      extract: async ({ source_name }) => {
+        extractCalls.push(source_name);
+        return {
+          source_name,
+          requested_iterations: 1,
+          successful_iterations: 1,
+          failed_iterations: 0,
+          links: ['vmess://eyJhZGQiOiIxLjIuMy40IiwicG9ydCI6IjQ0MyIsImlkIjoiMTExMTExMTEtMTExMS0xMTExLTExMTEtMTExMTExMTExMTExIiwibmV0Ijoid3MiLCJob3N0Ijoid3d3LmV4YW1wbGUiLCJwYXRoIjoiL3giLCJ0bHMiOiJ0bHMiLCJ2IjoyfQ==']
+        };
+      },
+      speedtest: (links) => links.map((link) => ({ link, reachable: true, average_download_mb_s: 5, latency_ms: 10 })),
+      availability: (results) => results.map((entry) => ({ ...entry, all_passed: true, provider_results: {} })),
+      countryLookup: () => 'US',
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { modules: [] } })
+    }
+  });
+
+  // Only the enabled credential source runs, and it runs despite having no URL.
+  assert.deepEqual(extractCalls, ['leiting']);
+  assert.equal(result.run_status, 'success');
+  assert.equal(result.counts.final_links, 1);
+});
+
 test('runNodePipeline refreshes failed summary counts after a partial streaming extractor failure', async () => {
   const projectRoot = await makeProject();
   const first = vmessLink('partial-first', 'partial-one.example');

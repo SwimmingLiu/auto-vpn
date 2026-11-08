@@ -1,6 +1,9 @@
 import crypto from 'node:crypto';
 import { spawn as defaultSpawn, ChildProcess } from 'node:child_process';
 
+import type { FingerprintStore } from './brand-cache.js';
+import type { FingerprintMemo } from './credential-source.js';
+
 type SpawnLike = (command: string, args: string[], options?: Record<string, unknown>) => ChildProcess;
 type FetchLike = (url: string, init?: Record<string, unknown>) => Promise<{
   ok?: boolean;
@@ -23,6 +26,23 @@ export interface SourceConfigInput {
   failure_limit?: number;
   max_runtime_seconds?: number;
   resume_from_iteration?: number;
+  /**
+   * `credential` sources carry an official site plus an account instead of a
+   * pre-built request URL, so nothing in the profile expires.
+   */
+  mode?: 'url' | 'credential';
+  official_site?: string;
+  apk_url?: string;
+  apk_path?: string;
+  account?: string;
+  password?: string;
+  platform?: 'android' | 'ios';
+  device_id?: string;
+  install_date?: string;
+  brand_flags?: string;
+  code?: string;
+  max_areas?: number;
+  timeout_ms?: number;
 }
 
 export interface ExtractInput {
@@ -47,6 +67,10 @@ export interface ExtractBackendOptions {
   eventCallback?: ExtractEventCallback;
   linksCallback?: (links: string[]) => void | Promise<void>;
   fetchSourceLinks?: (input: ExtractInput) => ExtractedSourceResult | Promise<ExtractedSourceResult>;
+  /** Persistent brand fingerprint cache for credential sources. */
+  fingerprintStore?: FingerprintStore;
+  /** Shared fingerprint across every source of the same brand in one run. */
+  fingerprintMemo?: FingerprintMemo;
 }
 
 export interface RuntimeSourceUrlOptions {
@@ -430,5 +454,40 @@ async function fetchSourceLinksInNode(input: ExtractInput, options: ExtractBacke
 }
 
 export async function fetchSourceLinksWithBackend(input: ExtractInput, options: ExtractBackendOptions = {}): Promise<ExtractedSourceResult> {
-  return options.fetchSourceLinks ? options.fetchSourceLinks(input) : fetchSourceLinksInNode(input, options);
+  if (options.fetchSourceLinks) {
+    return options.fetchSourceLinks(input);
+  }
+  if (isCredentialSource(input.source)) {
+    const { fetchCredentialSourceLinks } = await import('./credential-source.js');
+    const result = await fetchCredentialSourceLinks(input, {
+      eventCallback: options.eventCallback,
+      linksCallback: options.linksCallback,
+      fingerprintStore: options.fingerprintStore,
+      memo: options.fingerprintMemo
+    });
+    return {
+      source_name: result.source_name,
+      requested_iterations: result.requested_iterations,
+      successful_iterations: result.successful_iterations,
+      failed_iterations: result.failed_iterations,
+      links: result.links
+    };
+  }
+  return fetchSourceLinksInNode(input, options);
+}
+
+/**
+ * A credential source is identified by its mode or by carrying an account
+ * instead of a request URL; this keeps older profiles working unchanged.
+ */
+export function isCredentialSource(source: SourceConfigInput): boolean {
+  if (source.mode === 'credential') {
+    return true;
+  }
+  if (source.mode === 'url') {
+    return false;
+  }
+  const hasAccount = Boolean(String(source.account ?? '').trim());
+  const hasUrl = Boolean(String(source.url ?? '').trim());
+  return hasAccount && !hasUrl;
 }

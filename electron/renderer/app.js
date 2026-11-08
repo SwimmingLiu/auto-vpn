@@ -530,6 +530,20 @@ function handleDocumentInput(event) {
     return;
   }
 
+  if (target.matches('[data-drawer-source][data-drawer-mode]')) {
+    if (!state.settingsDrawer?.draft) {
+      return;
+    }
+    const sourceDraft = resolveDrawerSourceDraft();
+    const sourceName = target.dataset.drawerSource;
+    if (!sourceDraft?.[sourceName]) {
+      return;
+    }
+    sourceDraft[sourceName].mode = target.value === 'credential' ? 'credential' : 'url';
+    renderAll();
+    return;
+  }
+
   if (target.matches('[data-drawer-source][data-drawer-key]')) {
     if (!state.settingsDrawer?.draft) {
       return;
@@ -541,7 +555,10 @@ function handleDocumentInput(event) {
       return;
     }
     const rawValue = target.type === 'checkbox' ? target.checked : target.value.trim();
-    const normalizedValue = key === 'url' && typeof rawValue === 'string'
+    // Credential-mode addresses are official sites, not pasted request URLs, so
+    // they must not be run through the curl/URL normaliser.
+    const normalizeUrl = key === 'url' && sourceDraft[sourceName].mode !== 'credential';
+    const normalizedValue = normalizeUrl && typeof rawValue === 'string'
       ? normalizeSourceUrlInput(rawValue)
       : rawValue;
     if (target.type !== 'checkbox' && normalizedValue !== target.value) {

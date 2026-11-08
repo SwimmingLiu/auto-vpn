@@ -1326,12 +1326,24 @@ body[data-page="logs"] #logCenterTable {
   width: 142px;
 }
 
+/* The source table carries up to eight columns in credential mode, so the
+   address share is smaller and the credential fields get fixed widths. */
 .settings-col-url {
-  width: 44%;
+  width: 30%;
 }
 
+.settings-col-mode {
+  width: 132px;
+}
+
+.settings-col-account,
+.settings-col-password,
 .settings-col-key {
-  width: 28%;
+  width: 150px;
+}
+
+.settings-col-platform {
+  width: 108px;
 }
 
 .availability-col-url {
