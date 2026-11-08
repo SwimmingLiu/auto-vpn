@@ -359,3 +359,15 @@ test('an APK whose dex carries a very large string table still parses', () => {
   assert.equal(parsed[0], 'literal_0');
   assert.equal(parsed[literals.length - 1], `literal_${literals.length - 1}`);
 });
+
+test('inlineDownloadSpec keeps the published scheme and port', () => {
+  // The production downloader recovers the origin verbatim from the chunk, so
+  // a brand publishing plain http on a custom port is not rewritten to https.
+  const chunk = "const u='http://cdn.example:8080/apks64/20261107_lt'+index+'.apk';" +
+    "const clock=new Date(),index=clock.getHours()*4+Math.floor(clock.getMinutes()/15);";
+  const spec = inlineDownloadSpec(chunk);
+  assert.ok(spec);
+  assert.equal(spec.host, 'http://cdn.example:8080');
+  assert.equal(spec.prefix, 'lt');
+  assert.equal(spec.interval_minutes, 15);
+});

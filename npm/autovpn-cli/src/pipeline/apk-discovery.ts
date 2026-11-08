@@ -501,7 +501,9 @@ export function cdnReferencesFromChunk(source: string, chunkUrl: string): CdnRef
  * slot inline, e.g. `https://wpk.example.com/apks64/DATE_mfSLOT.apk`.
  */
 export function inlineDownloadSpec(source: string): { host: string; prefix: string; interval_minutes: number } | null {
-  const hostMatch = /https?:\/\/([a-z0-9.-]+)\/apks64\//i.exec(source);
+  // The port is part of the origin: a brand publishing `http://cdn:8080/`
+  // would otherwise be reduced to a bare host that answers nothing.
+  const hostMatch = /(https?):\/\/([a-z0-9.-]+(?::\d+)?)\/apks64\//i.exec(source);
   // The filename is assembled at runtime (`'…_mf'+index+'apk'`), so the prefix
   // is read from the literal fragment rather than a complete `.apk` path.
   const fileMatch = /apks64\/[^"'`+]*_([a-z]{2,6})["'`+]?\s*\+\s*index/i.exec(source)
@@ -511,7 +513,7 @@ export function inlineDownloadSpec(source: string): { host: string; prefix: stri
   }
   const intervalMatch = /getHours\(\)\s*\*\s*(\d+)\s*\+\s*Math\.floor\(\s*[^)]*getMinutes\(\)\s*\/\s*(\d+)\s*\)/.exec(source);
   return {
-    host: `https://${hostMatch[1]}`,
+    host: `${hostMatch[1].toLowerCase()}://${hostMatch[2]}`,
     prefix: fileMatch[1].toLowerCase(),
     interval_minutes: intervalMatch ? Number.parseInt(intervalMatch[2], 10) : 0
   };

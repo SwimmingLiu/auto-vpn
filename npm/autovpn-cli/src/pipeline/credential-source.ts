@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import {
   androidChunkUrls,
   apkDiscoveryFromBytes,
+  inlineDownloadSpec,
   type ApkDiscovery,
   candidateApkUrls,
   cdnConfigUrls,
@@ -701,22 +702,13 @@ async function defaultLoadApk(
 
   const consumeChunk = async (chunkText: string, chunkUrl: string): Promise<void> => {
     // Some brands hardcode the download origin and slot formula in the chunk.
-    // The filename is assembled at runtime (`'…_mf'+index+'apk'`), so the host
-    // and the interval are read separately rather than from one literal path.
-    // The scheme and port are kept: a brand that publishes `http://cdn:8080/`
-    // would otherwise be rewritten to `https://cdn` and every request would 404.
-    const hostsInChunk = [...chunkText.matchAll(/(https?):\/\/([a-z0-9.-]+(?::\d+)?)\/apks64\//gi)]
-      .map((match) => `${match[1].toLowerCase()}://${match[2]}`);
-    if (hostsInChunk.length > 0) {
-      hosts.push(...hostsInChunk);
-      const prefixInChunk = /apks64\/[^"'`+]*_([a-z]{2,6})["'`+]?\s*\+\s*index/i.exec(chunkText)
-        ?? /apks64\/[^"'`]*_([a-z]{2,6})\d*\.apk/i.exec(chunkText);
-      if (prefixInChunk) {
-        prefix = prefix || prefixInChunk[1].toLowerCase();
-      }
-      const intervalMatch = /getHours\(\)\s*\*\s*(\d+)\s*\+\s*Math\.floor\([^)]*getMinutes\(\)\s*\/\s*(\d+)\)/.exec(chunkText);
-      if (intervalMatch) {
-        interval = interval || Number.parseInt(intervalMatch[2], 10);
+    // The helper keeps the published scheme and port, so nothing is rewritten.
+    const inline = inlineDownloadSpec(chunkText);
+    if (inline) {
+      hosts.push(inline.host);
+      prefix = prefix || inline.prefix;
+      if (inline.interval_minutes > 0) {
+        interval = interval || inline.interval_minutes;
       }
     }
     // Others load a `cdn.js` that declares the hosts and the archive cadence.
