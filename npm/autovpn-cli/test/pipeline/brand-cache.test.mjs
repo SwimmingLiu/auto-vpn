@@ -125,3 +125,15 @@ test('a write failure does not propagate', () => {
   assert.doesNotThrow(() => store.write('雷霆', fingerprint));
   assert.equal(store.read('雷霆'), null);
 });
+
+test('a stale fingerprint is available but no longer fresh', () => {
+  // The credential flow keeps using a stale entry when its seeds answer, but
+  // re-verifies it against the APK rather than trusting it indefinitely.
+  let current = new Date('2026-11-08T00:00:00Z');
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-fp-'));
+  const store = new FingerprintStore({ cacheDir, now: () => current, maxAgeMs: 60_000 });
+  store.write('雷霆', fingerprint);
+  current = new Date('2026-11-09T00:00:00Z');
+  assert.equal(store.readFresh('雷霆'), null);
+  assert.ok(store.read('雷霆'));
+});

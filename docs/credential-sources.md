@@ -87,16 +87,25 @@ a scheduled run; raise it when a wider pool matters more than the wait.
 
 Package, version, certificate and seed domains only change when the vendor
 publishes a build, so the first run writes them under the runtime root's
-`brand-fingerprints/`. Later runs verify the cached seeds against
+`brand-fingerprints/`. Later runs verify the cached entry against
 `/api/eversion` first:
 
 - answers -> no APK download, only login and the node flow
 - nothing answers -> the vendor rotated domains, so the APK is re-downloaded,
   re-inspected and the cache is replaced
+- answers, but the entry is a day old -> the APK is re-inspected anyway: a
+  vendor can rotate the signing certificate while the old seeds keep serving
+  `/api/eversion`, and a stale certificate fails every login
+- login rejected while the cache was in use -> the entry is dropped, so the
+  next run re-inspects instead of repeating the failure
+
+Setting `apk_url` or `apk_path` bypasses the cache entirely; that is the way to
+pin a specific build or recover from a bad fingerprint.
 
 Measured on one machine: about 13s for a first run (including a 22 MB
-download) and about 6s on a cache hit. Sources of the same brand share one
-inspection within a run.
+download) and about 7s on a cache hit. Entries are keyed by brand, so two
+profile sources of the same brand (for example one `android` and one `ios`)
+share one inspection and one cache file.
 
 ## Platform differences
 
