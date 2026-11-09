@@ -1,5 +1,3 @@
-// npm pack rebuilds the shared dist tree; the suite runs serially so other
-// tests never import a partially rebuilt package.
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';

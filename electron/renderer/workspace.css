@@ -290,7 +290,17 @@ body[data-page="logs"] #logsWorkspace > .panel { grid-template-rows: auto minmax
   .metric-grid.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 }
 @media (min-width: 721px) and (max-width: 960px) {
-  .sidebar { background: var(--surface); padding: 12px; }
+  /* A native frame clips its children. Bound the tablet grid and scroll the
+     main pane, rather than letting a tall page grow behind that frame. */
+  body { overflow: hidden; }
+  .workspace-shell { height: 100%; min-height: 0; grid-template-rows: auto minmax(0, 1fr); }
+  .main-shell { min-height: 0; }
+  .sidebar { display: flex; align-items: center; gap: 12px; background: var(--surface); padding: 10px 12px; }
+  .sidebar-brand { display: flex; flex: none; padding: 0; }
+  .sidebar-brand .brand-mark { width: 32px; height: 32px; border-radius: 8px; }
+  .sidebar-brand .brand-copy { display: none; }
+  .sidebar-nav { display: flex; flex: 1; min-width: 0; gap: 4px; padding: 0; }
+  .nav-item { flex: 1; min-width: 0; justify-content: center; gap: 8px; padding-inline: 8px; }
   .nav-icon { min-width: 24px; width: 24px; height: 24px; border: 0; background: none; }
   .nav-copy { font-size: 13px; }
   .nav-item.active { background: var(--accent-soft); }

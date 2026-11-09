@@ -16,9 +16,12 @@ async function waitForRendererBootstrap(page) {
 
 test('electron app exposes preload bridge and renders the real saved profile', async () => {
   const app = await electron.launch({ args: launchArgs });
+  let previousZoom = null;
 
   try {
     const page = await app.firstWindow();
+    previousZoom = await app.evaluate(({ BrowserWindow }) => { const contents = BrowserWindow.getAllWindows()[0].webContents; const zoom = contents.getZoomFactor(); contents.setZoomFactor(1); return zoom; });
+    await page.setViewportSize({ width: 1280, height: 800 });
     await waitForRendererBootstrap(page);
     await page.evaluate(() => document.querySelector('#navSettings')?.click());
     await page.waitForSelector('[data-settings-card="sources"]', { state: 'attached' });
@@ -65,6 +68,14 @@ test('electron app exposes preload bridge and renders the real saved profile', a
         assert.equal(await page.locator('html').getAttribute('data-theme'), 'dark');
         assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
       }
+      // Test the supported minimum too; a clipped native frame must still
+      // let the operator reach theme and account controls.
+      await page.setViewportSize({ width: 880, height: 640 });
+      await page.locator('[data-theme-choice="light"]').click();
+      const lastControl = page.locator('#settingsWorkspace button:visible, #settingsWorkspace input:visible, #settingsWorkspace select:visible').last();
+      await lastControl.scrollIntoViewIfNeeded();
+      const lastBox = await lastControl.boundingBox();
+      assert.ok(lastBox.y >= 0 && lastBox.y + lastBox.height <= 640);
       await page.locator('[data-settings-card="speed_test"]').click();
       assert.ok((await page.locator('[data-settings-dialog]').boundingBox()).width <= 560);
       await page.locator('[data-settings-dialog]').press('Escape');
@@ -75,6 +86,7 @@ test('electron app exposes preload bridge and renders the real saved profile', a
       }, previousTheme);
     }
   } finally {
+    if (previousZoom !== null) await app.evaluate(({ BrowserWindow }, zoom) => BrowserWindow.getAllWindows()[0]?.webContents.setZoomFactor(zoom), previousZoom);
     await app.close();
   }
 });
