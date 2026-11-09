@@ -3,21 +3,21 @@ name: Refresh Linux visual baselines
 # Linux pixel baselines and the renderer digests must be produced by the same
 # ubuntu-24.04 runner that checks them. An amd64 container on Apple silicon
 # rasterizes differently (untouched pages moved up to 14.6% in measurement), so
-# the only correct source is the CI image itself.
+# the correct source is the CI image itself.
 #
-# Run this after a renderer change, review the PNGs it commits, then push the
-# refreshed baselines with the change. It never runs on its own.
+# Trigger it by adding the `refresh-visual-baselines` label to a pull request.
+# The job never writes to the branch: it publishes the regenerated PNGs and the
+# digest values as an artifact, which you review and commit with the change.
+# `workflow_dispatch` only becomes usable once this file is on the default
+# branch; the label path works from the pull request itself.
 
 on:
+  pull_request:
+    types: [labeled]
   workflow_dispatch:
-    inputs:
-      branch:
-        description: Branch to regenerate baselines on
-        required: true
-        default: main
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   NPM_CONFIG_AUDIT: "false"
@@ -26,6 +26,7 @@ env:
 
 jobs:
   refresh:
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'refresh-visual-baselines'
     name: Refresh ubuntu-24.04 baselines
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -34,7 +35,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.branch }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -75,3 +76,4 @@ jobs:
           path: |
             electron/tests/visual-baselines/h5/linux/**
             renderer-digests.txt
+          if-no-files-found: error
