@@ -599,8 +599,13 @@ body[data-page="logs"] .page-content {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  /* The global `*` reduced-motion rule below forces every animation to
+     0.01ms with `!important`. A frozen ring reads as a broken image, so this
+     keeps the spinner turning (slowly) by matching that important with a more
+     specific selector. */
   .status-orb-spinner {
-    animation-duration: 2.4s;
+    animation-duration: 2.4s !important;
+    animation-iteration-count: infinite !important;
   }
 }
 
@@ -2630,8 +2635,12 @@ body[data-page="logs"] #logCenterTable {
     padding: 0;
   }
 
+  /* Section-specific desktop widths (sources, availability) are more specific
+     than a bare `.settings-drawer-panel`, so each one has to be listed here or
+     that sheet stays inset with desktop corners on a phone. */
   .settings-drawer-panel,
-  .settings-drawer-shell[data-section="availability_targets"] .settings-drawer-panel {
+  .settings-drawer-shell[data-section="availability_targets"] .settings-drawer-panel,
+  .settings-drawer-shell[data-section="sources"] .settings-drawer-panel {
     width: 100vw;
     max-width: none;
     height: 100vh;
@@ -3162,7 +3171,8 @@ body[data-page="logs"] #logCenterTable {
     overflow-x: auto;
   }
 
-  .settings-drawer-panel {
+  .settings-drawer-panel,
+  .settings-drawer-shell[data-section="sources"] .settings-drawer-panel {
     width: 100vw;
     max-width: none;
     height: 100vh;

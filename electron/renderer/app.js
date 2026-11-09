@@ -16,6 +16,7 @@ import {
   buildTopbarActions,
   buildAccountPoolRecords,
   removeAvailabilityTargetDraft,
+  resolveDashboardRunSummary,
   validateSourceDraft,
   classifyLogEntry,
   escapeHtml,
@@ -1983,6 +1984,31 @@ function renderActiveRuntimeSections(viewModel) {
   const currentStage = document.querySelector('#runsCurrentStage');
   if (currentStage) {
     currentStage.outerHTML = buildRunsCurrentStageMarkup(viewModel);
+  }
+
+  const hero = document.querySelector('.status-hero-card');
+  if (hero) {
+    const summary = resolveDashboardRunSummary(viewModel);
+    const wasRunning = hero.classList.contains('is-running');
+    hero.querySelector('h3').textContent = viewModel.currentStatusLabel;
+    hero.classList.toggle('is-running', summary.isRunning);
+    hero.dataset.tone = viewModel.runStateTone;
+    // Run-end paths only refresh these runtime sections, so the copy, the orb
+    // and the result badge have to follow here too; otherwise a stopped or
+    // failed run keeps saying "running" until some later full page render.
+    // Rewriting them only when the state flips keeps the spinner's CSS
+    // animation from restarting on every log line.
+    if (summary.isRunning !== wasRunning) {
+      hero.querySelector('p').textContent = summary.heroCopy;
+      hero.querySelector('.status-orb').innerHTML = summary.isRunning
+        ? '<span class="status-orb-spinner"></span>'
+        : '✓';
+      const badge = document.querySelector('[data-dashboard-result-badge]');
+      if (badge) {
+        badge.className = `badge ${summary.lastResultTone}`;
+        badge.textContent = summary.lastResultLabel;
+      }
+    }
   }
 
   const dashboardMetrics = document.querySelector('#dashboardMetricsPanel');

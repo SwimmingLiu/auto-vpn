@@ -26,7 +26,7 @@ import {
   type RouteGroup,
   type RouteNode
 } from './brand-protocol.js';
-import { decryptPayload, extractLinksFromPlaintext, linkFingerprint } from './extract.js';
+import { decryptPayload, extractLinksFromPlaintext, linkDigest, linkFingerprint } from './extract.js';
 import { AccountStore, type StoredAccount } from '../pool/account-store.js';
 import { brandFromSite, normalizeBrand } from '../pool/brands.js';
 import type { FingerprintStore } from './brand-cache.js';
@@ -1020,14 +1020,16 @@ export async function fetchCredentialSourceLinks(
   let results: CredentialExtractResult[] = [];
   let callbackFailure: Error | null = null;
   // The dashboard reads per-source totals from one `extract_iteration` stream.
-  // Both platforms emit their own, so they are merged here: summing the raw
-  // link counts and keeping one fingerprint set per source is what the two
-  // cards beside the run status are meant to show.
-  const liveTotals = new Map<string, number>();
+  // Both platforms emit their own, so they are merged here. Raw links use the
+  // exact-string identity each platform already dedupes with: summing the
+  // per-platform counts would report the same link twice and leave the card
+  // above the final union for the rest of the run. Dedupe keeps the canonical
+  // fingerprint union, the same identity the global dedupe card counts.
+  const liveLinkIds = new Set<string>();
   const liveFingerprints = new Set<string>();
   try {
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
-      liveTotals.clear();
+      liveLinkIds.clear();
       liveFingerprints.clear();
       results = await Promise.all(platforms.map((platform) => {
         const scoped: CredentialExtractOptions = {
@@ -1043,20 +1045,21 @@ export async function fetchCredentialSourceLinks(
               return;
             }
             if (type === 'extract_iteration') {
-              const total = Number(payload.total_links ?? 0);
-              liveTotals.set(platform, Number.isFinite(total) ? total : 0);
               const fingerprints = Array.isArray(payload.new_item_fingerprints)
                 ? payload.new_item_fingerprints.map((value) => String(value)).filter(Boolean)
                 : [];
               for (const fingerprint of fingerprints) liveFingerprints.add(fingerprint);
-              const rawTotal = [...liveTotals.values()].reduce((sum, value) => sum + value, 0);
+              const linkIds = Array.isArray(payload.new_item_link_ids)
+                ? payload.new_item_link_ids.map((value) => String(value)).filter(Boolean)
+                : [];
+              for (const id of linkIds) liveLinkIds.add(id);
               event(options, 'extract_iteration', {
                 source_name: input.source_name,
                 iteration: Number(payload.iteration ?? 0),
                 requested_iterations: policy.max_iterations,
                 new_items: Number(payload.new_items ?? 0),
                 extracted_links: Number(payload.extracted_links ?? 0),
-                total_links: rawTotal,
+                total_links: liveLinkIds.size,
                 deduped_links: liveFingerprints.size,
                 new_item_fingerprints: fingerprints
               });
@@ -1549,7 +1552,9 @@ export async function fetchCredentialPlatformLinks(
   // link repeated across two platforms has to collapse there or the number
   // only ever grows.
   const fingerprints = new Set<string>();
-
+  // Raw totals use the exact-string identity the pipeline dedupes with, so the
+  // live number and `extract_source_completed.raw_links` agree.
+  const linkIds = new Set<string>();
   const policy = resolveRoundPolicy(source);
   const maxIterations = policy.max_iterations;
   const minIterations = policy.min_iterations;
@@ -1567,6 +1572,7 @@ export async function fetchCredentialPlatformLinks(
     let newInRound = 0;
     let answeredInRound = 0;
     const newFingerprints: string[] = [];
+    const newLinkIds: string[] = [];
     for (const route of activeRoutes) {
       const plain = await getCommStr(
         ctx, eversionFields.apiLinks, apiDomain, '/api/evmess', `&area=${route.area}`, discovery.seed_domains
@@ -1597,6 +1603,9 @@ export async function fetchCredentialPlatformLinks(
           const fingerprint = linkFingerprint(link);
           fingerprints.add(fingerprint);
           newFingerprints.push(fingerprint);
+          const digest = linkDigest(link);
+          linkIds.add(digest);
+          newLinkIds.push(digest);
         }
       }
     }
@@ -1621,7 +1630,8 @@ export async function fetchCredentialPlatformLinks(
       extracted_links: newInRound,
       total_links: links.length,
       deduped_links: fingerprints.size,
-      new_item_fingerprints: newFingerprints
+      new_item_fingerprints: newFingerprints,
+      new_item_link_ids: newLinkIds
     });
     log(`[extract] round ${round}/${maxIterations} +${newInRound} new (total ${links.length})`);
 

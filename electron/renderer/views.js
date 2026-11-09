@@ -164,6 +164,7 @@ export function buildViewModel(state, messages, language) {
     retryStageOptions,
     selectedRetryStage,
     runControlState: resolveRunControlState(state.runState),
+    runState: state.runState ?? 'idle',
     statusItems: buildStatusItems(state, messages),
     currentStatusLabel: resolveCurrentStatusLabel(state, messages),
     currentTaskLabel: resolveCurrentTaskLabel(state, messages),
@@ -284,16 +285,29 @@ function buildPageInner(activePage, vm, messages) {
   }
 }
 
-function buildDashboardPage(vm, messages) {
-  // While a run is in flight the hero card must not claim the last one
-  // finished: `hasResult` only says an artifact directory exists, which is also
-  // true at the start of the run that is producing it.
-  const isRunning = vm.runControlState?.isBusy === true || vm.runStateLabel === messages.runStateLabels.running;
+/**
+ * The words and tone the dashboard uses to describe the current run.
+ *
+ * `hasResult` only says an artifact directory exists, which is also true at the
+ * start of the run that is producing it, and a failed run leaves one behind as
+ * well. Callers must not treat it as proof of success. Shared with the runtime
+ * updater in app.js, which refreshes the hero without a full page render.
+ */
+export function resolveDashboardRunSummary(vm) {
+  const isRunning = vm.runControlState?.isBusy === true;
+  const failed = vm.runState === 'failed';
   const heroCopy = isRunning
     ? (vm.hasResult ? '正在执行，完成后覆盖本次结果' : '正在执行首次运行')
-    : (vm.hasResult ? '最近一次运行已完成' : '系统就绪，等待运行');
-  const lastResultLabel = isRunning ? '进行中' : (vm.hasResult ? '成功' : '未开始');
-  const lastResultTone = isRunning ? 'accent' : (vm.hasResult ? 'success' : 'neutral');
+    : failed
+      ? '运行失败，可在日志中查看原因'
+      : (vm.hasResult ? '最近一次运行已完成' : '系统就绪，等待运行');
+  const lastResultLabel = isRunning ? '进行中' : failed ? '失败' : vm.hasResult ? '成功' : '未开始';
+  const lastResultTone = isRunning ? 'accent' : failed ? 'danger' : vm.hasResult ? 'success' : 'neutral';
+  return { isRunning, heroCopy, lastResultLabel, lastResultTone };
+}
+
+function buildDashboardPage(vm, messages) {
+  const { isRunning, heroCopy, lastResultLabel, lastResultTone } = resolveDashboardRunSummary(vm);
   return `
     <div id="dashboardOverview" class="page-grid dashboard-grid">
       <article class="panel wide-panel status-hero-card ${isRunning ? 'is-running' : ''}" data-run-state="${escapeHtml(vm.hasResult ? 'result' : 'empty')}">
@@ -310,7 +324,7 @@ function buildDashboardPage(vm, messages) {
       <article class="panel">
         <div class="panel-headline">
           <h3>最近运行结果</h3>
-          ${renderBadge(lastResultLabel, lastResultTone)}
+          ${renderBadge(lastResultLabel, lastResultTone, 'data-dashboard-result-badge')}
         </div>
         <div class="key-value-list">
           <div class="key-value-row"><span>状态</span><strong>${lastResultLabel}</strong></div>
@@ -1071,8 +1085,8 @@ function renderDrawerField(label, type, value, path, isCompact = false, extraAtt
   `;
 }
 
-function renderBadge(text, tone) {
-  return `<span class="badge ${tone}">${escapeHtml(text)}</span>`;
+function renderBadge(text, tone, attributes = '') {
+  return `<span class="badge ${tone}"${attributes ? ` ${attributes}` : ''}>${escapeHtml(text)}</span>`;
 }
 
 function renderQr(qr) {

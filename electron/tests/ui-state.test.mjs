@@ -28,6 +28,7 @@ import {
   groupLogEntriesByStage,
   normalizeOfficialSourceDraft,
   removeAvailabilityTargetDraft,
+  resolveDashboardRunSummary,
   validateSourceDraft
 } from '../renderer/views.js';
 
@@ -276,6 +277,46 @@ test('the dashboard hero does not claim a finished run while one is in flight', 
 
   const idle = buildViewModel({ runState: 'idle' }, messages, 'zh-CN');
   assert.match(buildPageMarkup('dashboard', idle, messages, 'zh-CN'), /系统就绪，等待运行/);
+
+  // A failed run leaves its artifact directory behind, so `hasResult` is still
+  // true; the recent-result card must not call that a success.
+  const failed = buildViewModel({
+    runState: 'failed',
+    artifactDir: '/tmp/artifacts/20261109-220238',
+    counts: { raw_links: 54, deduped_links: 51 }
+  }, messages, 'zh-CN');
+  const failedMarkup = buildPageMarkup('dashboard', failed, messages, 'zh-CN');
+  assert.match(failedMarkup, /运行失败，可在日志中查看原因/);
+  assert.match(failedMarkup, /最近运行结果[\s\S]*?失败/);
+  assert.doesNotMatch(failedMarkup, /最近一次运行已完成/);
+  assert.doesNotMatch(failedMarkup, /status-hero-card is-running/);
+});
+
+test('the shared dashboard run summary drives both the page and the live update', () => {
+  const messages = getMessages('zh-CN');
+  const running = buildViewModel({ runState: 'running', artifactDir: '/tmp/a' }, messages, 'zh-CN');
+  assert.deepEqual(resolveDashboardRunSummary(running), {
+    isRunning: true,
+    heroCopy: '正在执行，完成后覆盖本次结果',
+    lastResultLabel: '进行中',
+    lastResultTone: 'accent'
+  });
+  // The runtime updater in app.js reuses this exact helper, so a stopped or
+  // failed run cannot disagree with the next full render.
+  const failed = buildViewModel({ runState: 'failed', artifactDir: '/tmp/a' }, messages, 'zh-CN');
+  assert.deepEqual(resolveDashboardRunSummary(failed), {
+    isRunning: false,
+    heroCopy: '运行失败，可在日志中查看原因',
+    lastResultLabel: '失败',
+    lastResultTone: 'danger'
+  });
+  const idle = buildViewModel({ runState: 'idle' }, messages, 'zh-CN');
+  assert.deepEqual(resolveDashboardRunSummary(idle), {
+    isRunning: false,
+    heroCopy: '系统就绪，等待运行',
+    lastResultLabel: '未开始',
+    lastResultTone: 'neutral'
+  });
 });
 
 test('results page renders unknown preview regions as US', () => {
