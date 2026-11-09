@@ -190,10 +190,41 @@ test('compact dialogs retain labels, cancel drafts and offer touch column contro
   assert.match(await page.locator('#resultNodePreview tbody tr').first().innerText(), /US · Node 1/);
 });
 
+test('a fresh web runtime opens speed settings with displayed defaults and persists edits', async (t) => {
+  const runtimeRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'autovpn-web-first-launch-'));
+  // Explicit path overrides outrank RUNTIME_ROOT; keep saves inside the fixture
+  // even when the developer shell points at a separate live profile.
+  const env = { ...process.env, VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot, VPN_AUTOMATION_PROFILE_PATH: path.join(runtimeRoot, 'profile.toml'), VPN_AUTOMATION_ARTIFACTS_ROOT: path.join(runtimeRoot, 'artifacts'), AUTOVPN_SERVER_HISTORY_RETENTION_DAYS: '0' };
+  const runtime = createServerRuntime({ projectRoot: process.cwd(), env });
+  assert.equal((await runtime.loadState()).profile.speed_test, undefined);
+  const service = await createAutoVpnServer({ host: '127.0.0.1', port: 0, projectRoot: process.cwd(), auth: { enabled: false, token: '' }, runtime });
+  const browser = await chromium.launch();
+  t.after(async () => { await browser.close(); await service.close(); await fs.rm(runtimeRoot, { recursive: true, force: true }); });
+  const page = await browser.newPage({ viewport: { width: 880, height: 640 }, reducedMotion: 'reduce' });
+  const initialState = page.waitForResponse((response) => response.url().endsWith('/api/state'));
+  await page.goto(service.origin);
+  await initialState;
+  await page.locator('#navSettings').click();
+  await page.locator('[data-settings-card="speed_test"]').click();
+  assert.equal(await page.locator('[data-drawer-path="speed_test.min_download_mb_s"]').inputValue(), '1');
+  assert.equal(await page.locator('[data-drawer-path="speed_test.timeout_seconds"]').inputValue(), '20');
+  const concurrency = page.locator('[data-drawer-path="speed_test.concurrency"]');
+  assert.equal(await concurrency.inputValue(), '3');
+  await concurrency.fill('7');
+  await page.locator('[data-drawer-save]').click();
+  await page.locator('[data-settings-dialog]').waitFor({ state: 'hidden' });
+  await page.reload();
+  await page.locator('#navSettings').click();
+  await page.locator('[data-settings-card="speed_test"]').click();
+  assert.equal(await concurrency.inputValue(), '7');
+  await fs.mkdir(evidence, { recursive: true });
+  await page.screenshot({ path: path.join(evidence, 'first-launch-speed-settings.png') });
+});
+
 test('web account upload persists in the same SQLite store used by desktop and CLI', async (t) => {
   const runtimeRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'autovpn-web-pool-'));
   await fs.copyFile('electron/runtime/default-profile.toml', path.join(runtimeRoot, 'profile.toml'));
-  const env = { ...process.env, VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot, AUTOVPN_SERVER_HISTORY_RETENTION_DAYS: '0' };
+  const env = { ...process.env, VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot, VPN_AUTOMATION_PROFILE_PATH: path.join(runtimeRoot, 'profile.toml'), VPN_AUTOMATION_ARTIFACTS_ROOT: path.join(runtimeRoot, 'artifacts'), AUTOVPN_SERVER_HISTORY_RETENTION_DAYS: '0' };
   const runtime = createServerRuntime({ projectRoot: process.cwd(), env });
   const service = await createAutoVpnServer({ host: '127.0.0.1', port: 0, projectRoot: process.cwd(), auth: { enabled: false, token: '' }, runtime });
   const browser = await chromium.launch();

@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import fs from 'node:fs/promises';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 import { _electron as electron } from 'playwright';
@@ -23,8 +25,15 @@ async function resizeNativeWindow(app, page, size) {
   await page.waitForFunction(({ width, height }) => innerWidth === width && innerHeight === height, size);
 }
 
-test('electron app exposes preload bridge and renders the real saved profile', async () => {
-  const app = await electron.launch({ args: launchArgs });
+test('electron preload renders a fresh runtime and opens settings at native sizes', async (t) => {
+  // An existing developer profile hid the first-launch missing-section bug.
+  // Use an empty runtime and isolated preferences on every platform.
+  const runtimeRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'autovpn-native-launch-'));
+  t.after(() => fs.rm(runtimeRoot, { recursive: true, force: true }));
+  const app = await electron.launch({
+    args: [...launchArgs, `--user-data-dir=${path.join(runtimeRoot, 'electron-data')}`],
+    env: { ...process.env, VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot }
+  });
   let previousZoom = null;
 
   try {

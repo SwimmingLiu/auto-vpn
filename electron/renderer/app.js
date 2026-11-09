@@ -18,6 +18,7 @@ import {
   buildLogStateActions,
   buildRunsCurrentStageMarkup,
   buildRunsStageProgressMarkup,
+  buildSpeedTestDraft,
   buildSourceIterationDraft,
   buildSidebarNav,
   buildViewModel,
@@ -1030,7 +1031,7 @@ function buildSettingsDraft(section) {
   }
 
   if (section === 'sources') return buildSourceIterationDraft(state.profile.sources);
-  if (section === 'speed_test') return structuredClone(state.profile.speed_test);
+  if (section === 'speed_test') return buildSpeedTestDraft(state.profile.speed_test);
   if (section === 'availability_targets') return buildAvailabilityTargetDraft(state.profile.availability_targets);
   if (section === 'deploy') return buildDeployDraft(state.profile.deploy);
   if (section === 'paths') return structuredClone(state.profile.paths);

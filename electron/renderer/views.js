@@ -1111,6 +1111,12 @@ export function buildRegionStats(nodeRows = []) {
   return Array.from(counts.entries()).map(([region, count]) => ({ region, count }));
 }
 
+// Fresh profiles have no speed_test section. Reuse these defaults in both
+// the settings card and its draft so the displayed controls can always open.
+export function buildSpeedTestDraft(config = {}) {
+  return structuredClone({ ...FALLBACK_PROFILE.speed_test, ...config });
+}
+
 export function buildSourceIterationDraft(sources = {}) {
   const normalized = normalizeOfficialSourceDraft(sources);
   const firstSource = Object.values(normalized)[0] ?? {};
@@ -1411,7 +1417,7 @@ function mergeProfile(profile) {
     ...profile,
     sources: normalizeOfficialSourceDraft(profile?.sources ?? FALLBACK_PROFILE.sources),
     availability_targets: profile?.availability_targets ?? DEFAULT_AVAILABILITY_TARGETS,
-    speed_test: { ...FALLBACK_PROFILE.speed_test, ...(profile?.speed_test ?? {}) },
+    speed_test: buildSpeedTestDraft(profile?.speed_test),
     deploy: { ...FALLBACK_PROFILE.deploy, ...(profile?.deploy ?? {}) },
     paths: mergedPaths,
     workspace: mergedPaths
