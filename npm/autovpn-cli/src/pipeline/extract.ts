@@ -131,6 +131,19 @@ function generateVmessLink(payload: Record<string, unknown>): string {
   return `vmess://${encoded}`;
 }
 
+/**
+ * Exact-string identity for a link.
+ *
+ * `linkFingerprint` collapses links that describe the same node, which is what
+ * the dedupe card counts. Raw link totals have to use the same `seen` identity
+ * the pipeline itself uses, or two platforms that label one node differently
+ * would make the live raw count disagree with the final result. A digest keeps
+ * the link out of the event stream.
+ */
+export function linkDigest(link: string): string {
+  return crypto.createHash('sha256').update(String(link)).digest('hex');
+}
+
 export function linkFingerprint(link: string): string {
   try {
     const encoded = String(link).replace(/^vmess:\/\//, '');

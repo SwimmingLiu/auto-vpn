@@ -1178,6 +1178,75 @@ test('renderer shows deploy save toast with project and url details', async () =
   }
 });
 
+test('renderer updates the compact status area after failure and stop without a full render', async () => {
+  const server = await startStaticServer(path.join(__dirname, '..', 'renderer'));
+  let browser;
+  try {
+    browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1280, height: 820 } });
+    await page.addInitScript(() => {
+      window.vpnAutomation = {
+        loadProfile: async () => ({
+          sources: { leiting: { url: 'https://capture.example/api', key: 'demo', enabled: true, max_iterations: 1 } },
+          speed_test: { min_download_mb_s: 1, timeout_seconds: 20, concurrency: 3 },
+          availability_targets: {},
+          deploy: { cloudflare_api_token: 'test-token' },
+          paths: { project_root: '/tmp/autovpn', artifacts_root: '/tmp/autovpn/artifacts' }
+        }),
+        saveProfile: async () => ({ ok: true }),
+        latestArtifact: async () => ({ ok: false, artifact_dir: '' }),
+        artifactList: async () => ({ ok: true, items: [] }),
+        runPipeline: async () => ({ ok: true, code: 0 }),
+        stopPipeline: async () => ({ ok: true }),
+        onPipelineEvent: (callback) => {
+          window.__emitPipelineEvent = callback;
+          return () => {};
+        }
+      };
+    });
+
+    await page.goto(`${server.origin}/index.html`);
+    await page.waitForSelector('#dashboardOverview');
+    await page.waitForFunction(() => typeof window.__emitPipelineEvent === 'function');
+
+    // Run-end paths refresh only the runtime sections. Before the shared summary
+    // the hero kept its spinner and "running" copy until some later full render.
+    const hero = () => page.evaluate(() => {
+      const card = document.querySelector('.status-hero-card');
+      return {
+        running: card.classList.contains('is-running'),
+        label: card.querySelector('h3')?.textContent?.trim(),
+        recovery: Boolean(card.querySelector('[data-page-target="logs"]'))
+      };
+    });
+
+    await page.evaluate(() => {
+      window.__emitPipelineEvent({ type: 'run_started', artifact_dir: '/tmp/artifacts/20261110-000000' });
+      window.__emitPipelineEvent({ type: 'stage', stage: 'extract', status: 'running' });
+    });
+    await page.waitForFunction(() => document.querySelector('.status-hero-card')?.classList.contains('is-running'));
+    assert.deepEqual(await hero(), { running: true, label: '运行中', recovery: false });
+
+    // A failure leaves the artifact directory behind; it must not read as a success.
+    await page.evaluate(() => window.__emitPipelineEvent({ type: 'run_failed', error: 'fixture failure' }));
+    await page.waitForFunction(() => !document.querySelector('.status-hero-card')?.classList.contains('is-running'));
+    assert.deepEqual(await hero(), { running: false, label: '失败', recovery: true });
+
+    await page.evaluate(() => window.__emitPipelineEvent({ type: 'run_started', artifact_dir: '/tmp/artifacts/20261110-000100' }));
+    await page.waitForFunction(() => document.querySelector('.status-hero-card')?.classList.contains('is-running'));
+    // A stop is reported as an idle server state, not as a finished process.
+    await page.evaluate(() => window.__emitPipelineEvent({ type: 'server_state', run_state: 'idle' }));
+    await page.waitForFunction(() => !document.querySelector('.status-hero-card')?.classList.contains('is-running'));
+    const stopped = await hero();
+    assert.equal(stopped.running, false);
+    assert.equal(stopped.recovery, false);
+    assert.notEqual(stopped.label, '运行中');
+  } finally {
+    await browser?.close();
+    await server.close();
+  }
+});
+
 async function startStaticServer(rootDir) {
   const server = http.createServer(async (request, response) => {
     const url = request.url === '/' ? '/index.html' : request.url;

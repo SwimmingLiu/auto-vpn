@@ -13,6 +13,7 @@ import {
   buildAvailabilityTargetDraft,
   buildPageMarkup,
   buildDashboardMetricsMarkup,
+  buildDashboardStateMarkup,
   buildLogCenterMarkup,
   buildLogStateActions,
   buildRunsCurrentStageMarkup,
@@ -22,6 +23,7 @@ import {
   buildViewModel,
   buildAccountPoolRecords,
   removeAvailabilityTargetDraft,
+  resolveDashboardRunSummary,
   validateSourceDraft,
   classifyLogEntry,
   escapeHtml,
@@ -2015,8 +2017,13 @@ function renderActiveRuntimeSections(viewModel) {
 
   const hero = document.querySelector('.status-hero-card');
   if (hero) {
-    hero.querySelector('h3').textContent = viewModel.currentStatusLabel;
-    hero.classList.toggle('is-running', viewModel.runControlState.isBusy);
+    const summary = resolveDashboardRunSummary(viewModel);
+    const copy = hero.querySelector('.dashboard-state-copy');
+    if (copy.querySelector('h3')?.textContent !== viewModel.currentStatusLabel
+      || Boolean(copy.querySelector('p')) !== summary.failed) {
+      copy.innerHTML = buildDashboardStateMarkup(viewModel);
+    }
+    hero.classList.toggle('is-running', summary.isRunning);
     hero.dataset.tone = viewModel.runStateTone;
   }
 

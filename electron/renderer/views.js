@@ -155,6 +155,7 @@ export function buildViewModel(state, messages, language) {
     runControlState: resolveRunControlState(state.runState),
     runOptions: state.runOptions ?? {},
     activity: state.activity ?? [],
+    runState: state.runState ?? 'idle',
     statusItems: buildStatusItems(state, messages),
     currentStatusLabel: resolveCurrentStatusLabel(state, messages),
     currentTaskLabel: resolveCurrentTaskLabel(state, messages),
@@ -266,22 +267,23 @@ function buildPageInner(activePage, vm, messages) {
   }
 }
 
+// Page construction and live updates share the same current-run state;
+// a retained artifact is never evidence that the active run succeeded.
+export function resolveDashboardRunSummary(vm) {
+  return { isRunning: vm.runControlState?.isBusy === true, failed: vm.runState === 'failed' || vm.runStateTone === 'danger' };
+}
+
+export function buildDashboardStateMarkup(vm) {
+  const { failed } = resolveDashboardRunSummary(vm);
+  return `<h3>${escapeHtml(vm.currentStatusLabel)}</h3>${failed ? '<p>运行失败，可在日志中查看原因</p><button class="btn btn-secondary small" data-page-target="logs" type="button">查看日志</button>' : ''}`;
+}
+
 function buildDashboardPage(vm, messages) {
-  // While a run is in flight the hero card must not claim the last one
-  // finished: `hasResult` only says an artifact directory exists, which is also
-  // true at the start of the run that is producing it.
-  const isRunning = vm.runControlState?.isBusy === true || vm.runStateLabel === messages.runStateLabels.running;
-  // Failed runs can also leave an artifact directory. Its existence is not
-  // evidence of success when showing the recent result.
-  const failed = vm.runStateTone === 'danger';
+  const { isRunning } = resolveDashboardRunSummary(vm);
   return `
     <div id="dashboardOverview" class="page-grid dashboard-grid">
       <article class="panel wide-panel status-hero-card ${isRunning ? 'is-running' : ''}" data-run-state="${escapeHtml(vm.hasResult ? 'result' : 'empty')}">
-        <div>
-          <h3>${escapeHtml(vm.currentStatusLabel)}</h3>
-          ${failed ? '<p>运行失败，可在日志中查看原因</p>' : ''}
-          ${failed ? '<button class="btn btn-secondary small" data-page-target="logs" type="button">查看日志</button>' : ''}
-        </div>
+        <div class="dashboard-state-copy">${buildDashboardStateMarkup(vm)}</div>
         ${buildRunControls(vm)}
       </article>
 
@@ -984,8 +986,8 @@ function renderDrawerField(label, type, value, path, isCompact = false, extraAtt
   `;
 }
 
-function renderBadge(text, tone) {
-  return `<span class="badge ${tone}">${escapeHtml(text)}</span>`;
+function renderBadge(text, tone, attributes = '') {
+  return `<span class="badge ${tone}"${attributes ? ` ${attributes}` : ''}>${escapeHtml(text)}</span>`;
 }
 
 function renderQr(qr) {

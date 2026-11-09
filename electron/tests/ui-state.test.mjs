@@ -28,6 +28,7 @@ import {
   groupLogEntriesByStage,
   normalizeOfficialSourceDraft,
   removeAvailabilityTargetDraft,
+  resolveDashboardRunSummary,
   validateSourceDraft
 } from '../renderer/views.js';
 
@@ -698,4 +699,14 @@ test('the account pool panel shows the four vendors and a masked total', () => {
     assert.match(markup, new RegExp(label));
   }
   assert.match(markup, /上传 CSV/);
+});
+
+
+test('dashboard live and full rendering agree after failure and stop with retained artifacts', () => {
+  const messages = getMessages('zh-CN');
+  const failed = buildViewModel({ runState: 'failed', artifactDir: '/tmp/retained' }, messages, 'zh-CN');
+  assert.deepEqual(resolveDashboardRunSummary(failed), { isRunning: false, failed: true });
+  assert.match(buildPageMarkup('dashboard', failed, messages, 'zh-CN'), /查看日志/);
+  const idle = buildViewModel({ runState: 'idle' }, messages, 'zh-CN');
+  assert.deepEqual(resolveDashboardRunSummary(idle), { isRunning: false, failed: false });
 });

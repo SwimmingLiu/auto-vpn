@@ -44,6 +44,9 @@ export function createControlPlane(options = {}) {
     3: ['198.51.100.20', '198.51.100.21', '198.51.100.22']
   };
   const requestedAreas = [];
+  // Areas are counted per channel: both platforms ask every route in the same
+  // round, and one shared counter would advance twice per round.
+  const areaCounters = new Map();
   let round = 0;
 
   const routeList = {
@@ -84,9 +87,13 @@ export function createControlPlane(options = {}) {
     if (path === '/api/evmess') {
       const area = Number(parsed.searchParams.get('area'));
       requestedAreas.push(area);
-      // One round is one pass over every route: the area counter advances once
-      // both routes have been asked.
-      if (requestedAreas.length % 2 === 0) round += 1;
+      // One round is one pass over every route by every platform. Each channel
+      // asks independently, so its own counter decides which round it is in;
+      // `platform` names the channel on the request.
+      const caller = parsed.searchParams.get('platform') ?? 'single';
+      const seen = (areaCounters.get(caller) ?? 0) + 1;
+      areaCounters.set(caller, seen);
+      if (seen % 2 === 0) round = Math.floor(seen / 2);
       const list = perRound[area] ?? [];
       const index = Math.min(round, rounds) - 1;
       const address = list[index];

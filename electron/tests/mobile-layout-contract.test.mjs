@@ -168,6 +168,23 @@ test('WebKit preserves safe-area navigation, run bar and settings visual viewpor
     assert.equal(await page.locator('[data-settings-dialog]').evaluate((node) => getComputedStyle(node).backgroundColor), 'rgb(255, 255, 255)');
     assert.equal(await page.locator('.settings-drawer-actions').evaluate((node) => getComputedStyle(node).paddingBottom), '36px');
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.visualViewport.width));
+    // Section-specific desktop widths must not leak into the mobile sheet: the
+    // sources drawer is the one that sets its own width.
+    for (const section of ['deploy', 'sources']) {
+      await page.evaluate((name) => document.querySelector(`[data-settings-card="${name}"]`)?.click(), section);
+      await page.waitForSelector('#settingsDrawer[data-open="true"]');
+      const sheet = await page.locator('.settings-drawer-panel').evaluate((node) => {
+        const style = getComputedStyle(node);
+        const box = node.getBoundingClientRect();
+        return { width: style.width, maxWidth: style.maxWidth, radius: style.borderRadius, left: box.x, boxWidth: box.width };
+      });
+      assert.deepEqual(sheet, { width: '390px', maxWidth: 'none', radius: '0px', left: 0, boxWidth: 390 }, `${section} drawer must fill the phone sheet`);
+      // Close through the drawer's own cancel control: the backdrop is a
+      // full-size button under the panel and the trap owns Escape, so the
+      // cancel button keeps this loop independent of focus handling.
+      await page.locator('.settings-drawer-actions [data-drawer-close="cancel"]').click();
+      await page.waitForSelector('#settingsDrawer[data-open="false"]', { state: 'attached' });
+    }
   } finally {
     await closeAllWithin([() => browser?.close(), () => service.close()]);
   }
