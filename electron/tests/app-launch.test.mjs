@@ -14,6 +14,15 @@ async function waitForRendererBootstrap(page) {
   await page.waitForFunction(() => document.querySelector('#pageContent')?.childElementCount > 0);
 }
 
+async function resizeNativeWindow(app, page, size) {
+  // Viewport emulation leaves the native surface smaller on Linux headless,
+  // so pointer coordinates can miss a card even when its DOM box is visible.
+  await app.evaluate(({ BrowserWindow }, { width, height }) => {
+    BrowserWindow.getAllWindows()[0].setContentSize(width, height);
+  }, size);
+  await page.waitForFunction(({ width, height }) => innerWidth === width && innerHeight === height, size);
+}
+
 test('electron app exposes preload bridge and renders the real saved profile', async () => {
   const app = await electron.launch({ args: launchArgs });
   let previousZoom = null;
@@ -21,7 +30,7 @@ test('electron app exposes preload bridge and renders the real saved profile', a
   try {
     const page = await app.firstWindow();
     previousZoom = await app.evaluate(({ BrowserWindow }) => { const contents = BrowserWindow.getAllWindows()[0].webContents; const zoom = contents.getZoomFactor(); contents.setZoomFactor(1); return zoom; });
-    await page.setViewportSize({ width: 1280, height: 800 });
+    await resizeNativeWindow(app, page, { width: 1280, height: 800 });
     await waitForRendererBootstrap(page);
     await page.evaluate(() => document.querySelector('#navSettings')?.click());
     await page.waitForSelector('[data-settings-card="sources"]', { state: 'attached' });
@@ -70,7 +79,7 @@ test('electron app exposes preload bridge and renders the real saved profile', a
       }
       // Test the supported minimum too; a clipped native frame must still
       // let the operator reach theme and account controls.
-      await page.setViewportSize({ width: 880, height: 640 });
+      await resizeNativeWindow(app, page, { width: 880, height: 640 });
       await page.locator('[data-theme-choice="light"]').click();
       const lastControl = page.locator('#settingsWorkspace button:visible, #settingsWorkspace input:visible, #settingsWorkspace select:visible').last();
       await lastControl.scrollIntoViewIfNeeded();
