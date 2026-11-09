@@ -1260,6 +1260,76 @@ test('renderer shows deploy save toast with project and url details', async () =
   }
 });
 
+test('renderer retires the running hero and result badge when a run ends without a full render', async () => {
+  const server = await startStaticServer(path.join(__dirname, '..', 'renderer'));
+  let browser;
+  try {
+    browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1280, height: 820 } });
+    await page.addInitScript(() => {
+      window.vpnAutomation = {
+        loadProfile: async () => ({
+          sources: { leiting: { url: 'https://capture.example/api', key: 'demo', enabled: true, max_iterations: 1 } },
+          speed_test: { min_download_mb_s: 1, timeout_seconds: 20, concurrency: 3 },
+          availability_targets: {},
+          deploy: { cloudflare_api_token: 'test-token' },
+          paths: { project_root: '/tmp/autovpn', artifacts_root: '/tmp/autovpn/artifacts' }
+        }),
+        saveProfile: async () => ({ ok: true }),
+        latestArtifact: async () => ({ ok: false, artifact_dir: '' }),
+        artifactList: async () => ({ ok: true, items: [] }),
+        runPipeline: async () => ({ ok: true, code: 0 }),
+        stopPipeline: async () => ({ ok: true }),
+        onPipelineEvent: (callback) => {
+          window.__emitPipelineEvent = callback;
+          return () => {};
+        }
+      };
+    });
+
+    await page.goto(`${server.origin}/index.html`);
+    await page.waitForSelector('#dashboardOverview');
+    await page.waitForFunction(() => typeof window.__emitPipelineEvent === 'function');
+
+    // Run-end paths refresh only the runtime sections. Before the shared summary
+    // the hero kept its spinner and "running" copy until some later full render.
+    const hero = () => page.evaluate(() => {
+      const card = document.querySelector('.status-hero-card');
+      return {
+        running: card.classList.contains('is-running'),
+        copy: card.querySelector('p')?.textContent?.trim(),
+        spinner: Boolean(card.querySelector('.status-orb-spinner')),
+        badge: document.querySelector('[data-dashboard-result-badge]')?.textContent?.trim()
+      };
+    });
+
+    await page.evaluate(() => {
+      window.__emitPipelineEvent({ type: 'run_started', artifact_dir: '/tmp/artifacts/20261110-000000' });
+      window.__emitPipelineEvent({ type: 'stage', stage: 'extract', status: 'running' });
+    });
+    await page.waitForFunction(() => document.querySelector('.status-hero-card')?.classList.contains('is-running'));
+    assert.deepEqual(await hero(), { running: true, copy: '正在执行，完成后覆盖本次结果', spinner: true, badge: '进行中' });
+
+    // A failure leaves the artifact directory behind; it must not read as a success.
+    await page.evaluate(() => window.__emitPipelineEvent({ type: 'run_failed', error: 'fixture failure' }));
+    await page.waitForFunction(() => !document.querySelector('.status-hero-card')?.classList.contains('is-running'));
+    assert.deepEqual(await hero(), { running: false, copy: '运行失败，可在日志中查看原因', spinner: false, badge: '失败' });
+
+    await page.evaluate(() => window.__emitPipelineEvent({ type: 'run_started', artifact_dir: '/tmp/artifacts/20261110-000100' }));
+    await page.waitForFunction(() => document.querySelector('.status-hero-card')?.classList.contains('is-running'));
+    // A stop is reported as an idle server state, not as a finished process.
+    await page.evaluate(() => window.__emitPipelineEvent({ type: 'server_state', run_state: 'idle' }));
+    await page.waitForFunction(() => !document.querySelector('.status-hero-card')?.classList.contains('is-running'));
+    const stopped = await hero();
+    assert.equal(stopped.running, false);
+    assert.equal(stopped.spinner, false);
+    assert.notEqual(stopped.badge, '进行中');
+  } finally {
+    await browser?.close();
+    await server.close();
+  }
+});
+
 async function startStaticServer(rootDir) {
   const server = http.createServer(async (request, response) => {
     const url = request.url === '/' ? '/index.html' : request.url;
