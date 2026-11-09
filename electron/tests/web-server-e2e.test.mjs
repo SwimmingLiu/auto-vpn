@@ -707,7 +707,8 @@ test('served web ui handles visible browser controls across all pages', { timeou
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
       assert.equal(await page.locator('[data-drawer-save="save"]').isVisible(), true);
       if (section === 'sources') {
-        await page.locator('[data-drawer-path="sources.maxIterations"]').fill('41');
+        // The round budget is per vendor now; the shared url-mode fields are gone.
+        await page.locator('[data-drawer-source="leiting"][data-drawer-key="max_iterations"]').fill('41');
       } else if (section === 'speed_test') {
         await page.locator('[data-drawer-path="speed_test.concurrency"]').fill('4');
       } else if (section === 'availability_targets') {
@@ -723,7 +724,7 @@ test('served web ui handles visible browser controls across all pages', { timeou
 
       await opener.click();
       if (section === 'sources') {
-        assert.equal(await page.locator('[data-drawer-path="sources.maxIterations"]').inputValue(), '41');
+        assert.equal(await page.locator('[data-drawer-source="leiting"][data-drawer-key="max_iterations"]').inputValue(), '41');
       } else if (section === 'speed_test') {
         assert.equal(await page.locator('[data-drawer-path="speed_test.concurrency"]').inputValue(), '4');
       } else if (section === 'availability_targets') {

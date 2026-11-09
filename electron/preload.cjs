@@ -3,6 +3,10 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('vpnAutomation', {
   loadProfile: () => ipcRenderer.invoke('profile:load'),
   saveProfile: (payload) => ipcRenderer.invoke('profile:save', payload),
+  loadAccounts: () => ipcRenderer.invoke('accounts:snapshot'),
+  importAccounts: (content, format) => ipcRenderer.invoke('accounts:import', { content, format }),
+  setAccountStatus: (payload) => ipcRenderer.invoke('accounts:status', payload),
+  accountsTemplate: () => ipcRenderer.invoke('accounts:template'),
   runPipeline: (options) => ipcRenderer.invoke('pipeline:run', options),
   stopPipeline: () => ipcRenderer.invoke('pipeline:stop'),
   openUrl: (url) => ipcRenderer.invoke('external:open-url', url),

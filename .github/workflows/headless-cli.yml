@@ -161,6 +161,8 @@ jobs:
         env:
           AUTOVPN_PACKAGE_PLATFORM: linux
           AUTOVPN_PACKAGE_ARCH: x64
+        # `runElectronBuilder` retries internally and switches to the mirror on
+        # the second attempt; the outer loop covers a failure before that point.
         run: |
           AUTOVPN_CI_RETRIES=2 AUTOVPN_CI_RETRY_BASE_SECONDS=60 \
             bash scripts/ci/retry-command.sh "package Electron app" -- \

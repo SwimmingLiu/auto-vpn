@@ -630,6 +630,62 @@ export function cleanGeneratedRuntimeArtifacts(projectRoot, options = {}) {
   fs.mkdirSync(runtimeDir, { recursive: true });
 }
 
+/**
+ * Mirror used when GitHub cannot serve the Electron runtime or the packaging
+ * binaries. `electron-builder` resolves both itself, so `ELECTRON_MIRROR`
+ * (which `@electron/get` reads during `npm install`) has no effect on it.
+ */
+export const ELECTRON_BUILDER_MIRROR = 'https://npmmirror.com/mirrors/electron/';
+
+/**
+ * Environment for one `electron-builder` attempt.
+ *
+ * Attempt 1 uses the defaults, so a working GitHub is always preferred and the
+ * mirror is never contacted unnecessarily. Later attempts pin both the runtime
+ * and `electron-builder`'s own binaries (`fpm`, `AppImage`, `nsis`) to the
+ * mirror, because a 504 from the GitHub release CDN fails either one.
+ */
+export function buildElectronBuilderEnv(attempt, baseEnv = process.env) {
+  const env = { ...baseEnv };
+  if (attempt <= 1) {
+    return env;
+  }
+  env.ELECTRON_MIRROR = env.ELECTRON_MIRROR || ELECTRON_BUILDER_MIRROR;
+  env.ELECTRON_BUILDER_BINARIES_MIRROR = env.ELECTRON_BUILDER_BINARIES_MIRROR
+    || 'https://npmmirror.com/mirrors/electron-builder-binaries/';
+  return env;
+}
+
+/**
+ * Runs `electron-builder` with a mirror fallback.
+ *
+ * A transient CDN failure is the difference between a red and a green package
+ * job, and it is not made more likely by retrying: the artifacts are immutable
+ * once published. `AUTOVPN_ELECTRON_BUILDER_ATTEMPTS` bounds the attempts.
+ */
+export function runElectronBuilder(projectRoot, options = {}) {
+  const platforms = options.platforms;
+  const archs = options.archs;
+  const args = buildElectronBuilderArgs({ platforms, archs });
+  const attempts = Math.max(1, Math.trunc(Number(options.attempts ?? process.env.AUTOVPN_ELECTRON_BUILDER_ATTEMPTS ?? 3)) || 1);
+  let result;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    if (attempt > 1) {
+      logPackageStage(`Retrying electron-builder with the mirror (attempt ${attempt}/${attempts})`);
+    }
+    result = spawnSync('npx', args, buildCommandSpawnOptions('npx', {
+      cwd: projectRoot,
+      stdio: 'inherit',
+      timeout: 600000,
+      env: buildElectronBuilderEnv(attempt, options.env ?? process.env)
+    }));
+    if (result.status === 0) {
+      return result;
+    }
+  }
+  return result;
+}
+
 export function runPackaging(projectRoot) {
   const { runtimeDir } = resolveRuntimePaths(projectRoot);
   const platforms = buildPackagePlatformList();
@@ -657,11 +713,7 @@ export function runPackaging(projectRoot) {
   preparePackageIcons(projectRoot, platforms);
 
   logPackageStage('Running electron-builder');
-  return spawnSync('npx', buildElectronBuilderArgs({ platforms, archs }), buildCommandSpawnOptions('npx', {
-    cwd: projectRoot,
-    stdio: 'inherit',
-    timeout: 600000
-  }));
+  return runElectronBuilder(projectRoot, { platforms, archs });
 }
 
 if (process.argv[1] === __filename) {

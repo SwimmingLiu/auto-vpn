@@ -2,21 +2,10 @@ import { buildStageModel, PAGE_INDEX, PAGE_ORDER, resolveRunControlState } from 
 
 const FALLBACK_PROFILE = {
   sources: {
-    leiting: {
-      url: 'https://capture-1.vpn.example/api/v1/client/subscribe',
-      key: 'lt-demo-key',
-      enabled: true
-    },
-    heilong: {
-      url: 'https://capture-2.vpn.example/api/v1/client/nodes',
-      key: 'hl-demo-key',
-      enabled: true
-    },
-    custom: {
-      url: 'https://capture-3.vpn.example/custom.txt',
-      key: '',
-      enabled: false
-    }
+    leiting: { mode: 'credential', official_site: 'https://www.68123836.com', enabled: true, max_iterations: 4, plateau_limit: 2 },
+    heidong: { mode: 'credential', official_site: 'https://www.67986457.com', enabled: true, max_iterations: 4, plateau_limit: 2 },
+    mifeng: { mode: 'credential', official_site: 'https://www.86933221.com', enabled: true, max_iterations: 4, plateau_limit: 2 },
+    xuanfeng: { mode: 'credential', official_site: 'https://www.16863988.com', enabled: true, max_iterations: 4, plateau_limit: 2 }
   },
   speed_test: {
     min_download_mb_s: 1,
@@ -66,7 +55,7 @@ const EMPTY_COUNTS = {
   postprocess_links: 0
 };
 
-const SOURCE_DISPLAY_ORDER = ['leiting', 'heidong', 'mifeng', 'xuanfeng-area', 'xuanfeng-all-area'];
+const SOURCE_DISPLAY_ORDER = ['leiting', 'heidong', 'mifeng', 'xuanfeng'];
 const RETRY_STAGE_ORDER = ['speedtest', 'availability', 'postprocess', 'render', 'obfuscate', 'deploy', 'verify'];
 const STAGE_DISPLAY_NAMES = {
   doctor: 'doctor',
@@ -181,6 +170,11 @@ export function buildViewModel(state, messages, language) {
     runStateLabel: messages.runStateLabels[state.runState] ?? messages.runStateLabels.idle,
     runStateTone: runStateTone(state.runState),
     settingsDrawer: state.settingsDrawer ?? null,
+    accountPool: {
+      ...EMPTY_ACCOUNT_POOL,
+      ...(state.accountPool ?? {}),
+      recordsMarkup: buildAccountPoolRecords({ ...EMPTY_ACCOUNT_POOL, ...(state.accountPool ?? {}) })
+    },
     modalTransform: state.modalTransform ?? '',
     runtime: state.runtime ?? 'electron'
   };
@@ -632,15 +626,177 @@ function buildSettingsPage(vm, messages) {
           <span class="panel-subcopy">点击卡片后在弹窗中编辑，并在弹窗内直接保存</span>
         </div>
         <div class="settings-overview-grid">
-          ${buildSettingsCard('sources', '数据源配置', `已启用 ${vm.sourceRows.filter((row) => row.enabled).length} / ${vm.sourceRows.length} 个来源`, '管理抓取地址、密钥和启用状态')}
+          ${buildSettingsCard('sources', '数据源配置', `${vm.sourceRows.filter((row) => row.enabled).length} / ${vm.sourceRows.length} 个官网 · 双端并发`, '只填官网；账号池登录，密钥自动发现')}
           ${buildSettingsCard('speed_test', '测速配置', `最低 ${vm.profile.speed_test.min_download_mb_s} MB/s · 并发 ${vm.profile.speed_test.concurrency}`, '控制测速阈值、超时和并发')}
           ${buildSettingsCard('availability_targets', 'AI可达性检测', `已启用 ${enabledAvailabilityTargetCount(vm.profile.availability_targets)} / ${Object.keys(vm.profile.availability_targets ?? {}).length} 个网站`, '配置 Gemini、ChatGPT、Claude 或自定义网站')}
           ${buildSettingsCard('deploy', '部署配置', `项目 ${vm.profile.deploy.project_name || '未设置'}`, '项目名变化会自动联动默认 Pages 地址；手动修改 URL 后，后续不再自动覆盖')}
         </div>
       </article>
 
+      ${buildAccountPoolPanel(vm)}
       ${buildSettingsDrawer(vm)}
     </div>
+  `;
+}
+
+export function filterAccountPoolAccounts(pool = {}) {
+  const query = String(pool.query ?? '').trim().toLowerCase();
+  const status = pool.statusFilter ?? 'all';
+  const brand = pool.brandFilter ?? 'all';
+  const rows = (pool.accounts ?? []).filter((account) => {
+    if (status !== 'all' && account.status !== status) return false;
+    if (brand !== 'all' && account.brand !== brand) return false;
+    if (!query) return true;
+    return [account.account_masked, account.note, account.status_reason, SOURCE_NAMES[account.brand]]
+      .some((value) => String(value ?? '').toLowerCase().includes(query));
+  });
+  const sortBy = pool.sortBy ?? 'brand';
+  return rows.sort((left, right) => {
+    if (sortBy === 'recent') return String(right.last_used_at || '').localeCompare(String(left.last_used_at || '')) || left.id - right.id;
+    if (sortBy === 'uses') return Number(right.use_count ?? 0) - Number(left.use_count ?? 0) || left.id - right.id;
+    if (sortBy === 'expiry') return String(left.expires_at || '9999').localeCompare(String(right.expires_at || '9999')) || left.id - right.id;
+    return String(left.brand).localeCompare(String(right.brand)) || left.id - right.id;
+  });
+}
+
+export function buildAccountPoolRecords(pool = EMPTY_ACCOUNT_POOL) {
+  if (pool.status === 'loading') {
+    return '<div class="account-pool-empty" role="status">正在读取账号池…</div>';
+  }
+  if (pool.status === 'error' || pool.status === 'unavailable') {
+    return `<div class="account-pool-empty" role="alert">${escapeHtml(pool.error || '账号池不可用')}</div>`;
+  }
+  const rows = filterAccountPoolAccounts(pool);
+  if (rows.length === 0) {
+    const hasAny = (pool.accounts ?? []).length > 0;
+    return `<div class="account-pool-empty">${hasAny ? '没有匹配的账号' : '还没有账号。上传 CSV 后，官网登录会自动从池中取用。'}</div>`;
+  }
+  return `
+    <div class="table-wrap account-pool-table-wrap">
+      <table class="data-table account-pool-table">
+        <colgroup>
+          <col class="account-col-account" />
+          <col class="account-col-brand" />
+          <col class="account-col-status" />
+          <col class="account-col-expiry" />
+          <col class="account-col-usage" />
+          <col class="account-col-actions" />
+        </colgroup>
+        <thead><tr><th>账号</th><th>加速器</th><th>状态</th><th>到期</th><th>使用</th><th>操作</th></tr></thead>
+        <tbody>
+          ${rows.map((account) => {
+            const meta = ACCOUNT_STATUS_META[account.status] ?? { label: account.status, tone: 'neutral' };
+            const retired = account.status !== 'active';
+            return `
+              <tr data-account-row="${account.id}">
+                <td data-field-label="账号"><code class="account-mask">${escapeHtml(account.account_masked)}</code>${account.note ? `<span class="account-note">${escapeHtml(account.note)}</span>` : ''}</td>
+                <td data-field-label="加速器">${escapeHtml(SOURCE_NAMES[account.brand] ?? account.brand)}</td>
+                <td data-field-label="状态">${renderBadge(meta.label, meta.tone)}${account.status_reason ? `<span class="account-note">${escapeHtml(account.status_reason)}</span>` : ''}</td>
+                <td data-field-label="到期">${escapeHtml(account.expires_at || '—')}</td>
+                <td data-field-label="使用"><span class="account-usage">${Number(account.use_count ?? 0)} 次</span><span class="account-note">${Number(account.success_count ?? 0)} 成功 / ${Number(account.fail_count ?? 0)} 失败</span></td>
+                <td data-field-label="操作"><button class="btn btn-secondary small ${retired ? '' : 'destructive'}" data-account-action="toggle" data-account-id="${account.id}" type="button" ${pool.busy ? 'disabled' : ''}>${retired ? '启用' : '停用'}</button></td>
+              </tr>
+            `;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>
+    <p class="account-pool-count">显示 ${rows.length} / ${(pool.accounts ?? []).length} 个账号</p>
+  `;
+}
+
+export function buildAccountPoolPanel(vm) {
+  const pool = vm.accountPool ?? EMPTY_ACCOUNT_POOL;
+  const stats = pool.stats ?? { total: 0, active: 0, disabled: 0, expired: 0, invalid: 0, expiring_soon: 0, by_brand: [] };
+  const total = Number(stats.total ?? 0);
+  const segments = ['active', 'disabled', 'expired', 'invalid'];
+  const meterLabel = segments.map((status) => `${ACCOUNT_STATUS_META[status].label} ${Number(stats[status] ?? 0)}`).join('，');
+  const message = pool.message || (pool.status === 'error' ? pool.error : '');
+  // A failed load must not render a wall of zeros: "0 可用 / 共 0 个" reads as a
+  // real empty pool, and counts left over from the last good load read as a
+  // successful refresh. Show the state instead and let the records area carry
+  // the reason.
+  const unavailable = pool.status === 'error' || pool.status === 'unavailable';
+  const summary = unavailable
+    ? `
+      <div class="account-pool-summary is-unavailable">
+        <div class="account-pool-total">
+          <strong>—</strong>
+          <span>账号池未读取</span>
+        </div>
+        <p class="account-pool-expiry">${escapeHtml(pool.status === 'error' ? '刷新失败，下方是失败原因' : '当前环境没有账号池')}</p>
+      </div>
+    `
+    : `
+      <div class="account-pool-summary">
+        <div class="account-pool-total">
+          <strong>${Number(stats.active ?? 0)}</strong>
+          <span>可用账号 / 共 ${total} 个</span>
+        </div>
+        <div class="account-pool-status-grid">
+          ${segments.map((status) => `
+            <div class="account-pool-stat ${ACCOUNT_STATUS_META[status].tone}">
+              <span>${ACCOUNT_STATUS_META[status].label}</span>
+              <strong>${Number(stats[status] ?? 0)}</strong>
+            </div>
+          `).join('')}
+        </div>
+        <div class="account-pool-meter" role="img" aria-label="${escapeHtml(meterLabel)}">
+          ${total > 0 ? segments.map((status) => {
+            const count = Number(stats[status] ?? 0);
+            return count > 0 ? `<span class="${ACCOUNT_STATUS_META[status].tone}" style="flex-grow:${count}" title="${ACCOUNT_STATUS_META[status].label} ${count}"></span>` : '';
+          }).join('') : '<span class="empty"></span>'}
+        </div>
+        <p class="account-pool-expiry">${Number(stats.expiring_soon ?? 0) > 0 ? `7 天内到期 ${Number(stats.expiring_soon)} 个` : '没有 7 天内到期的账号'}</p>
+      </div>
+
+      <div class="account-pool-brands">
+        ${SOURCE_DISPLAY_ORDER.map((brand) => {
+          const row = (stats.by_brand ?? []).find((item) => item.brand === brand);
+          return `<span class="account-brand-chip"><strong>${SOURCE_NAMES[brand]}</strong>${Number(row?.active ?? 0)} 可用 / ${Number(row?.total ?? 0)} 总数</span>`;
+        }).join('')}
+      </div>
+
+      <div class="account-pool-toolbar">
+        <label class="account-pool-search"><span>搜索</span><input data-account-search type="search" value="${escapeHtml(pool.query ?? '')}" placeholder="账号掩码或备注" /></label>
+        <label><span>状态</span><select data-account-status-filter>
+          <option value="all" ${pool.statusFilter === 'all' ? 'selected' : ''}>全部状态</option>
+          ${segments.map((status) => `<option value="${status}" ${pool.statusFilter === status ? 'selected' : ''}>${ACCOUNT_STATUS_META[status].label}</option>`).join('')}
+        </select></label>
+        <label><span>加速器</span><select data-account-brand-filter>
+          <option value="all" ${pool.brandFilter === 'all' ? 'selected' : ''}>全部加速器</option>
+          ${SOURCE_DISPLAY_ORDER.map((brand) => `<option value="${brand}" ${pool.brandFilter === brand ? 'selected' : ''}>${SOURCE_NAMES[brand]}</option>`).join('')}
+        </select></label>
+        <label><span>排序</span><select data-account-sort>
+          <option value="brand" ${pool.sortBy === 'brand' ? 'selected' : ''}>按加速器</option>
+          <option value="recent" ${pool.sortBy === 'recent' ? 'selected' : ''}>最近使用</option>
+          <option value="uses" ${pool.sortBy === 'uses' ? 'selected' : ''}>使用次数</option>
+          <option value="expiry" ${pool.sortBy === 'expiry' ? 'selected' : ''}>到期时间</option>
+        </select></label>
+      </div>
+    `;
+  return `
+    <article class="panel wide-panel account-pool-panel" id="accountPoolPanel" aria-busy="${pool.busy || pool.status === 'loading' ? 'true' : 'false'}">
+      <div class="panel-headline account-pool-headline">
+        <div>
+          <h3>账号池</h3>
+          <span class="panel-subcopy">官网登录自动取用 · 列表不展示密码</span>
+        </div>
+        <div class="account-pool-actions">
+          <button class="btn btn-secondary small" data-account-action="refresh" type="button" ${pool.busy ? 'disabled' : ''}>刷新</button>
+          <button class="btn btn-secondary small" data-account-action="template" type="button" ${pool.busy ? 'disabled' : ''}>下载模板</button>
+          <button class="btn btn-primary small" data-account-action="upload" type="button" ${pool.busy ? 'disabled' : ''}>${pool.busy ? '导入中…' : '上传 CSV'}</button>
+          <input id="accountPoolFile" data-account-file type="file" accept=".csv,.txt,text/csv,text/plain" hidden aria-hidden="true" tabindex="-1" />
+        </div>
+      </div>
+
+      ${summary}
+
+      <div id="accountPoolRecords" class="account-pool-records">${pool.recordsMarkup ?? ''}</div>
+      <p class="account-pool-message ${pool.issues?.length ? 'warning' : ''}" role="status" aria-live="polite" ${message || pool.issues?.length ? '' : 'hidden'}>
+        ${escapeHtml(message)}${pool.issues?.length ? ` ${pool.issues.slice(0, 3).map((issue) => `第 ${escapeHtml(String(issue.line ?? ''))} 行：${escapeHtml(issue.message)}`).join('；')}${pool.issues.length > 3 ? `；另有 ${pool.issues.length - 3} 行` : ''}` : ''}
+      </p>
+    </article>
   `;
 }
 
@@ -708,7 +864,7 @@ function buildSettingsDrawer(vm) {
           <button class="icon-btn settings-drawer-close" data-drawer-close="cancel" type="button" aria-label="关闭${escapeHtml(title)}">×</button>
         </div>
         <div class="settings-drawer-body">
-          ${isOpen ? buildSettingsDrawerBody(section, drawer.draft) : ''}
+          ${isOpen ? buildSettingsDrawerBody(section, drawer.draft, vm) : ''}
         </div>
         <div class="settings-drawer-actions">
           <button class="btn btn-secondary" data-drawer-close="cancel" type="button">取消</button>
@@ -720,13 +876,38 @@ function buildSettingsDrawer(vm) {
 }
 
 const SOURCE_NAMES = {
-  'leiting': '雷霆',
-  'heidong': '黑洞',
-  'mifeng': '蜜蜂',
-  'xuanfeng-area': '旋风部分区域',
-  'xuanfeng-all-area': '旋风全区域',
-  'heilong': '黑龙',
-  'custom': '自定义'
+  leiting: '雷霆',
+  heidong: '黑洞',
+  mifeng: '蜜蜂',
+  xuanfeng: '旋风'
+};
+
+const LEGACY_SOURCE_ALIASES = {
+  'xuanfeng-area': 'xuanfeng',
+  'xuanfeng-all-area': 'xuanfeng',
+  xuanfeng1: 'xuanfeng',
+  xuanfeng2: 'xuanfeng'
+};
+
+const ACCOUNT_STATUS_META = {
+  active: { label: '可用', tone: 'success' },
+  disabled: { label: '停用', tone: 'neutral' },
+  expired: { label: '到期', tone: 'warning' },
+  invalid: { label: '失效', tone: 'danger' }
+};
+
+const EMPTY_ACCOUNT_POOL = {
+  status: 'idle',
+  stats: null,
+  accounts: [],
+  error: '',
+  message: '',
+  issues: [],
+  query: '',
+  statusFilter: 'all',
+  brandFilter: 'all',
+  sortBy: 'brand',
+  busy: false
 };
 
 /** Credential sources are also configured by their official site. */
@@ -737,72 +918,65 @@ const OFFICIAL_SITES = {
   mifeng: 'https://www.86933221.com'
 };
 
-function buildSettingsDrawerBody(section, draft) {
+function buildSettingsDrawerBody(section, draft, vm = null) {
   if (section === 'sources') {
-    const sourceDraft = draft?.sources ?? {};
+    const sourceDraft = normalizeOfficialSourceDraft(draft?.sources ?? {});
     return `
       <div class="source-drawer-settings">
-        ${renderDrawerField('最大迭代次数', 'number', draft?.maxIterations ?? 40, 'sources.maxIterations', true, 'data-source-max-iterations min="1"')}
-        ${renderDrawerField('早停次数', 'number', draft?.plateauLimit ?? 20, 'sources.plateauLimit', true, 'data-source-plateau-limit min="1"')}
-        ${renderDrawerField('区域起始', 'number', draft?.areaMin ?? 0, 'sources.areaMin', true, 'data-source-area-min')}
-        ${renderDrawerField('区域结束', 'number', draft?.areaMax ?? 100, 'sources.areaMax', true, 'data-source-area-max')}
+        <div class="source-drawer-settings-copy">
+          <strong>每个加速器只填官网</strong>
+          <span>密钥从 APK 自动发现，账号密码由账号池提供。Android 与 iOS 两个通道同时抓取，每条线路按「轮数」循环请求，连续「早停」轮没有新节点就停止。</span>
+        </div>
       </div>
       <div class="table-wrap">
         <table class="data-table settings-source-table">
           <colgroup>
             <col class="settings-col-enabled" />
             <col class="settings-col-name" />
-            <col class="settings-col-mode" />
-            <col class="settings-col-url" />
-            <col class="settings-col-account" />
-            <col class="settings-col-password" />
-            <col class="settings-col-platform" />
-            <col class="settings-col-key" />
+            <col class="settings-col-connection" />
+            <col class="settings-col-rounds" />
           </colgroup>
-          <thead><tr><th>启用</th><th>名称</th><th>模式</th><th>官网 / 地址</th><th>账号</th><th>密码</th><th>平台</th><th>密钥</th></tr></thead>
+          <thead><tr><th>启用</th><th>加速器</th><th>官网</th><th>循环</th></tr></thead>
           <tbody>
-            ${Object.entries(sourceDraft).map(([name, source]) => {
-              const isCredential = source.mode === 'credential';
+            ${SOURCE_DISPLAY_ORDER.map((name) => {
+              const source = sourceDraft[name];
               const label = escapeHtml(SOURCE_NAMES[name] || name);
+              const pool = vm?.accountPool?.stats?.by_brand?.find((item) => item.brand === name);
+              const poolHint = vm?.accountPool?.stats
+                ? `账号池 ${Number(pool?.active ?? 0)} 个可用`
+                : '账号池未连接';
               return `
               <tr data-settings-field-group>
-                <td data-field-label="启用"><input aria-label="${label}：启用" type="checkbox" data-drawer-source="${escapeHtml(name)}" data-drawer-key="enabled" ${source.enabled ? 'checked' : ''} /></td>
-                <td data-field-label="名称"><strong class="settings-source-name">${label}</strong></td>
-                <td data-field-label="模式">
-                  <select aria-label="${label}：模式" data-drawer-source="${escapeHtml(name)}" data-drawer-mode="true">
-                    <option value="credential" ${isCredential ? 'selected' : ''}>官网 + 账号</option>
-                    <option value="url" ${isCredential ? '' : 'selected'}>自定义地址</option>
-                  </select>
+                <td data-field-label="启用"><input aria-label="${label}：启用" type="checkbox" data-drawer-source="${escapeHtml(name)}" data-drawer-key="enabled" ${source.enabled !== false ? 'checked' : ''} /></td>
+                <td data-field-label="加速器">
+                  <strong class="settings-source-name">${label}</strong>
+                  <span class="settings-source-hint ${Number(pool?.active ?? 0) > 0 ? 'ready' : 'empty'}">${escapeHtml(poolHint)}</span>
                 </td>
-                <td data-field-label="官网 / 地址">
-                  ${isCredential
-                    ? `<input aria-label="${label}：官网地址" data-drawer-source="${escapeHtml(name)}" data-drawer-key="official_site" placeholder="${escapeHtml(OFFICIAL_SITES[name] ?? '')}" value="${escapeHtml(source.official_site ?? '')}" />`
-                    : `<textarea class="table-textarea mono" rows="3" aria-label="${label}：地址" data-drawer-source="${escapeHtml(name)}" data-drawer-key="url">${escapeHtml(source.url ?? '')}</textarea>`}
+                <td data-field-label="官网">
+                  <input aria-label="${label}：官网地址" inputmode="url" spellcheck="false" class="mono" data-drawer-source="${escapeHtml(name)}" data-drawer-key="official_site" placeholder="${escapeHtml(OFFICIAL_SITES[name] ?? '')}" value="${escapeHtml(source.official_site ?? '')}" />
                 </td>
-                <td data-field-label="账号">
-                  ${isCredential
-                    ? `<input type="text" aria-label="${label}：账号" data-drawer-source="${escapeHtml(name)}" data-drawer-key="account" value="${escapeHtml(source.account ?? '')}" />`
-                    : '<span class="settings-source-empty">—</span>'}
+                <td data-field-label="循环">
+                  <div class="source-credential-rounds">
+                    <label class="source-field">
+                      <span>轮数</span>
+                      <input type="number" min="1" step="1" inputmode="numeric" aria-label="${label}：抓取轮数" title="每条线路循环请求的次数；每轮服务端会返回不同落地机" data-drawer-source="${escapeHtml(name)}" data-drawer-key="max_iterations" value="${escapeHtml(source.max_iterations ?? 4)}" />
+                    </label>
+                    <label class="source-field">
+                      <span>早停</span>
+                      <input type="number" min="1" step="1" inputmode="numeric" aria-label="${label}：连续空轮早停次数" title="连续多少轮没有新节点就停止" data-drawer-source="${escapeHtml(name)}" data-drawer-key="plateau_limit" value="${escapeHtml(source.plateau_limit ?? 2)}" />
+                    </label>
+                  </div>
+                  <span class="source-round-summary">双端并发</span>
                 </td>
-                <td data-field-label="密码">
-                  ${isCredential
-                    ? `<input type="password" autocomplete="off" aria-label="${label}：密码" data-drawer-source="${escapeHtml(name)}" data-drawer-key="password" value="${escapeHtml(source.password ?? '')}" />`
-                    : '<span class="settings-source-empty">—</span>'}
-                </td>
-                <td data-field-label="平台">
-                  ${isCredential
-                    ? `<select aria-label="${label}：平台" data-drawer-source="${escapeHtml(name)}" data-drawer-key="platform">
-                        <option value="android" ${source.platform === 'ios' ? '' : 'selected'}>Android</option>
-                        <option value="ios" ${source.platform === 'ios' ? 'selected' : ''}>iOS</option>
-                      </select>`
-                    : '<span class="settings-source-empty">—</span>'}
-                </td>
-                <td data-field-label="密钥"><input type="password" aria-label="${label}：密钥" data-drawer-source="${escapeHtml(name)}" data-drawer-key="key" value="${escapeHtml(source.key ?? '')}" autocomplete="off" /></td>
               </tr>
             `;
             }).join('')}
           </tbody>
         </table>
+      </div>
+      <div class="notice-card source-drawer-notice">
+        <strong>账号在下面的账号池里管理</strong>
+        <p>登录被拒会把该账号标记为失效并停用，会员到期会按日期自动停用；更换密码后重新上传 CSV 即可恢复。抓取结果里免费线路和中国大陆线路会被跳过。</p>
       </div>
     `;
   }
@@ -960,15 +1134,13 @@ function buildSubscriptionCards(baseUrl) {
 function buildSourceRows(profile) {
   return Object.entries(profile.sources).map(([name, source], index) => ({
     name,
+    label: SOURCE_NAMES[name] || name,
     primary: index === 0,
-    enabled: Boolean(source.enabled),
-    mode: source.mode === 'credential' ? 'credential' : 'url',
-    url: source.url ?? '',
+    enabled: source.enabled !== false,
+    mode: 'credential',
     officialSite: source.official_site ?? '',
-    account: source.account ?? '',
-    password: source.password ?? '',
-    platform: source.platform === 'ios' ? 'ios' : 'android',
-    key: source.key ?? ''
+    maxIterations: Number(source.max_iterations ?? 4),
+    plateauLimit: Number(source.plateau_limit ?? 2)
   }));
 }
 
@@ -1022,13 +1194,12 @@ export function buildRegionStats(nodeRows = []) {
 }
 
 export function buildSourceIterationDraft(sources = {}) {
-  const firstSource = Object.values(sources)[0] ?? {};
+  const normalized = normalizeOfficialSourceDraft(sources);
+  const firstSource = Object.values(normalized)[0] ?? {};
   return {
-    sources: structuredClone(sources),
-    maxIterations: coercePositiveInteger(firstSource.max_iterations, 40),
-    plateauLimit: coercePositiveInteger(firstSource.plateau_limit, 20),
-    areaMin: coerceAreaValue(firstSource.area_min, 0),
-    areaMax: coerceAreaValue(firstSource.area_max, 100)
+    sources: normalized,
+    maxIterations: coercePositiveInteger(firstSource.max_iterations, 4),
+    plateauLimit: coercePositiveInteger(firstSource.plateau_limit, 2)
   };
 }
 
@@ -1084,32 +1255,50 @@ export function applyAvailabilityTargetDraft(draft = {}) {
 }
 
 export function applySourceIterationDraft(sources = {}, draft = {}) {
-  const maxIterations = coercePositiveInteger(draft.maxIterations, 40);
-  const plateauLimit = coercePositiveInteger(draft.plateauLimit, 20);
-  const areaMin = coerceAreaValue(draft.areaMin, 0);
-  const areaMax = coerceAreaValue(draft.areaMax, 100);
+  // The drawer edits each row's rounds in place, and each row is the source of
+  // truth when the draft carries rows. The shared `maxIterations` /
+  // `plateauLimit` fields remain only for callers that pass bare values, which
+  // then apply to every row.
+  if (draft?.sources) {
+    return normalizeOfficialSourceDraft(draft.sources);
+  }
+  const maxIterations = coercePositiveInteger(draft.maxIterations, 4);
+  const plateauLimit = coercePositiveInteger(draft.plateauLimit, 2);
+  const normalized = normalizeOfficialSourceDraft(sources);
   return Object.fromEntries(
-    Object.entries(sources).map(([name, source]) => {
-      // These fields describe the url-mode fetch: 40 rounds against a list you
-      // already hold. A credential source re-requests every route per round,
-      // so writing them here would multiply real API traffic many times over.
-      // It keeps its own values, which default to a single round.
-      if (source.mode === 'credential') {
-        return [name, { ...source }];
-      }
-      return [
-        name,
-        {
-          ...source,
-          max_iterations: maxIterations,
-          min_iterations: Math.min(coercePositiveInteger(source.min_iterations, 0), maxIterations),
-          plateau_limit: plateauLimit,
-          area_min: Math.min(areaMin, areaMax),
-          area_max: Math.max(areaMin, areaMax)
-        }
-      ];
-    })
+    Object.entries(normalized).map(([name, source]) => [
+      name,
+      { ...source, max_iterations: maxIterations, plateau_limit: plateauLimit }
+    ])
   );
+}
+
+export function validateSourceDraft(draft = {}) {
+  const sources = draft.sources ?? {};
+  for (const [name, source] of Object.entries(sources)) {
+    // Only the vendor rows are edited here. A custom url source is passed
+    // through untouched, so validating its `official_site` would reject a save
+    // for a field the drawer never showed.
+    if (!SOURCE_DISPLAY_ORDER.includes(name)) continue;
+    if (source.enabled === false) continue;
+    const value = String(source.official_site ?? '').trim();
+    let parsed;
+    try {
+      parsed = new URL(value);
+    } catch {
+      return `${SOURCE_NAMES[name] ?? name}：请填写有效的官网地址`;
+    }
+    if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.hostname) {
+      return `${SOURCE_NAMES[name] ?? name}：官网地址必须以 http:// 或 https:// 开头`;
+    }
+  }
+  if (!Number.isFinite(Number(draft.maxIterations)) || Number(draft.maxIterations) < 1) {
+    return '循环轮数至少为 1';
+  }
+  if (!Number.isFinite(Number(draft.plateauLimit)) || Number(draft.plateauLimit) < 1) {
+    return '早停轮数至少为 1';
+  }
+  return '';
 }
 
 function inferNodeRegion(name = '') {
@@ -1228,6 +1417,65 @@ function inferLogStage(line) {
   return matches.at(-1) ?? '';
 }
 
+// Fields the drawer no longer edits. `min_iterations` and `platforms` stay: the
+// round policy and `resolveCredentialPlatforms` still read them, so a pinned
+// debug profile that sets them must survive a save from the drawer.
+const OBSOLETE_SOURCE_FIELDS = [
+  'url', 'key', 'account', 'password', 'platform',
+  'use_random_area', 'area_min', 'area_max', 'max_areas',
+  'resume_from_iteration', 'failure_limit'
+];
+
+export function normalizeOfficialSourceDraft(sources = {}) {
+  const collapsed = {};
+  // A non-vendor row (a custom `url` source) is kept out of the vendor table
+  // but must survive a save: the drawer does not render it, and dropping it
+  // would delete a working source the operator never touched.
+  const extras = {};
+  for (const [name, source] of Object.entries(sources ?? {})) {
+    const canonical = LEGACY_SOURCE_ALIASES[name] ?? name;
+    if (!SOURCE_DISPLAY_ORDER.includes(canonical)) {
+      extras[canonical] = { ...source };
+      continue;
+    }
+    const existing = collapsed[canonical];
+    collapsed[canonical] = existing
+      ? {
+          ...existing,
+          ...source,
+          // The first row listed the vendor's rounds; a legacy duplicate must
+          // not overwrite them just by appearing later in the file.
+          max_iterations: existing.max_iterations ?? source.max_iterations,
+          plateau_limit: existing.plateau_limit ?? source.plateau_limit,
+          enabled: existing.enabled !== false || source.enabled !== false
+        }
+      : { ...source };
+  }
+  const vendorRows = Object.fromEntries(SOURCE_DISPLAY_ORDER.map((name) => {
+    const source = collapsed[name] ?? {};
+    const wasCredential = source.mode === 'credential';
+    const normalized = {
+      ...source,
+      mode: 'credential',
+      // Fill the vendor default only for a row that has never been stored.
+      // A cleared input is a real edit, not a request for the default: refilling
+      // it here would undo what the operator just typed.
+      official_site: source.official_site === undefined
+        ? (OFFICIAL_SITES[name] ?? '')
+        : String(source.official_site).trim(),
+      enabled: source.enabled !== false,
+      max_iterations: wasCredential ? coercePositiveInteger(source.max_iterations, 4) : 4,
+      plateau_limit: wasCredential ? coercePositiveInteger(source.plateau_limit, 2) : 2
+    };
+    for (const field of OBSOLETE_SOURCE_FIELDS) delete normalized[field];
+    // A URL-mode floor is the same mismatch as its URL-mode cap: 10 URL fetches
+    // are not 10 route-loop rounds, so it goes with the rest of the old shape.
+    if (!wasCredential) delete normalized.min_iterations;
+    return [name, normalized];
+  }));
+  return { ...vendorRows, ...extras };
+}
+
 function mergeProfile(profile) {
   const workspace = profile?.workspace ?? {};
   const paths = profile?.paths ?? {};
@@ -1240,7 +1488,7 @@ function mergeProfile(profile) {
   return {
     ...FALLBACK_PROFILE,
     ...profile,
-    sources: profile?.sources ?? FALLBACK_PROFILE.sources,
+    sources: normalizeOfficialSourceDraft(profile?.sources ?? FALLBACK_PROFILE.sources),
     availability_targets: profile?.availability_targets ?? DEFAULT_AVAILABILITY_TARGETS,
     speed_test: { ...FALLBACK_PROFILE.speed_test, ...(profile?.speed_test ?? {}) },
     deploy: { ...FALLBACK_PROFILE.deploy, ...(profile?.deploy ?? {}) },

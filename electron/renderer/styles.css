@@ -1297,15 +1297,108 @@ body[data-page="logs"] #logCenterTable {
   border-radius: 10px;
 }
 
+/* The selects share the row with 36px inputs; leaving them at the 46px base
+   height makes the mode and platform controls sit visibly lower than the text
+   fields beside them. They also drop the native control: macOS reserves an
+   arrow area outside the padding box, so a select sized to fit its own text by
+   measurement still renders "官网 +" clipped. A drawn chevron makes the space
+   the same on every platform. */
+.settings-source-table select {
+  min-height: 36px;
+  padding: 0 28px 0 10px;
+  border-radius: 10px;
+  font-size: 13px;
+  appearance: none;
+  background-image: url("data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><path d='M4 6.5 8 10.5 12 6.5' fill='none' stroke='%23656d85' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  background-size: 14px 14px;
+  text-overflow: ellipsis;
+}
+
 .settings-source-table,
 .availability-target-table {
   table-layout: fixed;
+  /* The generic data table keeps a 720px floor so a dense table stays legible.
+     Five columns of fixed width fit below that, so the drawer does not need the
+     horizontal scrollbar the floor would otherwise force on a laptop window. */
+  min-width: 0;
+}
+
+/* Credential rows hold their fields inside the connection cell instead of in
+   three columns of their own, which is what let the mode select shrink below
+   the width of its own text. The site takes a full line, the three identity
+   fields share the next, and the two round controls sit together below them. */
+.source-credential-fields {
+  display: grid;
+  gap: 8px;
+}
+
+.source-credential-identity {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.source-credential-rounds {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.source-field {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.source-field > span {
+  color: var(--text-soft);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.source-field input,
+.source-field select {
+  min-width: 0;
+  text-overflow: ellipsis;
 }
 
 .settings-source-name {
   display: inline-block;
   white-space: nowrap;
   font-size: 13px;
+}
+
+.settings-source-hint {
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--text-soft);
+}
+
+.settings-source-hint.ready {
+  color: var(--success);
+}
+
+.settings-source-hint.empty {
+  color: var(--warning);
+}
+
+/* The row states its loop once, next to the controls that set it, so the
+   summary line is readable instead of repeating two numbers in the header. */
+.source-round-summary {
+  display: inline-block;
+  color: var(--text-soft);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.notice-card.source-drawer-notice {
+  margin: 0;
 }
 
 .table-textarea {
@@ -1323,27 +1416,19 @@ body[data-page="logs"] #logCenterTable {
 
 .settings-col-name,
 .availability-col-name {
-  width: 142px;
-}
-
-/* The source table carries up to eight columns in credential mode, so the
-   address share is smaller and the credential fields get fixed widths. */
-.settings-col-url {
-  width: 30%;
-}
-
-.settings-col-mode {
   width: 132px;
 }
 
-.settings-col-account,
-.settings-col-password,
-.settings-col-key {
-  width: 150px;
+/* Four columns: enable, brand, official site, and a loop summary. The round
+   controls live inside the site cell, so the table no longer needs a column
+   per field. */
+.settings-col-connection {
+  width: auto;
+  min-width: 320px;
 }
 
-.settings-col-platform {
-  width: 108px;
+.settings-col-rounds {
+  width: 148px;
 }
 
 .availability-col-url {
@@ -1356,8 +1441,283 @@ body[data-page="logs"] #logCenterTable {
 
 .source-drawer-settings {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
+}
+
+.source-drawer-settings-copy {
+  display: grid;
+  gap: 4px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: linear-gradient(180deg, #ffffff 0%, var(--surface-soft) 100%);
+}
+
+.source-drawer-settings-copy strong {
+  font-size: 13px;
+}
+
+.source-drawer-settings-copy span {
+  color: var(--text-soft);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.account-pool-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.account-pool-headline {
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.account-pool-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.account-pool-summary {
+  display: grid;
+  gap: 12px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8faff 100%);
+}
+
+.account-pool-total {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.account-pool-total strong {
+  font-size: 40px;
+  line-height: 1;
+  letter-spacing: -0.05em;
+  font-variant-numeric: tabular-nums;
+}
+
+.account-pool-total span {
+  color: var(--text-soft);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.account-pool-status-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  gap: 8px;
+}
+
+.account-pool-stat {
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: var(--surface-muted);
+}
+
+.account-pool-stat span {
+  color: var(--text-soft);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.account-pool-stat strong {
+  font-size: 20px;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+
+.account-pool-stat.success strong {
+  color: var(--success);
+}
+
+.account-pool-stat.warning strong {
+  color: var(--warning);
+}
+
+.account-pool-stat.danger strong {
+  color: var(--danger);
+}
+
+.account-pool-meter {
+  display: flex;
+  gap: 2px;
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--surface-muted);
+}
+
+.account-pool-meter span {
+  display: block;
+  min-width: 4px;
+}
+
+.account-pool-meter span.success {
+  background: var(--success);
+}
+
+.account-pool-meter span.warning {
+  background: var(--warning);
+}
+
+.account-pool-meter span.danger {
+  background: var(--danger);
+}
+
+.account-pool-meter span.neutral {
+  background: var(--border-strong);
+}
+
+.account-pool-meter span.empty {
+  flex: 1;
+  background: var(--border-strong);
+  opacity: 0.4;
+}
+
+.account-pool-expiry {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.account-pool-brands {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.account-brand-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 7px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: #fff;
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.account-brand-chip strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.account-pool-toolbar {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.4fr) repeat(3, minmax(120px, 1fr));
+  gap: 10px;
+}
+
+.account-pool-toolbar label {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.account-pool-toolbar label > span {
+  color: var(--text-soft);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.account-pool-toolbar input,
+.account-pool-toolbar select {
+  min-height: 38px;
+  border-radius: 10px;
+  font-size: 13px;
+}
+
+.account-pool-table {
+  table-layout: fixed;
+  min-width: 0;
+}
+
+.account-col-account {
+  width: auto;
+}
+
+.account-col-brand {
+  width: 92px;
+}
+
+.account-col-status {
+  width: 128px;
+}
+
+.account-col-expiry {
+  width: 110px;
+}
+
+.account-col-usage {
+  width: 132px;
+}
+
+.account-col-actions {
+  width: 92px;
+}
+
+.account-pool-table td {
+  vertical-align: middle;
+}
+
+.account-mask {
+  display: block;
+  font-family: "SFMono-Regular", ui-monospace, Menlo, monospace;
+  font-size: 13px;
+}
+
+.account-note {
+  display: block;
+  margin-top: 3px;
+  color: var(--text-soft);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.account-usage {
+  display: block;
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.account-pool-count {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.account-pool-empty {
+  padding: 22px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 16px;
+  color: var(--text-soft);
+  font-size: 13px;
+  text-align: center;
+}
+
+.account-pool-message {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--success-soft);
+  color: var(--success);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.account-pool-message.warning {
+  background: var(--warning-soft);
+  color: #a65c00;
 }
 
 .settings-overview-panel {
@@ -1493,6 +1853,8 @@ body[data-page="logs"] #logCenterTable {
   min-height: 0;
   overflow: auto;
   display: grid;
+  grid-auto-rows: max-content;
+  align-content: start;
   gap: 16px;
   padding-right: 6px;
 }
@@ -2124,8 +2486,12 @@ body[data-page="logs"] #logCenterTable {
     align-items: flex-start;
   }
 
-  .source-drawer-settings {
+  .account-pool-toolbar {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .account-pool-toolbar .account-pool-search {
+    grid-column: 1 / -1;
   }
 }
 
@@ -2325,6 +2691,91 @@ body[data-page="logs"] #logCenterTable {
     width: 44px;
     min-width: 44px;
     height: 44px;
+    min-height: 44px;
+  }
+
+  /* The cards are a block stack, so the table's own scroll box would become a
+     second, nested scroller inside the drawer body. */
+  .settings-drawer-body .table-wrap {
+    overflow: visible;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .source-credential-rounds {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .settings-source-hint {
+    margin-top: 4px;
+  }
+
+  .account-pool-toolbar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .account-pool-toolbar .account-pool-search {
+    grid-column: 1 / -1;
+  }
+
+  .account-pool-actions {
+    width: 100%;
+  }
+
+  .account-pool-actions .btn {
+    flex: 1;
+    min-height: 44px;
+  }
+
+  .account-pool-toolbar input,
+  .account-pool-toolbar select {
+    min-height: 44px;
+  }
+
+  .account-pool-table thead,
+  .account-pool-table colgroup {
+    display: none;
+  }
+
+  .account-pool-table,
+  .account-pool-table tbody,
+  .account-pool-table tr,
+  .account-pool-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .account-pool-table tr {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px 12px;
+    margin-bottom: 12px;
+    padding: 14px;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+  }
+
+  .account-pool-table td {
+    padding: 4px 0;
+    border: 0;
+  }
+
+  .account-pool-table td::before {
+    content: attr(data-field-label);
+    display: block;
+    margin-bottom: 3px;
+    color: var(--text-soft);
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  .account-pool-table td:first-child,
+  .account-pool-table td:last-child {
+    grid-column: 1 / -1;
+  }
+
+  .account-pool-table td:last-child .btn {
+    width: 100%;
     min-height: 44px;
   }
 
@@ -2669,6 +3120,10 @@ body[data-page="logs"] #logCenterTable {
   }
 
   .source-drawer-settings {
+    grid-template-columns: 1fr;
+  }
+
+  .account-pool-toolbar {
     grid-template-columns: 1fr;
   }
 

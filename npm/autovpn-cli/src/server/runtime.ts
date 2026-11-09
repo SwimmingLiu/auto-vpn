@@ -11,6 +11,9 @@ import {
 } from '../jobs/commands.js';
 import { followLog as defaultFollowLog } from '../jobs/logs.js';
 import { latestJobId, loadJob } from '../jobs/read.js';
+import { AccountStore } from '../pool/account-store.js';
+import { normalizeBrand } from '../pool/brands.js';
+import { parseAccountFile } from '../pool/csv.js';
 import { resolveArtifactsRoot, resolveProfilePath } from '../runtime/paths.js';
 
 export interface ServerState {
@@ -25,6 +28,9 @@ export interface ServerState {
 export interface ServerRuntime {
   loadState(): Promise<ServerState>;
   saveProfile?(profile: Record<string, unknown>): Promise<Record<string, unknown>>;
+  loadAccounts?(): Promise<Record<string, unknown>>;
+  importAccounts?(input: { content?: string; format?: string }): Promise<Record<string, unknown>>;
+  setAccountStatus?(input: { id?: number; brand?: string; account?: string; status?: string; reason?: string }): Promise<Record<string, unknown>>;
   startRun?(options: { skipDeploy?: boolean; skipVerify?: boolean; resumeLatest?: boolean }): Promise<Record<string, unknown>>;
   startRetry?(options: { artifactDir?: string; stage?: string }): Promise<Record<string, unknown>>;
   stopRun?(): Promise<Record<string, unknown>>;
@@ -439,6 +445,49 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
         ok: true,
         profile: sanitizeProfileForServer(saveProfilePayload(options.projectRoot, merged, options.env) as Record<string, any>)
       };
+    },
+    async loadAccounts() {
+      const store = new AccountStore({ env: options.env, now: options.now });
+      try {
+        return { ok: true, stats: store.stats(), accounts: store.list({ status: 'all', includeDeleted: true }) };
+      } finally {
+        store.close();
+      }
+    },
+    async importAccounts(input = {}) {
+      const content = String(input.content ?? '');
+      const format = input.format === 'csv' || input.format === 'legacy' ? input.format : 'auto';
+      const parsed = parseAccountFile(content, format);
+      if (parsed.records.length === 0) {
+        return { ok: false, imported: 0, issues: parsed.issues };
+      }
+      const store = new AccountStore({ env: options.env, now: options.now });
+      try {
+        const outcome = store.importRecords(parsed.records);
+        return { ok: true, parsed: parsed.records.length, ...outcome, issues: parsed.issues, stats: store.stats() };
+      } finally {
+        store.close();
+      }
+    },
+    async setAccountStatus(input = {}) {
+      const id = Number(input.id);
+      const brand = normalizeBrand(input.brand);
+      const account = String(input.account ?? '').trim();
+      const byId = Number.isInteger(id) && id > 0;
+      if (!byId && (!brand || !account)) return { ok: false, error: 'id_or_brand_and_account_required' };
+      const store = new AccountStore({ env: options.env, now: options.now });
+      try {
+        const status = String(input.status ?? '');
+        const reason = String(input.reason ?? 'disabled by operator');
+        const ok = status === 'active'
+          ? (byId ? store.enableById(id) : store.enable(brand!, account))
+          : status === 'disabled'
+            ? (byId ? store.disableById(id, reason) : store.disable(brand!, account, reason))
+            : false;
+        return ok ? { ok, ...(byId ? { id } : { brand }), status } : { ok: false, error: 'account_not_found_or_status_invalid' };
+      } finally {
+        store.close();
+      }
     },
     async startRun(runOptions = {}) {
       if (runState === 'running' || runState === 'stopping') {

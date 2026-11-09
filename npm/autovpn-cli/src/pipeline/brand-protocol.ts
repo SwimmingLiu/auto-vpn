@@ -198,6 +198,106 @@ export function flattenRouteGroups(groups: RouteGroup[]): RouteNode[] {
   return out;
 }
 
+/**
+ * Route groups the pool must not spend rounds on.
+ *
+ * `/myapi/apinodelist` mixes three kinds of row: paid foreign regions, a free
+ * tier, and mainland/return-to-China lines. Only the first produces nodes worth
+ * publishing, and asking the other two costs a request per round forever.
+ * Matching is on the group name (`cname`) and the row name, because a free row
+ * can sit inside an otherwise paid group.
+ */
+const FREE_ROUTE_PATTERN = /免费|免費|试用|試用|体验|體驗|free|trial|guest/i;
+
+/**
+ * Mainland and return-to-China labels.
+ *
+ * 香港 / 台湾 / 澳门 are deliberately not matched: the apps list them as their own
+ * regions rather than as 中国, and they are the routes this pool exists to
+ * collect. `回国` is matched because it is the mainland-bound direction.
+ */
+const CHINA_ROUTE_PATTERN =
+  /中国|中國|国内|國內|大陆|大陸|内地|內地|回国|回國|china|mainland|\bCN\b|北京|上海|天津|重庆|廣州|广州|深圳|杭州|南京|成都|武汉|武漢|西安|苏州|蘇州|郑州|鄭州|长沙|長沙|青岛|青島|大连|大連|宁波|寧波|厦门|廈門|福州|济南|濟南|合肥|昆明|南昌|贵阳|貴陽|太原|石家庄|石家莊|哈尔滨|哈爾濱|长春|長春|沈阳|瀋陽|南宁|南寧|海口|兰州|蘭州|银川|銀川|西宁|西寧|乌鲁木齐|烏魯木齊|呼和浩特|拉萨|拉薩|广东|廣東|江苏|江蘇|浙江|山东|山東|河南|河北|湖南|湖北|四川|福建|安徽|辽宁|遼寧|陕西|陝西|江西|云南|雲南|贵州|貴州|山西|甘肃|甘肅|吉林|黑龙江|黑龍江|海南|青海|内蒙古|內蒙古|广西|廣西|宁夏|寧夏|新疆|西藏/i;
+
+export function isFreeRoute(route: Pick<RouteNode, 'region' | 'name'>): boolean {
+  return FREE_ROUTE_PATTERN.test(`${route.region} ${route.name}`);
+}
+
+/**
+ * Hong Kong / Taiwan / Macau stay in the pool even when the vendor spells the
+ * region `中国香港` or `中国台湾`; the bare `中国` rule below would otherwise drop
+ * exactly the routes the filter promises to keep.
+ */
+const GREATER_CHINA_EXEMPT_PATTERN = /香港|台湾|台灣|臺灣|澳门|澳門|hong\s*kong|taiwan|macau|macao/i;
+
+export function isChinaRoute(route: Pick<RouteNode, 'region' | 'name'>): boolean {
+  const text = `${route.region} ${route.name}`;
+  if (GREATER_CHINA_EXEMPT_PATTERN.test(text) && !/回国|回國|mainland-bound/i.test(text)) {
+    return false;
+  }
+  return CHINA_ROUTE_PATTERN.test(text);
+}
+
+export interface RouteFilterOptions {
+  /** Keep the free tier. Off by default: it issues placeholders, not nodes. */
+  includeFree?: boolean;
+  /** Keep mainland and return-to-China lines. Off by default. */
+  includeChina?: boolean;
+  /** Keep rows the vendor marked unclickable. Off by default. */
+  includeDisabled?: boolean;
+}
+
+export interface RouteFilterResult {
+  routes: RouteNode[];
+  dropped_free: number;
+  dropped_china: number;
+  dropped_disabled: number;
+  dropped_duplicate: number;
+}
+
+/**
+ * Reduce one or more route tables to the area ids worth looping over.
+ *
+ * Dedupe is by `area`, not by name: 旋风 serves two labelled tables that overlap,
+ * and the same id in both is one route, not two. The first occurrence wins so
+ * the region label stays the one the vendor listed first.
+ */
+export function selectForeignRoutes(routes: RouteNode[], options: RouteFilterOptions = {}): RouteFilterResult {
+  const result: RouteFilterResult = {
+    routes: [],
+    dropped_free: 0,
+    dropped_china: 0,
+    dropped_disabled: 0,
+    dropped_duplicate: 0
+  };
+  const seen = new Set<number>();
+  for (const route of routes) {
+    if (!Number.isFinite(route.area) || route.area < 0) {
+      result.dropped_duplicate += 1;
+      continue;
+    }
+    if (!options.includeDisabled && !route.enabled) {
+      result.dropped_disabled += 1;
+      continue;
+    }
+    if (!options.includeFree && isFreeRoute(route)) {
+      result.dropped_free += 1;
+      continue;
+    }
+    if (!options.includeChina && isChinaRoute(route)) {
+      result.dropped_china += 1;
+      continue;
+    }
+    if (seen.has(route.area)) {
+      result.dropped_duplicate += 1;
+      continue;
+    }
+    seen.add(route.area);
+    result.routes.push(route);
+  }
+  return result;
+}
+
 /** The placeholder the server returns when it will not issue a real node. */
 export const PLACEHOLDER_ADDRESS = '1.1.1.1';
 

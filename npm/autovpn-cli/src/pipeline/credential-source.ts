@@ -19,6 +19,7 @@ import {
   LOGIN_SALT,
   pathAndQuery,
   selectApiDomain,
+  selectForeignRoutes,
   type BrandIdentity,
   type DeviceIdentity,
   type Platform,
@@ -26,6 +27,8 @@ import {
   type RouteNode
 } from './brand-protocol.js';
 import { decryptPayload, extractLinksFromPlaintext } from './extract.js';
+import { AccountStore, type StoredAccount } from '../pool/account-store.js';
+import { brandFromSite, normalizeBrand } from '../pool/brands.js';
 import type { FingerprintStore } from './brand-cache.js';
 import type { ExtractedSourceResult, SourceConfigInput, ExtractInput } from './extract.js';
 
@@ -56,8 +59,12 @@ export interface BrandCredentialSource {
   account?: string;
   password?: string;
   enabled?: boolean;
-  /** Which client identity to impersonate. */
+  /** Legacy single-channel field; ignored by the pool-backed flow. */
   platform?: Platform;
+  /** Internal/test override. Omitted means Android and iOS run concurrently. */
+  platforms?: Platform[];
+  /** Pool accounts to try after an explicit credential rejection. */
+  account_retry_limit?: number;
   /** Stable device id; a fixed default is used when omitted. */
   device_id?: string;
   /** Install date in `yyyy-MM-dd`; today is used when omitted. */
@@ -68,6 +75,10 @@ export interface BrandCredentialSource {
   code?: string;
   /** Maximum routes to request; all routes when omitted. */
   max_areas?: number;
+  /** Keep the free tier's rows. Off: they answer with placeholders. */
+  include_free_routes?: boolean;
+  /** Keep mainland and return-to-China rows. Off: wrong direction. */
+  include_china_routes?: boolean;
   /** Upper bound on request rounds; each round asks every enabled route once. */
   max_iterations?: number;
   /** Rounds that always run before a plateau may stop the run. */
@@ -109,6 +120,8 @@ export interface CredentialExtractOptions {
   fingerprintStore?: FingerprintStore;
   /** Shared in-memory fingerprint, so several sources of one brand inspect once. */
   memo?: FingerprintMemo;
+  /** Test seam for the account pool; production opens the runtime SQLite DB. */
+  accountStore?: AccountStore;
   /**
    * Egress settings, forwarded from the extract backend so a credential source
    * behaves like a url source on networks that need a proxy or a TLS fallback.
@@ -119,13 +132,30 @@ export interface CredentialExtractOptions {
 
 export interface CredentialDiagnostics {
   brand: string;
-  platform: Platform;
+  platform: Platform | 'android+ios';
+  platforms?: Platform[];
+  platform_results?: Array<{
+    platform: Platform;
+    links: number;
+    rounds: number;
+    requests: number;
+    errors: string[];
+  }>;
+  login_ok?: boolean;
+  login_rejected?: boolean;
+  credential_rejected?: boolean;
+  membership_expires_at?: string;
+  membership_level?: number;
   apk_url: string;
   package_name: string;
   version_name: string;
   seed_domains: string[];
   api_domain: string;
   route_count: number;
+  /** Route tables merged; 旋风 advertises two, the others one. */
+  route_tables?: number;
+  /** Rows removed before the round loop, by reason. */
+  routes_dropped?: { free: number; china: number; disabled: number; duplicate: number };
   node_count: number;
   placeholder_count: number;
   /** Rounds actually executed (one request per enabled route per round). */
@@ -227,14 +257,25 @@ export function credentialBrandKey(sourceName: string, source: BrandCredentialSo
 export interface FingerprintMemo {
   get(): ApkDiscovery | null;
   set(value: ApkDiscovery | null): void;
+  /** Coalesce concurrent APK inspections for the same brand. */
+  resolve?(loader: () => Promise<ApkDiscovery | null>): Promise<ApkDiscovery | null>;
 }
 
 export function createFingerprintMemo(store: FingerprintStore | null, brand: string): FingerprintMemo {
   let value: ApkDiscovery | null = store?.read(brand) ?? null;
+  let pending: Promise<ApkDiscovery | null> | null = null;
   return {
     get: () => value,
     set: (next) => {
       value = next;
+    },
+    resolve: (loader) => {
+      // Android and iOS start together. Without this both would see an empty
+      // memo and download the same 20-30 MB APK before either could set it.
+      pending ??= loader().finally(() => {
+        pending = null;
+      });
+      return pending;
     }
   };
 }
@@ -500,7 +541,8 @@ export interface EversionResult {
   domain: string;
   key: string;
   api_links: string[];
-  api_lines: string;
+  /** Every route table the vendor advertises; 旋风 ships two. */
+  api_lines: string[];
   payload: Record<string, unknown>;
 }
 
@@ -534,7 +576,7 @@ export async function resolveEversion(
           domain: base,
           key,
           api_links: apiLinkValues(payload.api_links),
-          api_lines: apiLineValue(payload.api_lines),
+          api_lines: apiLineValues(payload.api_lines),
           payload
         };
       } catch {
@@ -597,31 +639,38 @@ export function apiLinkValues(raw: unknown): string[] {
 /**
  * `api_lines` is a single URL on most brands and a `{key, value}` list on 旋风,
  * where each entry is a separately labelled route table.
+ *
+ * Every entry is returned. 旋风 ships two tables (黄金/白金) whose area ids
+ * overlap but do not coincide, so taking only the first silently dropped half
+ * its routes; the caller merges them and dedupes by area.
  */
-export function apiLineValue(raw: unknown): string {
+export function apiLineValues(raw: unknown): string[] {
   if (typeof raw === 'string') {
-    return raw;
+    return raw.trim() ? [raw.trim()] : [];
   }
-  if (Array.isArray(raw)) {
-    for (const item of raw) {
-      if (typeof item === 'string' && item.trim()) {
-        return item.trim();
-      }
-      if (item && typeof item === 'object') {
-        const value = (item as Record<string, unknown>).value;
-        if (typeof value === 'string' && value.trim()) {
-          return value.trim();
-        }
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const out: string[] = [];
+  for (const item of raw) {
+    if (typeof item === 'string' && item.trim()) {
+      if (!out.includes(item.trim())) out.push(item.trim());
+      continue;
+    }
+    if (item && typeof item === 'object') {
+      const value = (item as Record<string, unknown>).value;
+      if (typeof value === 'string' && value.trim() && !out.includes(value.trim())) {
+        out.push(value.trim());
       }
     }
   }
-  return '';
+  return out;
 }
 
-function eversionStrings(payload: Record<string, unknown>): { apiLinks: string[]; apiLines: string } {
+function eversionStrings(payload: Record<string, unknown>): { apiLinks: string[]; apiLines: string[] } {
   return {
     apiLinks: apiLinkValues(payload.api_links),
-    apiLines: apiLineValue(payload.api_lines)
+    apiLines: apiLineValues(payload.api_lines)
   };
 }
 
@@ -824,13 +873,296 @@ async function defaultLoadApk(
   return null;
 }
 
+export function resolveCredentialPlatforms(source: Pick<BrandCredentialSource, 'platforms'>): Platform[] {
+  const requested = Array.isArray(source.platforms) ? source.platforms : [];
+  const unique = [...new Set(requested.filter((value): value is Platform => value === 'android' || value === 'ios'))];
+  // The product contract is both client channels, concurrently. A legacy
+  // `platform = "ios"` row is not a choice any more; only the internal
+  // `platforms` override can narrow a run for tests or protocol debugging.
+  return unique.length > 0 ? unique : ['android', 'ios'];
+}
+
+/** A transport failure or stale signing cert must not retire a good account. */
 /**
- * Runs the credential flow for one brand.
+ * Throttling and session wording, which mentions the account without meaning
+ * the password is wrong.
  *
- * Returns the same shape the legacy URL source produced so the rest of the
- * pipeline (dedupe, speed test, availability, render, deploy) is unchanged.
+ * A vendor rate limit reads `账号登录过于频繁`; retiring the account for that
+ * burns a healthy credential and moves to the next one, which is then also
+ * throttled, until the whole brand's pool is marked invalid.
+ */
+const TRANSIENT_LOGIN_PATTERN =
+  /频繁|頻繁|过于|過於|稍后|稍後|稍候|重试|重試|too\s*many|rate\s*limit|frequency|try\s*(again|later)|timeout|超时|超時|繁忙|busy|服务器|服務器|server\s*error|network|网络|網絡/i;
+
+/**
+ * True only when the vendor said the credential itself is wrong.
+ *
+ * Conservative on purpose: a wrong classification retires a working account,
+ * while a missed one merely fails the run, which the retry path already covers.
+ */
+export function isCredentialLoginRejection(message: string): boolean {
+  const text = String(message ?? '');
+  if (!text.trim()) return false;
+  if (TRANSIENT_LOGIN_PATTERN.test(text)) return false;
+  return /密码错误|密碼錯誤|密码不正确|密碼不正確|账号不存在|帳號不存在|账户不存在|账户或密码|账号或密码|账号已被|帳號已被|密码已|被封禁|已被禁用|登录失败|登錄失敗|does\s*not\s*exist|not\s*(found|exist)|invalid\s*(password|account|credential|user)|incorrect\s*password|wrong\s*password|unauthorized/i.test(text);
+}
+
+export function membershipDate(value: unknown): string {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+    const ms = value > 10_000_000_000 ? value : value * 1000;
+    const date = new Date(ms);
+    return Number.isNaN(date.getTime()) ? '' : date.toISOString().slice(0, 10);
+  }
+  const text = String(value ?? '').trim();
+  if (!text) return '';
+  if (/^\d+$/.test(text)) {
+    // A bare number too short to be an epoch is a placeholder, not a date:
+    // `new Date('0')` would otherwise read as the year 2000.
+    return /^\d{10,13}$/.test(text) ? membershipDate(Number(text)) : '';
+  }
+  const parsed = new Date(text);
+  return Number.isNaN(parsed.getTime()) ? '' : parsed.toISOString().slice(0, 10);
+}
+
+function credentialRejectionMessage(payload: Record<string, unknown>): string {
+  return String(payload.msg ?? payload.message ?? '');
+}
+
+/**
+ * Pool-backed brand extraction. Android and iOS run concurrently against the
+ * same leased account; their links merge into the one source stream the rest of
+ * the pipeline already consumes.
  */
 export async function fetchCredentialSourceLinks(
+  input: ExtractInput,
+  options: CredentialExtractOptions = {}
+): Promise<CredentialExtractResult> {
+  const source = input.source as SourceConfigInput & BrandCredentialSource;
+  const platforms = resolveCredentialPlatforms(source);
+  const policy = resolveRoundPolicy(source);
+  const errors: string[] = [];
+  const diagnostics: CredentialDiagnostics = {
+    brand: input.source_name,
+    platform: platforms.length === 1 ? platforms[0] : 'android+ios',
+    platforms,
+    apk_url: '',
+    package_name: '',
+    version_name: '',
+    seed_domains: [],
+    api_domain: '',
+    route_count: 0,
+    node_count: 0,
+    placeholder_count: 0,
+    rounds: 0,
+    requests: 0,
+    errors
+  };
+  const empty: CredentialExtractResult = {
+    source_name: input.source_name,
+    requested_iterations: policy.max_iterations,
+    successful_iterations: 0,
+    failed_iterations: 0,
+    links: [],
+    diagnostics
+  };
+  event(options, 'extract_source_started', {
+    source_name: input.source_name,
+    requested_iterations: policy.max_iterations,
+    min_iterations: policy.min_iterations,
+    resume_from_iteration: 1,
+    platforms
+  });
+
+  const explicitAccount = String(source.account ?? '').trim();
+  const explicitPassword = String(source.password ?? '').trim();
+  const brand = normalizeBrand(input.source_name)
+    ?? brandFromSite(source.official_site)
+    ?? normalizeBrand(credentialBrandKey(input.source_name, source));
+  let store = options.accountStore ?? null;
+  let ownsStore = false;
+  let leased: StoredAccount | null = null;
+  let account = explicitAccount;
+  let password = explicitPassword;
+  if (!account || !password) {
+    if (!brand) {
+      errors.push('account pool brand could not be resolved');
+    } else {
+      store = options.accountStore ?? new AccountStore({ env: options.env, now: options.now });
+      ownsStore = !options.accountStore;
+      leased = store.lease(brand);
+      if (leased) {
+        account = leased.account;
+        password = leased.password;
+      } else {
+        errors.push(`account pool has no active ${brand} account`);
+      }
+    }
+  }
+  if (!account || !password) {
+    if (ownsStore) store?.close();
+    event(options, 'extract_source_completed', {
+      source_name: input.source_name,
+      requested_iterations: policy.max_iterations,
+      successful_iterations: 0,
+      failed_iterations: 1,
+      raw_links: 0
+    });
+    return { ...empty, failed_iterations: 1 };
+  }
+
+  const memo = options.memo ?? createFingerprintMemo(options.fingerprintStore ?? null, credentialBrandKey(input.source_name, source));
+  let linkQueue = Promise.resolve();
+  // A non-numeric retry limit (a hand-edited `account_retry_limit = "three"`)
+  // must not turn the attempt loop into zero passes, which reported the source
+  // as successful with no links and no error.
+  const retryLimit = Math.trunc(Number(source.account_retry_limit ?? 3));
+  const attempts = explicitAccount && explicitPassword ? 1 : (Number.isFinite(retryLimit) && retryLimit >= 1 ? retryLimit : 3);
+  let results: CredentialExtractResult[] = [];
+  let callbackFailure: Error | null = null;
+  try {
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      results = await Promise.all(platforms.map((platform) => {
+        const scoped: CredentialExtractOptions = {
+          ...options,
+          memo,
+          eventCallback: (type, payload) => {
+            if (type === 'extract_source_started') {
+              event(options, 'extract_platform_started', { ...payload, platform });
+              return;
+            }
+            if (type === 'extract_source_completed') {
+              event(options, 'extract_platform_completed', { ...payload, platform });
+              return;
+            }
+            if (type === 'log') {
+              // Four brands × two channels run at once; a bare `[extract]`
+              // line is unattributable in the log center.
+              event(options, 'log', {
+                message: String(payload.message ?? '').replace(/^\[extract\]/, `[extract][${input.source_name}][${platform}]`)
+              });
+              return;
+            }
+            event(options, type, { ...payload, platform });
+          },
+          linksCallback: (links) => {
+            // SQLite writes are synchronous, but the downstream speed-test
+            // submission is async. Serialize callbacks so two platforms cannot
+            // interleave a partially processed batch. A downstream failure is
+            // recorded and re-raised at the end instead of swallowed: the run
+            // must not report a batch as delivered when the speed pool rejected
+            // it, and the remaining rounds must stop feeding a dead chain.
+            linkQueue = linkQueue.then(async () => {
+              if (callbackFailure) return;
+              try {
+                await options.linksCallback?.(links);
+              } catch (error) {
+                callbackFailure = error instanceof Error ? error : new Error(String(error));
+              }
+            });
+            return linkQueue;
+          }
+        };
+        return fetchCredentialPlatformLinks({
+          source_name: input.source_name,
+          source: { ...source, account, password, platform, platforms: [platform] } as SourceConfigInput
+        }, scoped);
+      }));
+
+      const loginOk = results.some((result) => result.diagnostics.login_ok);
+      if (loginOk) {
+        if (store && leased) {
+          store.markSuccess(leased.id);
+          const expires = results.map((result) => result.diagnostics.membership_expires_at ?? '').find(Boolean);
+          if (expires) store.setExpiry(leased.brand, leased.account, expires);
+          const level = results.map((result) => result.diagnostics.membership_level).find((value) => value !== undefined);
+          const linked = results.some((result) => result.links.length > 0);
+          // A free-tier account (level 0/1) only ever produces placeholders.
+          // Retire it, but only when it actually produced nothing: a paid
+          // account misreported as level 1 must not lose its row.
+          if (level !== undefined && level < 2 && !linked) store.markInvalid(leased.id, 'no paid membership');
+        }
+        break;
+      }
+      const credentialRejected = results.length > 0 && results.every((result) => result.diagnostics.credential_rejected);
+      if (store && leased && credentialRejected) {
+        store.markInvalid(leased.id, 'login rejected');
+        if (attempt < attempts && brand) {
+          leased = store.lease(brand);
+          if (leased) {
+            account = leased.account;
+            password = leased.password;
+            continue;
+          }
+        }
+      }
+      break;
+    }
+  } finally {
+    if (ownsStore) store?.close();
+  }
+  await linkQueue;
+
+  const links: string[] = [];
+  const seen = new Set<string>();
+  for (const result of results) {
+    for (const link of result.links) {
+      if (!seen.has(link)) {
+        seen.add(link);
+        links.push(link);
+      }
+    }
+    for (const error of result.diagnostics.errors) {
+      errors.push(`[${result.diagnostics.platform}] ${error}`);
+    }
+  }
+  const first = results[0]?.diagnostics;
+  if (first) {
+    diagnostics.apk_url = first.apk_url;
+    diagnostics.package_name = first.package_name;
+    diagnostics.version_name = first.version_name;
+    diagnostics.seed_domains = first.seed_domains;
+    diagnostics.api_domain = first.api_domain;
+  }
+  diagnostics.route_count = Math.max(0, ...results.map((result) => result.diagnostics.route_count));
+  diagnostics.route_tables = Math.max(0, ...results.map((result) => result.diagnostics.route_tables ?? 0));
+  diagnostics.node_count = links.length;
+  diagnostics.placeholder_count = results.reduce((total, result) => total + result.diagnostics.placeholder_count, 0);
+  diagnostics.rounds = Math.max(0, ...results.map((result) => result.diagnostics.rounds));
+  diagnostics.requests = results.reduce((total, result) => total + result.diagnostics.requests, 0);
+  diagnostics.platform_results = results.map((result) => ({
+    platform: result.diagnostics.platform as Platform,
+    links: result.links.length,
+    rounds: result.diagnostics.rounds,
+    requests: result.diagnostics.requests,
+    errors: result.diagnostics.errors
+  }));
+  const successful = Math.max(0, ...results.map((result) => result.successful_iterations));
+  const failed = results.length === 0 ? 1 : Math.max(0, ...results.map((result) => result.failed_iterations));
+  if (callbackFailure) {
+    // Surfaced rather than logged: the orchestrator treats a thrown extract as
+    // a failed source, which is the truth — its downstream already died.
+    throw callbackFailure;
+  }
+  event(options, 'extract_source_completed', {
+    source_name: input.source_name,
+    requested_iterations: policy.max_iterations,
+    successful_iterations: successful,
+    failed_iterations: failed,
+    raw_links: links.length,
+    platforms
+  });
+  return {
+    source_name: input.source_name,
+    requested_iterations: policy.max_iterations,
+    successful_iterations: successful,
+    failed_iterations: failed,
+    links,
+    diagnostics
+  };
+}
+
+/** One client channel. The public wrapper runs both and merges the results. */
+export async function fetchCredentialPlatformLinks(
   input: ExtractInput,
   options: CredentialExtractOptions = {}
 ): Promise<CredentialExtractResult> {
@@ -923,6 +1255,9 @@ export async function fetchCredentialSourceLinks(
     log(`[extract] ${discovered.package_name} ${discovered.version_name} seeds=${discovered.seed_domains.length}`);
     return discovered.seed_domains.length > 0 ? discovered : null;
   };
+  const inspectSharedApk = (): Promise<ApkDiscovery | null> => (
+    memo.resolve ? memo.resolve(inspectApk) : inspectApk()
+  );
 
   // `apk_url` / `apk_path` are an explicit override: when either is set the
   // caller is asserting a specific build, so a cached fingerprint must not
@@ -943,7 +1278,7 @@ export async function fetchCredentialSourceLinks(
       // stale certificate fails every login with no other signal.
       if (staleButUsable) {
         log('[extract] cached fingerprint is past its trust window; re-inspecting the APK');
-        const refreshed = await inspectApk();
+        const refreshed = await inspectSharedApk();
         if (refreshed) {
           const refreshedEversion = await tryEversion(refreshed, credentialKeyCandidates(source, refreshed));
           if (refreshedEversion) {
@@ -969,7 +1304,7 @@ export async function fetchCredentialSourceLinks(
   }
 
   if (!discovery) {
-    discovery = await inspectApk();
+    discovery = await inspectSharedApk();
     if (!discovery) {
       errors.push('APK could not be located');
       return { ...empty, failed_iterations: 1 };
@@ -1062,7 +1397,10 @@ export async function fetchCredentialSourceLinks(
   try {
     const payload = JSON.parse(loginPlain) as Record<string, unknown>;
     if (Number(payload.code) !== 0) {
-      errors.push(`login rejected: code=${String(payload.code)} msg=${String(payload.msg ?? '')}`);
+      const message = credentialRejectionMessage(payload);
+      diagnostics.login_rejected = true;
+      diagnostics.credential_rejected = isCredentialLoginRejection(message);
+      errors.push(`login rejected: code=${String(payload.code)}`);
       // A cached fingerprint whose seeds answer eversion but whose signing
       // cert the vendor rotated keeps failing here on every run. Drop the
       // cache so the next run re-inspects the APK instead of repeating this.
@@ -1072,6 +1410,8 @@ export async function fetchCredentialSourceLinks(
       return { ...empty, failed_iterations: 1 };
     }
     token = String(payload.token ?? '');
+    diagnostics.membership_expires_at = membershipDate(payload.endtime ?? payload.expire_time);
+    diagnostics.membership_level = Number.isFinite(Number(payload.level)) ? Number(payload.level) : undefined;
   } catch {
     errors.push('login response was not JSON');
     return { ...empty, failed_iterations: 1 };
@@ -1080,6 +1420,7 @@ export async function fetchCredentialSourceLinks(
     errors.push('login returned no token');
     return { ...empty, failed_iterations: 1 };
   }
+  diagnostics.login_ok = true;
   ctx.token = token;
   // `&code=` must be non-empty from here on: the server answers an empty body
   // when it is blank, so the value from the profile (or the app's default) is
@@ -1096,32 +1437,69 @@ export async function fetchCredentialSourceLinks(
       const info = JSON.parse(infoPlain) as Record<string, unknown>;
       const detail = (info.info ?? {}) as Record<string, unknown>;
       const codeInfo = (info.code_info ?? {}) as Record<string, unknown>;
-      const level = Number(detail.level ?? 0);
+      // An omitted `level` means "not reported", not "free tier": reading it as
+      // 0 sent isvip=0 and then retired a paid account as having no membership.
+      // Only a field the vendor actually sent counts as evidence, so the paid
+      // defaults survive an older build or a proxy that strips `info`.
+      const levelRaw = detail.level ?? info.level;
+      const level = levelRaw === undefined || levelRaw === null || String(levelRaw).trim() === ''
+        ? undefined
+        : Number(levelRaw);
       const unlimit = String(codeInfo.unlimit ?? '').trim();
-      ctx.isVip = level >= 2;
-      ctx.isUnlimited = unlimit === '1';
+      if (level !== undefined && Number.isFinite(level)) {
+        ctx.isVip = level >= 2;
+        diagnostics.membership_level = level;
+      }
+      if (unlimit) ctx.isUnlimited = unlimit === '1';
+      const expires = membershipDate(detail.endtime ?? detail.expire_time ?? info.endtime ?? info.expire_time);
+      if (expires) diagnostics.membership_expires_at = expires;
     }
   } catch {
     // Defaults keep isvip/unlimit enabled, matching a paid account.
   }
 
   // 4) `/myapi/apinodelist`: the clickable route ids.
-  const routeGroups = parseRouteGroups(
-    await getRawCommStr(
-      ctx, eversionFields.apiLinks, apiDomain,
-      pathAndQuery(eversionFields.apiLines), '', discovery.seed_domains
-    )
-  );
-  let routes: RouteNode[] = flattenRouteGroups(routeGroups);
+  //
+  // Every advertised table is fetched and merged. 旋风 publishes two (黄金 and
+  // 白金); the others publish one. Area ids repeat across tables, so the merge
+  // dedupes by id — the same route asked twice in a round is a wasted request,
+  // not a second node.
+  const collected: RouteNode[] = [];
+  for (const table of eversionFields.apiLines) {
+    const groups = parseRouteGroups(
+      await getRawCommStr(
+        ctx, eversionFields.apiLinks, apiDomain, pathAndQuery(table), '', discovery.seed_domains
+      )
+    );
+    collected.push(...flattenRouteGroups(groups));
+  }
+  // Free-tier rows issue placeholders and mainland rows are the wrong
+  // direction, so neither is worth a request per round.
+  const selection = selectForeignRoutes(collected, {
+    includeFree: source.include_free_routes === true,
+    includeChina: source.include_china_routes === true
+  });
+  let routes: RouteNode[] = selection.routes;
   if (source.max_areas && source.max_areas > 0) {
     routes = routes.slice(0, source.max_areas);
   }
   diagnostics.route_count = routes.length;
+  diagnostics.route_tables = eversionFields.apiLines.length;
+  diagnostics.routes_dropped = {
+    free: selection.dropped_free,
+    china: selection.dropped_china,
+    disabled: selection.dropped_disabled,
+    duplicate: selection.dropped_duplicate
+  };
   if (!routes.length) {
-    errors.push('node list was empty');
+    errors.push(collected.length ? 'node list had no foreign paid routes' : 'node list was empty');
     return { ...empty, failed_iterations: 1 };
   }
-  log(`[extract] routes=${routes.length}`);
+  log(
+    `[extract] routes=${routes.length} tables=${eversionFields.apiLines.length}` +
+    ` dropped(free=${selection.dropped_free} china=${selection.dropped_china}` +
+    ` disabled=${selection.dropped_disabled} dup=${selection.dropped_duplicate})`
+  );
 
   // 5) `/api/evmess?area=ID`, repeated.
   //

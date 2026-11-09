@@ -13,12 +13,12 @@ const __dirname = path.dirname(__filename);
 
 const EXPECTED_DIGESTS_BY_PLATFORM = {
   darwin: {
-    dashboard: 'c8d7d5cb927bd917148f95be1615b2e7ae3897b9b278441bd94634119003711b',
+    dashboard: 'c3e8b9bb213713c13c2019033703aa986e038f8ba890a2bec7a5f3fc5ec2509f',
     runs: 'aeaa065b492713a83c84b944392497c5bb04bf635aa95715c96bf9f1f4ff1789',
     results: 'd3e51557c2061e90235c00445206cc23bbf153a1b4b9e279ea54fa1ea687b318',
     subscriptions: '2ab3fcab937eda0b6ad010cac25e4d213a57d152a3cb48325421fe3ddc2903d5',
     logs: '6ecb9ebe7da65f2a061b99b0e9df6283f20addb9c8410e9c0376675b5bc504cc',
-    settings: 'f15d94bfe17e18c7efe25481c78bd158bb9a10e438fe824540e8dda549c4dc36'
+    settings: '4383cf958db112b48e478bda35664efbae496f0a14ebd1d974f5c15e70ee795a'
   },
   linux: {
     dashboard: '675f3b0895f9430afb31b6d9bb10c6b3577654a021c2ced72b493a8aebd5acf0',

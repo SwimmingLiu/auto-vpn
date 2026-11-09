@@ -15,6 +15,8 @@ const KNOWN_EVENT_TYPES = new Set([
   'extract_iteration',
   'extract_source_completed',
   'extract_source_failed',
+  'extract_platform_started',
+  'extract_platform_completed',
   'speedtest_runtime',
   'speedtest_probe_result',
   'speedtest_selected',

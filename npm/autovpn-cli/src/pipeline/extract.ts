@@ -37,6 +37,10 @@ export interface SourceConfigInput {
   account?: string;
   password?: string;
   platform?: 'android' | 'ios';
+  platforms?: Array<'android' | 'ios'>;
+  account_retry_limit?: number;
+  include_free_routes?: boolean;
+  include_china_routes?: boolean;
   device_id?: string;
   install_date?: string;
   brand_flags?: string;

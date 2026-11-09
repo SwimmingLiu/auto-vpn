@@ -614,3 +614,28 @@ test('stageShareWorkerRuntime copies repo template vpn.js into the packaged runt
   );
   assert.equal(fs.readFileSync(runtimePath, 'utf-8'), fs.readFileSync(shareWorkerSource, 'utf-8'));
 });
+
+test('the first packaging attempt uses the default download hosts', () => {
+  // A reachable GitHub must always be preferred; the mirror is only a fallback.
+  const env = packageBuild.buildElectronBuilderEnv(1, { PATH: '/usr/bin' });
+  assert.equal(env.ELECTRON_MIRROR, undefined);
+  assert.equal(env.ELECTRON_BUILDER_BINARIES_MIRROR, undefined);
+  assert.equal(env.PATH, '/usr/bin');
+});
+
+test('a retried packaging attempt points both downloads at the mirror', () => {
+  // `electron-builder` resolves the Electron runtime itself, so `ELECTRON_MIRROR`
+  // alone does not cover it, and `fpm`/`AppImage` come from a second origin.
+  const env = packageBuild.buildElectronBuilderEnv(2, {});
+  assert.equal(env.ELECTRON_MIRROR, packageBuild.ELECTRON_BUILDER_MIRROR);
+  assert.match(env.ELECTRON_BUILDER_BINARIES_MIRROR, /electron-builder-binaries/);
+});
+
+test('an explicitly configured mirror is not overwritten', () => {
+  const env = packageBuild.buildElectronBuilderEnv(2, {
+    ELECTRON_MIRROR: 'https://mirror.internal/electron/',
+    ELECTRON_BUILDER_BINARIES_MIRROR: 'https://mirror.internal/binaries/'
+  });
+  assert.equal(env.ELECTRON_MIRROR, 'https://mirror.internal/electron/');
+  assert.equal(env.ELECTRON_BUILDER_BINARIES_MIRROR, 'https://mirror.internal/binaries/');
+});

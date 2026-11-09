@@ -13,6 +13,7 @@ import {
   addAvailabilityTargetDraft,
   applySourceIterationDraft,
   applyAvailabilityTargetDraft,
+  buildAccountPoolRecords,
   buildAvailabilityTargetDraft,
   buildDashboardMetricsMarkup,
   buildPageMarkup,
@@ -22,9 +23,12 @@ import {
   buildSourceIterationDraft,
   classifyLogEntry,
   extractSourceUrlFromCurl,
+  filterAccountPoolAccounts,
   filterLogEntries,
   groupLogEntriesByStage,
-  removeAvailabilityTargetDraft
+  normalizeOfficialSourceDraft,
+  removeAvailabilityTargetDraft,
+  validateSourceDraft
 } from '../renderer/views.js';
 
 test('buildSidebarNav marks only the active page as current', () => {
@@ -261,38 +265,85 @@ test('results page renders unknown preview regions as US', () => {
   assert.doesNotMatch(markup, />ZZ<\/span>/);
 });
 
-test('source iteration draft applies one max_iterations, plateau limit, and area range to all sources', () => {
+test('the source drawer drafts only the four official sites and their rounds', () => {
   const sources = {
-    leiting: { url: 'https://a.example', key: 'a', enabled: true, max_iterations: 12, min_iterations: 12, plateau_limit: 11, area_min: 10, area_max: 90 },
-    heidong: { url: 'https://b.example', key: 'b', enabled: true, max_iterations: 40, min_iterations: 40, plateau_limit: 8, area_min: 0, area_max: 100 }
+    'xuanfeng-area': { mode: 'credential', official_site: 'https://xf.example', enabled: true, max_iterations: 3, min_iterations: 10, plateau_limit: 2 },
+    'xuanfeng-all-area': { mode: 'credential', official_site: 'https://xf.example', enabled: false, max_iterations: 7 },
+    leiting: { url: 'https://a.example', key: 'a', enabled: true, max_iterations: 3000, min_iterations: 10, plateau_limit: 20, area_min: 10, area_max: 90 }
   };
   const draft = buildSourceIterationDraft(sources);
 
-  assert.equal(draft.maxIterations, 12);
-  assert.equal(draft.plateauLimit, 11);
-  assert.equal(draft.areaMin, 10);
-  assert.equal(draft.areaMax, 90);
-  draft.maxIterations = 25;
-  draft.plateauLimit = 20;
-  draft.areaMin = 20;
-  draft.areaMax = 60;
+  // One row per vendor, in a stable order, with no url-mode leftovers.
+  assert.deepEqual(Object.keys(draft.sources), ['leiting', 'heidong', 'mifeng', 'xuanfeng']);
+  assert.equal(draft.sources.xuanfeng.max_iterations, 3);
+  for (const source of Object.values(draft.sources)) {
+    assert.equal(source.mode, 'credential');
+    assert.equal(source.url, undefined);
+    assert.equal(source.key, undefined);
+    assert.equal(source.account, undefined);
+    assert.equal(source.password, undefined);
+    assert.equal(source.platform, undefined);
+    assert.equal(source.area_min, undefined);
+  }
+  // A credential row's round floor is still read by the round policy, so it
+  // survives the drawer. A legacy url row's floor describes 10 URL fetches, not
+  // 10 route-loop rounds, so it goes with the other URL-mode caps.
+  assert.equal(draft.sources.xuanfeng.min_iterations, 10);
+  assert.equal(draft.sources.leiting.min_iterations, undefined);
+  assert.equal(draft.sources.leiting.max_iterations, 4);
+});
 
-  assert.deepEqual(
-    Object.values(applySourceIterationDraft(sources, draft)).map((source) => source.max_iterations),
-    [25, 25]
-  );
-  assert.deepEqual(
-    Object.values(applySourceIterationDraft(sources, draft)).map((source) => [source.area_min, source.area_max]),
-    [[20, 60], [20, 60]]
-  );
-  assert.deepEqual(
-    Object.values(applySourceIterationDraft(sources, draft)).map((source) => source.min_iterations),
-    [12, 25]
-  );
-  assert.deepEqual(
-    Object.values(applySourceIterationDraft(sources, draft)).map((source) => source.plateau_limit),
-    [20, 20]
-  );
+test('a custom url source survives saving the sources drawer', () => {
+  // The drawer renders only the four vendors, so a profile that also carries a
+  // url-mode source must not lose it just because the drawer was saved.
+  const sources = {
+    leiting: { mode: 'credential', official_site: 'https://s.example', max_iterations: 4 },
+    'my-relay': { mode: 'url', url: 'https://relay.example/list', key: 'k1', enabled: true, max_iterations: 9 }
+  };
+  const saved = applySourceIterationDraft(sources, buildSourceIterationDraft(sources));
+  assert.deepEqual(saved['my-relay'], sources['my-relay']);
+  assert.equal(saved.leiting.official_site, 'https://s.example');
+});
+
+test('a cleared official site is not refilled from the vendor default mid-edit', () => {
+  // Refilling on every render replaced the input's value under the caret.
+  const cleared = normalizeOfficialSourceDraft({ leiting: { mode: 'credential', official_site: '', max_iterations: 4 } });
+  assert.equal(cleared.leiting.official_site, '');
+  const fresh = normalizeOfficialSourceDraft({});
+  assert.equal(fresh.leiting.official_site, 'https://www.68123836.com');
+});
+
+test('saving the source drawer keeps each row\'s own rounds', () => {
+  const sources = {
+    leiting: { mode: 'credential', official_site: 'https://site.example', max_iterations: 3, plateau_limit: 2 },
+    xuanfeng: { mode: 'credential', official_site: 'https://xf.example', max_iterations: 9, plateau_limit: 5 }
+  };
+  const draft = buildSourceIterationDraft(sources);
+  draft.sources.leiting.max_iterations = 6;
+  draft.sources.leiting.plateau_limit = 3;
+  const saved = applySourceIterationDraft(draft.sources, draft);
+  assert.equal(saved.leiting.max_iterations, 6);
+  assert.equal(saved.leiting.plateau_limit, 3);
+  assert.equal(saved.xuanfeng.max_iterations, 9);
+  assert.equal(saved.xuanfeng.plateau_limit, 5);
+  // A caller that only passes the shared values still stamps every row.
+  const shared = applySourceIterationDraft(sources, { maxIterations: 7, plateauLimit: 4 });
+  const stamped = Object.values(shared);
+  assert.equal(stamped.length, 4);
+  assert.deepEqual([...new Set(stamped.map((source) => source.max_iterations))], [7]);
+  assert.deepEqual([...new Set(stamped.map((source) => source.plateau_limit))], [4]);
+});
+
+test('the source drawer refuses an enabled row with no official site', () => {
+  const draft = buildSourceIterationDraft({});
+  assert.equal(validateSourceDraft(draft), '');
+  draft.sources.leiting.official_site = '';
+  assert.match(validateSourceDraft(draft), /雷霆/);
+  // A disabled row never reaches the network, so its empty site is fine.
+  draft.sources.leiting.enabled = false;
+  assert.equal(validateSourceDraft(draft), '');
+  draft.maxIterations = 0;
+  assert.match(validateSourceDraft(draft), /轮数/);
 });
 
 test('availability target draft supports add edit and delete', () => {
@@ -372,8 +423,12 @@ test('settings drawer is inert and has no actions while closed, with explicit so
     settingsDrawer: { section: 'sources', draft: { sources: profile.sources } }
   };
   const openMarkup = buildPageMarkup('settings', buildViewModel(openState, messages, 'zh-CN'), messages, 'zh-CN');
-  assert.match(openMarkup, /aria-label="雷霆：地址"/);
-  assert.match(openMarkup, /aria-label="雷霆：密钥"/);
+  // The drawer asks for an official site and a round budget, nothing else:
+  // credentials come from the pool and the control-plane key from the APK.
+  assert.match(openMarkup, /aria-label="雷霆：官网地址"/);
+  assert.match(openMarkup, /aria-label="雷霆：抓取轮数"/);
+  assert.doesNotMatch(openMarkup, /aria-label="雷霆：密钥"|aria-label="雷霆：账号"|aria-label="雷霆：密码"/);
+  assert.doesNotMatch(openMarkup, /data-drawer-mode/);
 });
 
 test('settings page renders deploy card and drawer fields', () => {
@@ -563,17 +618,50 @@ test('dashboard metrics render missing legacy per-source dedupe counts as unknow
   assert.match(buildDashboardMetricsMarkup(vm), /雷霆 —/);
 });
 
-test('saving the iteration drawer leaves credential sources on their own rounds', () => {
-  // These fields describe the url-mode fetch. A credential source re-requests
-  // every route per round, so stamping 40 rounds onto it multiplies real API
-  // traffic; it keeps its own values instead.
-  const sources = {
-    leiting: { mode: 'credential', official_site: 'https://site.example', max_iterations: 3, plateau_limit: 2 },
-    legacy: { url: 'https://provider.example/list', key: 'k' }
+test('the account pool filters and sorts without exposing a password', () => {
+  const pool = {
+    status: 'ready',
+    accounts: [
+      { id: 1, brand: 'leiting', account_masked: 'y1***56', status: 'active', expires_at: '', use_count: 2, success_count: 2, fail_count: 0, status_reason: '', note: '' },
+      { id: 2, brand: 'xuanfeng', account_masked: 'ab**cd', status: 'invalid', expires_at: '2026-01-01', use_count: 9, success_count: 0, fail_count: 1, status_reason: 'login rejected', note: '' },
+      { id: 3, brand: 'leiting', account_masked: 'zz**99', status: 'active', expires_at: '2027-05-01', use_count: 1, success_count: 1, fail_count: 0, status_reason: '', note: '备用' }
+    ],
+    statusFilter: 'all',
+    brandFilter: 'all',
+    query: '',
+    sortBy: 'brand'
   };
-  const saved = applySourceIterationDraft(sources, { maxIterations: 40, plateauLimit: 20, areaMin: 0, areaMax: 100 });
-  assert.equal(saved.leiting.max_iterations, 3);
-  assert.equal(saved.leiting.plateau_limit, 2);
-  assert.equal(saved.legacy.max_iterations, 40);
-  assert.equal(saved.legacy.plateau_limit, 20);
+  assert.deepEqual(filterAccountPoolAccounts(pool).map((row) => row.id), [1, 3, 2]);
+  assert.deepEqual(filterAccountPoolAccounts({ ...pool, statusFilter: 'active' }).map((row) => row.id), [1, 3]);
+  assert.deepEqual(filterAccountPoolAccounts({ ...pool, brandFilter: 'xuanfeng' }).map((row) => row.id), [2]);
+  assert.deepEqual(filterAccountPoolAccounts({ ...pool, query: '备用' }).map((row) => row.id), [3]);
+  assert.deepEqual(filterAccountPoolAccounts({ ...pool, sortBy: 'uses' }).map((row) => row.id), [2, 1, 3]);
+
+  const markup = buildAccountPoolRecords(pool);
+  assert.match(markup, /y1\*\*\*56/);
+  assert.match(markup, /login rejected/);
+  assert.doesNotMatch(markup, /password|passwd/i);
+});
+
+test('the account pool panel shows the four vendors and a masked total', () => {
+  const messages = getMessages('zh-CN');
+  const vm = buildViewModel({
+    profile: { sources: {}, speed_test: {}, availability_targets: {}, deploy: {} },
+    accountPool: {
+      status: 'ready',
+      stats: {
+        total: 6, active: 4, disabled: 1, expired: 1, invalid: 0, expiring_soon: 1,
+        by_brand: [{ brand: 'leiting', total: 6, active: 4, disabled: 1, expired: 1, invalid: 0 }]
+      },
+      accounts: []
+    }
+  }, messages, 'zh-CN');
+  const markup = buildPageMarkup('settings', vm, messages, 'zh-CN', {});
+  assert.match(markup, /账号池/);
+  assert.match(markup, /4<\/strong>[\s\S]*?可用账号 \/ 共 6 个/);
+  assert.match(markup, /7 天内到期 1 个/);
+  for (const label of ['雷霆', '黑洞', '蜜蜂', '旋风']) {
+    assert.match(markup, new RegExp(label));
+  }
+  assert.match(markup, /上传 CSV/);
 });

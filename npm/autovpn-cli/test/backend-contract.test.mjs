@@ -94,7 +94,7 @@ test('profile show is handled by Node shell without backend executeCli', async (
   const root = await mkdir(path.join(os.tmpdir(), `autovpn-profile-show-${Date.now()}`), { recursive: true });
   const profilePath = path.join(root, 'profile.toml');
   await writeFile(profilePath, [
-    '[sources.leiting]',
+    '[sources.legacy]',
     'enabled = true',
     'url = "https://source.example"',
     'key = "secret-key"',
@@ -123,7 +123,9 @@ test('profile show is handled by Node shell without backend executeCli', async (
   assert.equal(code, 0);
   assert.equal(executeCliCalled, false);
   const payload = JSON.parse(io.stdout);
-  assert.equal(payload.sources.leiting.key, 'secret-key');
+  // `leiting` is a vendor row and is normalized to the official-site contract;
+  // a custom url source keeps its own url/key untouched.
+  assert.equal(payload.sources.legacy.key, 'secret-key');
   assert.equal(payload.deploy.project_name, 'sub-nodes');
   assert.equal(payload.paths.profile_path, profilePath);
   assert.equal(path.basename(payload.workspace.project_root), path.basename(root));
@@ -199,7 +201,7 @@ test('profile save is handled by Node shell without installing Python backend', 
     io,
     readStdin: async () => JSON.stringify({
       sources: {
-        leiting: { enabled: true, url: 'https://source.example', key: 'secret-key' }
+        legacy: { enabled: true, url: 'https://source.example', key: 'secret-key' }
       },
       deploy: { project_name: 'sub-nodes', pages_project_url: 'https://sub-nodes.pages.dev' }
     }),
@@ -215,7 +217,7 @@ test('profile save is handled by Node shell without installing Python backend', 
   assert.equal(code, 0);
   assert.equal(executeCliCalled, false);
   const payload = JSON.parse(io.stdout);
-  assert.equal(payload.sources.leiting.key, 'secret-key');
+  assert.equal(payload.sources.legacy.key, 'secret-key');
   assert.equal(payload.deploy.project_name, 'sub-nodes');
   assert.match(await readFile(profilePath, 'utf8'), /project_name = "sub-nodes"/);
   assert.equal(io.stderr, '');

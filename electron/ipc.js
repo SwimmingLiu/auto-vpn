@@ -14,6 +14,10 @@ import { resolveStateProfilePath } from './paths.js';
 const IPC_CHANNELS = [
   'profile:load',
   'profile:save',
+  'accounts:snapshot',
+  'accounts:import',
+  'accounts:status',
+  'accounts:template',
   'shell:open-path',
   'clipboard:write-text',
   'logs:export',
@@ -105,6 +109,89 @@ export function registerIpcHandlers({
       invocation.runAsNode
     );
     return { ok: true };
+  });
+
+  ipcMain.handle('accounts:snapshot', async () => {
+    const invocation = buildBackendInvocation(projectRoot, 'accounts-snapshot', [], { isPackaged });
+    const output = await runCommand(
+      invocation.command,
+      invocation.args,
+      projectRoot,
+      runtimeProfilePath,
+      bundledProfilePath,
+      '',
+      runtimeArtifactsPath,
+      invocation.runAsNode
+    );
+    return JSON.parse(output.stdout);
+  });
+
+  ipcMain.handle('accounts:import', async (_event, payload = {}) => {
+    const content = String(payload?.content ?? '');
+    if (!content.trim()) return { ok: false, error: 'empty_file' };
+    if (Buffer.byteLength(content, 'utf8') > 1024 * 1024) return { ok: false, error: 'file_too_large' };
+    const format = ['auto', 'csv', 'legacy'].includes(payload?.format) ? payload.format : 'auto';
+    const invocation = buildBackendInvocation(projectRoot, 'accounts-import', ['--format', format], { isPackaged });
+    try {
+      const output = await runCommand(
+        invocation.command,
+        invocation.args,
+        projectRoot,
+        runtimeProfilePath,
+        bundledProfilePath,
+        content,
+        runtimeArtifactsPath,
+        invocation.runAsNode
+      );
+      return JSON.parse(output.stdout);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      try {
+        return JSON.parse(message);
+      } catch {
+        return { ok: false, error: message };
+      }
+    }
+  });
+
+  ipcMain.handle('accounts:status', async (_event, payload = {}) => {
+    const id = Number(payload?.id);
+    const status = String(payload?.status ?? '').trim();
+    if (!Number.isInteger(id) || id < 1 || !['active', 'disabled'].includes(status)) {
+      return { ok: false, error: 'invalid_account_status_payload' };
+    }
+    const invocation = buildBackendInvocation(
+      projectRoot,
+      status === 'active' ? 'accounts-enable' : 'accounts-disable',
+      ['--id', String(id), '--reason', String(payload?.reason ?? 'disabled by operator')],
+      { isPackaged }
+    );
+    const output = await runCommand(
+      invocation.command,
+      invocation.args,
+      projectRoot,
+      runtimeProfilePath,
+      bundledProfilePath,
+      '',
+      runtimeArtifactsPath,
+      invocation.runAsNode
+    );
+    return JSON.parse(output.stdout);
+  });
+
+  ipcMain.handle('accounts:template', async () => {
+    const invocation = buildBackendInvocation(projectRoot, 'accounts-template', [], { isPackaged });
+    const output = await runCommand(
+      invocation.command,
+      invocation.args,
+      projectRoot,
+      runtimeProfilePath,
+      bundledProfilePath,
+      '',
+      runtimeArtifactsPath,
+      invocation.runAsNode
+    );
+    return { ok: true, content: output.stdout };
   });
 
   ipcMain.handle('shell:open-path', async (_event, targetPath) => {

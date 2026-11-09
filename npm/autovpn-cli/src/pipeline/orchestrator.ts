@@ -4,6 +4,7 @@ import path from 'node:path';
 import { parse } from '@iarna/toml';
 
 import { AutoVpnEvent } from '../events/schema.js';
+import { normalizeOfficialSources } from '../config/profile.js';
 import { mergeProjectEnv } from '../runtime/env.js';
 import { resolveArtifactsRoot, resolveProfilePath, resolveUserRuntimeRoot } from '../runtime/paths.js';
 import { redactText } from '../runtime/redaction.js';
@@ -136,7 +137,8 @@ function asProfile(payload: unknown): PipelineProfile {
 async function readProfile(projectRoot: string, env: NodeJS.ProcessEnv): Promise<PipelineProfile> {
   const profilePath = resolveProfilePath(projectRoot, env);
   const text = await readFile(profilePath, 'utf8');
-  return asProfile(parse(text));
+  const profile = asProfile(parse(text));
+  return { ...profile, sources: normalizeOfficialSources(profile.sources ?? {}) as Record<string, SourceConfigInput> };
 }
 
 function enabledSources(profile: PipelineProfile): Array<[string, SourceConfigInput]> {
@@ -144,16 +146,12 @@ function enabledSources(profile: PipelineProfile): Array<[string, SourceConfigIn
     if (source.enabled === false) {
       return false;
     }
-    // Credential sources carry a site plus an account instead of a request URL.
-    // The first non-empty of the three is enough: `??` would let an empty
-    // `official_site` shadow a working `apk_url` and drop the source.
+    // Credential sources need only a location. The account is leased from the
+    // pool at extract time; an empty pool is a reported source failure, not a
+    // silently disabled source.
     if (source.mode === 'credential') {
-      const location = [source.official_site, source.apk_url, source.apk_path]
-        .map((value) => String(value ?? '').trim())
-        .find((value) => value.length > 0);
-      return Boolean(String(source.account ?? '').trim())
-        && Boolean(String(source.password ?? '').trim())
-        && Boolean(location);
+      return [source.official_site, source.apk_url, source.apk_path]
+        .some((value) => String(value ?? '').trim().length > 0);
     }
     return Boolean(String(source.url ?? '').trim()) && Boolean(String(source.key ?? '').trim());
   });
@@ -253,6 +251,9 @@ function renderHumanEvent(event: AutoVpnEvent): string {
   }
   if (event.type === 'run_failed') {
     return `[run_failed] ${String(event.error ?? 'unknown error')}`;
+  }
+  if (event.type === 'extract_platform_started' || event.type === 'extract_platform_completed') {
+    return `[${event.type}] ${String(event.source_name ?? '')} platform=${String(event.platform ?? '')}`;
   }
   return JSON.stringify(event);
 }
@@ -586,7 +587,7 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
     // Keyed by brand, not by profile entry name: two sources of one brand must
     // share both the in-run memo and the on-disk fingerprint.
     const brandKeyFor = (sourceName: string, source: SourceConfigInput): string => (
-      String(source.account ?? '').trim() ? credentialBrandKey(sourceName, source) : sourceName
+      source.mode === 'credential' || String(source.account ?? '').trim() ? credentialBrandKey(sourceName, source) : sourceName
     );
     const fingerprintMemos = new Map<string, FingerprintMemo>();
     const fingerprintMemoFor = (brand: string): FingerprintMemo => {
@@ -1451,7 +1452,7 @@ export async function resumeNodePipeline(options: NodeResumeOptions, context: Ru
     return memo;
   };
   const resumeBrandKeyFor = (sourceName: string, source: SourceConfigInput): string => (
-    String(source.account ?? '').trim() ? credentialBrandKey(sourceName, source) : sourceName
+    source.mode === 'credential' || String(source.account ?? '').trim() ? credentialBrandKey(sourceName, source) : sourceName
   );
 
   const emit = (type: string, payload: Record<string, unknown> = {}) => {

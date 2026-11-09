@@ -1,3 +1,5 @@
+import { accountsTemplate } from '../cli/accounts-commands.js';
+
 export interface WebAdapterOptions {
   passwordEnabled?: boolean;
 }
@@ -142,7 +144,12 @@ export function renderWebAdapterScript(options: WebAdapterOptions = {}): string 
       return request(path, requestOptions);
     }
     if (!response.ok) {
-      throw new Error(payload.error || 'request_failed');
+      // The import endpoint answers 400 with the parsed issues (line + reason).
+      // Throwing that away would leave the operator with a bare request_failed
+      // and no way to find the bad rows, so carry the payload on the error.
+      const error = new Error(payload.error || 'request_failed');
+      error.payload = payload;
+      throw error;
     }
     return payload;
   }
@@ -161,6 +168,16 @@ export function renderWebAdapterScript(options: WebAdapterOptions = {}): string 
       method: 'POST',
       body: JSON.stringify(profile || {})
     }),
+    loadAccounts: async () => request('/api/accounts'),
+    importAccounts: async (content, format = 'auto') => request('/api/accounts/import', {
+      method: 'POST',
+      body: JSON.stringify({ content: String(content || ''), format })
+    }),
+    setAccountStatus: async (payload) => request('/api/accounts/status', {
+      method: 'POST',
+      body: JSON.stringify(payload || {})
+    }),
+    accountsTemplate: async () => ({ ok: true, content: ${JSON.stringify(accountsTemplate())} }),
     runPipeline: async (options = {}) => request('/api/runs', {
       method: 'POST',
       body: JSON.stringify({

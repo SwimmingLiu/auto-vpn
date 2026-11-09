@@ -14,16 +14,22 @@ import {
   transformNodeId
 } from '../../dist/pipeline/brand-protocol.js';
 import {
-  apiLineValue,
+  apiLineValues,
   apiLinkValues,
   credentialBrandKey,
+  fetchCredentialSourceLinks,
+  isCredentialLoginRejection,
   loginSignature,
+  membershipDate,
   parseRouteGroups,
   resolveBrandLayout,
+  resolveCredentialPlatforms,
   resolveRoundPolicy,
   shouldStartRound,
   shouldStopOnPlateau
 } from '../../dist/pipeline/credential-source.js';
+import { selectForeignRoutes, isFreeRoute, isChinaRoute } from '../../dist/pipeline/brand-protocol.js';
+import { AccountStore } from '../../dist/pool/account-store.js';
 import { isCredentialSource } from '../../dist/pipeline/extract.js';
 
 const identity = {
@@ -175,13 +181,25 @@ test('apiLinkValues accepts both the string and the {key,value} shapes', () => {
   assert.deepEqual(apiLinkValues(undefined), []);
 });
 
-test('apiLineValue accepts a plain string and the 旋风 object list', () => {
-  assert.equal(apiLineValue('https://a.example:20000/myapi/apinodelist?level=2'), 'https://a.example:20000/myapi/apinodelist?level=2');
-  assert.equal(
-    apiLineValue([{ key: '黄金线路', value: 'https://b.example:20000/myapi/apinodelist?level=2', desc: '' }]),
-    'https://b.example:20000/myapi/apinodelist?level=2'
+test('apiLineValues keeps every 旋风 route table, not just the first', () => {
+  assert.deepEqual(
+    apiLineValues('https://a.example:20000/myapi/apinodelist?level=2'),
+    ['https://a.example:20000/myapi/apinodelist?level=2']
   );
-  assert.equal(apiLineValue(undefined), '');
+  assert.deepEqual(
+    apiLineValues([
+      { key: '黄金线路', value: 'https://b.example:20000/myapi/apinodelist?level=2', desc: '' },
+      { key: '白金线路', value: 'https://b.example:20000/myapi/apinodelist?level=3', desc: '' }
+    ]),
+    [
+      'https://b.example:20000/myapi/apinodelist?level=2',
+      'https://b.example:20000/myapi/apinodelist?level=3'
+    ]
+  );
+  // A repeated endpoint is one table, not two round trips per round.
+  assert.deepEqual(apiLineValues(['https://c.example/x', 'https://c.example/x']), ['https://c.example/x']);
+  assert.deepEqual(apiLineValues(undefined), []);
+  assert.deepEqual(apiLineValues(''), []);
 });
 
 test('isPlaceholderNode recognises the server template', () => {
@@ -265,4 +283,93 @@ test('the brand key falls back to the source name without a site', () => {
   assert.equal(credentialBrandKey('leiting', {}), 'lt');
   assert.equal(credentialBrandKey('custom_brand', {}), 'custom_brand');
   assert.equal(credentialBrandKey('', {}), 'unknown');
+});
+
+test('both client channels run by default and only the request can narrow them', () => {
+  assert.deepEqual(resolveCredentialPlatforms({}), ['android', 'ios']);
+  assert.deepEqual(resolveCredentialPlatforms({ platforms: ['ios'] }), ['ios']);
+  assert.deepEqual(resolveCredentialPlatforms({ platforms: ['ios', 'ios', 'nope'] }), ['ios']);
+  assert.deepEqual(resolveCredentialPlatforms({ platforms: [] }), ['android', 'ios']);
+});
+
+test('only a real credential rejection retires a pooled account', () => {
+  assert.equal(isCredentialLoginRejection('账号或密码错误'), true);
+  assert.equal(isCredentialLoginRejection('密码错误'), true);
+  assert.equal(isCredentialLoginRejection('user does not exist'), true);
+  assert.equal(isCredentialLoginRejection('请求过于频繁，请稍后再试'), false);
+  assert.equal(isCredentialLoginRejection(''), false);
+});
+
+test('membership dates accept epoch seconds, milliseconds and ISO text', () => {
+  assert.equal(membershipDate(1812363833), '2027-06-07');
+  assert.equal(membershipDate(1812363833000), '2027-06-07');
+  assert.equal(membershipDate('2027-06-05'), '2027-06-05');
+  assert.equal(membershipDate(''), '');
+  assert.equal(membershipDate(0), '');
+});
+
+test('free and mainland routes are dropped, and two tables merge by area', () => {
+  const routes = [
+    { area: 48, name: '永久免费专线01', region: '免费线路', cid: 48, enabled: true },
+    { area: 2, name: '美国', region: '美国', cid: 2, enabled: true },
+    { area: 3, name: '加州', region: '美国', cid: 2, enabled: true },
+    { area: 9, name: '上海', region: '中国', cid: 9, enabled: true },
+    { area: 10, name: '回国专线', region: '回国线路', cid: 10, enabled: true },
+    { area: 2, name: '美国-白金', region: '美国', cid: 2, enabled: true },
+    { area: 11, name: '日本', region: '日本', cid: 11, enabled: false }
+  ];
+  assert.equal(isFreeRoute(routes[0]), true);
+  assert.equal(isChinaRoute(routes[3]), true);
+  assert.equal(isChinaRoute({ region: '香港', name: '香港01' }), false);
+  const selected = selectForeignRoutes(routes);
+  assert.deepEqual(selected.routes.map((route) => route.area), [2, 3]);
+  assert.deepEqual(
+    [selected.dropped_free, selected.dropped_china, selected.dropped_disabled, selected.dropped_duplicate],
+    [1, 2, 1, 1]
+  );
+  // The overrides are for a profile pinning a specific table.
+  assert.equal(selectForeignRoutes(routes, { includeFree: true, includeChina: true, includeDisabled: true }).routes.length, 6);
+});
+
+test('a brand run without an active pooled account reports why and stops', async () => {
+  const store = new AccountStore({ dbPath: ':memory:' });
+  const result = await fetchCredentialSourceLinks(
+    { source_name: 'leiting', source: { mode: 'credential', official_site: 'https://www.68123836.com' } },
+    { accountStore: store, fetchImpl: async () => ({ ok: false, status: 500, text: async () => '', arrayBuffer: async () => new ArrayBuffer(0) }) }
+  );
+  assert.equal(result.links.length, 0);
+  assert.match(result.diagnostics.errors.join('; '), /account pool has no active leiting account/);
+  store.close();
+});
+
+test('an unreported membership level is not evidence of a free account', () => {
+  // Reading a missing `level` as 0 sent isvip=0 and then retired a paid account
+  // as "no paid membership" once the round loop produced nothing.
+  const level = (info) => {
+    const detail = (info.info ?? {});
+    const raw = detail.level ?? info.level;
+    return raw === undefined || raw === null || String(raw).trim() === '' ? undefined : Number(raw);
+  };
+  assert.equal(level({ info: { endtime: 1812363833 } }), undefined);
+  assert.equal(level({ info: {} }), undefined);
+  assert.equal(level({ info: { level: 2 } }), 2);
+  assert.equal(level({ info: { level: 0 } }), 0);
+});
+
+test('a throttling message is not a credential rejection', () => {
+  // Retiring an account for a vendor rate limit burns a healthy credential and
+  // walks the whole brand's pool.
+  for (const message of [
+    '账号登录过于频繁，请稍后再试',
+    '请求过于频繁',
+    '操作太频繁',
+    '服务器繁忙',
+    'server error, try again later',
+    'too many requests'
+  ]) {
+    assert.equal(isCredentialLoginRejection(message), false, message);
+  }
+  for (const message of ['密码错误', '账号或密码错误', '账号不存在', 'user does not exist', 'invalid password']) {
+    assert.equal(isCredentialLoginRejection(message), true, message);
+  }
 });

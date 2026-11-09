@@ -418,6 +418,14 @@ test('renderer matches the six-page canvas redesign and supports page navigation
               key: 'lt-demo-key',
               enabled: true,
               max_iterations: 40
+            },
+            // A source the drawer never renders. Saving the drawer must keep it.
+            'legacy-relay': {
+              mode: 'url',
+              url: 'https://relay.example/list',
+              key: 'lt-demo-key',
+              enabled: true,
+              max_iterations: 3
             }
           },
           speed_test: {
@@ -460,6 +468,29 @@ test('renderer matches the six-page canvas redesign and supports page navigation
           return { ok: true };
         },
         latestArtifact: async () => ({ ok: false, artifact_dir: '' }),
+        loadAccounts: async () => ({
+          ok: true,
+          stats: {
+            total: 6, active: 5, disabled: 0, expired: 0, invalid: 1, expiring_soon: 1,
+            by_brand: [
+              { brand: 'leiting', total: 3, active: 2, disabled: 0, expired: 0, invalid: 1 },
+              { brand: 'xuanfeng', total: 3, active: 3, disabled: 0, expired: 0, invalid: 0 }
+            ]
+          },
+          accounts: [
+            { id: 1, brand: 'leiting', account_masked: 'y1***56', official_site: 'https://www.68123836.com', expires_at: '', status: 'active', status_reason: '', note: '', created_at: '', updated_at: '', last_used_at: '', use_count: 2, success_count: 2, fail_count: 0, deleted: false },
+            { id: 2, brand: 'xuanfeng', account_masked: 'ab**cd', official_site: 'https://www.16863988.com', expires_at: '2026-12-01', status: 'invalid', status_reason: 'login rejected', note: '', created_at: '', updated_at: '', last_used_at: '', use_count: 5, success_count: 4, fail_count: 1, deleted: true }
+          ]
+        }),
+        importAccounts: async (content) => {
+          window.__importedAccountCsv = content;
+          return { ok: true, inserted: 1, updated: 0, rotated: 0, revived: 0, unchanged: 0, skipped: 0, issues: [{ line: 3, message: 'unknown brand: nope' }] };
+        },
+        setAccountStatus: async (payload) => {
+          window.__accountStatusCalls = [...(window.__accountStatusCalls ?? []), payload];
+          return { ok: true };
+        },
+        accountsTemplate: async () => ({ ok: true, content: 'brand,account,password,official_site,expires_at,status,note\nleiting,ACCOUNT,PASSWORD,https://www.68123836.com,,active,\n' }),
         artifactList: async () => ({
           ok: true,
           items: [
@@ -805,83 +836,103 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
     for (const selector of [
       '[data-drawer-source="leiting"][data-drawer-key="enabled"]',
-      '[data-drawer-source="leiting"][data-drawer-key="key"]'
+      '[data-drawer-source="leiting"][data-drawer-key="official_site"]'
     ]) {
       const box = await page.locator(selector).boundingBox();
       assert.ok(box && box.width >= 44 && box.height >= 44, `${selector} must be at least 44×44, got ${box?.width}×${box?.height}`);
     }
+    // The table's own scroll box must not become a second scroller inside the
+    // drawer body: at 390px the four cards are taller than the viewport.
+    const drawerScroll = await page.evaluate(() => {
+      const body = document.querySelector('.settings-drawer-body');
+      const wrap = document.querySelector('.settings-drawer-body .table-wrap');
+      return { bodyScrolls: body.scrollHeight > body.clientHeight, wrapScrolls: wrap ? wrap.scrollHeight > wrap.clientHeight : false };
+    });
+    assert.deepEqual(drawerScroll, { bodyScrolls: true, wrapScrolls: false });
     await page.setViewportSize({ width: 1440, height: 960 });
     assert.match(await page.locator('#settingsDrawerTitle').innerText(), /数据源配置/);
-    assert.equal(await page.locator('[data-source-max-iterations]').inputValue(), '40');
-    const sourceSettingTops = await page.locator('.source-drawer-settings .field').evaluateAll((nodes) =>
-      nodes.map((node) => Math.round(node.getBoundingClientRect().top))
-    );
-    assert.equal(new Set(sourceSettingTops).size, 1);
 
-    const curlInput = "curl 'https://www.xnfvjf.info:20000/api/evmess?&proto=v6&platform=ios&ver=5.8.55347&unicode=CDC37303-6CEC-4AB2-AAD9-AE88DEF1CF10&deviceid=CDC37303-6CEC-4AB2-AAD9-AE88DEF1CF10&code=ZRGOIXI&recomm_code=&device_token=&f=2026-04-23&install=2026-04-23&xf_fans=0&token=ZGSNZ19nnZqSl2VobGppZZOWaGZonHGRYWeVk5lu&t=1777190098.382194&width=375.0&height=812.0&area=999' -H 'Host: www.xnfvjf.info:20000'";
-    await page.locator('[data-drawer-source="leiting"][data-drawer-key="url"]').fill(curlInput);
-    await page.locator('[data-drawer-source="leiting"][data-drawer-key="url"]').blur();
+    // Final input contract: one official site per vendor, nothing else. The
+    // key is read from the APK and credentials come from the account pool.
+    assert.equal(await page.locator('.settings-source-table tbody tr').count(), 4);
+    const sourceFields = await page.evaluate(() => [...document.querySelectorAll('.settings-source-table [data-drawer-key]')]
+      .map((node) => `${node.dataset.drawerSource}:${node.dataset.drawerKey}`));
+    assert.deepEqual(sourceFields.sort(), [
+      'heidong:enabled', 'heidong:max_iterations', 'heidong:official_site', 'heidong:plateau_limit',
+      'leiting:enabled', 'leiting:max_iterations', 'leiting:official_site', 'leiting:plateau_limit',
+      'mifeng:enabled', 'mifeng:max_iterations', 'mifeng:official_site', 'mifeng:plateau_limit',
+      'xuanfeng:enabled', 'xuanfeng:max_iterations', 'xuanfeng:official_site', 'xuanfeng:plateau_limit'
+    ]);
+    for (const selector of [
+      '[data-drawer-mode]',
+      '[data-drawer-source="leiting"][data-drawer-key="key"]',
+      '[data-drawer-source="leiting"][data-drawer-key="account"]',
+      '[data-drawer-source="leiting"][data-drawer-key="password"]',
+      '[data-drawer-source="leiting"][data-drawer-key="platform"]'
+    ]) {
+      assert.equal(await page.locator(selector).count(), 0, `${selector} must be gone`);
+    }
+    // A legacy url-mode row is migrated on read: the drawer shows its brand's
+    // site, and saving never writes the old url/key back.
     assert.equal(
-      await page.locator('[data-drawer-source="leiting"][data-drawer-key="url"]').inputValue(),
-      'https://www.xnfvjf.info:20000/api/evmess?&proto=v6&platform=ios&ver=5.8.55347&unicode=CDC37303-6CEC-4AB2-AAD9-AE88DEF1CF10&deviceid=CDC37303-6CEC-4AB2-AAD9-AE88DEF1CF10&code=ZRGOIXI&recomm_code=&device_token=&f=2026-04-23&install=2026-04-23&xf_fans=0&token=ZGSNZ19nnZqSl2VobGppZZOWaGZonHGRYWeVk5lu&t=1777190098.382194&width=375.0&height=812.0&area=999'
+      await page.locator('[data-drawer-source="leiting"][data-drawer-key="official_site"]').inputValue(),
+      'https://www.68123836.com'
     );
-
-    await page.locator('[data-source-max-iterations]').fill('25');
-    await page.locator('[data-source-plateau-limit]').fill('20');
-    await page.locator('[data-source-area-min]').fill('20');
-    await page.locator('[data-source-area-max]').fill('60');
-    assert.equal(await page.locator('[data-source-max-iterations]').inputValue(), '25');
-    assert.equal(await page.locator('[data-source-plateau-limit]').inputValue(), '20');
-    assert.equal(await page.locator('[data-source-area-min]').inputValue(), '20');
-    assert.equal(await page.locator('[data-source-area-max]').inputValue(), '60');
+    await page.locator('[data-drawer-source="leiting"][data-drawer-key="official_site"]').fill('https://leiting.example');
+    await page.locator('[data-drawer-source="leiting"][data-drawer-key="max_iterations"]').fill('6');
+    await page.locator('[data-drawer-source="leiting"][data-drawer-key="plateau_limit"]').fill('3');
     await page.locator('[data-drawer-save="save"]').click();
     await page.waitForSelector('#settingsDrawer[data-open="false"]');
-    assert.equal(
-      await page.evaluate(() => window.__savedProfiles.at(-1).sources.leiting.max_iterations),
-      25
-    );
-    assert.equal(
-      await page.evaluate(() => window.__savedProfiles.at(-1).sources.leiting.plateau_limit),
-      20
-    );
-    assert.equal(
-      await page.evaluate(() => window.__savedProfiles.at(-1).sources.leiting.url),
-      'https://www.xnfvjf.info:20000/api/evmess?&proto=v6&platform=ios&ver=5.8.55347&unicode=CDC37303-6CEC-4AB2-AAD9-AE88DEF1CF10&deviceid=CDC37303-6CEC-4AB2-AAD9-AE88DEF1CF10&code=ZRGOIXI&recomm_code=&device_token=&f=2026-04-23&install=2026-04-23&xf_fans=0&token=ZGSNZ19nnZqSl2VobGppZZOWaGZonHGRYWeVk5lu&t=1777190098.382194&width=375.0&height=812.0&area=999'
-    );
-    assert.deepEqual(
-      await page.evaluate(() => [
-        window.__savedProfiles.at(-1).sources.leiting.area_min,
-        window.__savedProfiles.at(-1).sources.leiting.area_max
-      ]),
-      [20, 60]
-    );
-
-    // Credential mode: the official site shows as a placeholder until typed,
-    // the password keeps its exact bytes, and saving does not stamp the
-    // url-mode round settings onto the source.
+    const savedSources = await page.evaluate(() => window.__savedProfiles.at(-1).sources);
+    assert.equal(savedSources.leiting.official_site, 'https://leiting.example');
+    assert.equal(savedSources.leiting.max_iterations, 6);
+    assert.equal(savedSources.leiting.plateau_limit, 3);
+    assert.equal(savedSources.leiting.mode, 'credential');
+    assert.equal(savedSources.leiting.url, undefined);
+    assert.equal(savedSources.leiting.key, undefined);
+    assert.equal(savedSources.leiting.min_iterations, undefined);
+    // A source the drawer does not render (a custom url relay) must survive the save.
+    assert.equal(savedSources['legacy-relay'].url, 'https://relay.example/list');
+    // Every enabled row must carry a site: an empty one is refused before save.
     await page.locator('[data-settings-card="sources"]').click();
     await page.waitForSelector('#settingsDrawer[data-open="true"]');
-    await page.locator('[data-drawer-source="leiting"][data-drawer-mode]').selectOption('credential');
-    const siteInput = page.locator('[data-drawer-source="leiting"][data-drawer-key="official_site"]');
-    assert.equal(await siteInput.inputValue(), '');
-    assert.match(await siteInput.getAttribute('placeholder'), /^https:\/\//);
-    await siteInput.fill('https://site.example');
-    await page.locator('[data-drawer-source="leiting"][data-drawer-key="account"]').fill('acct1');
-    await page.locator('[data-drawer-source="leiting"][data-drawer-key="password"]').fill(' pass with space ');
-    assert.equal(
-      await page.locator('[data-drawer-source="leiting"][data-drawer-key="password"]').inputValue(),
-      ' pass with space '
-    );
+    await page.locator('[data-drawer-source="heidong"][data-drawer-key="official_site"]').fill('');
     await page.locator('[data-drawer-save="save"]').click();
+    await page.waitForSelector('[data-toast]');
+    assert.match(await page.locator('[data-toast]').innerText(), /黑洞/);
+    assert.equal(await page.locator('#settingsDrawer[data-open="true"]').count(), 1);
+    await page.keyboard.press('Escape');
     await page.waitForSelector('#settingsDrawer[data-open="false"]');
-    const savedCredential = await page.evaluate(() => window.__savedProfiles.at(-1).sources.leiting);
-    assert.equal(savedCredential.official_site, 'https://site.example');
-    assert.equal(savedCredential.account, 'acct1');
-    assert.equal(savedCredential.password, ' pass with space ');
-    assert.equal(savedCredential.max_iterations, 25);
-    assert.equal(savedCredential.plateau_limit, 20);
-    // The url field must not survive a switch to credential mode.
-    assert.equal(savedCredential.url, undefined);
+
+    // Account pool panel: counts, masked rows, filters, upload and toggles.
+    await page.waitForSelector('#accountPoolPanel');
+    const poolText = await page.locator('#accountPoolPanel').innerText();
+    assert.match(poolText, /5<\/strong>|可用账号/);
+    assert.match(poolText, /y1\*\*\*56/);
+    assert.match(poolText, /login rejected/);
+    assert.doesNotMatch(poolText, /passwd|password/i);    await page.locator('[data-account-status-filter]').selectOption('invalid');
+    assert.equal(await page.locator('[data-account-row]').count(), 1);
+    assert.match(await page.locator('#accountPoolRecords').innerText(), /ab\*\*cd/);
+    await page.locator('[data-account-status-filter]').selectOption('all');
+    await page.locator('[data-account-search]').fill('y1');
+    assert.equal(await page.locator('[data-account-row]').count(), 1);
+    await page.locator('[data-account-search]').fill('');
+    assert.equal(await page.locator('[data-account-row]').count(), 2);
+    await page.locator('[data-account-action="toggle"][data-account-id="1"]').click();
+    await page.waitForFunction(() => (window.__accountStatusCalls ?? []).length === 1);
+    assert.deepEqual(await page.evaluate(() => window.__accountStatusCalls[0]), { id: 1, status: 'disabled', reason: '停用（界面操作）' });
+
+    const fileChooserPromise = page.waitForEvent('filechooser');
+    await page.locator('[data-account-action="upload"]').click();
+    const fileChooser = await fileChooserPromise;
+    await fileChooser.setFiles({ name: 'accounts.csv', mimeType: 'text/csv', buffer: Buffer.from('brand,account,password\nleiting,new-user,new-pass\n', 'utf8') });
+    await page.waitForFunction(() => typeof window.__importedAccountCsv === 'string');
+    assert.match(await page.evaluate(() => window.__importedAccountCsv), /^brand,account,password/);
+    await page.waitForFunction(() => /导入完成/.test(document.querySelector('#accountPoolPanel')?.innerText ?? ''));
+
+    const downloadPromise = page.waitForEvent('download');
+    await page.locator('[data-account-action="template"]').click();
+    assert.equal((await downloadPromise).suggestedFilename(), 'accounts-template.csv');
 
     await page.locator('[data-settings-card="availability_targets"]').click();
     await page.waitForSelector('#settingsDrawer[data-open="true"]');
