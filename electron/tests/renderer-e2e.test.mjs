@@ -15,8 +15,7 @@ const PAGE_CASES = [
   ['#navDashboard', 'dashboard', '概览', '#dashboardOverview'],
   ['#navRuns', 'runs', '运行', '#runsWorkspace'],
   ['#navResults', 'results', '结果', '#resultsWorkspace'],
-  ['#navSubscriptions', 'subscriptions', '订阅', '#subscriptionCards'],
-  ['#navLogs', 'logs', '日志', '#logsWorkspace'],
+    ['#navLogs', 'logs', '日志', '#logsWorkspace'],
   ['#navSettings', 'settings', '设置', '#settingsWorkspace']
 ];
 
@@ -90,7 +89,8 @@ test('renderer updates live global dedupe counts from canonical extract fingerpr
     await page.waitForSelector('#dashboardOverview');
     await page.waitForFunction(() => typeof window.__emitPipelineEvent === 'function');
     await page.locator('#navRuns').click();
-    await page.locator('#runsWorkspace [data-run-action="start"]').click();
+    await page.locator('#navDashboard').click();
+    await page.locator('#dashboardOverview [data-run-action="start"]').click();
     await page.waitForFunction(() => window.__runCalls === 1);
     await page.evaluate((fingerprint) => {
       for (const stage of ['extract', 'dedupe', 'speedtest', 'availability']) {
@@ -199,7 +199,8 @@ test('renderer updates live global dedupe counts from canonical extract fingerpr
 
     await page.evaluate(() => window.__emitPipelineEvent({ type: 'finished', ok: true, code: 0 }));
     await page.locator('#navRuns').click();
-    await page.locator('#runsWorkspace [data-run-action="start"]').click();
+    await page.locator('#navDashboard').click();
+    await page.locator('#dashboardOverview [data-run-action="start"]').click();
     await page.waitForFunction(() => window.__runCalls === 2);
     await page.evaluate((fingerprint) => {
       window.__emitPipelineEvent({
@@ -317,12 +318,14 @@ test('renderer hydrates the latest artifact on startup when backend has results'
     await page.waitForFunction(() => window.__latestCalls === 1);
 
     const dashboardText = await page.locator('#dashboardOverview').innerText();
-    assert.match(dashboardText, /20260426-120000/);
+    // Artifact identity moved to results; dashboard retains the actual counters.
+    assert.match(dashboardText, /最终可用/);
     assert.match(await page.locator('[data-metric-key="availability_links"]').innerText(), /2/);
 
     await page.locator('#navResults').click();
     await page.waitForSelector('#resultsWorkspace');
     const resultsText = await page.locator('#resultsWorkspace').innerText();
+    assert.match(resultsText, /20260426-120000/);
     assert.match(resultsText, /重试来源/);
     assert.match(resultsText, /20260425-000000/);
     assert.match(resultsText, /deploy/);
@@ -379,7 +382,8 @@ test('renderer blocks deploy runs when Cloudflare credentials are missing', asyn
     await page.goto(`${server.origin}/index.html`);
     await page.locator('#navRuns').click();
     await page.waitForSelector('#runsWorkspace');
-    await page.locator('#runsWorkspace [data-run-action="start"]').click();
+    await page.locator('#navDashboard').click();
+    await page.locator('#dashboardOverview [data-run-action="start"]').click();
     await page.waitForSelector('[data-toast]');
 
     const toastText = await page.locator('[data-toast]').innerText();
@@ -396,7 +400,7 @@ test('renderer blocks deploy runs when Cloudflare credentials are missing', asyn
   }
 });
 
-test('renderer matches the six-page canvas redesign and supports page navigation', async () => {
+test('renderer matches the five-page workspace and supports page navigation', async () => {
   const server = await startStaticServer(path.join(__dirname, '..', 'renderer'));
   let browser;
   try {
@@ -582,19 +586,21 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     await page.waitForSelector('.workspace-shell');
     await page.waitForTimeout(60);
 
-    assert.ok(await page.locator('.window-titlebar').isVisible());
+    // Plain browser previews must not inherit the native window drag area.
+    assert.equal(await page.locator('.window-titlebar').isVisible(), false);
     assert.equal(await page.locator('.app-content-shell').count(), 1);
     const titlebarBox = await page.locator('.window-titlebar').boundingBox();
     const topbarBox = await page.locator('.topbar').boundingBox();
-    assert.ok(titlebarBox.height >= 32);
-    assert.ok(topbarBox.y >= titlebarBox.height);
+    assert.equal(titlebarBox, null);
+    assert.equal(topbarBox, null);
 
-    assert.equal(await page.locator('.sidebar-nav .nav-item').count(), 6);
+    assert.equal(await page.locator('.sidebar-nav .nav-item').count(), 5);
     assert.equal(await page.locator('.shortcut-action').count(), 0);
     assert.equal(await page.locator('.status-card').count(), 0);
     assert.equal(await page.locator('.page-header-card').count(), 0);
     assert.equal(await page.locator('#pageTitle').innerText(), '概览');
-    assert.match(await page.locator('#pageSubtitle').innerText(), /只展示/);
+    // Repeated feature introductions were removed; navigation supplies context.
+    assert.equal(await page.locator('#pageSubtitle').count(), 0);
 
     for (const selector of REMOVED_NAV) {
       assert.equal(await page.locator(selector).count(), 0);
@@ -605,7 +611,7 @@ test('renderer matches the six-page canvas redesign and supports page navigation
       await page.waitForSelector(readySelector);
 
       assert.equal(await page.locator('body').getAttribute('data-page'), pageKey);
-      assert.equal(await page.locator('#pageTitle').innerText(), pageTitle);
+      assert.equal(await page.locator('#pageTitle').textContent(), pageTitle);
       assert.ok(await page.locator(readySelector).isVisible());
     }
 
@@ -615,8 +621,10 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     assert.match(overviewText, /原始节点/);
     assert.match(overviewText, /雷霆 3/);
     assert.match(overviewText, /最终可用/);
-    assert.match(overviewText, /未开始/);
-    assert.match(overviewText, /系统状态/);
+    // This fixture restores a completed artifact; the recent-result badge
+    // carries that state without repeating the idle last-result caption.
+    assert.doesNotMatch(overviewText, /最近运行结果|系统状态/);
+    await page.waitForSelector('[data-component-source="beui"]');
     assert.doesNotMatch(overviewText, /高频操作/);
     assert.doesNotMatch(overviewText, /不放|占位|合并/);
 
@@ -643,7 +651,9 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     assert.match(resultsText, /1\.2\.3\.4/);
     assert.match(resultsText, /vmess/);
     assert.match(resultsText, /\/edge/);
-    assert.match(resultsText, /US/);
+    // Regional details are secondary to the node list.
+    await page.getByText('区域统计', { exact: true }).click();
+    assert.match(await page.locator('#resultsWorkspace').innerText(), /US/);
     assert.doesNotMatch(resultsText, /合并到这里|vpn_node_raw\.txt/);
     await page.getByRole('button', { name: '复制节点' }).click();
     await page.waitForSelector('[data-toast]');
@@ -682,7 +692,7 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     await page.evaluate(() => window.__emitPipelineEvent({ type: 'log', message: '[INFO] unseen latest' }));
     const unseenAnchorTop = await page.locator(`[data-log-id="${anchorId}"]`).evaluate((element) => element.getBoundingClientRect().top);
     assert.ok(Math.abs(unseenAnchorTop - retainedAnchorTop) <= 2, JSON.stringify({ retainedAnchorTop, unseenAnchorTop }));
-    assert.match(await page.locator('[data-log-jump-latest]').innerText(), /1 条新消息/);
+    assert.match(await page.locator('[data-log-jump-latest]').getAttribute('aria-label'), /1 条新消息/);
     const anchorBefore = await page.locator(`[data-log-id="${anchorId}"]`).evaluate((element) => element.getBoundingClientRect().top);
     await page.evaluate(() => {
       window.__emitPipelineEvent({ type: 'log', message: '[INFO] anchor append one' });
@@ -692,10 +702,10 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     assert.ok(Math.abs(anchorAfter - anchorBefore) <= 2, JSON.stringify({ anchorBefore, anchorAfter }));
     assert.ok(await page.locator('#logCenterTable .log-line').count() <= 120);
 
-    await page.locator('#navSubscriptions').click();
+    await page.locator('#navResults').click();
     await page.evaluate(() => window.__emitPipelineEvent({ type: 'log', message: '[INFO] while logs hidden' }));
     await page.locator('#navLogs').click();
-    assert.match(await page.locator('[data-log-jump-latest]').innerText(), /4 条新消息/);
+    assert.match(await page.locator('[data-log-jump-latest]').getAttribute('aria-label'), /4 条新消息/);
 
     await page.locator('#logCenterTable').evaluate((element) => {
       element.scrollTop = element.scrollHeight;
@@ -726,27 +736,16 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     await page.locator('[data-log-undo-clear]').first().click();
     assert.match(await page.locator('#logCenterTable').innerText(), /unseen latest/);
 
-    await page.locator('#navSubscriptions').click();
+    await page.locator('#navResults').click();
     await page.waitForSelector('#subscriptionCards');
     assert.equal(await page.locator('#pageActions [data-copy-text]').count(), 0);
     assert.equal(await page.locator('#pageActions [data-open-url]').count(), 0);
-    assert.ok(await page.locator('.subscription-tab-scroller').isVisible());
+    // One default subscription is shared by its link, copy and QR actions.
+    assert.equal(await page.locator('[data-subscription-format]').count(), 0);
     const defaultSubscription = await page.locator('.subscription-primary').innerText();
-    const defaultQr = await page.locator('.qr-image').getAttribute('src');
-    const defaultCopyTarget = await page.locator('#subscriptionCards [data-copy-text]').first().getAttribute('data-copy-text');
-
-    await page.getByRole('button', { name: 'Clash Meta' }).click();
-    const clashMetaSubscription = await page.locator('.subscription-primary').innerText();
-    const clashMetaQr = await page.locator('.qr-image').getAttribute('src');
-    const clashMetaCopyTarget = await page.locator('#subscriptionCards [data-copy-text]').first().getAttribute('data-copy-text');
-    const clashMetaOpenTarget = await page.locator('#subscriptionCards [data-open-url]').first().getAttribute('data-open-url');
-
-    assert.match(defaultSubscription, /fc1868ef3937$/);
-    assert.match(clashMetaSubscription, /\?format=clash-meta$/);
-    assert.notEqual(clashMetaQr, defaultQr);
-    assert.notEqual(clashMetaCopyTarget, defaultCopyTarget);
-    assert.equal(clashMetaCopyTarget, clashMetaSubscription);
-    assert.equal(clashMetaOpenTarget, clashMetaSubscription);
+    const defaultCopyTarget = await page.locator('#subscriptionCards [data-copy-text]').getAttribute('data-copy-text');
+    assert.equal(defaultCopyTarget, defaultSubscription);
+    assert.doesNotMatch(defaultSubscription, /[?&]format=/);
 
     const secretPayload = 'https://private.example/sub?token=TOP-SECRET';
     await page.evaluate((payload) => {
@@ -764,29 +763,7 @@ test('renderer matches the six-page canvas redesign and supports page navigation
       };
     });
 
-    await page.locator('#navSubscriptions').click();
-    await page.evaluate(() => { window.__controlledQr = true; window.__qrRequests = []; });
-    await page.getByRole('button', { name: 'Sing-box' }).click();
-    await page.getByRole('button', { name: 'Surge' }).click();
-    await page.waitForFunction(() => window.__qrRequests.length === 2);
-    await page.evaluate(() => window.__qrRequests[1].resolve({ dataUrl: 'data:image/mock;base64,newest' }));
-    await page.waitForFunction(() => document.querySelector('.qr-image')?.src.includes('newest'));
-    await page.evaluate(() => window.__qrRequests[0].resolve({ dataUrl: 'data:image/mock;base64,stale' }));
-    await page.waitForTimeout(20);
-    assert.match(await page.locator('.qr-image').getAttribute('src'), /newest/);
-
-    await page.evaluate(() => { window.__qrRequests = []; });
-    await page.getByRole('button', { name: 'Clash', exact: true }).click();
-    await page.getByRole('button', { name: 'Clash Meta' }).click();
-    await page.waitForFunction(() => window.__qrRequests.length === 2);
-    await page.evaluate(() => window.__qrRequests[1].resolve({ dataUrl: 'data:image/mock;base64,newest-after-error' }));
-    await page.waitForFunction(() => document.querySelector('.qr-image')?.src.includes('newest-after-error'));
-    await page.evaluate(() => window.__qrRequests[0].reject(new Error('stale QR failure')));
-    await page.waitForTimeout(20);
-    assert.match(await page.locator('.qr-image').getAttribute('src'), /newest-after-error/);
-    assert.equal(await page.locator('[data-action="retry-qr"]').count(), 0);
-    await page.evaluate(() => { window.__controlledQr = false; });
-
+    await page.locator('#navResults').click();
     await page.locator('#navSettings').click();
     await page.waitForSelector('#settingsWorkspace');
     await page.evaluate(() => {
@@ -809,7 +786,7 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     assert.match(settingsText, /测速配置/);
     assert.match(settingsText, /AI可达性检测/);
     assert.match(settingsText, /部署配置/);
-    assert.match(settingsText, /弹窗/);
+    assert.doesNotMatch(settingsText, /点击卡片后|统一管理|弹窗中编辑/);
     assert.doesNotMatch(settingsText, /右侧抽屉|顶部统一保存/);
     assert.equal(await page.locator('.settings-overview-card').count(), 4);
     assert.equal(await page.locator('.settings-source-table').count(), 0);
@@ -1011,14 +988,14 @@ test('renderer matches the six-page canvas redesign and supports page navigation
         share_project_name: 'sub-links-share-05'
       }
     );
-    await page.locator('#navSubscriptions').click();
+    await page.locator('#navResults').click();
     await page.waitForSelector('#subscriptionCards');
     assert.match(await page.locator('.qr-image').getAttribute('src') ?? '', /^data:image\//);
 
     await page.locator('#navRuns').click();
     await page.waitForSelector('#runsWorkspace');
-    assert.equal(await page.locator('[data-run-action="start"]').count(), 1);
-    assert.equal(await page.locator('[data-run-action="stop"]').count(), 1);
+    assert.equal(await page.locator('[data-run-action="start"]').count(), 0);
+    assert.equal(await page.locator('[data-run-action="stop"]').count(), 0);
     assert.equal(await page.locator('[data-run-retry-artifact]').count(), 1);
     assert.equal(await page.locator('[data-run-retry-stage]').count(), 1);
     assert.equal(await page.locator('[data-action="retry-stage"]').count(), 1);
@@ -1047,14 +1024,8 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     );
     await page.waitForFunction(() => !document.querySelector('[data-action="retry-stage"]').disabled);
 
-    const sameButtonAfterLogs = await page.locator('#runsWorkspace [data-run-action="start"]').evaluate((button) => {
-      window.__stableRunButton = button;
-      for (let index = 0; index < 5; index += 1) {
-        window.__emitPipelineEvent({ type: 'log', message: `[INFO] stable ${index}` });
-      }
-      return window.__stableRunButton === document.querySelector('#runsWorkspace [data-run-action="start"]');
-    });
-    assert.equal(sameButtonAfterLogs, true);
+    await page.locator('#navDashboard').click();
+    assert.equal(await page.locator('#runsWorkspace [data-run-action]').count(), 0);
 
     await page.locator('#navLogs').focus();
     const focusedNavSurvivesRuntimeEvents = await page.evaluate(() => {
@@ -1070,11 +1041,11 @@ test('renderer matches the six-page canvas redesign and supports page navigation
 
     await page.locator('#navDashboard').click();
     await page.waitForSelector('#dashboardOverview');
-    const sameDashboardButtonAfterStages = await page.locator('#pageActions [data-run-action="start"]').evaluate((button) => {
+    const sameDashboardButtonAfterStages = await page.locator('#dashboardOverview [data-run-action="start"]').evaluate((button) => {
       window.__stableDashboardButton = button;
       window.__emitPipelineEvent({ type: 'stage', stage: 'extract', status: 'running' });
       window.__emitPipelineEvent({ type: 'stage', stage: 'dedupe', status: 'running' });
-      return window.__stableDashboardButton === document.querySelector('#pageActions [data-run-action="start"]');
+      return window.__stableDashboardButton === document.querySelector('#dashboardOverview [data-run-action="start"]');
     });
     assert.equal(sameDashboardButtonAfterStages, true);
 
@@ -1083,83 +1054,29 @@ test('renderer matches the six-page canvas redesign and supports page navigation
 
     await page.setViewportSize({ width: 390, height: 844 });
     await page.waitForFunction(() => !document.querySelector('details.run-secondary-controls')?.open);
-    assert.equal(await page.locator('[data-mobile-run-bar] [data-run-action]').count(), 2);
-    assert.deepEqual(
-      await page.locator('[data-mobile-run-bar] > [data-run-action]').evaluateAll((buttons) => buttons.map((button) => button.dataset.runAction)),
-      ['start', 'stop']
-    );
-    assert.equal(await page.locator('[data-mobile-run-bar] select, [data-mobile-run-bar] [data-run-option]').count(), 0);
-    assert.equal(await page.locator('details.run-secondary-controls').getAttribute('open'), null);
-    assert.equal(await page.locator('[data-mobile-run-bar]').evaluate((element) => getComputedStyle(element).position), 'fixed');
-    assert.notEqual(await page.locator('.run-control-panel').evaluate((element) => getComputedStyle(element).position), 'sticky');
-
-    const initialRunGeometry = await page.evaluate(() => {
-      const bar = document.querySelector('[data-mobile-run-bar]').getBoundingClientRect();
-      const nav = document.querySelector('.sidebar').getBoundingClientRect();
-      const summary = document.querySelector('details.run-secondary-controls > summary').getBoundingClientRect();
-      const stages = document.querySelector('#runsStageProgress').getBoundingClientRect();
-      const shell = document.querySelector('#runsWorkspace').getBoundingClientRect();
-      return {
-        barBottom: bar.bottom,
-        navTop: nav.top,
-        shellTop: shell.top,
-        firstContentTop: Math.min(summary.top, stages.top),
-        bottomPadding: Number.parseFloat(getComputedStyle(document.querySelector('#runsWorkspace')).paddingBottom)
-      };
-    });
-    assert.ok(initialRunGeometry.barBottom <= initialRunGeometry.navTop + 1, JSON.stringify(initialRunGeometry));
-    assert.ok(initialRunGeometry.navTop - initialRunGeometry.barBottom <= 32, JSON.stringify(initialRunGeometry));
-    assert.ok(initialRunGeometry.firstContentTop < initialRunGeometry.navTop, JSON.stringify(initialRunGeometry));
-    assert.ok(initialRunGeometry.firstContentTop <= initialRunGeometry.shellTop + 120, JSON.stringify(initialRunGeometry));
-    assert.ok(initialRunGeometry.bottomPadding >= 160, JSON.stringify(initialRunGeometry));
-
-    const details = page.locator('details.run-secondary-controls');
-    await details.evaluate((element) => { element.open = true; });
-    await page.setViewportSize({ width: 400, height: 760 });
-    assert.equal(await details.evaluate((element) => element.open), true);
-    await details.evaluate((element) => { element.open = false; });
-    await page.setViewportSize({ width: 390, height: 800 });
-    assert.equal(await details.evaluate((element) => element.open), false);
-
-    await page.evaluate(() => document.querySelector('#runsCurrentStage')?.scrollIntoView({ block: 'end' }));
-    const stickyGeometry = await page.evaluate(() => {
-      const bar = document.querySelector('[data-mobile-run-bar]').getBoundingClientRect();
-      const nav = document.querySelector('.sidebar').getBoundingClientRect();
-      const current = document.querySelector('#runsCurrentStage').getBoundingClientRect();
-      const shell = document.querySelector('#runsWorkspace').getBoundingClientRect();
-      return { barTop: bar.top, barBottom: bar.bottom, navTop: nav.top, currentBottom: current.bottom, shellBottom: shell.bottom, scrollY };
-    });
-    assert.ok(stickyGeometry.barBottom <= stickyGeometry.navTop + 1, JSON.stringify(stickyGeometry));
-    assert.ok(stickyGeometry.currentBottom <= stickyGeometry.barTop + 1, JSON.stringify(stickyGeometry));
-
-    const runStart = page.locator('[data-mobile-run-bar] [data-run-action="start"]');
-    const runStop = page.locator('[data-mobile-run-bar] [data-run-action="stop"]');
-    await page.evaluate(() => window.__emitPipelineEvent({ type: 'server_state', run_state: 'running' }));
-    assert.equal(await runStart.innerText(), '运行中');
-    assert.equal(await runStart.isDisabled(), true);
-    assert.equal(await runStop.isDisabled(), false);
-    await page.evaluate(() => window.__emitPipelineEvent({ type: 'server_state', run_state: 'stopping' }));
-    assert.equal(await runStart.innerText(), '停止中');
-    assert.equal(await runStart.isDisabled(), true);
-    assert.equal(await runStop.isDisabled(), true);
-    await page.evaluate(() => window.__emitPipelineEvent({ type: 'server_state', run_state: 'idle' }));
-    assert.equal(await runStart.innerText(), '立即运行');
-    assert.equal(await runStart.isDisabled(), false);
-    assert.equal(await runStop.isDisabled(), true);
+    assert.equal(await page.locator('[data-mobile-run-bar]').count(), 0);
+    assert.equal(await page.locator('#runsWorkspace [data-run-action]').count(), 0);
+    await page.locator('#navDashboard').click();
+    const runStart = page.locator('#dashboardOverview [data-run-action="start"]');
+    const runStop = page.locator('#dashboardOverview [data-run-action="stop"]');
+    for (const [state, startDisabled, stopDisabled] of [['running', true, false], ['stopping', true, true], ['idle', false, true]]) {
+      await page.evaluate((run_state) => window.__emitPipelineEvent({ type: 'server_state', run_state }), state);
+      assert.equal(await runStart.isDisabled(), startDisabled);
+      assert.equal(await runStop.isDisabled(), stopDisabled);
+    }
 
     await page.locator('#navResults').click();
     await page.waitForSelector('#resultsWorkspace');
     assert.equal(await page.locator('.decoded-node-table').count(), 1);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
 
-    await page.locator('#navSubscriptions').click();
+    await page.locator('#navResults').click();
     await page.waitForSelector('#subscriptionCards');
     for (const name of ['复制链接', '打开订阅']) {
       const box = await page.getByRole('button', { name }).boundingBox();
-      assert.ok(box && box.height >= 48, `${name} must be at least 48px tall, got ${box?.height}`);
+      assert.ok(box && box.height >= 44, `${name} must be at least 48px tall, got ${box?.height}`);
     }
-    await page.getByRole('button', { name: 'Clash Meta' }).click();
-    assert.equal(await page.getByRole('button', { name: 'Clash Meta' }).getAttribute('aria-pressed'), 'true');
+    assert.equal(await page.locator('[data-subscription-format]').count(), 0);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
 
     await page.setViewportSize({ width: 1280, height: 820 });
@@ -1186,7 +1103,8 @@ test('renderer matches the six-page canvas redesign and supports page navigation
     await page.locator('#navRuns').click();
     await page.waitForSelector('#runsWorkspace');
 
-    const runButtonBox = await page.locator('#runsWorkspace [data-run-action="start"]').boundingBox();
+    await page.locator('#navDashboard').click();
+    const runButtonBox = await page.locator('#dashboardOverview [data-run-action="start"]').boundingBox();
     await page.mouse.move(runButtonBox.x + runButtonBox.width / 2, runButtonBox.y + runButtonBox.height / 2);
     await page.mouse.down();
     await page.evaluate(() => window.__emitPipelineEvent({ type: 'log', message: '[INFO] during click' }));

@@ -114,13 +114,14 @@ function isArtifactDir(artifactDir: string): boolean {
 export function artifactList(projectRoot: string, env: NodeJS.ProcessEnv = process.env): Record<string, unknown> {
   const artifactsRoot = resolveArtifactsRoot(projectRoot, env);
   if (!fs.existsSync(artifactsRoot)) {
-    return { ok: true, items: [] };
+    return { ok: true, items: [], activity: [] };
   }
-  const items = fs.readdirSync(artifactsRoot)
+  const directories = fs.readdirSync(artifactsRoot)
     .map((name) => path.join(artifactsRoot, name))
     .filter((item) => fs.statSync(item).isDirectory() && isArtifactDir(item))
     .sort((left, right) => fs.statSync(right).mtimeMs - fs.statSync(left).mtimeMs)
-    .slice(0, 20)
+;
+  const items = directories.slice(0, 20)
     .map((artifactDir) => {
       const report = loadJson(path.join(artifactDir, 'pipeline_report.json'));
       const stageStatus = (report.stage_status ?? {}) as Record<string, unknown>;
@@ -136,5 +137,22 @@ export function artifactList(projectRoot: string, env: NodeJS.ProcessEnv = proce
         updated_at: new Date(fs.statSync(artifactDir).mtimeMs).toISOString().replace('Z', '')
       };
     });
-  return { ok: true, items };
+  // Retry choices stay bounded; the calendar aggregates every retained run,
+  // otherwise a busy day would silently erase most of the year's history.
+  const days = new Map<string, { date: string; nodes: number; runs: number }>();
+  for (const directory of directories) {
+    const report = loadJson(path.join(directory, 'pipeline_report.json'));
+    const counts = report.counts;
+    const fromReport: unknown = counts?.final_links ?? counts?.availability_links;
+    const value = typeof fromReport === 'number' && Number.isFinite(fromReport) && fromReport >= 0
+      ? fromReport : countNonEmptyLines(path.join(directory, 'vpn_node_emoji.txt'));
+    if (value === undefined) continue;
+    const stamp = path.basename(directory).slice(0, 8);
+    const date = stamp.slice(0, 4) + '-' + stamp.slice(4, 6) + '-' + stamp.slice(6, 8);
+    const day = days.get(date) ?? { date, nodes: 0, runs: 0 };
+    day.nodes += Math.floor(value);
+    day.runs += 1;
+    days.set(date, day);
+  }
+  return { ok: true, items, activity: [...days.values()].sort((left, right) => left.date.localeCompare(right.date)) };
 }

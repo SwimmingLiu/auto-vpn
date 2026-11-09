@@ -59,3 +59,21 @@ test('artifactList restores missing counts from each artifact directory', () => 
     availability_links: 1
   });
 });
+
+test('daily node activity includes retained runs beyond the twenty retry choices', (t) => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-activity-'));
+  t.after(() => fs.rmSync(projectRoot, { recursive: true, force: true }));
+  const artifactsRoot = path.join(projectRoot, 'artifacts');
+  for (let day = 1; day <= 25; day += 1) {
+    const stamp = '202611' + String(day).padStart(2, '0');
+    writeJson(path.join(artifactsRoot, stamp + '-120000', 'pipeline_report.json'), {
+      run_status: 'success', counts: { final_links: day }
+    });
+  }
+  writeJson(path.join(artifactsRoot, '20261101-130000', 'pipeline_report.json'), { counts: { final_links: 5 } });
+  const result = artifactList(projectRoot, { VPN_AUTOMATION_ARTIFACTS_ROOT: artifactsRoot });
+  assert.equal(result.items.length, 20);
+  assert.equal(result.activity.length, 25);
+  assert.deepEqual(result.activity[0], { date: '2026-11-01', nodes: 6, runs: 2 });
+  assert.equal(result.activity.reduce((sum, day) => sum + day.nodes, 0), 330);
+});

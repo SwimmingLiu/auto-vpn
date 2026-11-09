@@ -1,0 +1,21 @@
+@layer theme, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/utilities.css" layer(utilities) source(none);
+@source "./analytics.tsx";
+@source "./vendor/beui";
+@theme inline {
+  --color-background: var(--surface);
+  --color-foreground: var(--text);
+  --color-muted: var(--surface-muted);
+  --color-muted-foreground: var(--text-soft);
+  --color-border: var(--border);
+  --color-ring: var(--accent);
+  --color-accent: var(--accent-soft);
+}
+:root {
+  --background: var(--surface);
+  --foreground: var(--text);
+  --muted: var(--surface-muted);
+  --muted-foreground: var(--text-soft);
+  --ring: var(--accent);
+}

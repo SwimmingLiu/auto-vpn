@@ -113,7 +113,7 @@ test('resolveLanguage ignores saved and system language and always returns zh-CN
 test('getMessages exposes Chinese-only copy', () => {
   assert.equal(getMessages().appTitle, 'AutoVPN');
   assert.equal(getMessages().sidebarTitle, 'AutoVPN');
-  assert.equal(getMessages().sidebarVersion, 'v.1.8.0');
+  assert.equal(getMessages().sidebarVersion, 'v.2.0.1');
   assert.equal(getMessages().runButton, '立即运行');
   assert.equal(getMessages('en-US').pageTitles.results, '结果');
   assert.equal(
@@ -135,9 +135,9 @@ test('getMessages suppresses language-switching copy', () => {
   assert.equal(messages.languageLabel, '');
 });
 
-test('PAGE_ORDER exposes the six-page canvas workspace', () => {
-  assert.equal(PAGE_ORDER.length, 6);
-  assert.deepEqual(PAGE_ORDER, ['dashboard', 'runs', 'results', 'subscriptions', 'logs', 'settings']);
+test('PAGE_ORDER exposes five pages with subscriptions included in results', () => {
+  assert.equal(PAGE_ORDER.length, 5);
+  assert.deepEqual(PAGE_ORDER, ['dashboard', 'runs', 'results', 'logs', 'settings']);
 });
 
 test('getMessages exposes the canvas-aligned workspace copy for the redesigned renderer', () => {
@@ -259,11 +259,12 @@ test('the dashboard hero does not claim a finished run while one is in flight', 
     counts: { raw_links: 54, deduped_links: 51 }
   }, messages, 'zh-CN');
   const runningMarkup = buildPageMarkup('dashboard', running, messages, 'zh-CN');
-  assert.match(runningMarkup, /正在执行，完成后覆盖本次结果/);
+  // Check the actual state, rather than retaining redundant explanatory copy.
+  assert.match(runningMarkup, /运行中/);
   assert.doesNotMatch(runningMarkup, /最近一次运行已完成/);
   assert.match(runningMarkup, /status-hero-card is-running/);
-  assert.match(runningMarkup, /status-orb-spinner/);
-  assert.match(runningMarkup, /最近运行结果[\s\S]*?进行中/);
+  assert.match(runningMarkup, /aria-label="立即运行"/);
+  assert.doesNotMatch(runningMarkup, /最近运行结果|系统状态/);
 
   const finished = buildViewModel({
     runState: 'success',
@@ -271,11 +272,13 @@ test('the dashboard hero does not claim a finished run while one is in flight', 
     counts: { raw_links: 54, deduped_links: 51 }
   }, messages, 'zh-CN');
   const finishedMarkup = buildPageMarkup('dashboard', finished, messages, 'zh-CN');
-  assert.match(finishedMarkup, /最近一次运行已完成/);
+  assert.match(finishedMarkup, /id="dashboardAnalytics"/);
   assert.doesNotMatch(finishedMarkup, /status-hero-card is-running/);
 
+  const nextRun = buildViewModel({ runState: 'running', runResult: 'success' }, messages, 'zh-CN');
+  assert.equal(nextRun.currentStatusLabel, '运行中');
   const idle = buildViewModel({ runState: 'idle' }, messages, 'zh-CN');
-  assert.match(buildPageMarkup('dashboard', idle, messages, 'zh-CN'), /系统就绪，等待运行/);
+  assert.match(buildPageMarkup('dashboard', idle, messages, 'zh-CN'), /空闲/);
 });
 
 test('results page renders unknown preview regions as US', () => {
@@ -511,7 +514,7 @@ test('settings page renders deploy card and drawer fields', () => {
   assert.match(markup, /sub-nodes/);
 });
 
-test('settings page renders deploy helper copy and results page renders deployment summary', () => {
+test('deploy help is contextual and results retain deployment details', () => {
   const messages = getMessages('zh-CN');
   const state = {
     profile: {
@@ -539,9 +542,11 @@ test('settings page renders deploy helper copy and results page renders deployme
   const settingsMarkup = buildPageMarkup('settings', vm, messages, 'zh-CN');
   const resultsMarkup = buildPageMarkup('results', vm, messages, 'zh-CN');
 
-  assert.match(settingsMarkup, /项目名变化会自动联动默认 Pages 地址/);
-  assert.match(settingsMarkup, /手动修改 URL 后，后续不再自动覆盖/);
-  assert.match(resultsMarkup, /本次 deploy 目标/);
+  // The overview identifies the editor; address rules belong inside its help.
+  assert.doesNotMatch(settingsMarkup, /项目名变化会自动联动默认 Pages 地址/);
+  const drawerMarkup = buildPageMarkup('settings', { ...vm, settingsDrawer: { section: 'deploy', draft: state.profile.deploy } }, messages, 'zh-CN');
+  assert.match(drawerMarkup, /<details class="context-help">[\s\S]*?手动修改 URL 后/);
+  assert.match(resultsMarkup, /部署详情/);
   assert.match(resultsMarkup, /\/tmp\/artifacts\/pages_bundle\/_worker\.js/);
   assert.match(resultsMarkup, /manifest\.json/);
 });
@@ -550,18 +555,17 @@ test('subscription QR states render actionable errors and accessible format sele
   const messages = getMessages('zh-CN');
   const base = {
     profile: { sources: {}, deploy: { subscription_url: 'https://vpn.example/secret' } },
-    subscriptionFormat: 'Clash Meta'
   };
 
-  const errorMarkup = buildPageMarkup('subscriptions', buildViewModel({
+  const errorMarkup = buildPageMarkup('results', buildViewModel({
     ...base,
     qr: { status: 'error', dataUrl: '', message: '生成失败' }
   }, messages, 'zh-CN'), messages, 'zh-CN');
   assert.match(errorMarkup, /生成失败/);
   assert.match(errorMarkup, /data-action="retry-qr"/);
-  assert.match(errorMarkup, /data-subscription-format="Clash Meta"[^>]*aria-pressed="true"/);
+  assert.doesNotMatch(errorMarkup, /data-subscription-format|[?&]format=/);
 
-  const unavailableMarkup = buildPageMarkup('subscriptions', buildViewModel({
+  const unavailableMarkup = buildPageMarkup('results', buildViewModel({
     ...base,
     qr: { status: 'unavailable', dataUrl: '', message: '' }
   }, messages, 'zh-CN'), messages, 'zh-CN');

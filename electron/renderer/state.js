@@ -15,7 +15,6 @@ export const PAGE_ORDER = [
   'dashboard',
   'runs',
   'results',
-  'subscriptions',
   'logs',
   'settings'
 ];

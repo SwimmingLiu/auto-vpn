@@ -21,6 +21,7 @@ export interface ServerState {
   runState: 'idle' | 'running' | 'stopping' | 'failed' | 'success';
   artifact?: Record<string, unknown>;
   retryArtifacts?: unknown[];
+  activity?: unknown[];
   deployment?: Record<string, unknown>;
   logEvents?: unknown[];
 }
@@ -434,6 +435,7 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
         runState,
         artifact,
         retryArtifacts: Array.isArray(retries.items) ? retries.items : [],
+        activity: Array.isArray(retries.activity) ? retries.activity : [],
         deployment: (artifact?.deployment ?? {}) as Record<string, unknown>,
         logEvents: latestJobEvents(job)
       };

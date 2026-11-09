@@ -32,7 +32,8 @@ test('electron app exposes preload bridge and renders the real saved profile', a
     const hasArtifactListBridge = await page.evaluate(() => typeof window.vpnAutomation?.artifactList === 'function');
     const hasRetryStageBridge = await page.evaluate(() => typeof window.vpnAutomation?.retryStage === 'function');
     const hasCopyTextBridge = await page.evaluate(() => typeof window.vpnAutomation?.copyText === 'function');
-    const pageTitle = await page.locator('#pageTitle').innerText();
+    // Pages identified by navigation no longer repeat a visible top heading.
+    const pageTitle = await page.locator('#pageTitle').textContent();
     const actionText = await page.locator('#pageActions').innerText();
     const sourceSummary = await page.locator('#settingsCardSummary-sources').innerText();
 
@@ -48,6 +49,30 @@ test('electron app exposes preload bridge and renders the real saved profile', a
     assert.equal(actionText.trim(), '');
     assert.equal(pageTitle, '设置');
     assert.notEqual(sourceSummary.trim(), '');
+    assert.equal(await page.locator('#sidebarVersion').textContent(), 'v.2.0.1');
+    assert.match(await page.locator('.brand-mark').getAttribute('src'), /vpn-auto-logo-v3.png/);
+    assert.equal(await page.locator('.brand-mark').evaluate((image) => image.complete && image.naturalWidth > 0), true);
+
+    // Exercise actual file:// + preload rendering as well as the H5 gate.
+    // Restore the user's saved appearance after testing the local preference.
+    const previousTheme = await page.evaluate(() => localStorage.getItem('autovpn.ui.theme'));
+    try {
+      await page.locator('[data-theme-choice="dark"]').click();
+      assert.equal(await page.locator('html').getAttribute('data-theme'), 'dark');
+      for (const name of ['Dashboard', 'Runs', 'Results', 'Logs', 'Settings']) {
+        await page.locator('#nav' + name).click();
+        assert.equal(await page.locator('html').getAttribute('data-theme'), 'dark');
+        assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+      }
+      await page.locator('[data-settings-card="speed_test"]').click();
+      assert.ok((await page.locator('[data-settings-dialog]').boundingBox()).width <= 560);
+      await page.locator('[data-settings-dialog]').press('Escape');
+    } finally {
+      await page.evaluate((value) => {
+        if (value === null) localStorage.removeItem('autovpn.ui.theme');
+        else localStorage.setItem('autovpn.ui.theme', value);
+      }, previousTheme);
+    }
   } finally {
     await app.close();
   }

@@ -50,6 +50,8 @@ function comparePng(actualBuffer, expectedBuffer) {
 }
 
 async function enableVisualTestFont(page) {
+  // Disable JS-driven component motion as well as CSS animation for stable pixels.
+  await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.addInitScript(() => document.documentElement.dataset.visualTest = 'true');
 }
 
@@ -159,7 +161,7 @@ test('served web ui desktop PNGs match browser baselines', async () => {
     await page.goto(`${service.origin}/`);
     await waitForVisualTestFont(page);
     await page.waitForSelector('#dashboardOverview');
-    await page.waitForFunction(() => document.body.innerText.includes('20260703-120000'));
+    await page.waitForFunction(() => document.querySelector('[data-metric-key="raw_links"] strong')?.textContent === '5');
     await page.screenshot({ animations: 'disabled' });
 
     for (const [name, navSelector, readySelector] of [
@@ -248,7 +250,7 @@ test('served web ui mobile PNGs match reviewable browser baselines', async () =>
       ['dashboard-390x844', '#navDashboard', '#dashboardOverview'],
       ['runs-idle-390x844', '#navRuns', '#runsWorkspace'],
       ['results-390x844', '#navResults', '#resultsWorkspace'],
-      ['subscriptions-390x844', '#navSubscriptions', '#subscriptionCards'],
+      ['subscriptions-390x844', '#navResults', '#subscriptionCards'],
       ['logs-390x844', '#navLogs', '#logsWorkspace'],
       ['settings-390x844', '#navSettings', '#settingsWorkspace']
     ]) {
@@ -257,8 +259,9 @@ test('served web ui mobile PNGs match reviewable browser baselines', async () =>
       await page.waitForTimeout(160);
       await assertPngBaseline(page, name);
     }
+    await page.locator('#navDashboard').click();
+    await page.locator('#dashboardOverview [data-run-action="start"]').click();
     await page.locator('#navRuns').click();
-    await page.locator('#runsWorkspace [data-run-action="start"]').click();
     await page.waitForFunction(() => document.querySelector('#runStateBadge')?.textContent?.includes('运行中'));
     await page.waitForTimeout(60);
     await assertPngBaseline(page, 'runs-running-390x844');

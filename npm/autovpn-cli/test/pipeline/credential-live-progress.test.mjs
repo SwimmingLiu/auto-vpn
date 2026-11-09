@@ -62,6 +62,11 @@ test('a credential source reports per-round progress to the dashboard', async ()
   store.close();
 
   assert.ok(result.links.length > 0, 'the fixture must produce links');
+  const substages = events.filter((event) => event.type === 'extract_substage');
+  assert.ok(substages.some((event) => event.substage === 'apk_download' && event.status === 'cached'));
+  assert.ok(substages.some((event) => event.substage === 'apk_analysis' && event.status === 'cached'));
+  assert.ok(substages.some((event) => event.substage === 'domain_discovery' && event.status === 'success'));
+
 
   const iterations = events.filter((event) => event.type === 'extract_iteration');
   assert.ok(iterations.length >= 2, `expected one progress event per round, got ${iterations.length}`);
