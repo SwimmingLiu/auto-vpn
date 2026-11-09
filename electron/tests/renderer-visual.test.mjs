@@ -22,7 +22,7 @@ const EXPECTED_DIGESTS_BY_PLATFORM = {
   },
   linux: {
     dashboard: '3464b43de395facd3d6e1b319c2ff03d95f07fbdc5d31b627cb73295583bd296',
-    runs: '4ca6b6fd1d58db366b4aeac1eb54553e65f9e5e7d732c3a47e82a401981abc9a',
+    runs: '85583dfe1ebacf5de8b035aaa7eb574bc82b6d9581973a24655c81f497e65785',
     results: '4903b6fedc59e39c4af5a08bd35ec601bb11c2bce2595df9f1fadb0a7b8bd3f1',
     subscriptions: '267278ad45eaef932766446343812841f804d80638740c52421bf1fd427a11aa',
     logs: 'e1d90b1d5fd245f45c446d9c146829753118512fd8e4ee82dead3248683be487',
