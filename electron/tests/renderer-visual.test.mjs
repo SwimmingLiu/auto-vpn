@@ -72,6 +72,14 @@ test('renderer visual hashes match the full mockup-driven workspace', async () =
       digests[name] = crypto.createHash('sha256').update(buffer).digest('hex');
     }
 
+    if (process.env.UPDATE_RENDERER_DIGESTS === '1') {
+      // Baseline regeneration must happen on the OS whose digests are being
+      // replaced: Chromium's rasterization differs between macOS and the
+      // ubuntu-24.04 runner, so a digest captured elsewhere would fail CI even
+      // for an untouched page. The workflow below runs this on the runner.
+      console.log(`RENDERER_DIGESTS ${JSON.stringify({ [process.platform]: digests })}`);
+      return;
+    }
     assert.deepEqual(digests, expectedDigests);
   } finally {
     await browser?.close();

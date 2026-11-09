@@ -1,0 +1,77 @@
+name: Refresh Linux visual baselines
+
+# Linux pixel baselines and the renderer digests must be produced by the same
+# ubuntu-24.04 runner that checks them. An amd64 container on Apple silicon
+# rasterizes differently (untouched pages moved up to 14.6% in measurement), so
+# the only correct source is the CI image itself.
+#
+# Run this after a renderer change, review the PNGs it commits, then push the
+# refreshed baselines with the change. It never runs on its own.
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: Branch to regenerate baselines on
+        required: true
+        default: main
+
+permissions:
+  contents: write
+
+env:
+  NPM_CONFIG_AUDIT: "false"
+  NPM_CONFIG_FUND: "false"
+  NPM_CONFIG_PREFER_OFFLINE: "true"
+
+jobs:
+  refresh:
+    name: Refresh ubuntu-24.04 baselines
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branch }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            npm/autovpn-cli/package-lock.json
+
+      - name: Install Node dependencies
+        run: bash scripts/ci/retry-command.sh "npm ci" -- npm ci --prefer-offline --no-audit --fund=false
+
+      - name: Install npm CLI dependencies
+        run: |
+          bash scripts/ci/retry-command.sh "npm ci --prefix npm/autovpn-cli" -- \
+            npm ci --prefix npm/autovpn-cli --prefer-offline --no-audit --fund=false
+
+      - name: Install pinned Playwright Chromium runtime
+        run: npx playwright install --with-deps chromium-headless-shell
+
+      - name: Build the CLI
+        run: npm run build:autovpn-cli
+
+      - name: Rewrite the H5 pixel baselines
+        run: UPDATE_VISUAL_BASELINES=1 node --test --test-concurrency=1 electron/tests/web-server-visual.test.mjs
+
+      - name: Re-run the H5 gate against the new baselines
+        run: node --test --test-concurrency=1 electron/tests/web-server-visual.test.mjs
+
+      - name: Print the renderer digests for this runner
+        run: UPDATE_RENDERER_DIGESTS=1 node --test electron/tests/renderer-visual.test.mjs | tee renderer-digests.txt
+
+      - name: Upload the refreshed baselines and digests
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-visual-baselines
+          path: |
+            electron/tests/visual-baselines/h5/linux/**
+            renderer-digests.txt
