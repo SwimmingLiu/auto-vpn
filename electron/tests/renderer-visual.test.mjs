@@ -21,12 +21,12 @@ const EXPECTED_DIGESTS_BY_PLATFORM = {
     settings: '4383cf958db112b48e478bda35664efbae496f0a14ebd1d974f5c15e70ee795a'
   },
   linux: {
-    dashboard: '675f3b0895f9430afb31b6d9bb10c6b3577654a021c2ced72b493a8aebd5acf0',
+    dashboard: '3464b43de395facd3d6e1b319c2ff03d95f07fbdc5d31b627cb73295583bd296',
     runs: '4ca6b6fd1d58db366b4aeac1eb54553e65f9e5e7d732c3a47e82a401981abc9a',
     results: '4903b6fedc59e39c4af5a08bd35ec601bb11c2bce2595df9f1fadb0a7b8bd3f1',
     subscriptions: '267278ad45eaef932766446343812841f804d80638740c52421bf1fd427a11aa',
     logs: 'e1d90b1d5fd245f45c446d9c146829753118512fd8e4ee82dead3248683be487',
-    settings: '7c2197ed283bdf331b166e9c480fe9664ea7362e741d9da77ff881c766f7d7ac'
+    settings: 'fb091a9417179ff7d8c217a5d40dc6b1d9f6734876e0fc4c398b7f450c818aa4'
   }
 };
 

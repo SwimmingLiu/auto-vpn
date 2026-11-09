@@ -5,19 +5,22 @@ name: Refresh Linux visual baselines
 # rasterizes differently (untouched pages moved up to 14.6% in measurement), so
 # the correct source is the CI image itself.
 #
-# Trigger it by adding the `refresh-visual-baselines` label to a pull request.
-# The job never writes to the branch: it publishes the regenerated PNGs and the
-# digest values as an artifact, which you review and commit with the change.
-# `workflow_dispatch` only becomes usable once this file is on the default
-# branch; the label path works from the pull request itself.
+# Trigger it by adding the `refresh-visual-baselines` label to a pull request in
+# this repository. The job regenerates the Linux PNGs and the `linux` digest
+# block, commits them to the PR's own branch, and pushes. It runs only for
+# branches in this repository, never for a fork.
 
 on:
   pull_request:
     types: [labeled]
   workflow_dispatch:
+    inputs:
+      branch:
+        description: Branch to refresh (an in-repo branch)
+        required: true
 
 permissions:
-  contents: read
+  contents: write
 
 env:
   NPM_CONFIG_AUDIT: "false"
@@ -26,16 +29,19 @@ env:
 
 jobs:
   refresh:
-    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'refresh-visual-baselines'
+    if: |
+      github.event_name == 'workflow_dispatch'
+      || (github.event.label.name == 'refresh-visual-baselines' && github.event.pull_request.head.repo.full_name == github.repository)
     name: Refresh ubuntu-24.04 baselines
     runs-on: ubuntu-24.04
     timeout-minutes: 20
 
     steps:
-      - name: Checkout
+      - name: Checkout the pull request branch
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ github.event.pull_request.head.ref || inputs.branch }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -66,14 +72,24 @@ jobs:
       - name: Re-run the H5 gate against the new baselines
         run: node --test --test-concurrency=1 electron/tests/web-server-visual.test.mjs
 
-      - name: Print the renderer digests for this runner
-        run: UPDATE_RENDERER_DIGESTS=1 node --test electron/tests/renderer-visual.test.mjs | tee renderer-digests.txt
+      - name: Capture this runner's renderer digests
+        run: |
+          set -o pipefail
+          UPDATE_RENDERER_DIGESTS=1 node --test electron/tests/renderer-visual.test.mjs | tee renderer-digests.txt
+          node scripts/ci/refresh-visual-digests.mjs "$(grep -o 'RENDERER_DIGESTS .*' renderer-digests.txt | head -1 | sed 's/^RENDERER_DIGESTS //')"
 
-      - name: Upload the refreshed baselines and digests
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-visual-baselines
-          path: |
-            electron/tests/visual-baselines/h5/linux/**
-            renderer-digests.txt
-          if-no-files-found: error
+      - name: Re-run the renderer visual gate against the new digests
+        run: node --test electron/tests/renderer-visual.test.mjs
+
+      - name: Commit the refreshed baselines to the branch
+        run: |
+          rm -f renderer-digests.txt
+          if git diff --quiet -- electron/tests/visual-baselines/h5/linux electron/tests/renderer-visual.test.mjs; then
+            echo "baselines already current for this runner; nothing to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add electron/tests/visual-baselines/h5/linux electron/tests/renderer-visual.test.mjs
+          git commit -m "test: refresh the ubuntu-24.04 visual baselines"
+          git push
