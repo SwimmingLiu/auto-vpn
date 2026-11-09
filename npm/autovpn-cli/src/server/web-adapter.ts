@@ -206,7 +206,7 @@ export function renderWebAdapterScript(options: WebAdapterOptions = {}): string 
     },
     artifactList: async () => {
       const payload = await state();
-      return { ok: true, items: payload.retryArtifacts || [] };
+      return { ok: true, items: payload.retryArtifacts || [], activity: payload.activity || [], activityUnavailable: Number(payload.activityUnavailable || 0) };
     },
     retryStage: async (options = {}) => request('/api/runs/retry-stage', {
       method: 'POST',

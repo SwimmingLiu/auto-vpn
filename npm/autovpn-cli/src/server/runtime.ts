@@ -21,6 +21,8 @@ export interface ServerState {
   runState: 'idle' | 'running' | 'stopping' | 'failed' | 'success';
   artifact?: Record<string, unknown>;
   retryArtifacts?: unknown[];
+  activity?: unknown[];
+  activityUnavailable?: number;
   deployment?: Record<string, unknown>;
   logEvents?: unknown[];
 }
@@ -210,7 +212,19 @@ function latestJobEvents(job: Record<string, any> | undefined, maxEvents = 1000)
   if (!eventLog || !fs.existsSync(eventLog)) return [];
   try {
     const lines = fs.readFileSync(eventLog, 'utf8').split(/\r?\n/).filter(Boolean);
-    return lines.slice(-maxEvents).map((line) => parseJsonLine(line)).filter(Boolean);
+    const events = lines.map((line) => parseJsonLine(line)).filter(Boolean);
+    const priorSteps = new Map<string, unknown>();
+    // APK/domain steps occur early. Preserve their latest states even when
+    // subsequent node logs exceed the bounded text-history window.
+    for (const event of events.slice(0, -maxEvents)) {
+      if (!event || typeof event !== 'object' || !('type' in event)) continue;
+      if (event.type === 'extract_substage' && 'source_name' in event && typeof event.source_name === 'string'
+        && 'platform' in event && typeof event.platform === 'string' && 'substage' in event && typeof event.substage === 'string') {
+        priorSteps.set([event.source_name, event.platform, event.substage].join(':'), event);
+      }
+      if (event.type === 'stage' && 'stage' in event && typeof event.stage === 'string') priorSteps.set(`stage:${event.stage}`, event);
+    }
+    return [...priorSteps.values(), ...events.slice(-maxEvents)];
   } catch {
     return [];
   }
@@ -434,6 +448,8 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
         runState,
         artifact,
         retryArtifacts: Array.isArray(retries.items) ? retries.items : [],
+        activity: Array.isArray(retries.activity) ? retries.activity : [],
+        activityUnavailable: Number(retries.activityUnavailable ?? 0),
         deployment: (artifact?.deployment ?? {}) as Record<string, unknown>,
         logEvents: latestJobEvents(job)
       };

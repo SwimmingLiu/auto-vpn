@@ -1269,7 +1269,15 @@ export async function fetchCredentialPlatformLinks(
   const cached = staleButUsable ? storedEntry : memo.get();
   const egress: Egress = { env: options.env, curlFetch: options.curlFetch };
 
+  // Report real extraction work instead of making the UI infer APK/domain
+  // activity from text logs. Cache reuse remains distinct from executed work.
+  const substage = (
+    name: 'apk_download' | 'apk_analysis' | 'domain_discovery',
+    status: 'running' | 'success' | 'failed' | 'cached'
+  ): void => event(options, 'extract_substage', { source_name: input.source_name, platform, substage: name, status });
+
   const inspectApk = async (): Promise<ApkDiscovery | null> => {
+    substage('apk_download', 'running');
     let apkBytes: Buffer | null = null;
     try {
       apkBytes = options.loadApk
@@ -1279,10 +1287,20 @@ export async function fetchCredentialPlatformLinks(
       errors.push(`apk: ${error instanceof Error ? error.message : String(error)}`);
     }
     if (!apkBytes) {
+      substage('apk_download', 'failed');
       errors.push('APK could not be located');
       return null;
     }
-    const discovered = apkDiscoveryFromBytes(apkBytes, source.apk_url ?? '');
+    substage('apk_download', 'success');
+    substage('apk_analysis', 'running');
+    let discovered: ApkDiscovery;
+    try {
+      discovered = apkDiscoveryFromBytes(apkBytes, source.apk_url ?? '');
+    } catch (error) {
+      substage('apk_analysis', 'failed');
+      throw error;
+    }
+    substage('apk_analysis', discovered.seed_domains.length > 0 ? 'success' : 'failed');
     log(`[extract] ${discovered.package_name} ${discovered.version_name} seeds=${discovered.seed_domains.length}`);
     return discovered.seed_domains.length > 0 ? discovered : null;
   };
@@ -1300,6 +1318,8 @@ export async function fetchCredentialPlatformLinks(
   let cachedInUse = false;
 
   if (discovery) {
+    substage('apk_download', 'cached');
+    substage('apk_analysis', 'cached');
     log(`[extract] cached fingerprint ${discovery.package_name} ${discovery.version_name}`);
     eversion = await tryEversion(discovery, keyCandidates);
     if (eversion) {
@@ -1371,7 +1391,8 @@ export async function fetchCredentialPlatformLinks(
 
   /** Runs eversion for one candidate fingerprint. */
   async function tryEversion(candidate: ApkDiscovery, keys: string[]): Promise<EversionResult | null> {
-    return resolveEversion(
+    substage('domain_discovery', 'running');
+    const resolved = await resolveEversion(
       fetchImpl,
       candidate.seed_domains,
       (ts) => commonParams({
@@ -1392,6 +1413,8 @@ export async function fetchCredentialPlatformLinks(
       keys,
       timeoutMs
     );
+    substage('domain_discovery', resolved ? 'success' : 'failed');
+    return resolved;
   }
   // Event lines are not passed through the text redactor, so nothing derived
   // from the key may reach them — not even a prefix.

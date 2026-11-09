@@ -1,0 +1,248 @@
+{
+  "repository": "https://github.com/starc007/ui-components",
+  "commit": "fb52f599d1550f006afe0344022cc45a913adab1",
+  "registryEndpoints": {
+    "donut-chart": "https://beui.dev/r/donut-chart.json",
+    "heat-calendar": "https://beui.dev/r/heat-calendar.json",
+    "tooltip": "https://beui.dev/r/tooltip.json"
+  },
+  "files": [
+    {
+      "path": "LICENSE",
+      "registryComparisons": {},
+      "sha256": "9e27b491d5691a1bd95708e79de23beb2962f33fe6c1ee31ab639f43009a0b20",
+      "url": "https://raw.githubusercontent.com/starc007/ui-components/fb52f599d1550f006afe0344022cc45a913adab1/LICENSE"
+    },
+    {
+      "path": "components/charts/donut-chart.tsx",
+      "registryComparisons": {
+        "donut-chart": "different"
+      },
+      "sha256": "5eb68300f2eb0fbf3418214a0ed93cdd2bb6c8a58f96ec42e3e6367030e90e60",
+      "url": "https://raw.githubusercontent.com/starc007/ui-components/fb52f599d1550f006afe0344022cc45a913adab1/components/charts/donut-chart.tsx"
+    },
+    {
+      "path": "components/charts/donut-chart/center.tsx",
+      "registryComparisons": {
+        "donut-chart": "equal"
+      },
+      "sha256": "a54cdf00378ce7c6ee7b0d69a71018e326f000ca69c62f8d8bd3607d3984f7a3",
+      "url": "https://raw.githubusercontent.com/starc007/ui-components/fb52f599d1550f006afe0344022cc45a913adab1/components/charts/donut-chart/center.tsx"
+    },
+    {
+      "path": "components/charts/donut-chart/context.tsx",
+      "registryComparisons": {
+        "donut-chart": "equal"
+      },
+      "sha256": "bd54567661a7ab6c005244e3a962a8e7b2b44423022c0030f8fee16a4d7e8d26",
+      "url": "https://raw.githubusercontent.com/starc007/ui-components/fb52f599d1550f006afe0344022cc45a913adab1/components/charts/donut-chart/context.tsx"
+    },
+    {
+      "path": "components/charts/donut-chart/legend.tsx",
+      "registryComparisons": {
+        "donut-chart": "equal"
+      },
+      "sha256": "098808c4d3b6abae545eb647321a4a8275b706583583beecc8e7df71debd6298",
+      "url": "https://raw.githubusercontent.com/starc007/ui-components/fb52f599d1550f006afe0344022cc45a913adab1/components/charts/donut-chart/legend.tsx"
+    },
+    {
+      "path": "components/charts/donut-chart/model.ts",
+      "registryComparisons": {
+        "donut-chart": "equal"
+      },
+      "sha256": "1f891dc55ce7ef3c9b54b31ac0056ee9910585f3b367a99eee7fd6a366b15154",
+      "url": "https://raw.githubusercontent.com/starc007/ui-components/fb52f599d1550f006afe0344022cc45a913adab1/components/charts/donut-chart/model.ts"
+    },
+    {
+      "path": "components/charts/heat-calendar.tsx",
+      "registryComparisons": {
+        "heat-calendar": "different"
+      },
+      "sha256": "3099aa2b61b7d45bcf16a055daf257fd1d633cba18b568a4144d3725a592ead3",
+      "url": "https://raw.githubusercontent.com/starc007/ui-components/fb52f599d1550f006afe0344022cc45a913adab1/components/charts/heat-calendar.tsx"
+    },
+    {
+      "path": "components/charts/heat-calendar/context.ts",
+      "registryComparisons": {
+        "heat-calendar": "equal"
+      },
+      "sha256": "3e35af2fbe40b6e264c69ca4817692c2f45fcac6ce37d0a3377a19479f1529e2",
+      "url": "https://raw.githubusercontent.com/starc007/ui-components/fb52f599d1550f006afe0344022cc45a913adab1/components/charts/heat-calendar/context.ts"
+    },
+    {
+      "path": "components/charts/heat-calendar/grid.tsx",
+      "registryComparisons": {
+        "heat-calendar": "equal"
+      },
+      "sha256": "13c916b8a3f6e2eec836148028e5708679450eff0e0b464e8cee1f09647e8350",
+      "url": "https://raw.githubusercontent.com/starc007/ui-components/fb52f599d1550f006afe0344022cc45a913adab1/components/charts/heat-calendar/grid.tsx"
+    },
+    {
+      "path": "components/charts/heat-calendar/legend.tsx",
+      "registryComparisons": {
+        "heat-calendar": "equal"
+      },
+      "sha256": "31be47a832801673a459fe83ddab866f799fe739ccd47319ef1eee165178a9ea",
+      "url": "https://raw.githubusercontent.com/starc007/ui-components/fb52f599d1550f006afe0344022cc45a913adab1/components/charts/heat-calendar/legend.tsx"
+    },
+    {
+      "path": "components/charts/heat-calendar/tooltip.tsx",
+      "registryComparisons": {
+        "heat-calendar": "equal"
+      },
+      "sha256": "3b3f5befd237d9a09279bb1cb7b95416bbb33962b8ed35b30f9e70be71ce3c2b",
+      "url": "https://raw.githubusercontent.com/starc007/ui-components/fb52f599d1550f006afe0344022cc45a913adab1/components/charts/heat-calendar/tooltip.tsx"
+    },
+    {
+      "path": "components/charts/heat-calendar/types.ts",
+      "registryComparisons": {
+        "heat-calendar": "equal"
+      },
+      "sha256": "d565efe9ea95f259a4b55cd4753bf74266db7ed4514fbf35714050b8419284f6",
+      "url": "https://raw.githubusercontent.com/starc007/ui-components/fb52f599d1550f006afe0344022cc45a913adab1/components/charts/heat-calendar/types.ts"
+    },
+    {
+      "path": "components/charts/heat-calendar/utils.ts",
+      "registryComparisons": {
+        "heat-calendar": "equal"
+      },
+      "sha256": "f79e08b906ccdef2e9ec5ce4c6aeb27b99efadad34ce40c2bbb509f71c8e1f99",
+      "url": "https://raw.githubusercontent.com/starc007/ui-components/fb52f599d1550f006afe0344022cc45a913adab1/components/charts/heat-calendar/utils.ts"
+    },
+    {
+      "path": "components/motion/digit-swap.tsx",
+      "registryComparisons": {
+        "donut-chart": "equal"
+      },
+      "sha256": "b2ac5b1189576d056691aa3fb83be9f08f726f2265c17de72ccf7a02bd2045be",
+      "url": "https://raw.githubusercontent.com/starc007/ui-components/fb52f599d1550f006afe0344022cc45a913adab1/components/motion/digit-swap.tsx"
+    },
+    {
+      "path": "components/motion/number-ticker.tsx",
+      "registryComparisons": {
+        "heat-calendar": "equal"
+      },
+      "sha256": "122fe951f13aa06357eef56c4acb6c5f665caa87f8ac37c86b55f61d1f232975",
+      "url": "https://raw.githubusercontent.com/starc007/ui-components/fb52f599d1550f006afe0344022cc45a913adab1/components/motion/number-ticker.tsx"
+    },
+    {
+      "path": "components/motion/tooltip-surface.tsx",
+      "registryComparisons": {
+        "heat-calendar": "equal",
+        "tooltip": "equal"
+      },
+      "sha256": "d082ccbc58b0ad10a4372245a6254f9a70095a55d869595d6bba778b23aba3f8",
+      "url": "https://raw.githubusercontent.com/starc007/ui-components/fb52f599d1550f006afe0344022cc45a913adab1/components/motion/tooltip-surface.tsx"
+    },
+    {
+      "path": "components/motion/tooltip.tsx",
+      "registryComparisons": {
+        "heat-calendar": "equal",
+        "tooltip": "different"
+      },
+      "sha256": "05aa29e1cac3ac96d2ea5f1320e48cc65f905b26ccee8044971d6a0318c776b4",
+      "url": "https://raw.githubusercontent.com/starc007/ui-components/fb52f599d1550f006afe0344022cc45a913adab1/components/motion/tooltip.tsx"
+    },
+    {
+      "path": "components/motion/tooltip/grace.ts",
+      "registryComparisons": {
+        "heat-calendar": "equal",
+        "tooltip": "equal"
+      },
+      "sha256": "a79f94a822560008bd903da1a939a6b76f8a2678daaf4733079afdb47d58f568",
+      "url": "https://raw.githubusercontent.com/starc007/ui-components/fb52f599d1550f006afe0344022cc45a913adab1/components/motion/tooltip/grace.ts"
+    },
+    {
+      "path": "components/motion/tooltip/positioner.tsx",
+      "registryComparisons": {
+        "heat-calendar": "equal",
+        "tooltip": "equal"
+      },
+      "sha256": "822fdab7bbe3767b3a78485be8351fb59518f53085a9294b2504a2d49e77e3fb",
+      "url": "https://raw.githubusercontent.com/starc007/ui-components/fb52f599d1550f006afe0344022cc45a913adab1/components/motion/tooltip/positioner.tsx"
+    },
+    {
+      "path": "components/motion/tooltip/use-position.ts",
+      "registryComparisons": {
+        "heat-calendar": "equal",
+        "tooltip": "equal"
+      },
+      "sha256": "219252b6c13d8a9d320fee90155285a051716594aae89020679bc22069bb4ee9",
+      "url": "https://raw.githubusercontent.com/starc007/ui-components/fb52f599d1550f006afe0344022cc45a913adab1/components/motion/tooltip/use-position.ts"
+    },
+    {
+      "path": "lib/ease.ts",
+      "registryComparisons": {
+        "donut-chart": "equal",
+        "heat-calendar": "equal",
+        "tooltip": "equal"
+      },
+      "sha256": "cde4ce91ec645335cfa8297d6094c90b6e62ee6a1a021fe2ac0a6ece673c2a8f",
+      "url": "https://raw.githubusercontent.com/starc007/ui-components/fb52f599d1550f006afe0344022cc45a913adab1/lib/ease.ts"
+    },
+    {
+      "path": "lib/hooks/use-dismiss.ts",
+      "registryComparisons": {
+        "heat-calendar": "equal",
+        "tooltip": "equal"
+      },
+      "sha256": "b3243c39f363c9f9b33b528a2e720d5d48370e964b8c6c80747da423a4269a2a",
+      "url": "https://raw.githubusercontent.com/starc007/ui-components/fb52f599d1550f006afe0344022cc45a913adab1/lib/hooks/use-dismiss.ts"
+    },
+    {
+      "path": "lib/hooks/use-hover-capable.ts",
+      "registryComparisons": {
+        "donut-chart": "equal",
+        "heat-calendar": "equal"
+      },
+      "sha256": "b5b9397bfa03859e04673c8f1817cf13ff55d2a9688955d6e0459ae70db90d06",
+      "url": "https://raw.githubusercontent.com/starc007/ui-components/fb52f599d1550f006afe0344022cc45a913adab1/lib/hooks/use-hover-capable.ts"
+    },
+    {
+      "path": "lib/hooks/use-hover-gesture.ts",
+      "registryComparisons": {
+        "heat-calendar": "equal",
+        "tooltip": "equal"
+      },
+      "sha256": "d381531c81668faf22cada58671451f4e7b53cf8d8718d6768e485139810755d",
+      "url": "https://raw.githubusercontent.com/starc007/ui-components/fb52f599d1550f006afe0344022cc45a913adab1/lib/hooks/use-hover-gesture.ts"
+    },
+    {
+      "path": "lib/hooks/use-tap-gesture.ts",
+      "registryComparisons": {
+        "heat-calendar": "equal",
+        "tooltip": "equal"
+      },
+      "sha256": "b91954bf9f1cdc1771b2a6eac815d2f4e2493cb2cde5f508b2d96509dd71aeee",
+      "url": "https://raw.githubusercontent.com/starc007/ui-components/fb52f599d1550f006afe0344022cc45a913adab1/lib/hooks/use-tap-gesture.ts"
+    },
+    {
+      "path": "lib/touch.ts",
+      "registryComparisons": {
+        "heat-calendar": "equal",
+        "tooltip": "equal"
+      },
+      "sha256": "f2a15c243c86c8bd1abb6e2e65a423b3a4c45cc1d797ebd83997f21cd1beadb9",
+      "url": "https://raw.githubusercontent.com/starc007/ui-components/fb52f599d1550f006afe0344022cc45a913adab1/lib/touch.ts"
+    },
+    {
+      "path": "lib/utils.ts",
+      "registryComparisons": {
+        "donut-chart": "equal",
+        "heat-calendar": "equal",
+        "tooltip": "equal"
+      },
+      "sha256": "7c8c3dfc0cdd370d44932828eb067ef771c8fe7996693221d5d4b90af6d54f2d",
+      "url": "https://raw.githubusercontent.com/starc007/ui-components/fb52f599d1550f006afe0344022cc45a913adab1/lib/utils.ts"
+    },
+    {
+      "path": "components/charts/donut-chart/plot.tsx",
+      "registryComparisons": {
+        "donut-chart": "equal"
+      },
+      "sha256": "459457810ec59586583a1e5a924915fe0e44847a3725b3c6f18ebe0d709e2e6f",
+      "url": "https://raw.githubusercontent.com/starc007/ui-components/fb52f599d1550f006afe0344022cc45a913adab1/components/charts/donut-chart/plot.tsx"
+    }
+  ],
+  "registrySourceTransform": "The registry adds a // beui.dev/<component-route> attribution comment to each requested entry file; all other bytes matched the pinned GitHub sources."
+}

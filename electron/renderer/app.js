@@ -1,5 +1,11 @@
 import { getMessages, formatMessage } from './i18n.js';
 import { createLogViewState, createQrState, resolveRunControlState } from './state.js';
+// Keep appearance changes separate from profile saves and running jobs, so a
+// theme switch cannot discard a settings draft or restart the pipeline.
+import { getThemePreference, initializeAppearance, selectTheme, toggleSidebar } from './appearance.js';
+import { enhanceTables } from './tables.js';
+import { icon } from './icons.js';
+import { renderAnalytics, clearAnalytics } from './analytics.bundle.js';
 import {
   addAvailabilityTargetDraft,
   applyAvailabilityTargetDraft,
@@ -7,13 +13,15 @@ import {
   buildAvailabilityTargetDraft,
   buildPageMarkup,
   buildDashboardMetricsMarkup,
+  buildDashboardStateMarkup,
   buildLogCenterMarkup,
+  buildLogStateActions,
   buildRunsCurrentStageMarkup,
   buildRunsStageProgressMarkup,
+  buildSpeedTestDraft,
   buildSourceIterationDraft,
   buildSidebarNav,
   buildViewModel,
-  buildTopbarActions,
   buildAccountPoolRecords,
   removeAvailabilityTargetDraft,
   resolveDashboardRunSummary,
@@ -23,6 +31,8 @@ import {
   extractSourceUrlFromCurl,
   filterLogEntries
 } from './views.js';
+
+initializeAppearance();
 
 const demoProfile = {
   sources: {
@@ -86,10 +96,11 @@ const state = {
   stageStatus: {},
   counts: {},
   sourceCounts: {},
+  extractProgress: {},
   language: 'zh-CN',
+  themePreference: getThemePreference(),
   activePage: 'dashboard',
   subtabs: {},
-  subscriptionFormat: 'Clash',
   logFilter: '全部',
   settingsDrawer: null,
   accountPool: {
@@ -107,6 +118,9 @@ const state = {
   },
   isDemo: false,
   runtime: document.body.dataset.runtime === 'web' ? 'web' : 'electron',
+  runOptions: { skipDeploy: false, skipVerify: false, saveBeforeRun: true },
+  activity: [],
+  activityUnavailable: 0,
   runState: 'idle',
   runResult: 'idle',
   logEntries: [],
@@ -136,7 +150,6 @@ const elements = {
   sidebarVersion: document.querySelector('#sidebarVersion'),
   sidebarNav: document.querySelector('#sidebarNav'),
   pageTitle: document.querySelector('#pageTitle'),
-  pageSubtitle: document.querySelector('#pageSubtitle'),
   runStateBadge: document.querySelector('#runStateBadge'),
   pageActions: document.querySelector('#pageActions'),
   pageContent: document.querySelector('#pageContent'),
@@ -182,6 +195,8 @@ async function bootstrap() {
 
 function hydrateInitialRuntimeState(loadedState = {}) {
   const loadedProfile = loadedState.profile ?? {};
+  state.activity = Array.isArray(loadedState.activity) ? loadedState.activity : [];
+  state.activityUnavailable = Number(loadedState.activityUnavailable ?? 0);
   state.profile = loadedProfile;
   state.savedProfile = structuredClone(loadedProfile);
   const nextRunState = String(loadedState.runState ?? '');
@@ -276,6 +291,8 @@ function renderAll() {
     : null;
 
   renderChrome(messages, viewModel);
+  const qrPanelOpen = document.querySelector('.subscription-qr')?.open === true;
+  clearAnalytics();
   elements.pageContent.innerHTML = buildPageMarkup(
     state.activePage,
     viewModel,
@@ -283,6 +300,11 @@ function renderAll() {
     state.language,
     state.subtabs
   );
+  // Every full render replaces the tables; reapply layout to the current DOM.
+  const qrPanel = document.querySelector('.subscription-qr');
+  if (qrPanel) qrPanel.open = qrPanelOpen;
+  enhanceTables(elements.pageContent);
+  renderAnalytics(document.querySelector('#dashboardAnalytics'), viewModel);
   if (focusKey) {
     const selector = focusKey === 'account-search'
       ? '[data-account-search]'
@@ -318,16 +340,9 @@ function renderChrome(messages, viewModel) {
   elements.sidebarTitle.textContent = messages.sidebarTitle;
   elements.sidebarVersion.textContent = messages.sidebarVersion;
   elements.pageTitle.textContent = messages.pageTitles[state.activePage];
-  elements.pageSubtitle.textContent = messages.pageSubtitles[state.activePage];
   elements.sidebarNav.innerHTML = buildSidebarNav(messages, state.activePage);
   const controlState = resolveRunControlState(state.runState);
-  elements.pageActions.innerHTML = buildTopbarActions(state.activePage, viewModel, messages, {
-    runDisabled: controlState.runDisabled,
-    stopDisabled: controlState.stopDisabled,
-    runLabel: resolveRunButtonLabel(messages),
-    stopLabel: messages.stopButton,
-    saveLabel: messages.saveButton
-  });
+  elements.pageActions.replaceChildren();
   updateChromeState(messages);
 }
 
@@ -338,7 +353,10 @@ function updateChromeState(messages = getMessages(state.language)) {
   for (const button of document.querySelectorAll('[data-run-action="start"]')) {
     button.disabled = controlState.runDisabled;
     button.setAttribute('aria-busy', String(controlState.isBusy));
-    button.textContent = resolveRunButtonLabel(messages);
+    // Preserve the action icon when live pipeline status changes its label.
+    button.innerHTML = icon('play');
+    button.setAttribute('aria-label', resolveRunButtonLabel(messages));
+    button.title = resolveRunButtonLabel(messages);
   }
   for (const button of document.querySelectorAll('[data-run-action="stop"]')) {
     button.disabled = controlState.stopDisabled;
@@ -376,6 +394,16 @@ function runTone() {
 }
 
 async function handleDocumentClick(event) {
+  if (event.target.closest('#sidebarToggle')) {
+    toggleSidebar();
+    return;
+  }
+  const themeChoice = event.target.closest('[data-theme-choice]');
+  if (themeChoice) {
+    state.themePreference = themeChoice.dataset.themeChoice;
+    selectTheme(state.themePreference);
+    return;
+  }
   const jumpLatest = event.target.closest('[data-log-jump-latest]');
   if (jumpLatest) {
     state.logView.follow = true;
@@ -406,14 +434,6 @@ async function handleDocumentClick(event) {
   const subtab = event.target.closest('[data-subtab-page]');
   if (subtab) {
     state.subtabs[subtab.dataset.subtabPage] = subtab.dataset.subtab;
-    renderAll();
-    return;
-  }
-
-  const formatButton = event.target.closest('[data-subscription-format]');
-  if (formatButton) {
-    state.subscriptionFormat = formatButton.dataset.subscriptionFormat;
-    refreshQrCode();
     renderAll();
     return;
   }
@@ -534,6 +554,10 @@ async function handleDocumentClick(event) {
 }
 
 function handleDocumentInput(event) {
+  if (event.target.dataset.runOption) {
+    state.runOptions[event.target.dataset.runOption] = event.target.checked;
+    return;
+  }
   const target = event.target;
 
   if (!state.profile) {
@@ -939,11 +963,7 @@ function resolveActiveSubscriptionUrl() {
     return '';
   }
 
-  const format = state.subscriptionFormat ?? 'Clash';
-  if (format === 'Clash') {
-    return baseUrl;
-  }
-  return `${baseUrl}?format=${encodeURIComponent(format.toLowerCase().replaceAll(' ', '-'))}`;
+  return baseUrl;
 }
 
 function openSettingsDrawer(section, opener = document.activeElement) {
@@ -1011,7 +1031,7 @@ function buildSettingsDraft(section) {
   }
 
   if (section === 'sources') return buildSourceIterationDraft(state.profile.sources);
-  if (section === 'speed_test') return structuredClone(state.profile.speed_test);
+  if (section === 'speed_test') return buildSpeedTestDraft(state.profile.speed_test);
   if (section === 'availability_targets') return buildAvailabilityTargetDraft(state.profile.availability_targets);
   if (section === 'deploy') return buildDeployDraft(state.profile.deploy);
   if (section === 'paths') return structuredClone(state.profile.paths);
@@ -1072,7 +1092,7 @@ async function hydrateAccountPool() {
   renderAccountPoolPanelOnly();
   if (!window.vpnAutomation?.loadAccounts) {
     state.accountPool.status = 'unavailable';
-    state.accountPool.error = '账号池只在桌面端可用';
+    state.accountPool.error = '未连接账号服务';
     renderAccountPoolPanelOnly();
     return false;
   }
@@ -1107,6 +1127,7 @@ function renderAccountPoolRecords() {
   const messages = getMessages(state.language);
   const viewModel = buildViewModel(state, messages, state.language);
   holder.innerHTML = buildAccountPoolRecords(viewModel.accountPool);
+  enhanceTables(holder);
 }
 
 async function handleAccountPoolAction(button) {
@@ -1334,6 +1355,7 @@ async function runPipeline() {
   state.stageStatus = {};
   state.counts = {};
   state.sourceCounts = {};
+  state.extractProgress = {};
   state.extractDedupedFingerprints = new Set();
   state.logEntries = [];
   state.artifactDir = '';
@@ -1384,6 +1406,7 @@ async function retryStage() {
   state.stageStatus = {};
   state.counts = {};
   state.sourceCounts = {};
+  state.extractProgress = {};
   state.extractDedupedFingerprints = new Set();
   state.logEntries = [];
   state.artifactDir = '';
@@ -1430,11 +1453,7 @@ async function retryStage() {
 
 function collectRunOptions() {
   const optionInputs = document.querySelectorAll('[data-run-option]');
-  const options = {
-    skipDeploy: false,
-    skipVerify: false,
-    saveBeforeRun: true
-  };
+  const options = { ...state.runOptions };
   for (const input of optionInputs) {
     options[input.dataset.runOption] = Boolean(input.checked);
   }
@@ -1568,6 +1587,16 @@ function handlePipelineEvent(event, options = {}) {
 
   if (event.type === 'log') {
     appendLog(event.message);
+    return;
+  }
+
+  if (event.type === 'extract_substage') {
+    if (!['apk_download', 'apk_analysis', 'domain_discovery'].includes(event.substage)
+      || !['running', 'success', 'failed', 'cached'].includes(event.status)) return;
+    const key = [event.source_name, event.platform, event.substage].join(':');
+    state.extractProgress[key] = { source: String(event.source_name ?? ''), platform: String(event.platform ?? ''), substage: event.substage, status: event.status };
+    touchUpdate();
+    renderRuntimeOnly({ chrome: false });
     return;
   }
 
@@ -1744,6 +1773,7 @@ function resetRunScopedProgress() {
   state.stageStatus = {};
   state.counts = {};
   state.sourceCounts = {};
+  state.extractProgress = {};
   state.extractDedupedFingerprints = new Set();
   state.outputFiles = [];
   state.nodeRows = [];
@@ -1901,7 +1931,12 @@ async function hydrateRetryArtifacts() {
       return;
     }
     hydrateRetryArtifactState(result.items ?? []);
+    state.activity = Array.isArray(result.activity) ? result.activity : [];
+    state.activityUnavailable = Number(result.activityUnavailable ?? 0);
     touchUpdate();
+    // Completion refreshes history asynchronously, after the last pipeline
+    // event. Update the visible calendar without requiring a page switch.
+    renderRuntimeOnly({ chrome: false });
   } catch (error) {
     appendLog(formatMessage(getMessages(state.language).openFailed, { error: error.message }));
   }
@@ -1959,13 +1994,8 @@ function renderActiveRuntimeSections(viewModel) {
     const anchorViewportTop = anchor?.getBoundingClientRect().top;
     logCenter.innerHTML = buildLogCenterMarkup(viewModel);
     const workspace = logCenter.closest('#logsWorkspace');
-    workspace?.querySelectorAll('[data-log-jump-latest], [data-log-undo-clear]').forEach((node) => node.remove());
-    if (!state.logView.follow && state.logView.unseenCount > 0) {
-      logCenter.insertAdjacentHTML('beforebegin', `<button class="btn btn-primary small log-jump-latest" data-log-jump-latest type="button">回到底部 · ${state.logView.unseenCount} 条新消息</button>`);
-    }
-    if (state.logView.clearedSnapshot) {
-      logCenter.insertAdjacentHTML('beforebegin', '<button class="btn btn-secondary small log-undo-clear" data-log-undo-clear type="button">撤销清空</button>');
-    }
+    const stateActions = workspace?.querySelector('.log-state-actions');
+    if (stateActions) stateActions.innerHTML = buildLogStateActions(viewModel);
     if (state.logView.follow) {
       logCenter.scrollTop = logCenter.scrollHeight;
     } else if (anchorId) {
@@ -1978,39 +2008,33 @@ function renderActiveRuntimeSections(viewModel) {
 
   const stageProgress = document.querySelector('#runsStageProgress');
   if (stageProgress) {
+    const scrollTop = stageProgress.querySelector('.timeline')?.scrollTop ?? 0;
     stageProgress.outerHTML = buildRunsStageProgressMarkup(viewModel);
+    document.querySelector('#runsStageProgress .timeline').scrollTop = scrollTop;
   }
 
   const currentStage = document.querySelector('#runsCurrentStage');
   if (currentStage) {
-    currentStage.outerHTML = buildRunsCurrentStageMarkup(viewModel);
+    // Preserve the focused run controls while live events refresh details.
+    const template = document.createElement('template');
+    template.innerHTML = buildRunsCurrentStageMarkup(viewModel);
+    currentStage.querySelector('[data-current-stage-body]').replaceWith(template.content.querySelector('[data-current-stage-body]'));
+    currentStage.querySelector('.panel-headline > .badge').replaceWith(template.content.querySelector('.panel-headline > .badge'));
   }
 
   const hero = document.querySelector('.status-hero-card');
   if (hero) {
     const summary = resolveDashboardRunSummary(viewModel);
-    const wasRunning = hero.classList.contains('is-running');
-    hero.querySelector('h3').textContent = viewModel.currentStatusLabel;
+    const copy = hero.querySelector('.dashboard-state-copy');
+    if (copy.querySelector('h3')?.textContent !== viewModel.currentStatusLabel
+      || Boolean(copy.querySelector('p')) !== summary.failed) {
+      copy.innerHTML = buildDashboardStateMarkup(viewModel);
+    }
     hero.classList.toggle('is-running', summary.isRunning);
     hero.dataset.tone = viewModel.runStateTone;
-    // Run-end paths only refresh these runtime sections, so the copy, the orb
-    // and the result badge have to follow here too; otherwise a stopped or
-    // failed run keeps saying "running" until some later full page render.
-    // Rewriting them only when the state flips keeps the spinner's CSS
-    // animation from restarting on every log line.
-    if (summary.isRunning !== wasRunning) {
-      hero.querySelector('p').textContent = summary.heroCopy;
-      hero.querySelector('.status-orb').innerHTML = summary.isRunning
-        ? '<span class="status-orb-spinner"></span>'
-        : '✓';
-      const badge = document.querySelector('[data-dashboard-result-badge]');
-      if (badge) {
-        badge.className = `badge ${summary.lastResultTone}`;
-        badge.textContent = summary.lastResultLabel;
-      }
-    }
   }
 
+  renderAnalytics(document.querySelector('#dashboardAnalytics'), viewModel);
   const dashboardMetrics = document.querySelector('#dashboardMetricsPanel');
   if (dashboardMetrics) {
     dashboardMetrics.outerHTML = buildDashboardMetricsMarkup(viewModel);

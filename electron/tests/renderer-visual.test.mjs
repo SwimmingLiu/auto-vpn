@@ -13,20 +13,18 @@ const __dirname = path.dirname(__filename);
 
 const EXPECTED_DIGESTS_BY_PLATFORM = {
   darwin: {
-    dashboard: 'c3e8b9bb213713c13c2019033703aa986e038f8ba890a2bec7a5f3fc5ec2509f',
-    runs: '323c581e7ff9252c77f97077d20b421f5a057f5397f3df4d508bdfde53ce7f87',
-    results: 'd3e51557c2061e90235c00445206cc23bbf153a1b4b9e279ea54fa1ea687b318',
-    subscriptions: '2ab3fcab937eda0b6ad010cac25e4d213a57d152a3cb48325421fe3ddc2903d5',
-    logs: '6ecb9ebe7da65f2a061b99b0e9df6283f20addb9c8410e9c0376675b5bc504cc',
-    settings: '4383cf958db112b48e478bda35664efbae496f0a14ebd1d974f5c15e70ee795a'
+    dashboard: 'b81b37c979b906834c6f2287e25146902e97aa1e402c85b7ed85e3f634b4bd53',
+    runs: '061f496d88a5d902b0028fa4588d8eb94cad843df80f246f7f49e3a1f257e80f',
+    results: 'c1a4087454eed00652cf161b2c32a10b46931f6aec4d2dd6dc9b9e5621cef1f0',
+    logs: '5cd733dfc21bd23c4bea4ff9a271d9a2b0f30b80a898d2fd0566a12a8e41a3a0',
+    settings: '2d0d0b1cfd015ce18306a73870d6575c5950ca70711e2ad2a2850b5e1528bf81'
   },
   linux: {
-    dashboard: '3464b43de395facd3d6e1b319c2ff03d95f07fbdc5d31b627cb73295583bd296',
-    runs: '85583dfe1ebacf5de8b035aaa7eb574bc82b6d9581973a24655c81f497e65785',
-    results: '4903b6fedc59e39c4af5a08bd35ec601bb11c2bce2595df9f1fadb0a7b8bd3f1',
-    subscriptions: '267278ad45eaef932766446343812841f804d80638740c52421bf1fd427a11aa',
-    logs: 'e1d90b1d5fd245f45c446d9c146829753118512fd8e4ee82dead3248683be487',
-    settings: 'fb091a9417179ff7d8c217a5d40dc6b1d9f6734876e0fc4c398b7f450c818aa4'
+    dashboard: 'f6298ce922314cd74b1e3b991cb7614d3e1efb8b1fc2997e9f46712113c811a0',
+    runs: '869e28d0d41e24ba716629387d13eebb764f9f66fcb857be611a4946e9cb1fa3',
+    results: '862b030b19e8c29a3a2c243b7af8e9d14fb42b3e31f73787bb7efcc1d444bcb7',
+    logs: '2e5c1e2f792e16bf584e4191a303375be266f3df489fc98b73a12bc9a0268db2',
+    settings: '71023b852247adfe5b8c24d65085393a225a24e4a5c752f991902348d12b572b'
   }
 };
 
@@ -34,19 +32,18 @@ const VISUAL_CASES = [
   ['dashboard', '#navDashboard', '#dashboardOverview'],
   ['runs', '#navRuns', '#runsWorkspace'],
   ['results', '#navResults', '#resultsWorkspace'],
-  ['subscriptions', '#navSubscriptions', '#subscriptionCards'],
   ['logs', '#navLogs', '#logCenterTable'],
   ['settings', '#navSettings', '#settingsWorkspace']
 ];
 
-test('renderer visual hashes match the full mockup-driven workspace', async () => {
+test('renderer visual hashes match the five-page workspace', async () => {
   const expectedDigests = EXPECTED_DIGESTS_BY_PLATFORM[process.platform];
   assert.ok(expectedDigests, `renderer visual baselines are not reviewed for ${process.platform}`);
   const server = await startStaticServer(path.join(__dirname, '..', 'renderer'));
   let browser;
   try {
     browser = await chromium.launch();
-    const page = await browser.newPage({ viewport: { width: 1440, height: 960 }, deviceScaleFactor: 1 });
+    const page = await browser.newPage({ viewport: { width: 1440, height: 960 }, deviceScaleFactor: 1, reducedMotion: 'reduce' });
     const target = `${server.origin}/index.html`;
 
     await page.addInitScript(() => {

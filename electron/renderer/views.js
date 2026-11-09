@@ -1,4 +1,5 @@
 import { buildStageModel, PAGE_INDEX, PAGE_ORDER, resolveRunControlState } from './state.js';
+import { icon } from './icons.js';
 
 const FALLBACK_PROFILE = {
   sources: {
@@ -27,14 +28,7 @@ const FALLBACK_PROFILE = {
   }
 };
 
-const NAV_ICONS = {
-  dashboard: '⌂',
-  runs: '◉',
-  results: '▣',
-  subscriptions: '♢',
-  logs: '▤',
-  settings: '⚙'
-};
+// SVGs retain the same geometry across installed fonts and theme modes.
 
 const PAGE_STATUS = {
   dashboard: ['', 'neutral'],
@@ -46,7 +40,6 @@ const PAGE_STATUS = {
 };
 
 const LOG_FILTERS = ['全部', '运行日志', '错误', '按阶段'];
-const SUBSCRIPTION_FORMATS = ['Clash', 'Clash Meta', 'Sing-box', 'Surge'];
 const EMPTY_COUNTS = {
   raw_links: 0,
   deduped_links: 0,
@@ -103,8 +96,6 @@ export function buildViewModel(state, messages, language) {
     counts.deduped_links = dedupedSourceCount || counts.deduped_links || counts.postprocess_links || 0;
   }
   const subscriptionUrl = profile.deploy.subscription_url || FALLBACK_PROFILE.deploy.subscription_url;
-  const subscriptionCards = buildSubscriptionCards(subscriptionUrl);
-  const currentSubscription = subscriptionCards.find((card) => card.title === state.subscriptionFormat) ?? subscriptionCards[0];
   const displayLogs = (state.logEntries ?? []).map((entry, index) => ({
     logId: entry?.logId ?? `history-${index}`,
     ...classifyLogEntry(entry)
@@ -133,7 +124,6 @@ export function buildViewModel(state, messages, language) {
     profile,
     counts,
     subscriptionUrl,
-    subscriptionFormat: state.subscriptionFormat ?? 'Clash',
     qr: state.qr ?? { status: state.qrDataUrl ? 'success' : 'idle', dataUrl: state.qrDataUrl ?? '', message: '' },
     displayLogs,
     logFilter,
@@ -150,10 +140,9 @@ export function buildViewModel(state, messages, language) {
     outputFiles: state.outputFiles ?? [],
     nodeRows: state.nodeRows ?? [],
     regionStats: buildRegionStats(state.nodeRows ?? []),
-    subscriptionCards,
-    currentSubscription,
     sourceRows: buildSourceRows(profile),
     sourceCounts,
+    extractProgress: Object.values(state.extractProgress ?? {}),
     rawSourceMetricRows: buildSourceMetricRows(profile, sourceCounts, 'raw_links'),
     dedupedSourceMetricRows: buildSourceMetricRows(profile, sourceCounts, 'deduped_links'),
     retryContext: state.retryContext ?? {},
@@ -164,6 +153,9 @@ export function buildViewModel(state, messages, language) {
     retryStageOptions,
     selectedRetryStage,
     runControlState: resolveRunControlState(state.runState),
+    runOptions: state.runOptions ?? {},
+    activity: state.activity ?? [],
+    activityUnavailable: state.activityUnavailable ?? 0,
     runState: state.runState ?? 'idle',
     statusItems: buildStatusItems(state, messages),
     currentStatusLabel: resolveCurrentStatusLabel(state, messages),
@@ -177,7 +169,8 @@ export function buildViewModel(state, messages, language) {
       recordsMarkup: buildAccountPoolRecords({ ...EMPTY_ACCOUNT_POOL, ...(state.accountPool ?? {}) })
     },
     modalTransform: state.modalTransform ?? '',
-    runtime: state.runtime ?? 'electron'
+    runtime: state.runtime ?? 'electron',
+    themePreference: state.themePreference ?? 'system'
   };
 }
 
@@ -194,32 +187,24 @@ export function buildSidebarNav(messages, activePage) {
       id="${navId(page)}"
       class="nav-item ${activePage === page ? 'active' : ''}"
       data-page-target="${page}"
+      aria-label="${escapeHtml(messages.nav[page])}"
+      title="${escapeHtml(messages.nav[page])}"
       type="button"
       ${activePage === page ? 'aria-current="page"' : ''}
     >
-      <span class="nav-icon">${NAV_ICONS[page]}</span>
+      <span class="nav-icon">${icon(page)}</span>
       <span class="nav-copy">${escapeHtml(messages.nav[page])}</span>
     </button>
   `).join('');
 }
 
-export function buildTopbarActions(activePage, viewModel, messages, labels) {
-  const actionSets = {
-    dashboard: [
-      `<button class="btn btn-secondary" data-action="open-settings" type="button">${escapeHtml(messages.settingsButton)}</button>`,
-      `<button class="btn btn-danger" data-run-action="stop" type="button" ${labels.stopDisabled ? 'disabled' : ''}>${escapeHtml(labels.stopLabel)}</button>`,
-      `<button class="btn btn-primary" data-run-action="start" type="button" ${labels.runDisabled ? 'disabled' : ''}>${escapeHtml(labels.runLabel)}</button>`
-    ],
-    runs: [
-    ],
-    results: [
-    ],
-    subscriptions: [
-    ],
-    logs: [],
-    settings: []
-  };
-  return (actionSets[activePage] ?? []).join('');
+// Run actions belong to the state they affect; names remain available to
+// assistive technology and tooltips without repeating visible button text.
+function buildRunControls(vm, mobile = false) {
+  return `<div class="run-icon-controls ${mobile ? 'mobile-run-bar' : ''}" ${mobile ? 'data-mobile-run-bar' : ''}>
+    <button class="btn btn-primary icon-only" data-run-action="start" type="button" aria-label="立即运行" title="立即运行" ${vm.runControlState.runDisabled ? 'disabled' : ''}>${icon('play')}</button>
+    <button class="btn btn-secondary icon-only" data-run-action="stop" type="button" aria-label="停止运行" title="停止运行" ${vm.runControlState.stopDisabled ? 'disabled' : ''}>${icon('stop')}</button>
+  </div>`;
 }
 
 export function buildShortcutStrip(messages) {
@@ -276,8 +261,6 @@ function buildPageInner(activePage, vm, messages) {
       return buildRunsPage(vm, messages);
     case 'results':
       return buildResultsPage(vm, messages);
-    case 'subscriptions':
-      return buildSubscriptionsPage(vm, messages);
     case 'logs':
       return buildLogsPage(vm, messages);
     default:
@@ -285,72 +268,29 @@ function buildPageInner(activePage, vm, messages) {
   }
 }
 
-/**
- * The words and tone the dashboard uses to describe the current run.
- *
- * `hasResult` only says an artifact directory exists, which is also true at the
- * start of the run that is producing it, and a failed run leaves one behind as
- * well. Callers must not treat it as proof of success. Shared with the runtime
- * updater in app.js, which refreshes the hero without a full page render.
- */
+// Page construction and live updates share the same current-run state;
+// a retained artifact is never evidence that the active run succeeded.
 export function resolveDashboardRunSummary(vm) {
-  const isRunning = vm.runControlState?.isBusy === true;
-  const failed = vm.runState === 'failed';
-  const heroCopy = isRunning
-    ? (vm.hasResult ? '正在执行，完成后覆盖本次结果' : '正在执行首次运行')
-    : failed
-      ? '运行失败，可在日志中查看原因'
-      : (vm.hasResult ? '最近一次运行已完成' : '系统就绪，等待运行');
-  const lastResultLabel = isRunning ? '进行中' : failed ? '失败' : vm.hasResult ? '成功' : '未开始';
-  const lastResultTone = isRunning ? 'accent' : failed ? 'danger' : vm.hasResult ? 'success' : 'neutral';
-  return { isRunning, heroCopy, lastResultLabel, lastResultTone };
+  return { isRunning: vm.runControlState?.isBusy === true, failed: vm.runState === 'failed' || vm.runStateTone === 'danger' };
+}
+
+export function buildDashboardStateMarkup(vm) {
+  const { failed } = resolveDashboardRunSummary(vm);
+  return `<h3>${escapeHtml(vm.currentStatusLabel)}</h3>${failed ? '<p>运行失败，可在日志中查看原因</p><button class="btn btn-secondary small" data-page-target="logs" type="button">查看日志</button>' : ''}`;
 }
 
 function buildDashboardPage(vm, messages) {
-  const { isRunning, heroCopy, lastResultLabel, lastResultTone } = resolveDashboardRunSummary(vm);
+  const { isRunning } = resolveDashboardRunSummary(vm);
   return `
     <div id="dashboardOverview" class="page-grid dashboard-grid">
       <article class="panel wide-panel status-hero-card ${isRunning ? 'is-running' : ''}" data-run-state="${escapeHtml(vm.hasResult ? 'result' : 'empty')}">
-        <div>
-          <span class="panel-subcopy">当前运行状态</span>
-          <h3>${escapeHtml(vm.currentStatusLabel)}</h3>
-          <p>${heroCopy}</p>
-        </div>
-        <div class="status-orb" aria-hidden="true">${isRunning ? '<span class="status-orb-spinner"></span>' : '✓'}</div>
+        <div class="dashboard-state-copy">${buildDashboardStateMarkup(vm)}</div>
+        ${buildRunControls(vm)}
       </article>
 
       ${buildDashboardMetricsMarkup(vm)}
 
-      <article class="panel">
-        <div class="panel-headline">
-          <h3>最近运行结果</h3>
-          ${renderBadge(lastResultLabel, lastResultTone, 'data-dashboard-result-badge')}
-        </div>
-        <div class="key-value-list">
-          <div class="key-value-row"><span>状态</span><strong>${lastResultLabel}</strong></div>
-          <div class="key-value-row"><span>Artifact 目录</span><strong class="mono">${escapeHtml(vm.artifactDir || '—')}</strong></div>
-          <div class="key-value-row"><span>更新时间</span><strong>${escapeHtml(vm.lastUpdated)}</strong></div>
-        </div>
-      </article>
-
-      <article class="panel">
-        <div class="panel-headline">
-          <h3>系统状态</h3>
-          ${renderBadge(vm.runStateLabel, vm.runStateTone)}
-        </div>
-        <div class="key-value-list">
-          ${vm.statusItems.map((item) => `
-            <div class="key-value-row">
-              <span>${escapeHtml(item.label)}</span>
-              <strong>${escapeHtml(item.value)}</strong>
-            </div>
-          `).join('')}
-          <div class="key-value-row">
-            <span>${escapeHtml(messages.currentTaskLabel)}</span>
-            <strong>${escapeHtml(vm.currentTaskLabel)}</strong>
-          </div>
-        </div>
-      </article>
+      <div id="dashboardAnalytics" class="wide-panel"></div>
     </div>
   `;
 }
@@ -363,7 +303,6 @@ export function buildDashboardMetricsMarkup(vm) {
           <div class="metric-card ${metric.tone}" data-metric-key="${escapeHtml(metric.key)}">
             <span>${escapeHtml(metric.label)}</span>
             <strong>${escapeHtml(metric.value)}</strong>
-            <small>${escapeHtml(metric.detail)}</small>
             ${metric.key === 'raw_links'
               ? renderSourceMetricRows(vm.rawSourceMetricRows, '各数据源原始节点数')
               : metric.key === 'deduped_links'
@@ -382,15 +321,11 @@ function buildRunsPage(vm, messages) {
   const stageDisabled = vm.runControlState.isBusy || !vm.retryStageOptions.length ? 'disabled' : '';
   const retryDisabled = vm.runControlState.isBusy || !vm.selectedRetryArtifactDir || !vm.selectedRetryStage ? 'disabled' : '';
   return `
-    <div class="mobile-run-bar" data-mobile-run-bar>
-        <button class="btn btn-primary run-big" data-run-action="start" type="button" ${runDisabled}>▶ 开始运行</button>
-        <button class="btn btn-secondary run-big" data-run-action="stop" type="button" ${vm.runControlState.stopDisabled ? 'disabled' : ''}>■ 停止运行</button>
-    </div>
     <div class="page-grid runs-grid">
       <article class="panel wide-panel run-control-panel">
         <details class="run-secondary-controls">
-          <summary>重试历史、阶段与运行选项</summary>
-          <div class="retry-control-card">
+          <summary>${vm.retryArtifacts.length ? '重试与运行选项' : '运行选项'}</summary>
+          ${vm.retryArtifacts.length ? `<div class="retry-control-card">
           <div class="field compact retry-field retry-artifact-field">
             <span>历史 run</span>
             <select data-run-retry-artifact ${artifactDisabled}>
@@ -432,15 +367,15 @@ function buildRunsPage(vm, messages) {
               `
               : '<div class="empty-state">暂无可重试 run</div>'}
           </div>
-          <p class="retry-help">阶段重试会新建 artifact，并从所选阶段继续执行到 verify。</p>
           </div>
+          ` : ''}
           <div class="run-options">
           ${[
             ['跳过部署', 'skipDeploy', false],
             ['跳过验证', 'skipVerify', false],
             ['保存配置后运行', 'saveBeforeRun', true]
           ].map(([label, key, checked]) => `
-            <label class="checkbox-chip"><input data-run-option="${escapeHtml(key)}" type="checkbox" ${checked ? 'checked' : ''} />${escapeHtml(label)}</label>
+            <label class="checkbox-chip"><input data-run-option="${escapeHtml(key)}" type="checkbox" ${(vm.runOptions[key] ?? checked) ? 'checked' : ''} />${escapeHtml(label)}</label>
           `).join('')}
           </div>
         </details>
@@ -455,14 +390,15 @@ function buildRunsPage(vm, messages) {
 export function buildRunsStageProgressMarkup(vm) {
   return `
     <article id="runsStageProgress" class="panel timeline-panel">
-      <div class="panel-headline"><h3>阶段进度</h3><span class="panel-subcopy">全流程时间线</span></div>
-      <div class="timeline">
+      <div class="panel-headline"><h3>阶段进度</h3></div>
+      <div class="timeline" tabindex="0" role="region" aria-label="流水线阶段">
         ${vm.stageRows.map((stage) => `
           <div class="timeline-row">
             <span class="timeline-index ${stage.status}"></span>
             <span class="timeline-copy">${escapeHtml(stage.name)}</span>
             <span class="inline-state ${stateClass(stage.status)}">${escapeHtml(stageLabel(stage.status))}</span>
           </div>
+          ${stage.name === 'extract' && vm.extractProgress?.length ? `<div class="timeline-substeps">${vm.extractProgress.map((step) => `<div class="timeline-substep"><span>${escapeHtml(SOURCE_NAMES[step.source] ?? step.source)} · ${escapeHtml(step.platform)} · ${escapeHtml({ apk_download: 'APK 下载', apk_analysis: 'APK 解析', domain_discovery: '域名探测' }[step.substage])}</span><span class="inline-state ${step.status === 'cached' ? 'neutral' : stateClass(step.status)}">${step.status === 'cached' ? '缓存' : escapeHtml(stageLabel(step.status))}</span></div>`).join('')}</div>` : ''}
         `).join('')}
       </div>
     </article>
@@ -472,15 +408,15 @@ export function buildRunsStageProgressMarkup(vm) {
 export function buildRunsCurrentStageMarkup(vm) {
   return `
     <article id="runsCurrentStage" class="panel">
-      <div class="panel-headline"><h3>当前阶段详情</h3>${renderBadge(stageLabel(vm.currentStage.status), stateClass(vm.currentStage.status))}</div>
+      <div class="panel-headline run-stage-heading"><h3>当前阶段</h3>${renderBadge(stageLabel(vm.currentStage.status), stateClass(vm.currentStage.status))}</div>
+      <div data-current-stage-body>
       <div class="key-value-list">
         <div class="key-value-row"><span>阶段</span><strong>${escapeHtml(vm.currentStage.name)}</strong></div>
-        <div class="key-value-row"><span>状态</span><strong>${escapeHtml(stageLabel(vm.currentStage.status))}</strong></div>
         <div class="key-value-row"><span>开始时间</span><strong>${escapeHtml(vm.runStartedAt)}</strong></div>
         <div class="key-value-row"><span>已耗时</span><strong>${escapeHtml(vm.runElapsed)}</strong></div>
         <div class="key-value-row"><span>当前目标</span><strong>${escapeHtml(vm.currentStage.name === 'speedtest' ? '测速通过节点' : '流水线处理')}</strong></div>
       </div>
-      <div class="progress-track"><div class="progress-fill" style="width:35%"></div></div>
+      </div>
     </article>
   `;
 }
@@ -490,14 +426,16 @@ function buildResultsPage(vm, messages) {
   const verifyStage = vm.stageRows.find((row) => row.name === 'verify');
   return `
     <div id="resultsWorkspace" class="page-grid results-grid">
+      ${buildSubscriptionPanel(vm)}
+      <!-- Keep the artifact identity beside its actions without an introductory heading. -->
       <article class="panel wide-panel artifact-card">
         <div>
-          <span class="panel-subcopy">最终节点来源</span>
+          <span class="sr-only">最终节点来源</span>
           <strong class="mono">${escapeHtml(vm.artifactDir || '暂无')}</strong>
         </div>
         <div class="toolbar-right">
-          <button class="btn btn-secondary" data-action="copy-nodes" type="button">复制节点</button>
-          <button class="btn btn-secondary" data-action="open-artifact-dir" type="button">打开目录</button>
+          <button class="btn btn-secondary icon-only" data-action="copy-nodes" type="button" aria-label="复制节点" title="复制节点">${icon('copy')}</button>
+          ${vm.runtime === 'web' ? '' : `<button class="btn btn-secondary icon-only" data-action="open-artifact-dir" type="button" aria-label="打开目录" title="打开目录">${icon('folder')}</button>`}
         </div>
       </article>
 
@@ -516,33 +454,9 @@ function buildResultsPage(vm, messages) {
       ` : ''}
 
       <article class="panel wide-panel">
-        <div class="panel-headline"><h3>本次 deploy 目标</h3><span class="panel-subcopy">部署摘要</span></div>
-        <div class="key-value-list">
-          <div class="key-value-row"><span>项目名称</span><strong>${escapeHtml(vm.deployment.project_name || '—')}</strong></div>
-          <div class="key-value-row"><span>Pages 地址</span><strong class="mono">${escapeHtml(vm.deployment.pages_project_url || '—')}</strong></div>
-          <div class="key-value-row"><span>入口文件</span><strong class="mono">${escapeHtml(vm.deployment.worker_entry || '—')}</strong></div>
-          <div class="key-value-row"><span>Manifest</span><strong class="mono">${escapeHtml(vm.deployment.module_manifest_path || '—')}</strong></div>
-          <div class="key-value-row"><span>deploy 状态</span><strong>${escapeHtml(stageLabel(deployStage?.status || 'pending'))}</strong></div>
-          <div class="key-value-row"><span>verify 状态</span><strong>${escapeHtml(stageLabel(verifyStage?.status || 'pending'))}</strong></div>
-        </div>
-      </article>
-
-      <article class="panel wide-panel">
-        <div class="panel-headline"><h3>区域统计</h3><span class="panel-subcopy">按最终节点名称中的区域码统计</span></div>
-        <div class="region-stat-grid">
-          ${vm.regionStats.length ? vm.regionStats.map((item) => `
-            <div class="region-stat-card">
-              <span>${escapeHtml(item.region)}</span>
-              <strong>${escapeHtml(item.count)}</strong>
-            </div>
-          `).join('') : '<div class="empty-state">暂无区域统计，运行完成后显示。</div>'}
-        </div>
-      </article>
-
-      <article class="panel wide-panel">
-        <div class="panel-headline"><h3>最终节点列表</h3><span class="panel-subcopy">${escapeHtml(vm.nodeRows.length)} 条</span></div>
+        <div class="panel-headline node-list-heading"><h3 class="sr-only">最终节点列表</h3><span class="panel-subcopy">${escapeHtml(vm.nodeRows.length)} 个节点</span></div>
         <div id="resultNodePreview" class="table-wrap">
-          <table class="data-table decoded-node-table">
+          <table class="data-table decoded-node-table" data-column-table="nodes">
             <thead><tr><th>#</th><th>节点名称</th><th>IP地址</th><th>协议</th><th>path</th></tr></thead>
             <tbody>
               ${vm.nodeRows.length ? vm.nodeRows.map((row, index) => `
@@ -558,47 +472,45 @@ function buildResultsPage(vm, messages) {
           </table>
         </div>
       </article>
+      <!-- Low-frequency deployment paths used to bury the node comparison table. -->
+      <details class="panel wide-panel result-details" ${deployStage?.status === 'failed' || verifyStage?.status === 'failed' ? 'open' : ''}>
+        <summary>部署详情 ${renderBadge(stageLabel(deployStage?.status || 'pending'), stateClass(deployStage?.status || 'pending'))}</summary>
+        <div class="key-value-list">
+          <div class="key-value-row"><span>项目名称</span><strong>${escapeHtml(vm.deployment.project_name || '—')}</strong></div>
+          <div class="key-value-row"><span>Pages 地址</span><strong class="mono">${escapeHtml(vm.deployment.pages_project_url || '—')}</strong></div>
+          <div class="key-value-row"><span>入口文件</span><strong class="mono">${escapeHtml(vm.deployment.worker_entry || '—')}</strong></div>
+          <div class="key-value-row"><span>Manifest</span><strong class="mono">${escapeHtml(vm.deployment.module_manifest_path || '—')}</strong></div>
+          <div class="key-value-row"><span>deploy 状态</span><strong>${escapeHtml(stageLabel(deployStage?.status || 'pending'))}</strong></div>
+          <div class="key-value-row"><span>verify 状态</span><strong>${escapeHtml(stageLabel(verifyStage?.status || 'pending'))}</strong></div>
+        </div>
+      </details>
+
+      <details class="panel wide-panel result-details"><summary>区域统计</summary>
+        <div class="region-stat-grid">
+          ${vm.regionStats.length ? vm.regionStats.map((item) => `
+            <div class="region-stat-card">
+              <span>${escapeHtml(item.region)}</span>
+              <strong>${escapeHtml(item.count)}</strong>
+            </div>
+          `).join('') : '<div class="empty-state">暂无区域统计，运行完成后显示。</div>'}
+        </div>
+      </details>
+
     </div>
   `;
 }
 
-function buildSubscriptionsPage(vm, messages) {
-  const primaryCard = vm.currentSubscription;
-  return `
-    <div id="subscriptionCards" class="page-grid subscriptions-grid">
-      <article class="panel subscriptions-primary-panel">
-        <div class="panel-headline"><h3>主订阅地址</h3>${renderBadge('自动生成', 'success')}</div>
-        <div class="subscription-primary-stack">
-          <div class="subscription-tab-scroller">
-            ${SUBSCRIPTION_FORMATS.map((format) => `
-              <button
-                class="subtab ${vm.subscriptionFormat === format ? 'active' : ''}"
-                data-subscription-format="${escapeHtml(format)}"
-                aria-pressed="${vm.subscriptionFormat === format}"
-                type="button"
-              >${escapeHtml(format)}</button>
-            `).join('')}
-          </div>
-          <div class="subscription-primary mono">${escapeHtml(primaryCard.url)}</div>
-          <div class="action-grid">
-            <button class="btn btn-primary" data-copy-text="${escapeHtml(primaryCard.url)}" type="button">复制链接</button>
-            <button class="btn btn-secondary" data-open-url="${escapeHtml(primaryCard.url)}" type="button">打开订阅</button>
-          </div>
-        </div>
-      </article>
-
-      <article class="panel slim-panel">
-        <div class="panel-headline"><h3>订阅二维码</h3></div>
-        <div class="qr-block">${renderQr(vm.qr)}</div>
-        <p class="panel-subcopy center-copy">扫码导入订阅</p>
-      </article>
-
-      <article class="panel wide-panel subscription-meta">
-        <div class="mini-stat"><span>最后生成时间</span><strong>${escapeHtml(vm.lastUpdated)}</strong></div>
-        <div class="mini-stat"><span>最终节点数量</span><strong>${escapeHtml(vm.counts.availability_links)} 个</strong></div>
-      </article>
+// Results contain the one canonical subscription. QR is an object action,
+// rather than a second navigation destination with a large permanent card.
+function buildSubscriptionPanel(vm) {
+  return `<article id="subscriptionCards" class="panel wide-panel results-subscription-card">
+    <div class="subscription-primary mono">${escapeHtml(vm.subscriptionUrl)}</div>
+    <div class="subscription-actions">
+      <button class="btn btn-primary icon-only" data-copy-text="${escapeHtml(vm.subscriptionUrl)}" type="button" aria-label="复制链接" title="复制链接">${icon('copy')}</button>
+      <button class="btn btn-secondary icon-only" data-open-url="${escapeHtml(vm.subscriptionUrl)}" type="button" aria-label="打开订阅" title="打开订阅">${icon('external')}</button>
+      <details class="subscription-qr"><summary class="icon-btn" aria-label="订阅二维码" title="订阅二维码">${icon('qr')}</summary><div class="subscription-qr-panel">${renderQr(vm.qr)}</div></details>
     </div>
-  `;
+  </article>`;
 }
 
 function buildLogsPage(vm, messages) {
@@ -618,16 +530,15 @@ function buildLogsPage(vm, messages) {
           </div>
           <div class="toolbar-right">
             <div class="log-utility-actions">
-              <button class="btn btn-secondary small" data-action="copy-log" type="button">复制日志</button>
-              ${vm.runtime === 'web' ? '' : '<button class="btn btn-primary small" data-action="open-log-file" type="button">打开日志文件</button>'}
+              <button class="btn btn-secondary small icon-only" data-action="copy-log" type="button" aria-label="复制日志" title="复制日志">${icon('copy')}</button>
+              ${vm.runtime === 'web' ? '' : `<button class="btn btn-secondary small icon-only" data-action="open-log-file" type="button" aria-label="打开日志文件" title="打开日志文件">${icon('folder')}</button>`}
             </div>
             <div class="log-destructive-actions">
-              <button class="btn btn-secondary small" data-action="clear-log" type="button">清空显示</button>
+              <button class="btn btn-secondary small icon-only" data-action="clear-log" type="button" aria-label="清空显示" title="清空显示">${icon('trash')}</button>
             </div>
+            <div class="log-state-actions">${buildLogStateActions(vm)}</div>
           </div>
         </div>
-        ${!vm.logView.follow && vm.logView.unseenCount > 0 ? `<button class="btn btn-primary small log-jump-latest" data-log-jump-latest type="button">回到底部 · ${vm.logView.unseenCount} 条新消息</button>` : ''}
-        ${vm.logView.clearedSnapshot ? '<button class="btn btn-secondary small log-undo-clear" data-log-undo-clear type="button">撤销清空</button>' : ''}
         <div id="logCenterTable" class="terminal-output log-stream" role="log" aria-live="polite">
           ${buildLogCenterMarkup(vm)}
         </div>
@@ -636,23 +547,35 @@ function buildLogsPage(vm, messages) {
   `;
 }
 
+// Transient log actions share the existing toolbar, so appearing feedback
+// never shifts the stream or covers a log line being read.
+export function buildLogStateActions(vm) {
+  const label = `回到底部 · ${vm.logView.unseenCount} 条新消息`;
+  return `${!vm.logView.follow && vm.logView.unseenCount > 0 ? `<button class="btn btn-primary small icon-only" data-log-jump-latest type="button" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}">${icon('download')}</button>` : ''}${vm.logView.clearedSnapshot ? `<button class="btn btn-secondary small icon-only" data-log-undo-clear type="button" aria-label="撤销清空" title="撤销清空">${icon('refresh')}</button>` : ''}`;
+}
+
 export function buildLogCenterMarkup(vm) {
   return vm.logFilter === '按阶段' ? renderLogGroups(vm.logGroups) : renderLogRows(vm.logRows);
 }
 
 function buildSettingsPage(vm, messages) {
+  // The entries already identify their editor. Repeated instructions used to
+  // push the account tools below the first viewport.
   return `
     <div id="settingsWorkspace" class="page-grid settings-grid">
       <article class="panel wide-panel settings-overview-panel">
-        <div class="panel-headline">
-          <h3>设置总览</h3>
-          <span class="panel-subcopy">点击卡片后在弹窗中编辑，并在弹窗内直接保存</span>
-        </div>
         <div class="settings-overview-grid">
-          ${buildSettingsCard('sources', '数据源配置', `${vm.sourceRows.filter((row) => row.enabled).length} / ${vm.sourceRows.length} 个官网 · 双端并发`, '只填官网；账号池登录，密钥自动发现')}
-          ${buildSettingsCard('speed_test', '测速配置', `最低 ${vm.profile.speed_test.min_download_mb_s} MB/s · 并发 ${vm.profile.speed_test.concurrency}`, '控制测速阈值、超时和并发')}
-          ${buildSettingsCard('availability_targets', 'AI可达性检测', `已启用 ${enabledAvailabilityTargetCount(vm.profile.availability_targets)} / ${Object.keys(vm.profile.availability_targets ?? {}).length} 个网站`, '配置 Gemini、ChatGPT、Claude 或自定义网站')}
-          ${buildSettingsCard('deploy', '部署配置', `项目 ${vm.profile.deploy.project_name || '未设置'}`, '项目名变化会自动联动默认 Pages 地址；手动修改 URL 后，后续不再自动覆盖')}
+          ${buildSettingsCard('sources', '数据源配置', `${vm.sourceRows.filter((row) => row.enabled).length} / ${vm.sourceRows.length} 个官网 · 双端并发`)}
+          ${buildSettingsCard('speed_test', '测速配置', `最低 ${vm.profile.speed_test.min_download_mb_s} MB/s · 并发 ${vm.profile.speed_test.concurrency}`)}
+          ${buildSettingsCard('availability_targets', 'AI可达性检测', `已启用 ${enabledAvailabilityTargetCount(vm.profile.availability_targets)} / ${Object.keys(vm.profile.availability_targets ?? {}).length} 个网站`)}
+          ${buildSettingsCard('deploy', '部署配置', `项目 ${vm.profile.deploy.project_name || '未设置'}`)}
+        </div>
+      </article>
+
+      <article class="panel wide-panel appearance-panel">
+        <h3>${icon('sun')}外观</h3>
+        <div class="theme-choices" role="group" aria-label="界面主题">
+          ${[['system', 'monitor', '跟随系统'], ['light', 'sun', '浅色'], ['dark', 'moon', '深色']].map(([value, glyph, label]) => `<button class="theme-choice" type="button" data-theme-choice="${value}" aria-pressed="${vm.themePreference === value}">${icon(glyph)}${label}</button>`).join('')}
         </div>
       </article>
 
@@ -692,11 +615,11 @@ export function buildAccountPoolRecords(pool = EMPTY_ACCOUNT_POOL) {
   const rows = filterAccountPoolAccounts(pool);
   if (rows.length === 0) {
     const hasAny = (pool.accounts ?? []).length > 0;
-    return `<div class="account-pool-empty">${hasAny ? '没有匹配的账号' : '还没有账号。上传 CSV 后，官网登录会自动从池中取用。'}</div>`;
+    return `<div class="account-pool-empty">${hasAny ? '没有匹配的账号' : '暂无账号，上传 CSV 后可用。'}</div>`;
   }
   return `
     <div class="table-wrap account-pool-table-wrap">
-      <table class="data-table account-pool-table">
+      <table class="data-table account-pool-table" data-column-table="accounts">
         <colgroup>
           <col class="account-col-account" />
           <col class="account-col-brand" />
@@ -733,7 +656,6 @@ export function buildAccountPoolPanel(vm) {
   const stats = pool.stats ?? { total: 0, active: 0, disabled: 0, expired: 0, invalid: 0, expiring_soon: 0, by_brand: [] };
   const total = Number(stats.total ?? 0);
   const segments = ['active', 'disabled', 'expired', 'invalid'];
-  const meterLabel = segments.map((status) => `${ACCOUNT_STATUS_META[status].label} ${Number(stats[status] ?? 0)}`).join('，');
   const message = pool.message || (pool.status === 'error' ? pool.error : '');
   // A failed load must not render a wall of zeros: "0 可用 / 共 0 个" reads as a
   // real empty pool, and counts left over from the last good load read as a
@@ -741,15 +663,7 @@ export function buildAccountPoolPanel(vm) {
   // the reason.
   const unavailable = pool.status === 'error' || pool.status === 'unavailable';
   const summary = unavailable
-    ? `
-      <div class="account-pool-summary is-unavailable">
-        <div class="account-pool-total">
-          <strong>—</strong>
-          <span>账号池未读取</span>
-        </div>
-        <p class="account-pool-expiry">${escapeHtml(pool.status === 'error' ? '刷新失败，下方是失败原因' : '当前环境没有账号池')}</p>
-      </div>
-    `
+    ? ''
     : `
       <div class="account-pool-summary">
         <div class="account-pool-total">
@@ -757,40 +671,27 @@ export function buildAccountPoolPanel(vm) {
           <span>可用账号 / 共 ${total} 个</span>
         </div>
         <div class="account-pool-status-grid">
-          ${segments.map((status) => `
+          ${segments.filter((status) => status !== 'active').map((status) => `
             <div class="account-pool-stat ${ACCOUNT_STATUS_META[status].tone}">
               <span>${ACCOUNT_STATUS_META[status].label}</span>
               <strong>${Number(stats[status] ?? 0)}</strong>
             </div>
           `).join('')}
         </div>
-        <div class="account-pool-meter" role="img" aria-label="${escapeHtml(meterLabel)}">
-          ${total > 0 ? segments.map((status) => {
-            const count = Number(stats[status] ?? 0);
-            return count > 0 ? `<span class="${ACCOUNT_STATUS_META[status].tone}" style="flex-grow:${count}" title="${ACCOUNT_STATUS_META[status].label} ${count}"></span>` : '';
-          }).join('') : '<span class="empty"></span>'}
-        </div>
-        <p class="account-pool-expiry">${Number(stats.expiring_soon ?? 0) > 0 ? `7 天内到期 ${Number(stats.expiring_soon)} 个` : '没有 7 天内到期的账号'}</p>
-      </div>
-
-      <div class="account-pool-brands">
-        ${SOURCE_DISPLAY_ORDER.map((brand) => {
-          const row = (stats.by_brand ?? []).find((item) => item.brand === brand);
-          return `<span class="account-brand-chip"><strong>${SOURCE_NAMES[brand]}</strong>${Number(row?.active ?? 0)} 可用 / ${Number(row?.total ?? 0)} 总数</span>`;
-        }).join('')}
+        ${Number(stats.expiring_soon ?? 0) > 0 ? `<p class="account-pool-expiry">7 天内到期 ${Number(stats.expiring_soon)} 个</p>` : ''}
       </div>
 
       <div class="account-pool-toolbar">
-        <label class="account-pool-search"><span>搜索</span><input data-account-search type="search" value="${escapeHtml(pool.query ?? '')}" placeholder="账号掩码或备注" /></label>
-        <label><span>状态</span><select data-account-status-filter>
+        <label class="account-pool-search"><span class="sr-only">搜索</span><input data-account-search type="search" value="${escapeHtml(pool.query ?? '')}" placeholder="账号掩码或备注" /></label>
+        <label><span class="sr-only">状态</span><select data-account-status-filter>
           <option value="all" ${pool.statusFilter === 'all' ? 'selected' : ''}>全部状态</option>
           ${segments.map((status) => `<option value="${status}" ${pool.statusFilter === status ? 'selected' : ''}>${ACCOUNT_STATUS_META[status].label}</option>`).join('')}
         </select></label>
-        <label><span>加速器</span><select data-account-brand-filter>
+        <label><span class="sr-only">加速器</span><select data-account-brand-filter>
           <option value="all" ${pool.brandFilter === 'all' ? 'selected' : ''}>全部加速器</option>
           ${SOURCE_DISPLAY_ORDER.map((brand) => `<option value="${brand}" ${pool.brandFilter === brand ? 'selected' : ''}>${SOURCE_NAMES[brand]}</option>`).join('')}
         </select></label>
-        <label><span>排序</span><select data-account-sort>
+        <label><span class="sr-only">排序</span><select data-account-sort>
           <option value="brand" ${pool.sortBy === 'brand' ? 'selected' : ''}>按加速器</option>
           <option value="recent" ${pool.sortBy === 'recent' ? 'selected' : ''}>最近使用</option>
           <option value="uses" ${pool.sortBy === 'uses' ? 'selected' : ''}>使用次数</option>
@@ -803,12 +704,11 @@ export function buildAccountPoolPanel(vm) {
       <div class="panel-headline account-pool-headline">
         <div>
           <h3>账号池</h3>
-          <span class="panel-subcopy">官网登录自动取用 · 列表不展示密码</span>
         </div>
         <div class="account-pool-actions">
-          <button class="btn btn-secondary small" data-account-action="refresh" type="button" ${pool.busy ? 'disabled' : ''}>刷新</button>
-          <button class="btn btn-secondary small" data-account-action="template" type="button" ${pool.busy ? 'disabled' : ''}>下载模板</button>
-          <button class="btn btn-primary small" data-account-action="upload" type="button" ${pool.busy ? 'disabled' : ''}>${pool.busy ? '导入中…' : '上传 CSV'}</button>
+          <button class="btn btn-secondary small icon-only" data-account-action="refresh" type="button" ${pool.busy ? 'disabled' : ''} aria-label="刷新账号池" title="刷新账号池">${icon('refresh')}</button>
+          <button class="btn btn-secondary small icon-only" data-account-action="template" type="button" ${pool.busy ? 'disabled' : ''} aria-label="下载模板" title="下载模板">${icon('download')}</button>
+          <button class="btn btn-primary small" data-account-action="upload" type="button" ${pool.busy ? 'disabled' : ''}>${icon('upload')}${pool.busy ? '导入中…' : '上传 CSV'}</button>
           <input id="accountPoolFile" data-account-file type="file" accept=".csv,.txt,text/csv,text/plain" hidden aria-hidden="true" tabindex="-1" />
         </div>
       </div>
@@ -844,16 +744,17 @@ function renderProfileField(label, type, value, id, path) {
   `;
 }
 
-function buildSettingsCard(section, title, summary, detail) {
+function buildSettingsCard(section, title, summary) {
   return `
     <button
       class="settings-overview-card"
       data-settings-card="${section}"
       type="button"
     >
-      <span class="settings-card-kicker">${escapeHtml(title)}</span>
-      <strong class="settings-card-summary" id="settingsCardSummary-${section}">${escapeHtml(summary)}</strong>
-      <span class="settings-card-detail">${escapeHtml(detail)}</span>
+      <span class="settings-card-icon">${icon(section)}</span>
+      <span class="settings-card-copy"><span class="settings-card-kicker">${escapeHtml(title)}</span>
+      <span class="settings-card-summary" id="settingsCardSummary-${section}">${escapeHtml(summary)}</span></span>
+      ${icon('chevron', 'settings-card-arrow')}
     </button>
   `;
 }
@@ -881,10 +782,9 @@ function buildSettingsDrawer(vm) {
       <aside data-settings-dialog role="dialog" aria-modal="true" aria-labelledby="settingsDrawerTitle" class="settings-drawer-panel" ${style}>
         <div class="settings-drawer-head">
           <div>
-            <span class="settings-card-kicker">编辑配置</span>
             <h3 id="settingsDrawerTitle">${escapeHtml(title)}</h3>
           </div>
-          <button class="icon-btn settings-drawer-close" data-drawer-close="cancel" type="button" aria-label="关闭${escapeHtml(title)}">×</button>
+          <button class="icon-btn settings-drawer-close" data-drawer-close="cancel" type="button" aria-label="关闭${escapeHtml(title)}" title="关闭${escapeHtml(title)}">${icon('close')}</button>
         </div>
         <div class="settings-drawer-body">
           ${isOpen ? buildSettingsDrawerBody(section, drawer.draft, vm) : ''}
@@ -945,12 +845,14 @@ function buildSettingsDrawerBody(section, draft, vm = null) {
   if (section === 'sources') {
     const sourceDraft = normalizeOfficialSourceDraft(draft?.sources ?? {});
     return `
+      <details class="context-help"><summary>抓取与早停规则</summary>
       <div class="source-drawer-settings">
         <div class="source-drawer-settings-copy">
           <strong>每个加速器只填官网</strong>
           <span>密钥从 APK 自动发现，账号密码由账号池提供。Android 与 iOS 两个通道同时抓取，每条线路按「轮数」循环请求，连续「早停」轮没有新节点就停止。</span>
         </div>
       </div>
+      </details>
       <div class="table-wrap">
         <table class="data-table settings-source-table">
           <colgroup>
@@ -997,10 +899,10 @@ function buildSettingsDrawerBody(section, draft, vm = null) {
           </tbody>
         </table>
       </div>
-      <div class="notice-card source-drawer-notice">
-        <strong>账号在下面的账号池里管理</strong>
+      <details class="context-help source-drawer-notice"><summary>账号与线路规则</summary>
+
         <p>登录被拒会把该账号标记为失效并停用，会员到期会按日期自动停用；更换密码后重新上传 CSV 即可恢复。抓取结果里免费线路和中国大陆线路会被跳过。</p>
-      </div>
+      </details>
     `;
   }
 
@@ -1036,7 +938,7 @@ function buildSettingsDrawerBody(section, draft, vm = null) {
                 <td data-field-label="URL">
                   <textarea aria-label="${escapeHtml(formatAvailabilityName(target.name))}：URL" class="table-textarea mono" rows="3" data-availability-index="${index}" data-availability-key="url">${escapeHtml(target.url ?? '')}</textarea>
                 </td>
-                <td data-field-label="操作"><button class="btn btn-secondary small destructive" data-availability-action="remove" data-availability-index="${index}" type="button">删除</button></td>
+                <td data-field-label="操作"><button class="btn btn-secondary small destructive icon-only" data-availability-action="remove" data-availability-index="${index}" type="button" aria-label="删除${escapeHtml(formatAvailabilityName(target.name))}" title="删除${escapeHtml(formatAvailabilityName(target.name))}">${icon('trash')}</button></td>
               </tr>
             `).join('')}
           </tbody>
@@ -1047,16 +949,16 @@ function buildSettingsDrawerBody(section, draft, vm = null) {
 
   if (section === 'deploy') {
     return `
-      <div class="notice-card">
-        <strong>部署配置说明</strong>
+      <details class="context-help">
+        <summary>地址联动与验证规则</summary>
         <p>项目名变化会自动联动默认 Pages 地址；手动修改 URL 后，后续不再自动覆盖。verify 订阅地址用于 deploy 后的健康检查，不影响页面展示二维码。</p>
-      </div>
+      </details>
       <div class="form-grid compact-form-grid">
         ${renderDrawerField('项目名称', 'text', draft.project_name, 'deploy.project_name')}
+        ${renderDrawerField('最少节点数', 'number', draft.min_final_links ?? 10, 'deploy.min_final_links', false, 'min="0" step="1"')}
         ${renderDrawerField('Pages 地址', 'text', draft.pages_project_url, 'deploy.pages_project_url')}
         ${renderDrawerField('订阅地址', 'text', draft.subscription_url, 'deploy.subscription_url')}
         ${renderDrawerField('verify 订阅地址', 'text', draft.verify_subscription_url, 'deploy.verify_subscription_url')}
-        ${renderDrawerField('最少节点数', 'number', draft.min_final_links ?? 10, 'deploy.min_final_links', false, 'min="0" step="1"')}
         ${renderDrawerField('Cloudflare Token', 'password', draft.cloudflare_api_token, 'deploy.cloudflare_api_token')}
         ${renderDrawerField('Pages Secret ADMIN', 'password', draft.pages_secret_admin, 'deploy.pages_secret_admin')}
       </div>
@@ -1078,7 +980,7 @@ function formatAvailabilityName(name) {
 
 function renderDrawerField(label, type, value, path, isCompact = false, extraAttrs = '') {
   return `
-    <label class="field ${isCompact ? 'compact' : ''}">
+    <label class="field ${isCompact ? 'compact' : ''} ${path.startsWith('deploy.') && (path.includes('url') || path.includes('token') || path.includes('secret')) ? 'field-wide' : ''}">
       <span>${escapeHtml(label)}</span>
       <input type="${type}" value="${escapeHtml(value ?? '')}" data-drawer-path="${escapeHtml(path)}" ${extraAttrs} />
     </label>
@@ -1147,13 +1049,6 @@ function renderSourceMetricRows(rows, ariaLabel) {
   `;
 }
 
-function buildSubscriptionCards(baseUrl) {
-  return SUBSCRIPTION_FORMATS.map((title) => ({
-    title,
-    url: title === 'Clash' ? baseUrl : `${baseUrl}?format=${encodeURIComponent(title.toLowerCase().replaceAll(' ', '-'))}`
-  }));
-}
-
 function buildSourceRows(profile) {
   return Object.entries(profile.sources).map(([name, source], index) => ({
     name,
@@ -1214,6 +1109,12 @@ export function buildRegionStats(nodeRows = []) {
     counts.set(region, (counts.get(region) ?? 0) + 1);
   }
   return Array.from(counts.entries()).map(([region, count]) => ({ region, count }));
+}
+
+// Fresh profiles have no speed_test section. Reuse these defaults in both
+// the settings card and its draft so the displayed controls can always open.
+export function buildSpeedTestDraft(config = {}) {
+  return structuredClone({ ...FALLBACK_PROFILE.speed_test, ...config });
 }
 
 export function buildSourceIterationDraft(sources = {}) {
@@ -1354,7 +1255,10 @@ function buildLogRows(displayLogs, trimWindow = true) {
 }
 
 function selectLogWindow(entries, logView) {
-  if (logView?.follow !== false) return entries.slice(-28);
+  // With the compact shell, 28 lines fit entirely on a tall desktop window.
+  // That left no scroll range to pause following and shifted text on append.
+  // Keep the same bounded 120-line window in both follow and paused modes.
+  if (logView?.follow !== false) return entries.slice(-120);
   const anchorIndex = entries.findIndex((entry) => entry.logId === logView.anchorId);
   const start = anchorIndex >= 0
     ? Math.max(0, Math.min(anchorIndex - 8, Math.max(0, entries.length - 120)))
@@ -1513,7 +1417,7 @@ function mergeProfile(profile) {
     ...profile,
     sources: normalizeOfficialSourceDraft(profile?.sources ?? FALLBACK_PROFILE.sources),
     availability_targets: profile?.availability_targets ?? DEFAULT_AVAILABILITY_TARGETS,
-    speed_test: { ...FALLBACK_PROFILE.speed_test, ...(profile?.speed_test ?? {}) },
+    speed_test: buildSpeedTestDraft(profile?.speed_test),
     deploy: { ...FALLBACK_PROFILE.deploy, ...(profile?.deploy ?? {}) },
     paths: mergedPaths,
     workspace: mergedPaths
@@ -1585,9 +1489,12 @@ function runStatusLabel(status) {
 }
 
 function resolveCurrentStatusLabel(state, messages) {
+  // A retained result belongs to the previous run. Live state takes priority
+  // when another run starts through the service or another client.
+  if (state.runState === 'running') return '运行中';
+  if (state.runState === 'stopping') return '停止中';
   if (state.runResult === 'success' || state.runResult === 'demo') return '成功';
   if (state.runResult === 'failed') return '失败';
-  if (state.runState === 'running') return '运行中';
   return '空闲';
 }
 
