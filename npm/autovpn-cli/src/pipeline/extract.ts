@@ -131,7 +131,7 @@ function generateVmessLink(payload: Record<string, unknown>): string {
   return `vmess://${encoded}`;
 }
 
-function linkFingerprint(link: string): string {
+export function linkFingerprint(link: string): string {
   try {
     const encoded = String(link).replace(/^vmess:\/\//, '');
     const padded = encoded + '='.repeat((4 - (encoded.length % 4)) % 4);

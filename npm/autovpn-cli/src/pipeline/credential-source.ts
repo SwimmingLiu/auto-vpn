@@ -26,7 +26,7 @@ import {
   type RouteGroup,
   type RouteNode
 } from './brand-protocol.js';
-import { decryptPayload, extractLinksFromPlaintext } from './extract.js';
+import { decryptPayload, extractLinksFromPlaintext, linkFingerprint } from './extract.js';
 import { AccountStore, type StoredAccount } from '../pool/account-store.js';
 import { brandFromSite, normalizeBrand } from '../pool/brands.js';
 import type { FingerprintStore } from './brand-cache.js';
@@ -1019,8 +1019,16 @@ export async function fetchCredentialSourceLinks(
   const attempts = explicitAccount && explicitPassword ? 1 : (Number.isFinite(retryLimit) && retryLimit >= 1 ? retryLimit : 3);
   let results: CredentialExtractResult[] = [];
   let callbackFailure: Error | null = null;
+  // The dashboard reads per-source totals from one `extract_iteration` stream.
+  // Both platforms emit their own, so they are merged here: summing the raw
+  // link counts and keeping one fingerprint set per source is what the two
+  // cards beside the run status are meant to show.
+  const liveTotals = new Map<string, number>();
+  const liveFingerprints = new Set<string>();
   try {
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      liveTotals.clear();
+      liveFingerprints.clear();
       results = await Promise.all(platforms.map((platform) => {
         const scoped: CredentialExtractOptions = {
           ...options,
@@ -1032,6 +1040,26 @@ export async function fetchCredentialSourceLinks(
             }
             if (type === 'extract_source_completed') {
               event(options, 'extract_platform_completed', { ...payload, platform });
+              return;
+            }
+            if (type === 'extract_iteration') {
+              const total = Number(payload.total_links ?? 0);
+              liveTotals.set(platform, Number.isFinite(total) ? total : 0);
+              const fingerprints = Array.isArray(payload.new_item_fingerprints)
+                ? payload.new_item_fingerprints.map((value) => String(value)).filter(Boolean)
+                : [];
+              for (const fingerprint of fingerprints) liveFingerprints.add(fingerprint);
+              const rawTotal = [...liveTotals.values()].reduce((sum, value) => sum + value, 0);
+              event(options, 'extract_iteration', {
+                source_name: input.source_name,
+                iteration: Number(payload.iteration ?? 0),
+                requested_iterations: policy.max_iterations,
+                new_items: Number(payload.new_items ?? 0),
+                extracted_links: Number(payload.extracted_links ?? 0),
+                total_links: rawTotal,
+                deduped_links: liveFingerprints.size,
+                new_item_fingerprints: fingerprints
+              });
               return;
             }
             if (type === 'log') {
@@ -1517,6 +1545,10 @@ export async function fetchCredentialPlatformLinks(
   let placeholders = 0;
   let requests = 0;
   const activeRoutes = routes.filter((route) => route.enabled);
+  // The dashboard's dedupe card counts distinct fingerprints, not raw links: a
+  // link repeated across two platforms has to collapse there or the number
+  // only ever grows.
+  const fingerprints = new Set<string>();
 
   const policy = resolveRoundPolicy(source);
   const maxIterations = policy.max_iterations;
@@ -1534,6 +1566,7 @@ export async function fetchCredentialPlatformLinks(
     }
     let newInRound = 0;
     let answeredInRound = 0;
+    const newFingerprints: string[] = [];
     for (const route of activeRoutes) {
       const plain = await getCommStr(
         ctx, eversionFields.apiLinks, apiDomain, '/api/evmess', `&area=${route.area}`, discovery.seed_domains
@@ -1561,6 +1594,9 @@ export async function fetchCredentialPlatformLinks(
           seen.add(link);
           links.push(link);
           newInRound += 1;
+          const fingerprint = linkFingerprint(link);
+          fingerprints.add(fingerprint);
+          newFingerprints.push(fingerprint);
         }
       }
     }
@@ -1573,6 +1609,20 @@ export async function fetchCredentialPlatformLinks(
     if (newInRound > 0) {
       await options.linksCallback?.(links.slice(-newInRound));
     }
+    // The dashboard's raw/dedupe cards read these numbers while the run is in
+    // flight. Without a per-round event a credential source stays at 0 until
+    // it finishes, which reads as a stalled run: the URL mode already emits
+    // `extract_iteration` for exactly this reason.
+    event(options, 'extract_iteration', {
+      source_name: input.source_name,
+      iteration: round,
+      requested_iterations: maxIterations,
+      new_items: newInRound,
+      extracted_links: newInRound,
+      total_links: links.length,
+      deduped_links: fingerprints.size,
+      new_item_fingerprints: newFingerprints
+    });
     log(`[extract] round ${round}/${maxIterations} +${newInRound} new (total ${links.length})`);
 
     plateau = newInRound === 0 ? plateau + 1 : 0;
