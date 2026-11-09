@@ -15,7 +15,7 @@ const EXPECTED_DIGESTS_BY_PLATFORM = {
   darwin: {
     dashboard: 'b81b37c979b906834c6f2287e25146902e97aa1e402c85b7ed85e3f634b4bd53',
     runs: '061f496d88a5d902b0028fa4588d8eb94cad843df80f246f7f49e3a1f257e80f',
-    results: 'f551c3260928a5373687fd2637004225a5b0142e8fda43062152bae55ad4de9b',
+    results: 'c1a4087454eed00652cf161b2c32a10b46931f6aec4d2dd6dc9b9e5621cef1f0',
     logs: '5cd733dfc21bd23c4bea4ff9a271d9a2b0f30b80a898d2fd0566a12a8e41a3a0',
     settings: '2d0d0b1cfd015ce18306a73870d6575c5950ca70711e2ad2a2850b5e1528bf81'
   },

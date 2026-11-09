@@ -155,6 +155,7 @@ export function buildViewModel(state, messages, language) {
     runControlState: resolveRunControlState(state.runState),
     runOptions: state.runOptions ?? {},
     activity: state.activity ?? [],
+    activityUnavailable: state.activityUnavailable ?? 0,
     runState: state.runState ?? 'idle',
     statusItems: buildStatusItems(state, messages),
     currentStatusLabel: resolveCurrentStatusLabel(state, messages),
@@ -434,7 +435,7 @@ function buildResultsPage(vm, messages) {
         </div>
         <div class="toolbar-right">
           <button class="btn btn-secondary icon-only" data-action="copy-nodes" type="button" aria-label="复制节点" title="复制节点">${icon('copy')}</button>
-          <button class="btn btn-secondary icon-only" data-action="open-artifact-dir" type="button" aria-label="打开目录" title="打开目录">${icon('folder')}</button>
+          ${vm.runtime === 'web' ? '' : `<button class="btn btn-secondary icon-only" data-action="open-artifact-dir" type="button" aria-label="打开目录" title="打开目录">${icon('folder')}</button>`}
         </div>
       </article>
 

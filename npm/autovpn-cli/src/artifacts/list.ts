@@ -4,11 +4,23 @@ import path from 'node:path';
 import { safeDeployment, redactText } from '../runtime/redaction.js';
 import { resolveArtifactsRoot } from '../runtime/paths.js';
 
-function loadJson(filePath: string): Record<string, any> {
+function isReport(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function loadJson(filePath: string): Record<string, unknown> {
   if (!fs.existsSync(filePath)) {
     return {};
   }
-  return JSON.parse(fs.readFileSync(filePath, 'utf8')) as Record<string, any>;
+  // Reports are external, crash-interruptible files. Invalid metadata must
+  // stay unknown rather than preventing the whole workspace from loading.
+  try {
+    const value: unknown = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    if (isReport(value)) return value;
+  } catch {
+    return { error: 'Artifact report is unreadable', metadata_unreadable: true };
+  }
+  return { error: 'Artifact report is invalid', metadata_unreadable: true };
 }
 
 function countNonEmptyLines(filePath: string): number | undefined {
@@ -140,19 +152,30 @@ export function artifactList(projectRoot: string, env: NodeJS.ProcessEnv = proce
   // Retry choices stay bounded; the calendar aggregates every retained run,
   // otherwise a busy day would silently erase most of the year's history.
   const days = new Map<string, { date: string; nodes: number; runs: number }>();
+  let activityUnavailable = 0;
   for (const directory of directories) {
-    const report = loadJson(path.join(directory, 'pipeline_report.json'));
-    const counts = report.counts;
-    const fromReport: unknown = counts?.final_links ?? counts?.availability_links;
-    const value = typeof fromReport === 'number' && Number.isFinite(fromReport) && fromReport >= 0
-      ? fromReport : countNonEmptyLines(path.join(directory, 'vpn_node_emoji.txt'));
-    if (value === undefined) continue;
-    const stamp = path.basename(directory).slice(0, 8);
-    const date = stamp.slice(0, 4) + '-' + stamp.slice(4, 6) + '-' + stamp.slice(6, 8);
-    const day = days.get(date) ?? { date, nodes: 0, runs: 0 };
-    day.nodes += Math.floor(value);
-    day.runs += 1;
-    days.set(date, day);
+    try {
+      // Final output is authoritative. Availability is an intermediate stage
+      // and can contain nodes that postprocessing later removes or rejects.
+      const finalFileCount = countNonEmptyLines(path.join(directory, 'vpn_node_emoji.txt'));
+      const report = loadJson(path.join(directory, 'pipeline_report.json'));
+      const reported = isReport(report.counts) ? report.counts.final_links : undefined;
+      const value = finalFileCount ?? (typeof reported === 'number' && Number.isFinite(reported) && reported >= 0 ? reported : undefined);
+      if (value === undefined) {
+        activityUnavailable += 1;
+        continue;
+      }
+      const stamp = path.basename(directory).slice(0, 8);
+      const date = stamp.slice(0, 4) + '-' + stamp.slice(4, 6) + '-' + stamp.slice(6, 8);
+      const day = days.get(date) ?? { date, nodes: 0, runs: 0 };
+      day.nodes += Math.floor(value);
+      day.runs += 1;
+      days.set(date, day);
+    } catch {
+      // One unreadable old report must not prevent profile/state loading.
+      // Preserve the missing-data count instead of claiming a zero output.
+      activityUnavailable += 1;
+    }
   }
-  return { ok: true, items, activity: [...days.values()].sort((left, right) => left.date.localeCompare(right.date)) };
+  return { ok: true, items, activityUnavailable, activity: [...days.values()].sort((left, right) => left.date.localeCompare(right.date)) };
 }

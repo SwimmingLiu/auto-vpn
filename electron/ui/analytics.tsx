@@ -7,6 +7,7 @@ interface AnalyticsInput {
   regionStats: { region: string; count: number }[];
   sourceCounts: Record<string, { deduped_links?: number }>;
   activity: { date: string; nodes: number; runs: number }[];
+  activityUnavailable?: number;
 }
 
 const colors = ['#6663df', '#23a79b', '#df9e40', '#a677d4', '#5499d8', '#d37293'];
@@ -17,7 +18,7 @@ function Distribution({ title, segments }: { title: string; segments: DonutSegme
   const total = segments.reduce((sum, item) => sum + item.value, 0);
   return <article className="panel analytics-distribution" aria-label={title}>
     <h3>{title}</h3>
-    {total > 0 ? <DonutChart segments={segments} label={title} formatValue={(value) => `${value} 个`} thickness={25}>
+    {total > 0 ? <DonutChart segments={segments} label={title} formatValue={(value) => value.toLocaleString('zh-CN')} thickness={25}>
       <div className="distribution-layout">
         <DonutChartPlot><DonutChartCenter totalLabel="节点" /></DonutChartPlot>
         <DonutChartLegend renderValue={(segment) => <><strong>{segment.value}</strong><span className="distribution-share">{Math.round(segment.share * 100)}%</span></>} />
@@ -31,7 +32,7 @@ function ContributionLegend() {
   return <div className="contribution-legend"><span>{start?.toISOString().slice(0, 7)} 至 {end?.toISOString().slice(0, 7)}</span><span className="contribution-scale">少{[0, 1, 2, 3, 4].map((level) => <i key={level} style={{ background: fill(level) }} aria-hidden="true" />)}多</span></div>;
 }
 
-function ContributionCalendar({ activity }: { activity: AnalyticsInput['activity'] }) {
+function ContributionCalendar({ activity, unavailable = 0 }: { activity: AnalyticsInput['activity']; unavailable?: number }) {
   // The component uses UTC calendar arithmetic; encode the user's local date
   // as a UTC date-only value so midnight does not move the highlighted day.
   const now = new Date(Date.now());
@@ -49,7 +50,7 @@ function ContributionCalendar({ activity }: { activity: AnalyticsInput['activity
   const maximum = Math.max(1, ...counts.flat());
   const total = counts.flat().reduce((sum, value) => sum + value, 0);
   return <article className="panel analytics-calendar" aria-label="每日节点产出">
-    <div className="analytics-heading"><h3>每日产出</h3><span title="按保留的运行记录累计最终可用节点，同一节点在不同运行中会分别计数">{total.toLocaleString('zh-CN')} 个节点</span></div>
+    <div className="analytics-heading"><h3>每日产出</h3><span title="按保留的运行记录累计最终可用节点，同一节点在不同运行中会分别计数">{total.toLocaleString('zh-CN')} 个节点{unavailable > 0 ? <span className="activity-unavailable" title={`${unavailable} 次运行缺少可确认的最终节点记录`}> · {unavailable} 次记录不完整</span> : null}</span></div>
     <div className="calendar-scroll" tabIndex={0} role="region" aria-label="53 周节点贡献，可横向滚动">
       <div className="calendar-canvas">
         <HeatCalendar weeks={53} values={counts.map((week) => week.map((count) => count / maximum))} maxCount={maximum} endDate={end} color="var(--accent)" unit="个节点">
@@ -66,7 +67,7 @@ function Analytics({ input }: { input: AnalyticsInput }) {
   const sources = Object.entries(input.sourceCounts).map(([name, counts], index) => ({ id: name, name: sourceNames[name] ?? name, value: Number(counts.deduped_links ?? 0), color: colors[index % colors.length] }));
   return <MotionConfig reducedMotion="user"><div className="dashboard-analytics" data-component-source="beui">
     <div className="analytics-distributions"><Distribution title="国家分布" segments={regions} /><Distribution title="加速器贡献" segments={sources} /></div>
-    <ContributionCalendar activity={input.activity} />
+    <ContributionCalendar activity={input.activity} unavailable={input.activityUnavailable} />
   </div></MotionConfig>;
 }
 

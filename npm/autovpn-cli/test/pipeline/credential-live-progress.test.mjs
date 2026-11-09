@@ -230,3 +230,18 @@ test('a round that adds nothing still reports the running total', async () => {
   }
   assert.equal(iterations[0].total_links < iterations[1].total_links, true);
 });
+
+test('an invalid downloaded APK reports analysis failure instead of leaving it running', async (t) => {
+  const store = new AccountStore({ dbPath: ':memory:' });
+  t.after(() => store.close());
+  const events = [];
+  await fetchCredentialSourceLinks({ source_name: 'leiting', source: {
+    mode: 'credential', official_site: 'https://example.test', account: 'fixture', password: 'fixture', platforms: ['android']
+  } }, {
+    accountStore: store, loadApk: async () => Buffer.from('invalid APK'),
+    fetchImpl: async () => { throw new Error('network must not be used'); },
+    eventCallback: (type, payload) => events.push({ type, ...payload })
+  });
+  const analysis = events.filter((event) => event.type === 'extract_substage' && event.substage === 'apk_analysis');
+  assert.deepEqual(analysis.map((event) => event.status), ['running', 'failed']);
+});

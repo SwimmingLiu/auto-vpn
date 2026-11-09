@@ -119,6 +119,7 @@ const state = {
   runtime: document.body.dataset.runtime === 'web' ? 'web' : 'electron',
   runOptions: { skipDeploy: false, skipVerify: false, saveBeforeRun: true },
   activity: [],
+  activityUnavailable: 0,
   runState: 'idle',
   runResult: 'idle',
   logEntries: [],
@@ -194,6 +195,7 @@ async function bootstrap() {
 function hydrateInitialRuntimeState(loadedState = {}) {
   const loadedProfile = loadedState.profile ?? {};
   state.activity = Array.isArray(loadedState.activity) ? loadedState.activity : [];
+  state.activityUnavailable = Number(loadedState.activityUnavailable ?? 0);
   state.profile = loadedProfile;
   state.savedProfile = structuredClone(loadedProfile);
   const nextRunState = String(loadedState.runState ?? '');
@@ -1929,7 +1931,11 @@ async function hydrateRetryArtifacts() {
     }
     hydrateRetryArtifactState(result.items ?? []);
     state.activity = Array.isArray(result.activity) ? result.activity : [];
+    state.activityUnavailable = Number(result.activityUnavailable ?? 0);
     touchUpdate();
+    // Completion refreshes history asynchronously, after the last pipeline
+    // event. Update the visible calendar without requiring a page switch.
+    renderRuntimeOnly({ chrome: false });
   } catch (error) {
     appendLog(formatMessage(getMessages(state.language).openFailed, { error: error.message }));
   }

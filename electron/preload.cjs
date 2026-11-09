@@ -1,6 +1,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('vpnAutomation', {
+  loadState: () => ipcRenderer.invoke('state:load'),
   loadProfile: () => ipcRenderer.invoke('profile:load'),
   saveProfile: (payload) => ipcRenderer.invoke('profile:save', payload),
   loadAccounts: () => ipcRenderer.invoke('accounts:snapshot'),

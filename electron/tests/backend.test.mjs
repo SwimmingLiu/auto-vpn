@@ -498,3 +498,21 @@ test('mergeLatestArtifactPreview combines backend report metadata and preview ro
     nodeSource: ''
   });
 });
+
+test('native extraction history survives a new reader and ignores unrelated runs', async (t) => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const { createRendererEventLog, readRendererHistory } = await import('../lib/renderer-history.js');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-renderer-history-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const profile = path.join(root, 'profile.toml');
+  const file = createRendererEventLog(profile);
+  const step = { type: 'extract_substage', source_name: 'leiting', platform: 'android', substage: 'apk_analysis', status: 'success' };
+  fs.appendFileSync(file, [JSON.stringify({ type: 'run_started', artifact_dir: '/tmp/run-a' }), JSON.stringify({ ...step, status: 'running' }), ...Array(1100).fill(JSON.stringify({ type: 'log', message: 'later' })), '{partial', JSON.stringify(step)].join('\n'));
+  assert.deepEqual(readRendererHistory(profile, '/tmp/run-a'), [step]);
+  assert.deepEqual(readRendererHistory(profile, '/tmp/run-b'), []);
+  const next = createRendererEventLog(profile);
+  assert.notEqual(next, file);
+  assert.deepEqual(readRendererHistory(profile), []);
+});

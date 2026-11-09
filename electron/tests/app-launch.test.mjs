@@ -38,6 +38,7 @@ test('electron app exposes preload bridge and renders the real saved profile', a
     const sourceSummary = await page.locator('#settingsCardSummary-sources').innerText();
 
     assert.equal(hasBridge, true);
+    assert.equal(await page.evaluate(() => typeof window.vpnAutomation.loadState), 'function');
     assert.equal(hasStopBridge, true);
     assert.equal(hasRunBridge, true);
     assert.equal(hasQrBridge, true);

@@ -1293,7 +1293,13 @@ export async function fetchCredentialPlatformLinks(
     }
     substage('apk_download', 'success');
     substage('apk_analysis', 'running');
-    const discovered = apkDiscoveryFromBytes(apkBytes, source.apk_url ?? '');
+    let discovered: ApkDiscovery;
+    try {
+      discovered = apkDiscoveryFromBytes(apkBytes, source.apk_url ?? '');
+    } catch (error) {
+      substage('apk_analysis', 'failed');
+      throw error;
+    }
     substage('apk_analysis', discovered.seed_domains.length > 0 ? 'success' : 'failed');
     log(`[extract] ${discovered.package_name} ${discovered.version_name} seeds=${discovered.seed_domains.length}`);
     return discovered.seed_domains.length > 0 ? discovered : null;

@@ -24,3 +24,10 @@ test('npm package ships the canonical share Worker template', async () => {
 
   assert.equal(packagedTemplate, canonicalTemplate);
 });
+
+test('npm web assets include the full beUI permission notice', async () => {
+  const permission = await readFile(path.join(repoRoot, 'electron', 'ui', 'vendor', 'beui', 'LICENSE'), 'utf8');
+  const shipped = await readFile(path.join(packageRoot, 'dist', 'web', 'renderer', 'THIRD_PARTY_NOTICES.txt'), 'utf8');
+  assert.ok(shipped.includes(permission));
+  assert.match(shipped, /Copyright.*Saurabh Chauhan/);
+});

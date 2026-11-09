@@ -104,7 +104,11 @@ function enhanceTable(table, name) {
     if (index === target) return;
     layout.order.splice(index, 1);
     layout.order.splice(target, 0, key);
+    const focused = document.activeElement;
     apply();
+    // Moving an existing header detaches its focused grip. Restore it so
+    // successive keyboard moves stay on the same column.
+    if (focused instanceof HTMLElement && table.contains(focused)) focused.focus();
     save();
     announce(`已将${columns.find(([id]) => id === key)[1]}移到第 ${target + 1} 列`);
   };

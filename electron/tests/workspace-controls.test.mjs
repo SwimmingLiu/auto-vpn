@@ -118,6 +118,15 @@ test('table dragging, keyboard resizing and saved layout preserve data alignment
   assert.ok(keyboard.width >= after.width + 15);
   await table.locator('[data-column-key="address"] .column-grip').press('Alt+ArrowRight');
   assert.deepEqual(await keys(), ['index', 'name', 'address', 'protocol', 'path']);
+  const addressGrip = table.locator('[data-column-key="address"] .column-grip');
+  await addressGrip.focus();
+  await page.keyboard.press('Alt+ArrowLeft');
+  await page.keyboard.press('Alt+ArrowLeft');
+  assert.equal(await addressGrip.evaluate((node) => document.activeElement === node), true);
+  assert.equal((await keys())[0], 'address');
+  await page.keyboard.press('Alt+ArrowRight');
+  await page.keyboard.press('Alt+ArrowRight');
+
   await page.locator('#navLogs').click();
   await page.locator('#navResults').click();
   assert.ok((await table.locator('th[data-column-key="name"]').boundingBox()).width >= keyboard.width - 1);
@@ -240,6 +249,15 @@ test('beUI charts expose the real node distributions and keyboard heatmap detail
   await page.waitForSelector('[data-component-source="beui"]');
   assert.equal(await page.getByRole('img', { name: '国家分布' }).count(), 1);
   assert.equal(await page.getByRole('img', { name: '加速器贡献' }).count(), 1);
+  const chartGeometry = await page.locator('.analytics-distribution').first().evaluate((node) => {
+    const caption = node.querySelector('.overflow-hidden p');
+    const text = caption.getBoundingClientRect(), clip = caption.parentElement.getBoundingClientRect();
+    return { listStyle: getComputedStyle(node.querySelector('ul')).listStyleType, captionVisible: text.top >= clip.top - 1 && text.bottom <= clip.bottom + 1 };
+  });
+  assert.equal(chartGeometry.listStyle, 'none');
+  assert.equal(chartGeometry.captionVisible, true);
+  assert.equal(await page.locator('.calendar-scroll').evaluate((node) => getComputedStyle(node, '::-webkit-scrollbar').height), '4px');
+
   assert.match(await page.locator('.analytics-distribution').nth(1).innerText(), /雷霆[\s\S]*42/);
   assert.match(await page.locator('.analytics-heading').innerText(), /30 个节点/);
   const cell = page.locator('[data-heat-cell]').last();
@@ -261,4 +279,26 @@ test('run monitor scrolls actual extraction substages without duplicate run acti
   await timeline.focus();
   await timeline.press('End');
   await page.waitForFunction(() => document.querySelector('.timeline').scrollTop > 0);
+});
+
+test('finishing a web run refreshes the visible contribution calendar without navigation', async (t) => {
+  let activity = [];
+  let publish;
+  const service = await createAutoVpnServer({ host: '127.0.0.1', port: 0, projectRoot: '/repo', auth: { enabled: false, token: '' }, runtime: {
+    loadState: async () => ({ profile: { sources: {}, speed_test: {}, deploy: { subscription_url: 'https://example.test/sub' }, paths: {} }, runState: 'idle', retryArtifacts: [], activity }),
+    subscribe: (handler) => { publish = handler; return () => {}; }
+  } });
+  const browser = await chromium.launch();
+  t.after(async () => { await browser.close(); await service.close(); });
+  const page = await browser.newPage({ reducedMotion: 'reduce' });
+  await page.addInitScript(() => { Date.now = () => 1794211200000; });
+  const connected = page.waitForResponse((response) => response.url().includes('/api/events'));
+  await page.goto(service.origin);
+  await connected;
+  await page.waitForSelector('.analytics-heading');
+  assert.match(await page.locator('.analytics-heading').innerText(), /0 个节点/);
+  activity = [{ date: '2026-11-09', nodes: 7, runs: 1 }];
+  publish({ type: 'finished', ok: true });
+  await page.waitForFunction(() => document.querySelector('.analytics-heading')?.textContent?.includes('7 个节点'));
+  assert.equal(await page.locator('body').getAttribute('data-page'), 'dashboard');
 });

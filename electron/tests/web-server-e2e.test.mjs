@@ -793,7 +793,7 @@ test('served web ui handles visible browser controls across all pages', { timeou
     await page.getByRole('button', { name: '复制节点' }).click();
     await page.waitForSelector('[data-toast]');
     assert.match(await page.locator('[data-toast]').innerText(), /复制|已复制/);
-    await page.getByRole('button', { name: '打开目录' }).click();
+    assert.equal(await page.getByRole('button', { name: '打开目录' }).count(), 0);
 
     await page.evaluate(() => {
       let attempts = 0;

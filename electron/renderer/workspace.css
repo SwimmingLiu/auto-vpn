@@ -99,6 +99,10 @@ input, select, textarea { min-height: 36px; padding-inline: 10px; border-radius:
 .status-hero-card[data-tone="danger"] h3 { color: var(--danger); }
 .run-icon-controls .btn { min-width: 44px; min-height: 44px; }
 .dashboard-analytics { display: grid; gap: 16px; min-width: 0; }
+/* beUI utilities intentionally omit a global reset. Keep browser paragraph
+   margins and list markers out of chart captions and legend rows. */
+.dashboard-analytics p { margin: 0; }
+.dashboard-analytics ul { list-style: none; margin: 0; padding: 0; }
 .analytics-distributions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .analytics-distribution h3, .analytics-heading h3 { font-size: 14px; font-weight: 600; margin: 0 0 16px; }
 .distribution-layout { display: grid; grid-template-columns: minmax(128px, .85fr) minmax(0, 1.15fr); align-items: center; gap: 20px; }
@@ -252,9 +256,9 @@ body[data-page="logs"] #logsWorkspace > .panel { grid-template-rows: auto minmax
 /* Thumb paint changes only during activity, without changing layout width.
    Focus and system contrast settings retain a visible scrolling affordance. */
 * { scrollbar-color: transparent transparent; }
-:is(.page-content, .table-wrap, .settings-drawer-body, .terminal-output, .timeline)::-webkit-scrollbar { width: 4px; height: 4px; }
-:is(.page-content, .table-wrap, .settings-drawer-body, .terminal-output, .timeline)::-webkit-scrollbar-track, :is(.page-content, .table-wrap, .settings-drawer-body, .terminal-output, .timeline)::-webkit-scrollbar-corner { background: transparent; }
-:is(.page-content, .table-wrap, .settings-drawer-body, .terminal-output, .timeline)::-webkit-scrollbar-thumb { background: transparent; border-radius: 8px; }
+:is(.page-content, .table-wrap, .settings-drawer-body, .terminal-output, .timeline, .calendar-scroll)::-webkit-scrollbar { width: 4px; height: 4px; }
+:is(.page-content, .table-wrap, .settings-drawer-body, .terminal-output, .timeline, .calendar-scroll)::-webkit-scrollbar-track, :is(.page-content, .table-wrap, .settings-drawer-body, .terminal-output, .timeline, .calendar-scroll)::-webkit-scrollbar-corner { background: transparent; }
+:is(.page-content, .table-wrap, .settings-drawer-body, .terminal-output, .timeline, .calendar-scroll)::-webkit-scrollbar-thumb { background: transparent; border-radius: 8px; }
 [data-scroll-active], .table-wrap:focus-visible, .terminal-output:focus-visible, .page-content:focus-visible { scrollbar-color: var(--scroll-thumb) transparent; }
 [data-scroll-active]::-webkit-scrollbar-thumb, :focus-visible::-webkit-scrollbar-thumb, ::-webkit-scrollbar-thumb:active { background: var(--scroll-thumb); }
 @supports selector(::-webkit-scrollbar) { * { scrollbar-width: auto; scrollbar-color: auto; } }
@@ -357,8 +361,8 @@ body[data-page="logs"] #logsWorkspace > .panel { grid-template-rows: auto minmax
 }
 @media (forced-colors: active) {
   * { scrollbar-color: ButtonText Canvas; scrollbar-width: auto; }
-  :is(.page-content, .table-wrap, .settings-drawer-body, .terminal-output, .timeline)::-webkit-scrollbar-thumb { background: ButtonText; }
-  :is(.page-content, .table-wrap, .settings-drawer-body, .terminal-output, .timeline)::-webkit-scrollbar-track { background: Canvas; }
+  :is(.page-content, .table-wrap, .settings-drawer-body, .terminal-output, .timeline, .calendar-scroll)::-webkit-scrollbar-thumb { background: ButtonText; }
+  :is(.page-content, .table-wrap, .settings-drawer-body, .terminal-output, .timeline, .calendar-scroll)::-webkit-scrollbar-track { background: Canvas; }
   .theme-choice[aria-pressed="true"], .nav-item.active { outline: 1px solid Highlight; }
   .column-resize::after { background: ButtonText; }
 }
