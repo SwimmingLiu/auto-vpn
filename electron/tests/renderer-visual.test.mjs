@@ -14,7 +14,7 @@ const __dirname = path.dirname(__filename);
 const EXPECTED_DIGESTS_BY_PLATFORM = {
   darwin: {
     dashboard: 'c3e8b9bb213713c13c2019033703aa986e038f8ba890a2bec7a5f3fc5ec2509f',
-    runs: 'aeaa065b492713a83c84b944392497c5bb04bf635aa95715c96bf9f1f4ff1789',
+    runs: '323c581e7ff9252c77f97077d20b421f5a057f5397f3df4d508bdfde53ce7f87',
     results: 'd3e51557c2061e90235c00445206cc23bbf153a1b4b9e279ea54fa1ea687b318',
     subscriptions: '2ab3fcab937eda0b6ad010cac25e4d213a57d152a3cb48325421fe3ddc2903d5',
     logs: '6ecb9ebe7da65f2a061b99b0e9df6283f20addb9c8410e9c0376675b5bc504cc',

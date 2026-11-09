@@ -248,6 +248,36 @@ test('buildRegionStats trusts preview regionCode and defaults unknown regions to
   ]);
 });
 
+test('the dashboard hero does not claim a finished run while one is in flight', () => {
+  // A live run creates its artifact directory before it produces anything, so
+  // `hasResult` is already true. The hero card must follow runState, or the
+  // user sees green "success" while the counters beside it are still moving.
+  const messages = getMessages('zh-CN');
+  const running = buildViewModel({
+    runState: 'running',
+    artifactDir: '/tmp/artifacts/20261109-220238',
+    counts: { raw_links: 54, deduped_links: 51 }
+  }, messages, 'zh-CN');
+  const runningMarkup = buildPageMarkup('dashboard', running, messages, 'zh-CN');
+  assert.match(runningMarkup, /正在执行，完成后覆盖本次结果/);
+  assert.doesNotMatch(runningMarkup, /最近一次运行已完成/);
+  assert.match(runningMarkup, /status-hero-card is-running/);
+  assert.match(runningMarkup, /status-orb-spinner/);
+  assert.match(runningMarkup, /最近运行结果[\s\S]*?进行中/);
+
+  const finished = buildViewModel({
+    runState: 'success',
+    artifactDir: '/tmp/artifacts/20261109-220238',
+    counts: { raw_links: 54, deduped_links: 51 }
+  }, messages, 'zh-CN');
+  const finishedMarkup = buildPageMarkup('dashboard', finished, messages, 'zh-CN');
+  assert.match(finishedMarkup, /最近一次运行已完成/);
+  assert.doesNotMatch(finishedMarkup, /status-hero-card is-running/);
+
+  const idle = buildViewModel({ runState: 'idle' }, messages, 'zh-CN');
+  assert.match(buildPageMarkup('dashboard', idle, messages, 'zh-CN'), /系统就绪，等待运行/);
+});
+
 test('results page renders unknown preview regions as US', () => {
   const messages = getMessages('zh-CN');
   const vm = buildViewModel({

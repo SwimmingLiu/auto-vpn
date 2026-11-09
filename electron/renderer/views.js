@@ -285,15 +285,24 @@ function buildPageInner(activePage, vm, messages) {
 }
 
 function buildDashboardPage(vm, messages) {
+  // While a run is in flight the hero card must not claim the last one
+  // finished: `hasResult` only says an artifact directory exists, which is also
+  // true at the start of the run that is producing it.
+  const isRunning = vm.runControlState?.isBusy === true || vm.runStateLabel === messages.runStateLabels.running;
+  const heroCopy = isRunning
+    ? (vm.hasResult ? '正在执行，完成后覆盖本次结果' : '正在执行首次运行')
+    : (vm.hasResult ? '最近一次运行已完成' : '系统就绪，等待运行');
+  const lastResultLabel = isRunning ? '进行中' : (vm.hasResult ? '成功' : '未开始');
+  const lastResultTone = isRunning ? 'accent' : (vm.hasResult ? 'success' : 'neutral');
   return `
     <div id="dashboardOverview" class="page-grid dashboard-grid">
-      <article class="panel wide-panel status-hero-card">
+      <article class="panel wide-panel status-hero-card ${isRunning ? 'is-running' : ''}" data-run-state="${escapeHtml(vm.hasResult ? 'result' : 'empty')}">
         <div>
           <span class="panel-subcopy">当前运行状态</span>
           <h3>${escapeHtml(vm.currentStatusLabel)}</h3>
-          <p>${vm.hasResult ? '最近一次运行已完成' : '系统就绪，等待运行'}</p>
+          <p>${heroCopy}</p>
         </div>
-        <div class="status-orb">✓</div>
+        <div class="status-orb" aria-hidden="true">${isRunning ? '<span class="status-orb-spinner"></span>' : '✓'}</div>
       </article>
 
       ${buildDashboardMetricsMarkup(vm)}
@@ -301,10 +310,10 @@ function buildDashboardPage(vm, messages) {
       <article class="panel">
         <div class="panel-headline">
           <h3>最近运行结果</h3>
-          ${vm.hasResult ? renderBadge('成功', 'success') : renderBadge('未开始', 'neutral')}
+          ${renderBadge(lastResultLabel, lastResultTone)}
         </div>
         <div class="key-value-list">
-          <div class="key-value-row"><span>状态</span><strong>${vm.hasResult ? '成功' : '未开始'}</strong></div>
+          <div class="key-value-row"><span>状态</span><strong>${lastResultLabel}</strong></div>
           <div class="key-value-row"><span>Artifact 目录</span><strong class="mono">${escapeHtml(vm.artifactDir || '—')}</strong></div>
           <div class="key-value-row"><span>更新时间</span><strong>${escapeHtml(vm.lastUpdated)}</strong></div>
         </div>

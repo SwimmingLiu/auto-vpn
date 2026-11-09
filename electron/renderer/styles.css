@@ -572,6 +572,38 @@ body[data-page="logs"] .page-content {
   font-weight: 900;
 }
 
+/* A running pipeline owns a green check only when it has finished; while it is
+   in flight the accent-tinted spinner says "working" at a glance. */
+.status-hero-card.is-running h3 {
+  color: var(--accent);
+}
+
+.status-hero-card.is-running .status-orb {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.status-orb-spinner {
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  border: 3px solid rgba(91, 92, 226, 0.22);
+  border-top-color: var(--accent);
+  animation: status-orb-spin 0.9s linear infinite;
+}
+
+@keyframes status-orb-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-orb-spinner {
+    animation-duration: 2.4s;
+  }
+}
+
 .note-strip {
   display: flex;
   align-items: center;
@@ -832,12 +864,22 @@ body[data-page="logs"] .page-content {
   display: block;
 }
 
+/* The two run buttons belong to the page header's action group, so they take
+   the width of their labels and sit at the right edge instead of splitting the
+   full 1440px row 50/50. Below the desktop breakpoint the stacked mobile bar
+   (see the media query) still gives them a full-width thumb target. */
 .mobile-run-bar {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(160px, 1fr));
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
   grid-column: 1 / -1;
   align-self: start;
-  gap: 14px;
+  gap: 12px;
+}
+
+.mobile-run-bar .run-big {
+  min-width: 168px;
+  padding-inline: 26px;
 }
 
 #runsWorkspace {
@@ -1342,7 +1384,7 @@ body[data-page="logs"] #logCenterTable {
 
 .source-credential-rounds {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(72px, 1fr));
   gap: 8px;
 }
 
@@ -1409,6 +1451,11 @@ body[data-page="logs"] #logCenterTable {
   resize: vertical;
 }
 
+/* Four columns: enable, brand, official site, and the loop controls. The table
+   is fixed-layout inside a 1320px drawer, so a bare `auto` site column hands it
+   every spare pixel (~870px for a 26-character URL) while the round inputs
+   shrink to their spinner width (~54px). Sizing the two round boxes explicitly
+   and capping the site column keeps the row readable instead of lopsided. */
 .settings-col-enabled,
 .availability-col-enabled {
   width: 78px;
@@ -1419,16 +1466,13 @@ body[data-page="logs"] #logCenterTable {
   width: 132px;
 }
 
-/* Four columns: enable, brand, official site, and a loop summary. The round
-   controls live inside the site cell, so the table no longer needs a column
-   per field. */
 .settings-col-connection {
   width: auto;
   min-width: 320px;
 }
 
 .settings-col-rounds {
-  width: 148px;
+  width: 196px;
 }
 
 .availability-col-url {
@@ -1820,6 +1864,14 @@ body[data-page="logs"] #logCenterTable {
 .settings-drawer-shell[data-section="availability_targets"] .settings-drawer-panel {
   width: min(960px, calc(100vw - 48px));
   max-width: 960px;
+}
+
+/* The source table is four short columns. At 1320px the `auto` site column
+   absorbed ~870px for a 26-character URL while the loop inputs shrank to their
+   spinner width, so this drawer is sized to the content instead. */
+.settings-drawer-shell[data-section="sources"] .settings-drawer-panel {
+  width: min(1080px, calc(100vw - 48px));
+  max-width: 1080px;
 }
 
 .settings-drawer-shell[data-open="true"] .settings-drawer-panel {
@@ -2988,6 +3040,7 @@ body[data-page="logs"] #logCenterTable {
     position: fixed;
     inset: auto max(12px, var(--safe-area-right)) calc(76px + var(--safe-area-bottom)) max(12px, var(--safe-area-left));
     z-index: var(--z-sticky);
+    display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 10px;
     padding: 10px;
@@ -2995,6 +3048,11 @@ body[data-page="logs"] #logCenterTable {
     backdrop-filter: blur(16px);
     border: 1px solid var(--border);
     border-radius: 16px;
+  }
+
+  .mobile-run-bar .run-big {
+    min-width: 0;
+    padding-inline: 12px;
   }
 
   #runsCurrentStage {
