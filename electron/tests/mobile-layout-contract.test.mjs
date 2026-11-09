@@ -37,7 +37,9 @@ export async function assertMobileLayout(page, { width, height }) {
   assert.equal(await page.locator('#sidebarNav [aria-current="page"]').count(), 1);
 
   const undersized = await page.locator('#pageContent button:visible, #pageContent input:visible, #pageContent select:visible, #pageContent [tabindex="0"]:visible').evaluateAll((nodes) => nodes
-    .filter((node) => !node.closest('[hidden], [aria-hidden="true"]'))
+    // Calendar cells are data marks with tooltip/keyboard checks below; action
+    // controls retain the full touch target requirement.
+    .filter((node) => !node.closest('[hidden], [aria-hidden="true"]') && !node.hasAttribute('data-heat-cell'))
     .map((node) => { const box = node.getBoundingClientRect(); return { tag: node.tagName, text: node.textContent?.trim().slice(0, 32), width: box.width, height: box.height }; })
     .filter(({ width: targetWidth, height: targetHeight }) => targetWidth < 44 || targetHeight < 44));
   assert.deepEqual(undersized, [], `undersized visible page controls at ${width}x${height}`);
@@ -127,7 +129,7 @@ test('all breakpoint contracts preserve navigation, targets, overflow and conten
     await page.goto(service.origin, { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('#dashboardOverview');
     for (const [width, height] of VIEWPORTS) await assertMobileLayout(page, { width, height });
-    for (const [nav, ready] of [['Runs', '#runsWorkspace'], ['Results', '#resultsWorkspace'], ['Subscriptions', '#subscriptionCards'], ['Logs', '#logsWorkspace'], ['Settings', '#settingsWorkspace']]) {
+    for (const [nav, ready] of [['Runs', '#runsWorkspace'], ['Results', '#resultsWorkspace'], ['Logs', '#logsWorkspace'], ['Settings', '#settingsWorkspace']]) {
       await page.locator(`#nav${nav}`).click();
       await page.waitForSelector(ready);
       await assertMobileLayout(page, { width: 390, height: 844 });
@@ -154,16 +156,10 @@ test('WebKit preserves safe-area navigation, run bar and settings visual viewpor
     await assertMobileLayout(page, { width: 390, height: 844 });
     await page.evaluate(() => document.querySelector('#navRuns')?.click());
     await page.waitForSelector('#runsWorkspace');
-    const { runBar, nav } = await page.evaluate(() => {
-      const toBox = (node) => {
-        const box = node.getBoundingClientRect();
-        return { x: box.x, y: box.y, width: box.width, height: box.height };
-      };
-      const button = document.querySelector('#runsWorkspace [data-run-action="start"]');
-      return { runBar: toBox(button.parentElement), nav: toBox(document.querySelector('.sidebar')) };
-    });
-    assert.ok(runBar && nav && runBar.y + runBar.height <= nav.y, JSON.stringify({ runBar, nav }));
-    assert.equal(await page.locator('.mobile-run-bar').evaluate((node) => getComputedStyle(node).bottom), '100px');
+    // The only run controls are in the dashboard's state area. The monitor
+    // does not duplicate them or cover content with a fixed action bar.
+    assert.equal(await page.locator('#runsWorkspace [data-run-action]').count(), 0);
+    assert.ok(await page.locator('#runsStageProgress').isVisible());
     assert.equal(await page.locator('.sidebar').evaluate((node) => getComputedStyle(node).paddingBottom), '32px');
     await page.evaluate(() => document.querySelector('#navSettings')?.click());
     await page.waitForSelector('#settingsWorkspace');
@@ -172,6 +168,23 @@ test('WebKit preserves safe-area navigation, run bar and settings visual viewpor
     assert.equal(await page.locator('[data-settings-dialog]').evaluate((node) => getComputedStyle(node).backgroundColor), 'rgb(255, 255, 255)');
     assert.equal(await page.locator('.settings-drawer-actions').evaluate((node) => getComputedStyle(node).paddingBottom), '36px');
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.visualViewport.width));
+    // Section-specific desktop widths must not leak into the mobile sheet: the
+    // sources drawer is the one that sets its own width.
+    for (const section of ['deploy', 'sources']) {
+      await page.evaluate((name) => document.querySelector(`[data-settings-card="${name}"]`)?.click(), section);
+      await page.waitForSelector('#settingsDrawer[data-open="true"]');
+      const sheet = await page.locator('.settings-drawer-panel').evaluate((node) => {
+        const style = getComputedStyle(node);
+        const box = node.getBoundingClientRect();
+        return { width: style.width, maxWidth: style.maxWidth, radius: style.borderRadius, left: box.x, boxWidth: box.width };
+      });
+      assert.deepEqual(sheet, { width: '390px', maxWidth: 'none', radius: '0px', left: 0, boxWidth: 390 }, `${section} drawer must fill the phone sheet`);
+      // Close through the drawer's own cancel control: the backdrop is a
+      // full-size button under the panel and the trap owns Escape, so the
+      // cancel button keeps this loop independent of focus handling.
+      await page.locator('.settings-drawer-actions [data-drawer-close="cancel"]').click();
+      await page.waitForSelector('#settingsDrawer[data-open="false"]', { state: 'attached' });
+    }
   } finally {
     await closeAllWithin([() => browser?.close(), () => service.close()]);
   }

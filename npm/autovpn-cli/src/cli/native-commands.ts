@@ -10,6 +10,7 @@ import { publicStartedPayload, startDetachedResume, startDetachedRetry, startDet
 import { followLog } from '../jobs/logs.js';
 import { latestJobId, listJobs, loadJob, publicJobPayload, singleActiveJobId, tailLog } from '../jobs/read.js';
 import { readOptionValue, resolveProjectRoot } from '../runtime/paths.js';
+import { runAccountsCommand } from './accounts-commands.js';
 import { CliIo } from './output.js';
 
 export interface JobRuntimeOptions {
@@ -122,6 +123,16 @@ export async function runNativeCommand(argv: string[], context: NativeContext): 
       context.io.writeStdout(jsonLine(saveProfilePayload(projectRoot, payload, context.env)));
       return 0;
     }
+  }
+
+  if (command === 'accounts') {
+    return await runAccountsCommand(argv, {
+      cwd: context.cwd,
+      env: context.env,
+      io: context.io,
+      readStdin: context.readStdin,
+      now: context.now ? () => new Date(context.now!()) : undefined
+    });
   }
 
   if (command === 'artifacts') {

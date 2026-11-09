@@ -571,3 +571,30 @@ test('server runtime state includes latest artifact preview and retry artifacts'
   assert.match(stateText, /"key":"secret"/);
   assert.equal(state.deployment?.subscription_url, 'set');
 });
+
+test('a credential source password is redacted before it reaches the client', () => {
+  // The state endpoint must not echo a real account password back to the UI.
+  const profile = sanitizeProfileForServer({
+    sources: {
+      brand_a: { mode: 'credential', official_site: 'https://site.example', account: 'user1', password: 'secret-pass' },
+      brand_b: { mode: 'credential', official_site: 'https://other.example', account: 'user2', password: '' }
+    }
+  });
+  assert.equal(profile.sources.brand_a.password, '<redacted>');
+  assert.equal(profile.sources.brand_b.password, '');
+  assert.equal(profile.sources.brand_a.account, 'user1');
+  assert.equal(profile.sources.brand_a.official_site, 'https://site.example');
+});
+
+test('page refresh retains early extraction substages beyond the bounded text log tail', async (t) => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-substage-history-'));
+  t.after(() => fs.rmSync(projectRoot, { recursive: true, force: true }));
+  const runtimeRoot = path.join(projectRoot, 'state');
+  const job = writeJobFixture(runtimeRoot, 'active-job', { project_root: projectRoot });
+  const step = { type: 'extract_substage', source_name: 'leiting', platform: 'android', substage: 'apk_analysis', status: 'success' };
+  fs.writeFileSync(job.event_log, [JSON.stringify(step), ...Array(1100).fill(JSON.stringify({ type: 'log', message: 'later' }))].join('\n'));
+  const runtime = createServerRuntime({ projectRoot, env: { VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot }, followLog: async function* () {} });
+  const state = await runtime.loadState();
+  assert.deepEqual(state.logEvents[0], step);
+  assert.equal(state.logEvents.filter((event) => event.type === 'log').length, 1000);
+});

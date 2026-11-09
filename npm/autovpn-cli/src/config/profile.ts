@@ -2,9 +2,118 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { parse, stringify } from '@iarna/toml';
 
+import { brandSite, normalizeBrand, type BrandKey } from '../pool/brands.js';
 import { resolveArtifactsRoot, resolveProfilePath } from '../runtime/paths.js';
 
-const DEFAULT_SOURCE_ORDER = ['leiting', 'heidong', 'mifeng', 'xuanfeng-area', 'xuanfeng-all-area'];
+/**
+ * One entry per vendor.
+ *
+ * `xuanfeng-area` / `xuanfeng-all-area` were two profile rows for one brand's
+ * two route tables. The pipeline now fetches every table `/api/eversion`
+ * advertises and merges them, so a second row would only duplicate the work.
+ * Old profiles keep working: `normalizeBrand` maps both names to `xuanfeng`.
+ */
+const DEFAULT_SOURCE_ORDER = ['leiting', 'heidong', 'mifeng', 'xuanfeng'];
+
+/** Profile rows that name the same vendor twice, folded into one. */
+const LEGACY_SOURCE_ALIASES: Record<string, string> = {
+  'xuanfeng-area': 'xuanfeng',
+  'xuanfeng-all-area': 'xuanfeng',
+  xuanfeng1: 'xuanfeng',
+  xuanfeng2: 'xuanfeng'
+};
+
+/**
+ * Fold legacy split rows into their canonical name.
+ *
+ * A row spelled with the canonical name always wins: an alias
+ * (`xuanfeng-area`, `leiting_ios`) is the older shape, and letting it win would
+ * overwrite the configured site or round budget with a stale copy. Two aliases
+ * collapse to the first one listed. `enabled` is merged with OR either way, so
+ * a disabled duplicate can never switch off a live source.
+ */
+export function collapseLegacySources(sources: Record<string, any>): Record<string, any> {
+  const out: Record<string, any> = {};
+  for (const [name, config] of Object.entries(sources ?? {})) {
+    const canonical = LEGACY_SOURCE_ALIASES[name] ?? name;
+    const existing = out[canonical];
+    if (!existing) {
+      out[canonical] = { ...config };
+      continue;
+    }
+    out[canonical] = {
+      ...existing,
+      ...(canonical === name ? config : {}),
+      enabled: Boolean(existing.enabled ?? true) || Boolean(config.enabled ?? true)
+    };
+  }
+  return out;
+}
+
+const OFFICIAL_SOURCE_KEYS = new Set<BrandKey>(['leiting', 'heidong', 'mifeng', 'xuanfeng']);
+/**
+ * Fields the drawer no longer edits.
+ *
+ * `min_iterations` and `platforms` are deliberately absent: both are still read
+ * by the round policy and by `resolveCredentialPlatforms`, so a pinned debug
+ * profile that sets them must keep working. Dropping them here would silently
+ * change how many rounds run.
+ */
+const OBSOLETE_SOURCE_FIELDS = [
+  'url', 'key', 'account', 'password', 'platform',
+  'use_random_area', 'area_min', 'area_max',
+  'resume_from_iteration', 'failure_limit'
+] as const;
+
+function positiveInteger(value: unknown, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 1 ? Math.trunc(parsed) : fallback;
+}
+
+/**
+ * Migrate the four vendor rows to the final input contract: official site only.
+ *
+ * Credentials live in the account pool and the control-plane key is discovered
+ * from the APK. Both client channels run for every row, so a stored `platform`
+ * is no longer a choice. URL-mode round counts are not carried over: 3000 URL
+ * iterations meant 3000 requests, while 3000 credential rounds would mean
+ * 3000 requests per route per platform.
+ */
+export function normalizeOfficialSources(sources: Record<string, any>): Record<string, any> {
+  const collapsed = collapseLegacySources(sources);
+  const out: Record<string, any> = {};
+  for (const [name, config] of Object.entries(collapsed)) {
+    const brand = normalizeBrand(name);
+    if (!brand || !OFFICIAL_SOURCE_KEYS.has(brand) || !config || typeof config !== 'object') {
+      out[name] = config;
+      continue;
+    }
+    const wasCredential = config.mode === 'credential';
+    const normalized: Record<string, any> = {
+      ...config,
+      mode: 'credential',
+      official_site: String(config.official_site ?? '').trim() || brandSite(brand),
+      enabled: config.enabled !== false,
+      // 4 / 2 is the documented scheduled-run default for every row, so a
+      // credential row that never set rounds behaves like the shipped one.
+      max_iterations: wasCredential ? positiveInteger(config.max_iterations, 4) : 4,
+      plateau_limit: wasCredential ? positiveInteger(config.plateau_limit, 2) : 2
+    };
+    if (!wasCredential) {
+      // A legacy URL row's caps describe a different operation; start the
+      // route-loop flow at the documented scheduled-run default instead.
+      // 20 dry rounds meant 20 URL fetches; here each round is one request per
+      // route per platform, so the stored value would idle for minutes. A floor
+      // carried over from URL mode is the same mismatch and is dropped with it.
+      normalized.max_iterations = 4;
+      normalized.plateau_limit = 2;
+      delete normalized.min_iterations;
+    }
+    for (const field of OBSOLETE_SOURCE_FIELDS) delete normalized[field];
+    out[brand] = normalized;
+  }
+  return out;
+}
 
 function state(value: unknown): string {
   return String(value ?? '').trim() ? 'set' : 'missing';
@@ -21,7 +130,7 @@ export function profileSummary(projectRoot: string, env: NodeJS.ProcessEnv = pro
   const profilePath = resolveProfilePath(projectRoot, env);
   const stateRoot = path.dirname(profilePath);
   const payload = readProfile(profilePath);
-  const rawSources = (payload.sources ?? {}) as Record<string, any>;
+  const rawSources = normalizeOfficialSources((payload.sources ?? {}) as Record<string, any>);
   const sourceNames = [
     ...DEFAULT_SOURCE_ORDER,
     ...Object.keys(rawSources).filter((name) => !DEFAULT_SOURCE_ORDER.includes(name)).sort()
@@ -29,12 +138,18 @@ export function profileSummary(projectRoot: string, env: NodeJS.ProcessEnv = pro
   const sources = Object.fromEntries(
     sourceNames.map((name) => {
       const config = rawSources[name] ?? {};
+      const mode = config?.mode === 'credential' ? 'credential' : 'url';
       return [
       name,
       {
         enabled: Boolean(config?.enabled ?? true),
-        url: state(config?.url),
-        key: state(config?.key)
+        mode,
+        url: mode === 'url' ? state(config?.url) : state(config?.official_site ?? config?.apk_url),
+        // A credential source has no control-plane key in the profile; the key
+        // is discovered from the APK, so the check must not require one.
+        key: mode === 'url' ? state(config?.key) : state(config?.key ?? 'discovered'),
+        account: mode === 'credential' ? 'pool' : state(config?.account),
+        platform: mode === 'credential' ? 'android+ios' : String(config?.platform ?? 'android')
       }
     ];
     })
@@ -71,8 +186,10 @@ export function profilePayload(projectRoot: string, env: NodeJS.ProcessEnv = pro
     state_root: path.dirname(profilePath),
     profile_path: profilePath
   };
+  const raw = readProfile(profilePath);
   return {
-    ...readProfile(profilePath),
+    ...raw,
+    sources: normalizeOfficialSources((raw.sources ?? {}) as Record<string, any>),
     paths,
     workspace: paths
   };
@@ -84,6 +201,7 @@ export function saveProfilePayload(projectRoot: string, payload: Record<string, 
   const persisted = { ...payload };
   delete (persisted as Record<string, unknown>).paths;
   delete (persisted as Record<string, unknown>).workspace;
+  persisted.sources = normalizeOfficialSources((persisted.sources ?? {}) as Record<string, any>);
   fs.writeFileSync(profilePath, stringify(persisted as any), 'utf8');
   return profilePayload(projectRoot, env);
 }

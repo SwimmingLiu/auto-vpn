@@ -1,6 +1,6 @@
 {
   "name": "@swimmingliu/autovpn",
-  "version": "1.8.0",
+  "version": "2.0.1",
   "description": "npm wrapper for the AutoVPN headless CLI",
   "type": "module",
   "repository": {
@@ -22,7 +22,7 @@
   "scripts": {
     "build": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\" && tsc -p tsconfig.json && node scripts/copy-web-assets.mjs",
     "prepack": "npm run build",
-    "test": "npm run build && node --test test/*.test.mjs test/doctor/*.test.mjs test/jobs/*.test.mjs test/pipeline/*.test.mjs test/runtime/*.test.mjs test/server/*.test.mjs"
+    "test": "npm run build && node --test test/*.test.mjs test/doctor/*.test.mjs test/jobs/*.test.mjs test/pool/*.test.mjs test/pipeline/*.test.mjs test/runtime/*.test.mjs test/server/*.test.mjs"
   },
   "engines": {
     "node": ">=22.5.0"

@@ -7,7 +7,7 @@ import path from 'node:path';
 
 import * as packageBuild from '../build/package.mjs';
 import {
-  buildSvgIconRenderHtml,
+  buildIconRenderHtml,
   buildPackageArchList,
   buildElectronBuilderArgs,
   buildPackagePlatformList,
@@ -171,13 +171,13 @@ test('resolveLiveProfilePath prefers the repo-anchor state file for worktrees', 
   );
 });
 
-test('resolveIconPaths points packaging to generated icns and source svg', () => {
+test('resolveIconPaths points packaging to generated icns and source PNG', () => {
   const projectRoot = '/tmp/project';
   const iconPaths = resolveIconPaths(projectRoot);
 
   assert.equal(
-    iconPaths.sourceSvg,
-    '/tmp/project/electron/renderer/assets/vpn-auto-logo-v2-minimal.svg'
+    iconPaths.sourcePng,
+    '/tmp/project/electron/renderer/assets/vpn-auto-logo-v3.png'
   );
   assert.equal(iconPaths.outputDir, '/tmp/project/electron/build/assets');
   assert.equal(iconPaths.outputPng, '/tmp/project/electron/build/assets/app-icon-1024.png');
@@ -291,13 +291,13 @@ test('packaging profile staging always uses the sanitized default seed', () => {
   assert.doesNotMatch(bundled, /live-state|PRIVATE_VALUE_/);
 });
 
-test('buildSvgIconRenderHtml renders the app icon on a transparent canvas', () => {
-  const html = buildSvgIconRenderHtml('<svg viewBox="0 0 10 10"></svg>', 1024);
+test('buildIconRenderHtml renders the app icon on a transparent canvas', () => {
+  const html = buildIconRenderHtml(Buffer.from('png-bytes'), 1024);
 
   assert.match(html, /background:\s*transparent/);
   assert.match(html, /width:\s*1024px/);
   assert.match(html, /height:\s*1024px/);
-  assert.match(html, /data:image\/svg\+xml;base64,/);
+  assert.match(html, /data:image\/png;base64,/);
 });
 
 test('retryOperation reruns transient icon rendering operations', async () => {
@@ -613,4 +613,45 @@ test('stageShareWorkerRuntime copies repo template vpn.js into the packaged runt
     path.join(projectRoot, 'electron', 'runtime', 'share-worker', 'vpn.js')
   );
   assert.equal(fs.readFileSync(runtimePath, 'utf-8'), fs.readFileSync(shareWorkerSource, 'utf-8'));
+});
+
+test('the first packaging attempt uses the default download hosts', () => {
+  // A reachable GitHub must always be preferred; the mirror is only a fallback.
+  const env = packageBuild.buildElectronBuilderEnv(1, { PATH: '/usr/bin' });
+  assert.equal(env.ELECTRON_MIRROR, undefined);
+  assert.equal(env.ELECTRON_BUILDER_BINARIES_MIRROR, undefined);
+  assert.equal(env.PATH, '/usr/bin');
+});
+
+test('a retried packaging attempt points both downloads at the mirror', () => {
+  // `electron-builder` resolves the Electron runtime itself, so `ELECTRON_MIRROR`
+  // alone does not cover it, and `fpm`/`AppImage` come from a second origin.
+  const env = packageBuild.buildElectronBuilderEnv(2, {});
+  assert.equal(env.ELECTRON_MIRROR, packageBuild.ELECTRON_BUILDER_MIRROR);
+  assert.match(env.ELECTRON_BUILDER_BINARIES_MIRROR, /electron-builder-binaries/);
+});
+
+test('an explicitly configured mirror is not overwritten', () => {
+  const env = packageBuild.buildElectronBuilderEnv(2, {
+    ELECTRON_MIRROR: 'https://mirror.internal/electron/',
+    ELECTRON_BUILDER_BINARIES_MIRROR: 'https://mirror.internal/binaries/'
+  });
+  assert.equal(env.ELECTRON_MIRROR, 'https://mirror.internal/electron/');
+  assert.equal(env.ELECTRON_BUILDER_BINARIES_MIRROR, 'https://mirror.internal/binaries/');
+});
+
+test('the generated project logo and packaging PNG preserve transparent corners', async () => {
+  const { PNG } = await import('pngjs');
+  const { sourcePng, outputPng, outputIco } = resolveIconPaths(process.cwd());
+  const source = PNG.sync.read(fs.readFileSync(sourcePng));
+  const packaged = PNG.sync.read(fs.readFileSync(outputPng));
+  const windows = PNG.sync.read(fs.readFileSync(outputIco).subarray(22));
+  for (const image of [source, packaged, windows]) {
+    assert.equal(image.data[3], 0);
+    assert.equal(image.data[image.width * 4 - 1], 0);
+    assert.equal(image.data[image.data.length - 1], 0);
+    assert.ok(image.data.some((value, index) => index % 4 === 3 && value > 0));
+  }
+  assert.equal(packaged.width, 1024);
+  assert.equal(windows.width, 256);
 });

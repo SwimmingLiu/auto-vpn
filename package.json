@@ -1,6 +1,6 @@
 {
   "name": "vpn-subscription-automation",
-  "version": "1.8.0",
+  "version": "2.0.1",
   "description": "AutoVPN Electron desktop app for VPN subscription automation",
   "homepage": "https://github.com/SwimmingLiu/auto-vpn#readme",
   "author": {
@@ -15,18 +15,32 @@
     "preelectron:dev": "npm run build:autovpn-cli",
     "electron:dev": "electron .",
     "pretest:h5": "npm run build:autovpn-cli",
-    "test:h5": "node --test --test-concurrency=1 electron/tests/mobile-layout-contract.test.mjs electron/tests/web-server-e2e.test.mjs electron/tests/web-server-visual.test.mjs",
+    "test:h5": "node --test --test-concurrency=1 electron/tests/mobile-layout-contract.test.mjs electron/tests/workspace-controls.test.mjs electron/tests/web-server-e2e.test.mjs electron/tests/web-server-visual.test.mjs",
     "pretest:electron-native": "npm run build:autovpn-cli",
     "test:electron-native": "node --test --test-concurrency=1 electron/tests/app-launch.test.mjs electron/tests/artifact-preview.test.mjs electron/tests/backend.test.mjs electron/tests/ci-retry-helper.test.mjs electron/tests/package-build.test.mjs electron/tests/pipeline-child-finalizer.test.mjs electron/tests/process-lifecycle.test.mjs electron/tests/release-docs-workflow.test.mjs electron/tests/release-notes.test.mjs electron/tests/renderer-e2e.test.mjs electron/tests/renderer-visual.test.mjs electron/tests/ui-state.test.mjs electron/tests/window-config.test.mjs",
     "pretest:electron": "npm run build:autovpn-cli",
     "test:electron": "npm run test:h5 && npm run test:electron-native",
     "test:all": "npm test --prefix npm/autovpn-cli && npm run test:electron",
-    "package:electron": "node electron/build/package.mjs"
+    "package:electron": "node electron/build/package.mjs",
+    "build:ui": "npm run typecheck:ui && node scripts/build-ui.mjs",
+    "prebuild:autovpn-cli": "npm run build:ui",
+    "typecheck:ui": "node npm/autovpn-cli/node_modules/typescript/bin/tsc -p electron/ui/tsconfig.json"
   },
   "devDependencies": {
+    "@floating-ui/dom": "1.8.0",
+    "@tailwindcss/cli": "4.3.5",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "clsx": "2.1.1",
     "electron": "37.10.3",
     "electron-builder": "26.8.1",
-    "js-yaml": "4.3.0"
+    "esbuild": "0.28.2",
+    "js-yaml": "4.3.0",
+    "motion": "14.11.1",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "tailwind-merge": "3.7.0",
+    "tailwindcss": "4.3.5"
   },
   "build": {
     "appId": "com.swimmingliu.vpnautomation",

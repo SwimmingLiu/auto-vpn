@@ -1,8 +1,10 @@
+import { validateAccountsCommand } from '../accounts-commands.js';
 import { CliUsageError } from '../errors.js';
 import { readOptionValue } from '../global-options.js';
 
 const TOP_LEVEL_COMMANDS = new Set([
   'profile',
+  'accounts',
   'doctor',
   'artifacts',
   'run',
@@ -97,6 +99,11 @@ export function validateCommand(argv: string[]): void {
   }
 
   if (command === 'serve') {
+    return;
+  }
+
+  if (command === 'accounts') {
+    validateAccountsCommand(argv);
     return;
   }
 

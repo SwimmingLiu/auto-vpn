@@ -67,11 +67,13 @@ test('served web ui loads profile and starts a run through the web adapter', asy
     await page.locator('#navRuns').click();
     await page.waitForSelector('#runsWorkspace');
     await page.locator('.run-secondary-controls').evaluate((node) => { node.open = true; });
-    await page.locator('#runsWorkspace [data-run-action="start"]').click();
+    await page.locator('#navDashboard').click();
+    await page.locator('#dashboardOverview [data-run-action="start"]').click();
     await page.waitForTimeout(150);
 
     assert.equal(calls.length, 1);
     assert.deepEqual(calls[0], ['start', { skipDeploy: false, skipVerify: false, resumeLatest: false }]);
+    await page.locator('#navRuns').click();
     assert.match(await page.locator('#runsWorkspace').innerText(), /extract|运行|日志/);
   } finally {
     await browser?.close();
@@ -126,8 +128,11 @@ test('served web ui restores the latest running state after page refresh', async
     await page.waitForSelector('#runsWorkspace');
 
     assert.match(await page.locator('#runStateBadge').innerText(), /运行中/);
-    assert.equal(await page.locator('#runsWorkspace [data-run-action="start"]').isDisabled(), true);
-    assert.equal(await page.locator('#runsWorkspace [data-run-action="stop"]').isDisabled(), false);
+    await page.locator('#navDashboard').click();
+    assert.equal(await page.locator('#dashboardOverview [data-run-action="start"]').isDisabled(), true);
+    await page.locator('#navDashboard').click();
+    assert.equal(await page.locator('#dashboardOverview [data-run-action="stop"]').isDisabled(), false);
+    await page.locator('#navRuns').click();
     assert.match(await page.locator('#runsWorkspace').innerText(), /extract|运行中|12/);
     await page.locator('#navLogs').click();
     await page.waitForSelector('#logsWorkspace');
@@ -235,8 +240,11 @@ test('served web ui restores a retained terminal state after page refresh', asyn
     await page.waitForSelector('#runsWorkspace');
 
     assert.match(await page.locator('#runStateBadge').innerText(), /失败/);
-    assert.equal(await page.locator('#runsWorkspace [data-run-action="start"]').isDisabled(), false);
-    assert.equal(await page.locator('#runsWorkspace [data-run-action="stop"]').isDisabled(), true);
+    await page.locator('#navDashboard').click();
+    assert.equal(await page.locator('#dashboardOverview [data-run-action="start"]').isDisabled(), false);
+    await page.locator('#navDashboard').click();
+    assert.equal(await page.locator('#dashboardOverview [data-run-action="stop"]').isDisabled(), true);
+    await page.locator('#navRuns').click();
     assert.match(await page.locator('#runsWorkspace').innerText(), /失败|7|20260709-011000/);
   } finally {
     await browser?.close();
@@ -286,12 +294,18 @@ test('served web ui leaves stopping state when stop finds the server run already
     await page.locator('#navRuns').click();
     await page.waitForSelector('#runsWorkspace');
 
-    await page.locator('#runsWorkspace [data-run-action="start"]').click();
-    await page.waitForFunction(() => !document.querySelector('#runsWorkspace [data-run-action="stop"]')?.disabled);
-    await page.locator('#runsWorkspace [data-run-action="stop"]').click();
+    await page.locator('#navDashboard').click();
+    await page.locator('#dashboardOverview [data-run-action="start"]').click();
+    await page.locator('#navDashboard').click();
+    await page.waitForFunction(() => !document.querySelector('#dashboardOverview [data-run-action="stop"]')?.disabled);
+    await page.locator('#navDashboard').click();
+    await page.locator('#dashboardOverview [data-run-action="stop"]').click();
 
-    await page.waitForFunction(() => !document.querySelector('#runsWorkspace [data-run-action="start"]')?.disabled);
-    assert.equal(await page.locator('#runsWorkspace [data-run-action="stop"]').isDisabled(), true);
+    await page.locator('#navDashboard').click();
+    await page.waitForFunction(() => !document.querySelector('#dashboardOverview [data-run-action="start"]')?.disabled);
+    await page.locator('#navDashboard').click();
+    assert.equal(await page.locator('#dashboardOverview [data-run-action="stop"]').isDisabled(), true);
+    await page.locator('#navRuns').click();
     assert.doesNotMatch(await page.locator('#runsWorkspace').innerText(), /停止中/);
   } finally {
     await browser?.close();
@@ -343,10 +357,14 @@ test('served web ui treats run_failed and failed summaries as terminal states', 
     await page.waitForSelector('#dashboardOverview');
     await page.locator('#navRuns').click();
     await page.waitForSelector('#runsWorkspace');
-    await page.locator('#runsWorkspace [data-run-action="start"]').click();
+    await page.locator('#navDashboard').click();
+    await page.locator('#dashboardOverview [data-run-action="start"]').click();
 
-    await page.waitForFunction(() => !document.querySelector('#runsWorkspace [data-run-action="start"]')?.disabled);
-    assert.equal(await page.locator('#runsWorkspace [data-run-action="stop"]').isDisabled(), true);
+    await page.locator('#navDashboard').click();
+    await page.waitForFunction(() => !document.querySelector('#dashboardOverview [data-run-action="start"]')?.disabled);
+    await page.locator('#navDashboard').click();
+    assert.equal(await page.locator('#dashboardOverview [data-run-action="stop"]').isDisabled(), true);
+    await page.locator('#navRuns').click();
     assert.match(await page.locator('#runsWorkspace').innerText(), /失败|failed|fetch failed/i);
   } finally {
     await browser?.close();
@@ -391,6 +409,7 @@ test('served web ui stores token from url and authorizes api and sse requests', 
     await page.waitForSelector('#dashboardOverview');
     await page.locator('#navRuns').click();
     await page.waitForSelector('#runsWorkspace');
+    await page.locator('#navDashboard').click();
     await page.locator('[data-run-action="start"]').click();
     await page.waitForTimeout(150);
 
@@ -691,10 +710,11 @@ test('served web ui handles visible browser controls across all pages', { timeou
   try {
     browser = await chromium.launch();
     const page = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true });
+    page.setDefaultTimeout(3000);
     await page.goto(`${service.origin}/`);
     await page.waitForSelector('#dashboardOverview');
 
-    await page.locator('#pageActions [data-action="open-settings"]').click();
+    await page.locator('#navSettings').click();
     await page.waitForSelector('#settingsWorkspace');
 
     for (const section of ['sources', 'speed_test', 'availability_targets', 'deploy']) {
@@ -707,7 +727,8 @@ test('served web ui handles visible browser controls across all pages', { timeou
       assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), true);
       assert.equal(await page.locator('[data-drawer-save="save"]').isVisible(), true);
       if (section === 'sources') {
-        await page.locator('[data-drawer-path="sources.maxIterations"]').fill('41');
+        // The round budget is per vendor now; the shared url-mode fields are gone.
+        await page.locator('[data-drawer-source="leiting"][data-drawer-key="max_iterations"]').fill('41');
       } else if (section === 'speed_test') {
         await page.locator('[data-drawer-path="speed_test.concurrency"]').fill('4');
       } else if (section === 'availability_targets') {
@@ -723,7 +744,7 @@ test('served web ui handles visible browser controls across all pages', { timeou
 
       await opener.click();
       if (section === 'sources') {
-        assert.equal(await page.locator('[data-drawer-path="sources.maxIterations"]').inputValue(), '41');
+        assert.equal(await page.locator('[data-drawer-source="leiting"][data-drawer-key="max_iterations"]').inputValue(), '41');
       } else if (section === 'speed_test') {
         assert.equal(await page.locator('[data-drawer-path="speed_test.concurrency"]').inputValue(), '4');
       } else if (section === 'availability_targets') {
@@ -757,18 +778,22 @@ test('served web ui handles visible browser controls across all pages', { timeou
     await page.locator('[data-run-retry-stage]').selectOption('deploy');
     await page.locator('.run-secondary-controls').evaluate((node) => { node.open = true; });
     await page.locator('[data-action="retry-stage"]').click();
-    await page.waitForFunction(() => !document.querySelector('#runsWorkspace [data-run-action="start"]')?.disabled);
+    await page.locator('#navDashboard').click();
+    await page.waitForFunction(() => !document.querySelector('#dashboardOverview [data-run-action="start"]')?.disabled);
 
-    await page.locator('#runsWorkspace [data-run-action="start"]').click();
-    await page.waitForFunction(() => !document.querySelector('#runsWorkspace [data-run-action="stop"]')?.disabled);
-    await page.locator('#runsWorkspace [data-run-action="stop"]').click();
+    await page.locator('#navDashboard').click();
+    await page.locator('#dashboardOverview [data-run-action="start"]').click();
+    await page.locator('#navDashboard').click();
+    await page.waitForFunction(() => !document.querySelector('#dashboardOverview [data-run-action="stop"]')?.disabled);
+    await page.locator('#navDashboard').click();
+    await page.locator('#dashboardOverview [data-run-action="stop"]').click();
 
     await page.locator('#navResults').click();
     await page.waitForSelector('#resultsWorkspace');
     await page.getByRole('button', { name: '复制节点' }).click();
     await page.waitForSelector('[data-toast]');
     assert.match(await page.locator('[data-toast]').innerText(), /复制|已复制/);
-    await page.getByRole('button', { name: '打开目录' }).click();
+    assert.equal(await page.getByRole('button', { name: '打开目录' }).count(), 0);
 
     await page.evaluate(() => {
       let attempts = 0;
@@ -778,13 +803,17 @@ test('served web ui handles visible browser controls across all pages', { timeou
         return { ok: true, dataUrl: 'data:image/mock;base64,mobile-retry' };
       };
     });
-    await page.locator('#navSubscriptions').click();
+    await page.locator('#navSettings').click();
+    await page.locator('[data-settings-card="deploy"]').click();
+    await page.locator('[data-drawer-path="deploy.subscription_url"]').fill('https://example.test/sub-updated');
+    await page.locator('[data-drawer-save]').click();
+    await page.locator('#navResults').click();
+    await page.locator('.subscription-qr > summary').click();
     await page.waitForSelector('#subscriptionCards');
-    await page.getByRole('button', { name: 'Clash Meta' }).click();
     await page.waitForSelector('[data-action="retry-qr"]');
     await page.locator('[data-action="retry-qr"]').click();
     await page.waitForSelector('.qr-image');
-    assert.match(await page.locator('#subscriptionCards [data-copy-text]').first().getAttribute('data-copy-text'), /format=clash-meta/);
+    assert.match(await page.locator('#subscriptionCards [data-copy-text]').first().getAttribute('data-copy-text'), /https:\/\/example\.test\/sub-updated/);
     await page.getByRole('button', { name: '复制链接' }).click();
     await page.waitForSelector('[data-toast]');
 
@@ -883,8 +912,8 @@ test('served web ui supports mobile bottom navigation and run controls', async (
     assert.ok(navBox.y > 760);
 
     const navItems = page.locator('#sidebarNav .nav-item');
-    assert.equal(await navItems.count(), 6);
-    for (let index = 0; index < 6; index += 1) {
+    assert.equal(await navItems.count(), 5);
+    for (let index = 0; index < 5; index += 1) {
       const item = navItems.nth(index);
       assert.ok(await item.isVisible());
       const box = await item.boundingBox();
@@ -905,9 +934,12 @@ test('served web ui supports mobile bottom navigation and run controls', async (
       const box = await control.boundingBox();
       assert.ok(box && box.width >= 44 && box.height >= 44, `mobile run control was ${JSON.stringify(box)}`);
     }
-    await page.locator('#runsWorkspace [data-run-action="start"]').click();
-    await page.waitForFunction(() => document.querySelector('#runsWorkspace [data-run-action="start"]')?.disabled);
-    await page.locator('#runsWorkspace [data-run-action="stop"]').click();
+    await page.locator('#navDashboard').click();
+    await page.locator('#dashboardOverview [data-run-action="start"]').click();
+    await page.locator('#navDashboard').click();
+    await page.waitForFunction(() => document.querySelector('#dashboardOverview [data-run-action="start"]')?.disabled);
+    await page.locator('#navDashboard').click();
+    await page.locator('#dashboardOverview [data-run-action="stop"]').click();
 
     await page.locator('#navLogs').click();
     await page.waitForSelector('#logsWorkspace');

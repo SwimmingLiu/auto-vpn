@@ -218,6 +218,34 @@ export async function createAutoVpnServer(options: CreateAutoVpnServerOptions): 
         return;
       }
 
+      if (request.method === 'GET' && url.pathname === '/api/accounts') {
+        writeJson(response, 200, await options.runtime.loadAccounts?.() ?? { ok: false, error: 'accounts_unavailable' });
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/accounts/import') {
+        const body = await readJsonBody(request);
+        const result = await options.runtime.importAccounts?.({
+          content: String(body.content ?? ''),
+          format: String(body.format ?? 'auto')
+        }) ?? { ok: false, error: 'accounts_unavailable' };
+        writeJson(response, result.ok === false ? 400 : 200, result);
+        return;
+      }
+
+      if (request.method === 'POST' && url.pathname === '/api/accounts/status') {
+        const body = await readJsonBody(request);
+        const result = await options.runtime.setAccountStatus?.({
+          id: Number(body.id ?? 0),
+          brand: String(body.brand ?? ''),
+          account: String(body.account ?? ''),
+          status: String(body.status ?? ''),
+          reason: String(body.reason ?? '')
+        }) ?? { ok: false, error: 'accounts_unavailable' };
+        writeJson(response, result.ok === false ? 400 : 200, result);
+        return;
+      }
+
       if (request.method === 'POST' && url.pathname === '/api/qr') {
         const body = await readJsonBody(request);
         const text = String(body.text ?? '');

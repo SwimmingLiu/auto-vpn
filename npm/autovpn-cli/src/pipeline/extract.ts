@@ -1,6 +1,9 @@
 import crypto from 'node:crypto';
 import { spawn as defaultSpawn, ChildProcess } from 'node:child_process';
 
+import type { FingerprintStore } from './brand-cache.js';
+import type { FingerprintMemo } from './credential-source.js';
+
 type SpawnLike = (command: string, args: string[], options?: Record<string, unknown>) => ChildProcess;
 type FetchLike = (url: string, init?: Record<string, unknown>) => Promise<{
   ok?: boolean;
@@ -23,6 +26,27 @@ export interface SourceConfigInput {
   failure_limit?: number;
   max_runtime_seconds?: number;
   resume_from_iteration?: number;
+  /**
+   * `credential` sources carry an official site plus an account instead of a
+   * pre-built request URL, so nothing in the profile expires.
+   */
+  mode?: 'url' | 'credential';
+  official_site?: string;
+  apk_url?: string;
+  apk_path?: string;
+  account?: string;
+  password?: string;
+  platform?: 'android' | 'ios';
+  platforms?: Array<'android' | 'ios'>;
+  account_retry_limit?: number;
+  include_free_routes?: boolean;
+  include_china_routes?: boolean;
+  device_id?: string;
+  install_date?: string;
+  brand_flags?: string;
+  code?: string;
+  max_areas?: number;
+  timeout_ms?: number;
 }
 
 export interface ExtractInput {
@@ -36,6 +60,8 @@ export interface ExtractedSourceResult {
   successful_iterations: number;
   failed_iterations: number;
   links: string[];
+  /** Human-readable failures from a credential source, for the event log. */
+  errors?: string[];
 }
 
 export interface ExtractBackendOptions {
@@ -47,6 +73,10 @@ export interface ExtractBackendOptions {
   eventCallback?: ExtractEventCallback;
   linksCallback?: (links: string[]) => void | Promise<void>;
   fetchSourceLinks?: (input: ExtractInput) => ExtractedSourceResult | Promise<ExtractedSourceResult>;
+  /** Persistent brand fingerprint cache for credential sources. */
+  fingerprintStore?: FingerprintStore;
+  /** Shared fingerprint across every source of the same brand in one run. */
+  fingerprintMemo?: FingerprintMemo;
 }
 
 export interface RuntimeSourceUrlOptions {
@@ -101,7 +131,20 @@ function generateVmessLink(payload: Record<string, unknown>): string {
   return `vmess://${encoded}`;
 }
 
-function linkFingerprint(link: string): string {
+/**
+ * Exact-string identity for a link.
+ *
+ * `linkFingerprint` collapses links that describe the same node, which is what
+ * the dedupe card counts. Raw link totals have to use the same `seen` identity
+ * the pipeline itself uses, or two platforms that label one node differently
+ * would make the live raw count disagree with the final result. A digest keeps
+ * the link out of the event stream.
+ */
+export function linkDigest(link: string): string {
+  return crypto.createHash('sha256').update(String(link)).digest('hex');
+}
+
+export function linkFingerprint(link: string): string {
   try {
     const encoded = String(link).replace(/^vmess:\/\//, '');
     const padded = encoded + '='.repeat((4 - (encoded.length % 4)) % 4);
@@ -430,5 +473,47 @@ async function fetchSourceLinksInNode(input: ExtractInput, options: ExtractBacke
 }
 
 export async function fetchSourceLinksWithBackend(input: ExtractInput, options: ExtractBackendOptions = {}): Promise<ExtractedSourceResult> {
-  return options.fetchSourceLinks ? options.fetchSourceLinks(input) : fetchSourceLinksInNode(input, options);
+  if (options.fetchSourceLinks) {
+    return options.fetchSourceLinks(input);
+  }
+  if (isCredentialSource(input.source)) {
+    const { fetchCredentialSourceLinks } = await import('./credential-source.js');
+    const result = await fetchCredentialSourceLinks(input, {
+      eventCallback: options.eventCallback,
+      linksCallback: options.linksCallback,
+      fingerprintStore: options.fingerprintStore,
+      memo: options.fingerprintMemo,
+      // The credential flow talks to the same hosts as the url flow, so it
+      // needs the same egress handling: an injected fetch for tests, the
+      // configured upstream proxy, and the curl TLS fallback.
+      fetchImpl: options.fetch,
+      env: options.env,
+      curlFetch: options.curlFetch
+    });
+    return {
+      source_name: result.source_name,
+      requested_iterations: result.requested_iterations,
+      successful_iterations: result.successful_iterations,
+      failed_iterations: result.failed_iterations,
+      links: result.links,
+      errors: result.diagnostics.errors
+    };
+  }
+  return fetchSourceLinksInNode(input, options);
+}
+
+/**
+ * A credential source is identified by its mode or by carrying an account
+ * instead of a request URL; this keeps older profiles working unchanged.
+ */
+export function isCredentialSource(source: SourceConfigInput): boolean {
+  if (source.mode === 'credential') {
+    return true;
+  }
+  if (source.mode === 'url') {
+    return false;
+  }
+  const hasAccount = Boolean(String(source.account ?? '').trim());
+  const hasUrl = Boolean(String(source.url ?? '').trim());
+  return hasAccount && !hasUrl;
 }

@@ -95,6 +95,11 @@ export function resolveNodeCliEntry(projectRoot, options = {}) {
 const BACKEND_COMMANDS = new Map([
   ['profile', ['profile', 'show']],
   ['profile-save', ['profile', 'save']],
+  ['accounts-snapshot', ['accounts', 'snapshot']],
+  ['accounts-import', ['accounts', 'import', '--stdin', '--allow-issues']],
+  ['accounts-disable', ['accounts', 'disable']],
+  ['accounts-enable', ['accounts', 'enable']],
+  ['accounts-template', ['accounts', 'template']],
   ['artifact-latest', ['artifacts', 'latest']],
   ['artifact-list', ['artifacts', 'list']],
   ['run', ['run']],

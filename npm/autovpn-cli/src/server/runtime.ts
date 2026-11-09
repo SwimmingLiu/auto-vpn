@@ -11,6 +11,9 @@ import {
 } from '../jobs/commands.js';
 import { followLog as defaultFollowLog } from '../jobs/logs.js';
 import { latestJobId, loadJob } from '../jobs/read.js';
+import { AccountStore } from '../pool/account-store.js';
+import { normalizeBrand } from '../pool/brands.js';
+import { parseAccountFile } from '../pool/csv.js';
 import { resolveArtifactsRoot, resolveProfilePath } from '../runtime/paths.js';
 
 export interface ServerState {
@@ -18,6 +21,8 @@ export interface ServerState {
   runState: 'idle' | 'running' | 'stopping' | 'failed' | 'success';
   artifact?: Record<string, unknown>;
   retryArtifacts?: unknown[];
+  activity?: unknown[];
+  activityUnavailable?: number;
   deployment?: Record<string, unknown>;
   logEvents?: unknown[];
 }
@@ -25,6 +30,9 @@ export interface ServerState {
 export interface ServerRuntime {
   loadState(): Promise<ServerState>;
   saveProfile?(profile: Record<string, unknown>): Promise<Record<string, unknown>>;
+  loadAccounts?(): Promise<Record<string, unknown>>;
+  importAccounts?(input: { content?: string; format?: string }): Promise<Record<string, unknown>>;
+  setAccountStatus?(input: { id?: number; brand?: string; account?: string; status?: string; reason?: string }): Promise<Record<string, unknown>>;
   startRun?(options: { skipDeploy?: boolean; skipVerify?: boolean; resumeLatest?: boolean }): Promise<Record<string, unknown>>;
   startRetry?(options: { artifactDir?: string; stage?: string }): Promise<Record<string, unknown>>;
   stopRun?(): Promise<Record<string, unknown>>;
@@ -72,6 +80,14 @@ export function sanitizeProfileForServer(profile: Record<string, any>): Record<s
       safe.deploy[key] = redactIfSet(key, value);
     }
   }
+  // Credential sources carry a real account password; `/api/state` must not
+  // echo it back to the client. The renderer round-trips `<redacted>` through
+  // `preserveRedactedSecrets` on save, so the stored value is untouched.
+  for (const source of Object.values((safe.sources ?? {}) as Record<string, any>)) {
+    if (source && typeof source === 'object' && String(source.password ?? '').trim()) {
+      source.password = '<redacted>';
+    }
+  }
   return safe;
 }
 
@@ -81,7 +97,7 @@ function preserveRedactedSecrets(incoming: Record<string, any>, current: Record<
   for (const [name, source] of Object.entries((merged.sources ?? {}) as Record<string, any>)) {
     const currentSource = currentSources[name] ?? {};
     if (source && typeof source === 'object') {
-      for (const key of ['url', 'key']) {
+      for (const key of ['url', 'key', 'password']) {
         if (source[key] === '<redacted>') {
           source[key] = currentSource[key] ?? '';
         }
@@ -196,7 +212,19 @@ function latestJobEvents(job: Record<string, any> | undefined, maxEvents = 1000)
   if (!eventLog || !fs.existsSync(eventLog)) return [];
   try {
     const lines = fs.readFileSync(eventLog, 'utf8').split(/\r?\n/).filter(Boolean);
-    return lines.slice(-maxEvents).map((line) => parseJsonLine(line)).filter(Boolean);
+    const events = lines.map((line) => parseJsonLine(line)).filter(Boolean);
+    const priorSteps = new Map<string, unknown>();
+    // APK/domain steps occur early. Preserve their latest states even when
+    // subsequent node logs exceed the bounded text-history window.
+    for (const event of events.slice(0, -maxEvents)) {
+      if (!event || typeof event !== 'object' || !('type' in event)) continue;
+      if (event.type === 'extract_substage' && 'source_name' in event && typeof event.source_name === 'string'
+        && 'platform' in event && typeof event.platform === 'string' && 'substage' in event && typeof event.substage === 'string') {
+        priorSteps.set([event.source_name, event.platform, event.substage].join(':'), event);
+      }
+      if (event.type === 'stage' && 'stage' in event && typeof event.stage === 'string') priorSteps.set(`stage:${event.stage}`, event);
+    }
+    return [...priorSteps.values(), ...events.slice(-maxEvents)];
   } catch {
     return [];
   }
@@ -420,6 +448,8 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
         runState,
         artifact,
         retryArtifacts: Array.isArray(retries.items) ? retries.items : [],
+        activity: Array.isArray(retries.activity) ? retries.activity : [],
+        activityUnavailable: Number(retries.activityUnavailable ?? 0),
         deployment: (artifact?.deployment ?? {}) as Record<string, unknown>,
         logEvents: latestJobEvents(job)
       };
@@ -431,6 +461,49 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
         ok: true,
         profile: sanitizeProfileForServer(saveProfilePayload(options.projectRoot, merged, options.env) as Record<string, any>)
       };
+    },
+    async loadAccounts() {
+      const store = new AccountStore({ env: options.env, now: options.now });
+      try {
+        return { ok: true, stats: store.stats(), accounts: store.list({ status: 'all', includeDeleted: true }) };
+      } finally {
+        store.close();
+      }
+    },
+    async importAccounts(input = {}) {
+      const content = String(input.content ?? '');
+      const format = input.format === 'csv' || input.format === 'legacy' ? input.format : 'auto';
+      const parsed = parseAccountFile(content, format);
+      if (parsed.records.length === 0) {
+        return { ok: false, imported: 0, issues: parsed.issues };
+      }
+      const store = new AccountStore({ env: options.env, now: options.now });
+      try {
+        const outcome = store.importRecords(parsed.records);
+        return { ok: true, parsed: parsed.records.length, ...outcome, issues: parsed.issues, stats: store.stats() };
+      } finally {
+        store.close();
+      }
+    },
+    async setAccountStatus(input = {}) {
+      const id = Number(input.id);
+      const brand = normalizeBrand(input.brand);
+      const account = String(input.account ?? '').trim();
+      const byId = Number.isInteger(id) && id > 0;
+      if (!byId && (!brand || !account)) return { ok: false, error: 'id_or_brand_and_account_required' };
+      const store = new AccountStore({ env: options.env, now: options.now });
+      try {
+        const status = String(input.status ?? '');
+        const reason = String(input.reason ?? 'disabled by operator');
+        const ok = status === 'active'
+          ? (byId ? store.enableById(id) : store.enable(brand!, account))
+          : status === 'disabled'
+            ? (byId ? store.disableById(id, reason) : store.disable(brand!, account, reason))
+            : false;
+        return ok ? { ok, ...(byId ? { id } : { brand }), status } : { ok: false, error: 'account_not_found_or_status_invalid' };
+      } finally {
+        store.close();
+      }
     },
     async startRun(runOptions = {}) {
       if (runState === 'running' || runState === 'stopping') {

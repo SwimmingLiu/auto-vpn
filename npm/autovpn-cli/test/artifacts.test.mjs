@@ -59,3 +59,40 @@ test('artifactList restores missing counts from each artifact directory', () => 
     availability_links: 1
   });
 });
+
+test('daily node activity includes retained runs beyond the twenty retry choices', (t) => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-activity-'));
+  t.after(() => fs.rmSync(projectRoot, { recursive: true, force: true }));
+  const artifactsRoot = path.join(projectRoot, 'artifacts');
+  for (let day = 1; day <= 25; day += 1) {
+    const stamp = '202611' + String(day).padStart(2, '0');
+    writeJson(path.join(artifactsRoot, stamp + '-120000', 'pipeline_report.json'), {
+      run_status: 'success', counts: { final_links: day }
+    });
+  }
+  writeJson(path.join(artifactsRoot, '20261101-130000', 'pipeline_report.json'), { counts: { final_links: 5 } });
+  const result = artifactList(projectRoot, { VPN_AUTOMATION_ARTIFACTS_ROOT: artifactsRoot });
+  assert.equal(result.items.length, 20);
+  assert.equal(result.activity.length, 25);
+  assert.deepEqual(result.activity[0], { date: '2026-11-01', nodes: 6, runs: 2 });
+  assert.equal(result.activity.reduce((sum, day) => sum + day.nodes, 0), 330);
+});
+
+test('activity counts final output and isolates damaged or intermediate-only history', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-activity-boundary-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const artifactsRoot = path.join(root, 'artifacts');
+  const old = path.join(artifactsRoot, '20261001-120000');
+  writeJson(path.join(old, 'pipeline_report.json'), {});
+  fs.writeFileSync(path.join(old, 'pipeline_report.json'), '{');
+  fs.utimesSync(old, 1, 1);
+  for (let day = 1; day <= 21; day += 1) writeJson(path.join(artifactsRoot, '202611' + String(day).padStart(2, '0') + '-120000', 'pipeline_report.json'), { counts: { final_links: 1 } });
+  const final = path.join(artifactsRoot, '20261122-120000');
+  writeJson(path.join(final, 'pipeline_report.json'), { counts: { availability_links: 17, postprocess_links: 3 } });
+  fs.writeFileSync(path.join(final, 'vpn_node_emoji.txt'), 'one\ntwo\nthree\n');
+  writeJson(path.join(artifactsRoot, '20261123-120000', 'pipeline_report.json'), { run_status: 'failed', counts: { availability_links: 17 } });
+  const result = artifactList(root, { VPN_AUTOMATION_ARTIFACTS_ROOT: artifactsRoot });
+  assert.equal(result.activity.find((day) => day.date === '2026-11-22').nodes, 3);
+  assert.equal(result.activity.some((day) => day.date === '2026-11-23'), false);
+  assert.equal(result.activityUnavailable, 2);
+});

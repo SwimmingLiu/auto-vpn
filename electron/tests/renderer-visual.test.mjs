@@ -13,20 +13,18 @@ const __dirname = path.dirname(__filename);
 
 const EXPECTED_DIGESTS_BY_PLATFORM = {
   darwin: {
-    dashboard: 'c8d7d5cb927bd917148f95be1615b2e7ae3897b9b278441bd94634119003711b',
-    runs: 'aeaa065b492713a83c84b944392497c5bb04bf635aa95715c96bf9f1f4ff1789',
-    results: 'd3e51557c2061e90235c00445206cc23bbf153a1b4b9e279ea54fa1ea687b318',
-    subscriptions: '2ab3fcab937eda0b6ad010cac25e4d213a57d152a3cb48325421fe3ddc2903d5',
-    logs: '6ecb9ebe7da65f2a061b99b0e9df6283f20addb9c8410e9c0376675b5bc504cc',
-    settings: 'f15d94bfe17e18c7efe25481c78bd158bb9a10e438fe824540e8dda549c4dc36'
+    dashboard: 'b81b37c979b906834c6f2287e25146902e97aa1e402c85b7ed85e3f634b4bd53',
+    runs: '061f496d88a5d902b0028fa4588d8eb94cad843df80f246f7f49e3a1f257e80f',
+    results: 'c1a4087454eed00652cf161b2c32a10b46931f6aec4d2dd6dc9b9e5621cef1f0',
+    logs: '5cd733dfc21bd23c4bea4ff9a271d9a2b0f30b80a898d2fd0566a12a8e41a3a0',
+    settings: '2d0d0b1cfd015ce18306a73870d6575c5950ca70711e2ad2a2850b5e1528bf81'
   },
   linux: {
-    dashboard: '675f3b0895f9430afb31b6d9bb10c6b3577654a021c2ced72b493a8aebd5acf0',
-    runs: '4ca6b6fd1d58db366b4aeac1eb54553e65f9e5e7d732c3a47e82a401981abc9a',
-    results: '4903b6fedc59e39c4af5a08bd35ec601bb11c2bce2595df9f1fadb0a7b8bd3f1',
-    subscriptions: '267278ad45eaef932766446343812841f804d80638740c52421bf1fd427a11aa',
-    logs: 'e1d90b1d5fd245f45c446d9c146829753118512fd8e4ee82dead3248683be487',
-    settings: '7c2197ed283bdf331b166e9c480fe9664ea7362e741d9da77ff881c766f7d7ac'
+    dashboard: 'f6298ce922314cd74b1e3b991cb7614d3e1efb8b1fc2997e9f46712113c811a0',
+    runs: '869e28d0d41e24ba716629387d13eebb764f9f66fcb857be611a4946e9cb1fa3',
+    results: '862b030b19e8c29a3a2c243b7af8e9d14fb42b3e31f73787bb7efcc1d444bcb7',
+    logs: '2e5c1e2f792e16bf584e4191a303375be266f3df489fc98b73a12bc9a0268db2',
+    settings: '71023b852247adfe5b8c24d65085393a225a24e4a5c752f991902348d12b572b'
   }
 };
 
@@ -34,19 +32,18 @@ const VISUAL_CASES = [
   ['dashboard', '#navDashboard', '#dashboardOverview'],
   ['runs', '#navRuns', '#runsWorkspace'],
   ['results', '#navResults', '#resultsWorkspace'],
-  ['subscriptions', '#navSubscriptions', '#subscriptionCards'],
   ['logs', '#navLogs', '#logCenterTable'],
   ['settings', '#navSettings', '#settingsWorkspace']
 ];
 
-test('renderer visual hashes match the full mockup-driven workspace', async () => {
+test('renderer visual hashes match the five-page workspace', async () => {
   const expectedDigests = EXPECTED_DIGESTS_BY_PLATFORM[process.platform];
   assert.ok(expectedDigests, `renderer visual baselines are not reviewed for ${process.platform}`);
   const server = await startStaticServer(path.join(__dirname, '..', 'renderer'));
   let browser;
   try {
     browser = await chromium.launch();
-    const page = await browser.newPage({ viewport: { width: 1440, height: 960 }, deviceScaleFactor: 1 });
+    const page = await browser.newPage({ viewport: { width: 1440, height: 960 }, deviceScaleFactor: 1, reducedMotion: 'reduce' });
     const target = `${server.origin}/index.html`;
 
     await page.addInitScript(() => {
@@ -72,6 +69,14 @@ test('renderer visual hashes match the full mockup-driven workspace', async () =
       digests[name] = crypto.createHash('sha256').update(buffer).digest('hex');
     }
 
+    if (process.env.UPDATE_RENDERER_DIGESTS === '1') {
+      // Baseline regeneration must happen on the OS whose digests are being
+      // replaced: Chromium's rasterization differs between macOS and the
+      // ubuntu-24.04 runner, so a digest captured elsewhere would fail CI even
+      // for an untouched page. The workflow below runs this on the runner.
+      console.log(`RENDERER_DIGESTS ${JSON.stringify({ [process.platform]: digests })}`);
+      return;
+    }
     assert.deepEqual(digests, expectedDigests);
   } finally {
     await browser?.close();

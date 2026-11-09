@@ -1,5 +1,11 @@
 import { getMessages, formatMessage } from './i18n.js';
 import { createLogViewState, createQrState, resolveRunControlState } from './state.js';
+// Keep appearance changes separate from profile saves and running jobs, so a
+// theme switch cannot discard a settings draft or restart the pipeline.
+import { getThemePreference, initializeAppearance, selectTheme, toggleSidebar } from './appearance.js';
+import { enhanceTables } from './tables.js';
+import { icon } from './icons.js';
+import { renderAnalytics, clearAnalytics } from './analytics.bundle.js';
 import {
   addAvailabilityTargetDraft,
   applyAvailabilityTargetDraft,
@@ -7,47 +13,33 @@ import {
   buildAvailabilityTargetDraft,
   buildPageMarkup,
   buildDashboardMetricsMarkup,
+  buildDashboardStateMarkup,
   buildLogCenterMarkup,
+  buildLogStateActions,
   buildRunsCurrentStageMarkup,
   buildRunsStageProgressMarkup,
+  buildSpeedTestDraft,
   buildSourceIterationDraft,
   buildSidebarNav,
   buildViewModel,
-  buildTopbarActions,
+  buildAccountPoolRecords,
   removeAvailabilityTargetDraft,
+  resolveDashboardRunSummary,
+  validateSourceDraft,
   classifyLogEntry,
   escapeHtml,
   extractSourceUrlFromCurl,
   filterLogEntries
 } from './views.js';
 
+initializeAppearance();
+
 const demoProfile = {
   sources: {
-    leiting: {
-      url: 'https://capture-1.vpn.example/api/v1/client/subscribe',
-      key: 'lt-demo-key',
-      enabled: true
-    },
-    heidong: {
-      url: 'https://capture-2.vpn.example/api/v1/client/nodes',
-      key: 'hd-demo-key',
-      enabled: true
-    },
-    mifeng: {
-      url: 'https://capture-3.vpn.example/api/v1/client/subscribe',
-      key: 'mf-demo-key',
-      enabled: true
-    },
-    'xuanfeng-area': {
-      url: 'https://capture-4.vpn.example/api/v1/client/subscribe',
-      key: 'xf1-demo-key',
-      enabled: true
-    },
-    'xuanfeng-all-area': {
-      url: 'https://capture-5.vpn.example/api/v1/client/subscribe',
-      key: 'xf2-demo-key',
-      enabled: false
-    }
+    leiting: { mode: 'credential', official_site: 'https://www.68123836.com', enabled: true, max_iterations: 4, plateau_limit: 2 },
+    heidong: { mode: 'credential', official_site: 'https://www.67986457.com', enabled: true, max_iterations: 4, plateau_limit: 2 },
+    mifeng: { mode: 'credential', official_site: 'https://www.86933221.com', enabled: true, max_iterations: 4, plateau_limit: 2 },
+    xuanfeng: { mode: 'credential', official_site: 'https://www.16863988.com', enabled: true, max_iterations: 4, plateau_limit: 2 }
   },
   speed_test: {
     min_download_mb_s: 1.0,
@@ -104,14 +96,31 @@ const state = {
   stageStatus: {},
   counts: {},
   sourceCounts: {},
+  extractProgress: {},
   language: 'zh-CN',
+  themePreference: getThemePreference(),
   activePage: 'dashboard',
   subtabs: {},
-  subscriptionFormat: 'Clash',
   logFilter: '全部',
   settingsDrawer: null,
+  accountPool: {
+    status: 'idle',
+    stats: null,
+    accounts: [],
+    error: '',
+    message: '',
+    issues: [],
+    query: '',
+    statusFilter: 'all',
+    brandFilter: 'all',
+    sortBy: 'brand',
+    busy: false
+  },
   isDemo: false,
   runtime: document.body.dataset.runtime === 'web' ? 'web' : 'electron',
+  runOptions: { skipDeploy: false, skipVerify: false, saveBeforeRun: true },
+  activity: [],
+  activityUnavailable: 0,
   runState: 'idle',
   runResult: 'idle',
   logEntries: [],
@@ -141,7 +150,6 @@ const elements = {
   sidebarVersion: document.querySelector('#sidebarVersion'),
   sidebarNav: document.querySelector('#sidebarNav'),
   pageTitle: document.querySelector('#pageTitle'),
-  pageSubtitle: document.querySelector('#pageSubtitle'),
   runStateBadge: document.querySelector('#runStateBadge'),
   pageActions: document.querySelector('#pageActions'),
   pageContent: document.querySelector('#pageContent'),
@@ -173,6 +181,7 @@ async function bootstrap() {
   hydrateInitialRuntimeState(loadedState);
   hydrateHistoricalEvents(loadedState?.logEvents);
   touchUpdate();
+  void hydrateAccountPool();
   await refreshQrCode();
   if (!loadedState?.retryArtifacts) {
     await hydrateRetryArtifacts();
@@ -186,6 +195,8 @@ async function bootstrap() {
 
 function hydrateInitialRuntimeState(loadedState = {}) {
   const loadedProfile = loadedState.profile ?? {};
+  state.activity = Array.isArray(loadedState.activity) ? loadedState.activity : [];
+  state.activityUnavailable = Number(loadedState.activityUnavailable ?? 0);
   state.profile = loadedProfile;
   state.savedProfile = structuredClone(loadedProfile);
   const nextRunState = String(loadedState.runState ?? '');
@@ -268,8 +279,20 @@ function renderAll() {
   document.documentElement.lang = state.language;
   document.title = messages.appTitle;
   document.body.dataset.page = state.activePage;
+  const activeElement = document.activeElement;
+  const focusKey = activeElement?.dataset
+    ? (activeElement.dataset.accountSearch !== undefined ? 'account-search'
+      : activeElement.dataset.drawerSource && activeElement.dataset.drawerKey
+        ? `drawer:${activeElement.dataset.drawerSource}:${activeElement.dataset.drawerKey}`
+        : '')
+    : '';
+  const focusSelection = focusKey && 'selectionStart' in activeElement
+    ? [activeElement.selectionStart, activeElement.selectionEnd]
+    : null;
 
   renderChrome(messages, viewModel);
+  const qrPanelOpen = document.querySelector('.subscription-qr')?.open === true;
+  clearAnalytics();
   elements.pageContent.innerHTML = buildPageMarkup(
     state.activePage,
     viewModel,
@@ -277,6 +300,25 @@ function renderAll() {
     state.language,
     state.subtabs
   );
+  // Every full render replaces the tables; reapply layout to the current DOM.
+  const qrPanel = document.querySelector('.subscription-qr');
+  if (qrPanel) qrPanel.open = qrPanelOpen;
+  enhanceTables(elements.pageContent);
+  renderAnalytics(document.querySelector('#dashboardAnalytics'), viewModel);
+  if (focusKey) {
+    const selector = focusKey === 'account-search'
+      ? '[data-account-search]'
+      : `[data-drawer-source="${CSS.escape(focusKey.split(':')[1])}"][data-drawer-key="${CSS.escape(focusKey.split(':')[2])}"]`;
+    const restored = document.querySelector(selector);
+    restored?.focus();
+    if (restored && focusSelection && focusSelection[0] !== null) {
+      try {
+        restored.setSelectionRange(focusSelection[0], focusSelection[1]);
+      } catch {
+        // Number inputs do not expose a text selection.
+      }
+    }
+  }
   syncRunDetailsPresentation();
   updateChromeState(messages);
   renderToast();
@@ -298,16 +340,9 @@ function renderChrome(messages, viewModel) {
   elements.sidebarTitle.textContent = messages.sidebarTitle;
   elements.sidebarVersion.textContent = messages.sidebarVersion;
   elements.pageTitle.textContent = messages.pageTitles[state.activePage];
-  elements.pageSubtitle.textContent = messages.pageSubtitles[state.activePage];
   elements.sidebarNav.innerHTML = buildSidebarNav(messages, state.activePage);
   const controlState = resolveRunControlState(state.runState);
-  elements.pageActions.innerHTML = buildTopbarActions(state.activePage, viewModel, messages, {
-    runDisabled: controlState.runDisabled,
-    stopDisabled: controlState.stopDisabled,
-    runLabel: resolveRunButtonLabel(messages),
-    stopLabel: messages.stopButton,
-    saveLabel: messages.saveButton
-  });
+  elements.pageActions.replaceChildren();
   updateChromeState(messages);
 }
 
@@ -318,7 +353,10 @@ function updateChromeState(messages = getMessages(state.language)) {
   for (const button of document.querySelectorAll('[data-run-action="start"]')) {
     button.disabled = controlState.runDisabled;
     button.setAttribute('aria-busy', String(controlState.isBusy));
-    button.textContent = resolveRunButtonLabel(messages);
+    // Preserve the action icon when live pipeline status changes its label.
+    button.innerHTML = icon('play');
+    button.setAttribute('aria-label', resolveRunButtonLabel(messages));
+    button.title = resolveRunButtonLabel(messages);
   }
   for (const button of document.querySelectorAll('[data-run-action="stop"]')) {
     button.disabled = controlState.stopDisabled;
@@ -356,6 +394,16 @@ function runTone() {
 }
 
 async function handleDocumentClick(event) {
+  if (event.target.closest('#sidebarToggle')) {
+    toggleSidebar();
+    return;
+  }
+  const themeChoice = event.target.closest('[data-theme-choice]');
+  if (themeChoice) {
+    state.themePreference = themeChoice.dataset.themeChoice;
+    selectTheme(state.themePreference);
+    return;
+  }
   const jumpLatest = event.target.closest('[data-log-jump-latest]');
   if (jumpLatest) {
     state.logView.follow = true;
@@ -386,14 +434,6 @@ async function handleDocumentClick(event) {
   const subtab = event.target.closest('[data-subtab-page]');
   if (subtab) {
     state.subtabs[subtab.dataset.subtabPage] = subtab.dataset.subtab;
-    renderAll();
-    return;
-  }
-
-  const formatButton = event.target.closest('[data-subscription-format]');
-  if (formatButton) {
-    state.subscriptionFormat = formatButton.dataset.subscriptionFormat;
-    refreshQrCode();
     renderAll();
     return;
   }
@@ -486,6 +526,12 @@ async function handleDocumentClick(event) {
     return;
   }
 
+  const accountAction = event.target.closest('[data-account-action]');
+  if (accountAction) {
+    handleAccountPoolAction(accountAction);
+    return;
+  }
+
   const availabilityAction = event.target.closest('[data-availability-action]');
   if (availabilityAction) {
     handleAvailabilityTargetAction(availabilityAction);
@@ -508,6 +554,10 @@ async function handleDocumentClick(event) {
 }
 
 function handleDocumentInput(event) {
+  if (event.target.dataset.runOption) {
+    state.runOptions[event.target.dataset.runOption] = event.target.checked;
+    return;
+  }
   const target = event.target;
 
   if (!state.profile) {
@@ -530,6 +580,39 @@ function handleDocumentInput(event) {
     return;
   }
 
+  if (target.matches('[data-account-file]')) {
+    handleAccountFileSelected(target);
+    return;
+  }
+
+  if (target.matches('[data-account-search]')) {
+    state.accountPool.query = target.value;
+    touchUpdate();
+    renderAccountPoolRecords();
+    return;
+  }
+
+  if (target.matches('[data-account-status-filter]')) {
+    state.accountPool.statusFilter = target.value;
+    touchUpdate();
+    renderAccountPoolRecords();
+    return;
+  }
+
+  if (target.matches('[data-account-brand-filter]')) {
+    state.accountPool.brandFilter = target.value;
+    touchUpdate();
+    renderAccountPoolRecords();
+    return;
+  }
+
+  if (target.matches('[data-account-sort]')) {
+    state.accountPool.sortBy = target.value;
+    touchUpdate();
+    renderAccountPoolRecords();
+    return;
+  }
+
   if (target.matches('[data-drawer-source][data-drawer-key]')) {
     if (!state.settingsDrawer?.draft) {
       return;
@@ -540,17 +623,23 @@ function handleDocumentInput(event) {
     if (!sourceDraft?.[sourceName]) {
       return;
     }
+    // Only the official site is free text now. `enabled` is a boolean and the
+    // round fields are numbers, so nothing here needs the URL normaliser.
     const rawValue = target.type === 'checkbox' ? target.checked : target.value.trim();
-    const normalizedValue = key === 'url' && typeof rawValue === 'string'
-      ? normalizeSourceUrlInput(rawValue)
-      : rawValue;
-    if (target.type !== 'checkbox' && normalizedValue !== target.value) {
-      target.value = normalizedValue;
-    }
     sourceDraft[sourceName][key] =
       target.type === 'checkbox'
-        ? normalizedValue
-        : coerceProfileValue(normalizedValue, sourceDraft[sourceName][key]);
+        ? rawValue
+        : coerceProfileValue(rawValue, sourceDraft[sourceName][key]);
+    // A source that never set a round has no existing number to copy the type
+    // from, and `coerceProfileValue` would leave the field a string — which then
+    // lands in profile.toml quoted. Round controls are always numbers.
+    if (SOURCE_NUMERIC_KEYS.has(key)) {
+      const parsed = Number(sourceDraft[sourceName][key]);
+      if (Number.isFinite(parsed)) {
+        const floor = SOURCE_MINIMUM_ONE_KEYS.has(key) ? 1 : 0;
+        sourceDraft[sourceName][key] = Math.max(floor, Math.trunc(parsed));
+      }
+    }
     return;
   }
 
@@ -670,14 +759,6 @@ function resolveDrawerSourceDraft() {
   return state.settingsDrawer.draft?.sources ?? state.settingsDrawer.draft;
 }
 
-function normalizeSourceUrlInput(value) {
-  const text = String(value ?? '').trim();
-  if (!/^curl(?:\s|$)/i.test(text)) {
-    return text;
-  }
-  return extractSourceUrlFromCurl(text) || text;
-}
-
 function setObjectPath(root, path, value) {
   const segments = String(path ?? '').split('.').filter(Boolean);
   if (!segments.length || !root) {
@@ -703,6 +784,23 @@ function coerceProfileValue(value, currentValue) {
   }
   return value;
 }
+
+/** Source fields that are always numbers, whatever the draft already held. */
+const SOURCE_NUMERIC_KEYS = new Set([
+  'max_iterations',
+  'min_iterations',
+  'plateau_limit',
+  'max_runtime_seconds',
+  'max_areas',
+  'area_min',
+  'area_max'
+]);
+
+/** Of those, the ones the runner clamps to at least one. */
+const SOURCE_MINIMUM_ONE_KEYS = new Set([
+  'max_iterations',
+  'plateau_limit'
+]);
 
 function resolveErrorMessage(error) {
   if (error instanceof Error && error.message) {
@@ -865,11 +963,7 @@ function resolveActiveSubscriptionUrl() {
     return '';
   }
 
-  const format = state.subscriptionFormat ?? 'Clash';
-  if (format === 'Clash') {
-    return baseUrl;
-  }
-  return `${baseUrl}?format=${encodeURIComponent(format.toLowerCase().replaceAll(' ', '-'))}`;
+  return baseUrl;
 }
 
 function openSettingsDrawer(section, opener = document.activeElement) {
@@ -937,7 +1031,7 @@ function buildSettingsDraft(section) {
   }
 
   if (section === 'sources') return buildSourceIterationDraft(state.profile.sources);
-  if (section === 'speed_test') return structuredClone(state.profile.speed_test);
+  if (section === 'speed_test') return buildSpeedTestDraft(state.profile.speed_test);
   if (section === 'availability_targets') return buildAvailabilityTargetDraft(state.profile.availability_targets);
   if (section === 'deploy') return buildDeployDraft(state.profile.deploy);
   if (section === 'paths') return structuredClone(state.profile.paths);
@@ -960,6 +1054,13 @@ async function saveSettingsDrawer() {
   }
 
   const { section, draft } = state.settingsDrawer;
+  if (section === 'sources') {
+    const problem = validateSourceDraft(draft);
+    if (problem) {
+      showToast({ tone: 'danger', message: problem, durationMs: 4200 });
+      return;
+    }
+  }
   if (section !== 'about') {
     state.profile[section] = resolveSettingsDraftPayload(section, draft);
   }
@@ -983,6 +1084,182 @@ async function saveSettingsDrawer() {
     return;
   }
   closeSettingsDrawer({ restoreFocus: true });
+}
+
+async function hydrateAccountPool() {
+  state.accountPool.status = 'loading';
+  touchUpdate();
+  renderAccountPoolPanelOnly();
+  if (!window.vpnAutomation?.loadAccounts) {
+    state.accountPool.status = 'unavailable';
+    state.accountPool.error = '未连接账号服务';
+    renderAccountPoolPanelOnly();
+    return false;
+  }
+  try {
+    const snapshot = await window.vpnAutomation.loadAccounts();
+    if (!snapshot?.ok) {
+      throw new Error(snapshot?.error || '账号池读取失败');
+    }
+    state.accountPool.status = 'ready';
+    state.accountPool.stats = snapshot.stats ?? null;
+    state.accountPool.accounts = Array.isArray(snapshot.accounts) ? snapshot.accounts : [];
+    state.accountPool.error = '';
+  } catch (error) {
+    state.accountPool.status = 'error';
+    state.accountPool.error = resolveErrorMessage(error);
+  }
+  touchUpdate();
+  renderAccountPoolPanelOnly();
+  return state.accountPool.status === 'ready';
+}
+
+function renderAccountPoolPanelOnly() {
+  // A full re-render, not a patched subtree: the panel shares the page with the
+  // settings drawer, and replacing only the panel left the open drawer's draft
+  // bound to detached nodes.
+  renderAll();
+}
+
+function renderAccountPoolRecords() {
+  const holder = document.querySelector('#accountPoolRecords');
+  if (!holder) return;
+  const messages = getMessages(state.language);
+  const viewModel = buildViewModel(state, messages, state.language);
+  holder.innerHTML = buildAccountPoolRecords(viewModel.accountPool);
+  enhanceTables(holder);
+}
+
+async function handleAccountPoolAction(button) {
+  const action = button.dataset.accountAction;
+  if (action === 'refresh') {
+    const ok = await hydrateAccountPool();
+    showToast(
+      ok
+        ? { tone: 'success', message: '账号池已刷新' }
+        : { tone: 'danger', message: state.accountPool.error || '账号池刷新失败' }
+    );
+    return;
+  }
+  if (action === 'upload') {
+    document.querySelector('#accountPoolFile')?.click();
+    return;
+  }
+  if (action === 'template') {
+    await downloadAccountsTemplate();
+    return;
+  }
+  if (action === 'toggle') {
+    await toggleAccountStatus(Number(button.dataset.accountId));
+  }
+}
+
+async function downloadAccountsTemplate() {
+  try {
+    let content = '';
+    if (window.vpnAutomation?.accountsTemplate) {
+      const result = await window.vpnAutomation.accountsTemplate();
+      content = String(result?.content ?? '');
+    }
+    if (!content) {
+      throw new Error('模板不可用');
+    }
+    const blob = new Blob([content], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = 'accounts-template.csv';
+    anchor.click();
+    URL.revokeObjectURL(url);
+    showToast({ tone: 'success', message: '模板已下载' });
+  } catch (error) {
+    showToast({ tone: 'danger', message: resolveErrorMessage(error) });
+  }
+}
+
+async function handleAccountFileSelected(input) {
+  const file = input.files?.[0];
+  if (!file) return;
+  input.value = '';
+  if (file.size > 1024 * 1024) {
+    showToast({ tone: 'danger', message: '文件超过 1MB，请拆分后上传' });
+    return;
+  }
+  state.accountPool.busy = true;
+  state.accountPool.message = '';
+  state.accountPool.issues = [];
+  renderAccountPoolPanelOnly();
+  // Tone of the closing toast follows what actually happened. A rejected import
+  // must not end green just because the reload after it succeeded.
+  let importOk = false;
+  try {
+    const content = await file.text();
+    const result = await window.vpnAutomation.importAccounts(content, 'auto');
+    state.accountPool.issues = Array.isArray(result?.issues) ? result.issues : [];
+    if (!result?.ok) {
+      state.accountPool.message = result?.error === 'no_usable_rows'
+        ? '文件里没有可导入的账号'
+        : (result?.error || '导入失败');
+      showToast({ tone: 'danger', message: state.accountPool.message });
+    } else {
+      importOk = true;
+      const summary = `导入完成：新增 ${result.inserted ?? 0}，更新 ${result.updated ?? 0}，改密 ${result.rotated ?? 0}，恢复 ${result.revived ?? 0}，未变 ${result.unchanged ?? 0}`;
+      state.accountPool.message = state.accountPool.issues.length ? `${summary}；${state.accountPool.issues.length} 行有问题` : summary;
+      showToast({ tone: state.accountPool.issues.length ? 'warning' : 'success', message: summary });
+      appendLog(`[账号池] ${summary}`);
+    }
+  } catch (error) {
+    // The served web UI answers a rejected import with HTTP 400 and the parsed
+    // issues; `web-adapter.js` carries that payload on the error so the line
+    // numbers still reach the panel instead of a bare `request_failed`.
+    const payload = error?.payload;
+    if (payload && typeof payload === 'object') {
+      state.accountPool.issues = Array.isArray(payload.issues) ? payload.issues : [];
+      state.accountPool.message = payload.error === 'no_usable_rows'
+        ? '文件里没有可导入的账号'
+        : (payload.error || '导入失败');
+    } else {
+      state.accountPool.message = resolveErrorMessage(error);
+    }
+    showToast({ tone: 'danger', message: state.accountPool.message });
+  } finally {
+    state.accountPool.busy = false;
+  }
+  const reloaded = await hydrateAccountPool();
+  if (!importOk) {
+    // The panel now carries the failure reason, so a second toast would only
+    // stack noise on top of the danger toast that already fired.
+    return;
+  }
+  showToast({
+    tone: state.accountPool.issues.length ? 'warning' : 'success',
+    message: state.accountPool.message || (reloaded ? '账号池已更新' : state.accountPool.error)
+  });
+}
+
+async function toggleAccountStatus(id) {
+  const account = (state.accountPool.accounts ?? []).find((item) => item.id === id);
+  if (!account || !window.vpnAutomation?.setAccountStatus) {
+    return;
+  }
+  const nextStatus = account.status === 'active' ? 'disabled' : 'active';
+  state.accountPool.busy = true;
+  renderAccountPoolPanelOnly();
+  try {
+    const result = await window.vpnAutomation.setAccountStatus({ id, status: nextStatus, reason: '停用（界面操作）' });
+    if (!result?.ok) {
+      throw new Error(result?.error || '操作失败');
+    }
+    showToast({
+      tone: nextStatus === 'active' ? 'success' : 'neutral',
+      message: `${account.account_masked} 已${nextStatus === 'active' ? '启用' : '停用'}`
+    });
+  } catch (error) {
+    showToast({ tone: 'danger', message: resolveErrorMessage(error) });
+  } finally {
+    state.accountPool.busy = false;
+  }
+  await hydrateAccountPool();
 }
 
 async function saveProfile({ silent = false } = {}) {
@@ -1078,6 +1355,7 @@ async function runPipeline() {
   state.stageStatus = {};
   state.counts = {};
   state.sourceCounts = {};
+  state.extractProgress = {};
   state.extractDedupedFingerprints = new Set();
   state.logEntries = [];
   state.artifactDir = '';
@@ -1128,6 +1406,7 @@ async function retryStage() {
   state.stageStatus = {};
   state.counts = {};
   state.sourceCounts = {};
+  state.extractProgress = {};
   state.extractDedupedFingerprints = new Set();
   state.logEntries = [];
   state.artifactDir = '';
@@ -1174,11 +1453,7 @@ async function retryStage() {
 
 function collectRunOptions() {
   const optionInputs = document.querySelectorAll('[data-run-option]');
-  const options = {
-    skipDeploy: false,
-    skipVerify: false,
-    saveBeforeRun: true
-  };
+  const options = { ...state.runOptions };
   for (const input of optionInputs) {
     options[input.dataset.runOption] = Boolean(input.checked);
   }
@@ -1312,6 +1587,16 @@ function handlePipelineEvent(event, options = {}) {
 
   if (event.type === 'log') {
     appendLog(event.message);
+    return;
+  }
+
+  if (event.type === 'extract_substage') {
+    if (!['apk_download', 'apk_analysis', 'domain_discovery'].includes(event.substage)
+      || !['running', 'success', 'failed', 'cached'].includes(event.status)) return;
+    const key = [event.source_name, event.platform, event.substage].join(':');
+    state.extractProgress[key] = { source: String(event.source_name ?? ''), platform: String(event.platform ?? ''), substage: event.substage, status: event.status };
+    touchUpdate();
+    renderRuntimeOnly({ chrome: false });
     return;
   }
 
@@ -1488,6 +1773,7 @@ function resetRunScopedProgress() {
   state.stageStatus = {};
   state.counts = {};
   state.sourceCounts = {};
+  state.extractProgress = {};
   state.extractDedupedFingerprints = new Set();
   state.outputFiles = [];
   state.nodeRows = [];
@@ -1645,7 +1931,12 @@ async function hydrateRetryArtifacts() {
       return;
     }
     hydrateRetryArtifactState(result.items ?? []);
+    state.activity = Array.isArray(result.activity) ? result.activity : [];
+    state.activityUnavailable = Number(result.activityUnavailable ?? 0);
     touchUpdate();
+    // Completion refreshes history asynchronously, after the last pipeline
+    // event. Update the visible calendar without requiring a page switch.
+    renderRuntimeOnly({ chrome: false });
   } catch (error) {
     appendLog(formatMessage(getMessages(state.language).openFailed, { error: error.message }));
   }
@@ -1703,13 +1994,8 @@ function renderActiveRuntimeSections(viewModel) {
     const anchorViewportTop = anchor?.getBoundingClientRect().top;
     logCenter.innerHTML = buildLogCenterMarkup(viewModel);
     const workspace = logCenter.closest('#logsWorkspace');
-    workspace?.querySelectorAll('[data-log-jump-latest], [data-log-undo-clear]').forEach((node) => node.remove());
-    if (!state.logView.follow && state.logView.unseenCount > 0) {
-      logCenter.insertAdjacentHTML('beforebegin', `<button class="btn btn-primary small log-jump-latest" data-log-jump-latest type="button">回到底部 · ${state.logView.unseenCount} 条新消息</button>`);
-    }
-    if (state.logView.clearedSnapshot) {
-      logCenter.insertAdjacentHTML('beforebegin', '<button class="btn btn-secondary small log-undo-clear" data-log-undo-clear type="button">撤销清空</button>');
-    }
+    const stateActions = workspace?.querySelector('.log-state-actions');
+    if (stateActions) stateActions.innerHTML = buildLogStateActions(viewModel);
     if (state.logView.follow) {
       logCenter.scrollTop = logCenter.scrollHeight;
     } else if (anchorId) {
@@ -1722,14 +2008,33 @@ function renderActiveRuntimeSections(viewModel) {
 
   const stageProgress = document.querySelector('#runsStageProgress');
   if (stageProgress) {
+    const scrollTop = stageProgress.querySelector('.timeline')?.scrollTop ?? 0;
     stageProgress.outerHTML = buildRunsStageProgressMarkup(viewModel);
+    document.querySelector('#runsStageProgress .timeline').scrollTop = scrollTop;
   }
 
   const currentStage = document.querySelector('#runsCurrentStage');
   if (currentStage) {
-    currentStage.outerHTML = buildRunsCurrentStageMarkup(viewModel);
+    // Preserve the focused run controls while live events refresh details.
+    const template = document.createElement('template');
+    template.innerHTML = buildRunsCurrentStageMarkup(viewModel);
+    currentStage.querySelector('[data-current-stage-body]').replaceWith(template.content.querySelector('[data-current-stage-body]'));
+    currentStage.querySelector('.panel-headline > .badge').replaceWith(template.content.querySelector('.panel-headline > .badge'));
   }
 
+  const hero = document.querySelector('.status-hero-card');
+  if (hero) {
+    const summary = resolveDashboardRunSummary(viewModel);
+    const copy = hero.querySelector('.dashboard-state-copy');
+    if (copy.querySelector('h3')?.textContent !== viewModel.currentStatusLabel
+      || Boolean(copy.querySelector('p')) !== summary.failed) {
+      copy.innerHTML = buildDashboardStateMarkup(viewModel);
+    }
+    hero.classList.toggle('is-running', summary.isRunning);
+    hero.dataset.tone = viewModel.runStateTone;
+  }
+
+  renderAnalytics(document.querySelector('#dashboardAnalytics'), viewModel);
   const dashboardMetrics = document.querySelector('#dashboardMetricsPanel');
   if (dashboardMetrics) {
     dashboardMetrics.outerHTML = buildDashboardMetricsMarkup(viewModel);

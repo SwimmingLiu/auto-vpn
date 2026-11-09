@@ -10,10 +10,16 @@ import { buildBackendEnv, buildBackendInvocation, createNdjsonDecoder } from './
 import { pipelineStopResponse, requestProcessTreeStop } from './lib/process-lifecycle.js';
 import { attachPipelineChildFinalizer } from './lib/pipeline-child-finalizer.js';
 import { resolveStateProfilePath } from './paths.js';
+import { createRendererEventLog, readRendererHistory } from './lib/renderer-history.js';
 
 const IPC_CHANNELS = [
+  'state:load',
   'profile:load',
   'profile:save',
+  'accounts:snapshot',
+  'accounts:import',
+  'accounts:status',
+  'accounts:template',
   'shell:open-path',
   'clipboard:write-text',
   'logs:export',
@@ -77,7 +83,7 @@ export function registerIpcHandlers({
     return pipelineStopResponse(stop);
   }
 
-  ipcMain.handle('profile:load', async () => {
+  async function loadProfile() {
     const invocation = buildBackendInvocation(projectRoot, 'profile', [], { isPackaged });
     const output = await runCommand(
       invocation.command,
@@ -90,6 +96,20 @@ export function registerIpcHandlers({
       invocation.runAsNode
     );
     return JSON.parse(output.stdout);
+  }
+  ipcMain.handle('profile:load', loadProfile);
+
+  ipcMain.handle('state:load', async () => {
+    const [profile, artifact, history] = await Promise.all([loadProfile(), loadLatestArtifact(), loadArtifactList()]);
+    const terminal = ['success', 'failed'].includes(artifact.run_status) ? artifact.run_status : 'idle';
+    return {
+      profile, artifact,
+      runState: activePipelineChild ? (stopRequested ? 'stopping' : 'running') : terminal,
+      retryArtifacts: history.items ?? [],
+      activity: history.activity ?? [],
+      activityUnavailable: history.activityUnavailable ?? 0,
+      logEvents: readRendererHistory(profilePath(projectRoot, runtimeProfilePath), artifact.artifact_dir)
+    };
   });
 
   ipcMain.handle('profile:save', async (_event, payload) => {
@@ -105,6 +125,89 @@ export function registerIpcHandlers({
       invocation.runAsNode
     );
     return { ok: true };
+  });
+
+  ipcMain.handle('accounts:snapshot', async () => {
+    const invocation = buildBackendInvocation(projectRoot, 'accounts-snapshot', [], { isPackaged });
+    const output = await runCommand(
+      invocation.command,
+      invocation.args,
+      projectRoot,
+      runtimeProfilePath,
+      bundledProfilePath,
+      '',
+      runtimeArtifactsPath,
+      invocation.runAsNode
+    );
+    return JSON.parse(output.stdout);
+  });
+
+  ipcMain.handle('accounts:import', async (_event, payload = {}) => {
+    const content = String(payload?.content ?? '');
+    if (!content.trim()) return { ok: false, error: 'empty_file' };
+    if (Buffer.byteLength(content, 'utf8') > 1024 * 1024) return { ok: false, error: 'file_too_large' };
+    const format = ['auto', 'csv', 'legacy'].includes(payload?.format) ? payload.format : 'auto';
+    const invocation = buildBackendInvocation(projectRoot, 'accounts-import', ['--format', format], { isPackaged });
+    try {
+      const output = await runCommand(
+        invocation.command,
+        invocation.args,
+        projectRoot,
+        runtimeProfilePath,
+        bundledProfilePath,
+        content,
+        runtimeArtifactsPath,
+        invocation.runAsNode
+      );
+      return JSON.parse(output.stdout);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      try {
+        return JSON.parse(message);
+      } catch {
+        return { ok: false, error: message };
+      }
+    }
+  });
+
+  ipcMain.handle('accounts:status', async (_event, payload = {}) => {
+    const id = Number(payload?.id);
+    const status = String(payload?.status ?? '').trim();
+    if (!Number.isInteger(id) || id < 1 || !['active', 'disabled'].includes(status)) {
+      return { ok: false, error: 'invalid_account_status_payload' };
+    }
+    const invocation = buildBackendInvocation(
+      projectRoot,
+      status === 'active' ? 'accounts-enable' : 'accounts-disable',
+      ['--id', String(id), '--reason', String(payload?.reason ?? 'disabled by operator')],
+      { isPackaged }
+    );
+    const output = await runCommand(
+      invocation.command,
+      invocation.args,
+      projectRoot,
+      runtimeProfilePath,
+      bundledProfilePath,
+      '',
+      runtimeArtifactsPath,
+      invocation.runAsNode
+    );
+    return JSON.parse(output.stdout);
+  });
+
+  ipcMain.handle('accounts:template', async () => {
+    const invocation = buildBackendInvocation(projectRoot, 'accounts-template', [], { isPackaged });
+    const output = await runCommand(
+      invocation.command,
+      invocation.args,
+      projectRoot,
+      runtimeProfilePath,
+      bundledProfilePath,
+      '',
+      runtimeArtifactsPath,
+      invocation.runAsNode
+    );
+    return { ok: true, content: output.stdout };
   });
 
   ipcMain.handle('shell:open-path', async (_event, targetPath) => {
@@ -135,7 +238,7 @@ export function registerIpcHandlers({
     }
 
     const invocation = buildBackendInvocation(projectRoot, 'run', [], { isPackaged });
-    const runArgs = [...invocation.args];
+    const runArgs = [...invocation.args, '--event-log', createRendererEventLog(profilePath(projectRoot, runtimeProfilePath))];
     if (options?.skipDeploy) {
       runArgs.push('--skip-deploy');
     }
@@ -200,7 +303,7 @@ export function registerIpcHandlers({
     return previewArtifactDirectory(artifactDir);
   });
 
-  ipcMain.handle('artifact:latest', async () => {
+  async function loadLatestArtifact() {
     const invocation = buildBackendInvocation(projectRoot, 'artifact-latest', [], { isPackaged });
     const output = await runCommand(
       invocation.command,
@@ -217,9 +320,10 @@ export function registerIpcHandlers({
       return { ok: false, artifact_dir: '' };
     }
     return mergeLatestArtifactPreview(report, previewArtifactDirectory(report.artifact_dir));
-  });
+  }
+  ipcMain.handle('artifact:latest', loadLatestArtifact);
 
-  ipcMain.handle('artifact:list', async () => {
+  async function loadArtifactList() {
     const invocation = buildBackendInvocation(projectRoot, 'artifact-list', [], { isPackaged });
     const output = await runCommand(
       invocation.command,
@@ -232,7 +336,8 @@ export function registerIpcHandlers({
       invocation.runAsNode
     );
     return JSON.parse(output.stdout);
-  });
+  }
+  ipcMain.handle('artifact:list', loadArtifactList);
 
   ipcMain.handle('pipeline:retry-stage', async (_event, payload = {}) => {
     if (activePipelineChild) {
@@ -249,7 +354,8 @@ export function registerIpcHandlers({
       '--artifact-dir',
       artifactDir,
       '--stage',
-      stageName
+      stageName,
+      '--event-log', createRendererEventLog(profilePath(projectRoot, runtimeProfilePath))
     ], { isPackaged });
     const child = spawn(invocation.command, invocation.args, {
       cwd: projectRoot,

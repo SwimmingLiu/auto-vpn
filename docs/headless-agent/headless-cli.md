@@ -50,6 +50,26 @@ autovpn stop --project-root .
 The job commands preserve metadata and logs under the configured runtime root.
 Use `jobs show`, `jobs resume`, and `jobs retry` when operating a specific job.
 
+## Credential Sources
+
+A source can be configured with an official site and an account instead of a
+pre-built request URL. The run discovers the APK, seeds, session and nodes on
+its own; only the site and the credentials are stored.
+
+```toml
+[sources.leiting]
+mode = "credential"
+official_site = "https://www.68123836.com"
+account = "..."
+password = "..."
+platform = "android"   # or "ios"
+```
+
+The APK-derived fingerprint (package, version, certificate, seed domains) is
+cached under `$HOME/.auto-vpn/brand-fingerprints/` and re-verified by asking
+`/api/eversion`, so a normal run does not download or inspect the APK again.
+See [credential-sources.md](../credential-sources.md) for the full flow.
+
 ## Output Contract
 
 JSON commands write one JSON document to stdout. JSONL pipeline commands write

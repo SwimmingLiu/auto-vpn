@@ -50,6 +50,7 @@ function assertWorkflowTestGates(workflow, packageJson, allFiles) {
   const normalizeCommand = (command) => command.trim().replace(/\s+/g, ' ');
   const h5FilesExpected = [
     'mobile-layout-contract.test.mjs',
+    'workspace-controls.test.mjs',
     'web-server-e2e.test.mjs',
     'web-server-visual.test.mjs'
   ];
@@ -140,7 +141,7 @@ test('README follows the AutoVPN desktop app structure', () => {
     '.dmg` for Apple Silicon or Intel',
     '.deb` or `.rpm` for x64 or ARM64',
     'portable `.exe` for x64 or ARM64',
-    'export AUTOVPN_VERSION=1.8.0',
+    'export AUTOVPN_VERSION=2.0.1',
     'npm install -g @swimmingliu/autovpn',
     'autovpn --version',
     'autovpn doctor --project-root',
@@ -388,7 +389,7 @@ test('release package version matches the next release tag', () => {
   const packageJson = JSON.parse(readProjectFile('package.json'));
   const packageLock = JSON.parse(readProjectFile('package-lock.json'));
 
-  assert.equal(packageJson.version, '1.8.0');
+  assert.equal(packageJson.version, '2.0.1');
   assert.equal(packageLock.version, packageJson.version);
   assert.equal(packageLock.packages[''].version, packageJson.version);
 });
@@ -403,6 +404,7 @@ test('PR and release gates run the complete mobile Chromium/WebKit and visual ma
 
   assert.deepEqual(h5Files, [
     'mobile-layout-contract.test.mjs',
+    'workspace-controls.test.mjs',
     'web-server-e2e.test.mjs',
     'web-server-visual.test.mjs'
   ]);
