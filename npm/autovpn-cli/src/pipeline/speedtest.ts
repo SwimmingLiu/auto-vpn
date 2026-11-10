@@ -6,6 +6,15 @@ import {
   MihomoRuntime,
   OpenMihomoRuntimeOptions
 } from './proxy-runtime.js';
+import { mapWithConcurrency } from './concurrency.js';
+import {
+  HTTP_HEAD_LIMIT_BYTES,
+  connectProxySocket,
+  httpStatusLine,
+  parseProxyEndpoint,
+  safeParseHttpStatus,
+  splitHttpResponseHead
+} from './http-transport.js';
 import { retryTransientNetwork } from './network-retry.js';
 
 type FetchLike = (url: string, init?: Record<string, unknown>) => Promise<{
@@ -116,36 +125,27 @@ function emitEvent(callback: SpeedTestBackendOptions['eventCallback'], eventType
   }
 }
 
-async function mapWithConcurrency<T, R>(
-  items: T[],
+function defaultNow(): number {
+  return performance.now();
+}
+
+/** Shared-concurrency loop plus the progress hook speedtest emits per finished link. */
+async function mapWithCompletion<T, R>(
+  items: readonly T[],
   concurrency: number,
   worker: (item: T, index: number) => Promise<R>,
   onComplete?: (result: R, index: number, completed: number) => void
 ): Promise<R[]> {
-  const limit = Math.max(1, Math.trunc(Number(concurrency) || 1));
-  const results = new Array<R>(items.length);
-  let nextIndex = 0;
+  if (!onComplete) {
+    return mapWithConcurrency(items, concurrency, worker);
+  }
   let completed = 0;
-  async function runWorker(): Promise<void> {
-    while (nextIndex < items.length) {
-      const index = nextIndex;
-      nextIndex += 1;
-      const result = await worker(items[index], index);
-      results[index] = result;
-      completed += 1;
-      onComplete?.(result, index, completed);
-    }
-  }
-  const workers = await Promise.allSettled(Array.from({ length: Math.min(limit, items.length) }, () => runWorker()));
-  const failed = workers.find((result): result is PromiseRejectedResult => result.status === 'rejected');
-  if (failed) {
-    throw failed.reason;
-  }
-  return results;
-}
-
-function defaultNow(): number {
-  return performance.now();
+  return mapWithConcurrency(items, concurrency, async (item, index) => {
+    const result = await worker(item, index);
+    completed += 1;
+    onComplete(result, index, completed);
+    return result;
+  });
 }
 
 async function fetchWithTimeout(fetchImpl: FetchLike, url: string, timeoutMs: number): Promise<Awaited<ReturnType<FetchLike>>> {
@@ -158,6 +158,9 @@ async function fetchWithTimeout(fetchImpl: FetchLike, url: string, timeoutMs: nu
   try {
     const response = await fetchImpl(url, { signal: controller.signal });
     if (internallyTimedOut) {
+      // The headers arrived after we gave up: release the body/socket too.
+      const cancellation = response.body?.cancel?.();
+      void Promise.resolve(cancellation).catch(() => {});
       const error = new Error(`request timed out after ${timeoutMs}ms`) as Error & { code?: string };
       error.code = 'AUTOVPN_INTERNAL_TIMEOUT';
       throw error;
@@ -196,6 +199,7 @@ async function readResponseBytes(response: Awaited<ReturnType<FetchLike>>, maxBy
     const reader = response.body.getReader();
     let timedOut = false;
     let reachedCap = false;
+    let failed = false;
     try {
       return await withBodyTimeout(async () => {
         let total = 0;
@@ -212,10 +216,13 @@ async function readResponseBytes(response: Awaited<ReturnType<FetchLike>>, maxBy
         return total;
       }, timeoutMs);
     } catch (error) {
+      failed = true;
       timedOut = error instanceof Error && error.message.includes('response body timed out');
       throw error;
     } finally {
-      if (timedOut || reachedCap) {
+      // Any exit that did not drain the body naturally must release the
+      // keep-alive connection instead of leaving the reader locked.
+      if (failed || timedOut || reachedCap) {
         await reader.cancel().catch(() => {});
       }
       reader.releaseLock();
@@ -227,6 +234,9 @@ async function readResponseBytes(response: Awaited<ReturnType<FetchLike>>, maxBy
 function requireOkResponse(response: Awaited<ReturnType<FetchLike>>, allowedStatuses: Set<number>): void {
   const status = Number(response.status ?? 200);
   if (response.ok === false || !allowedStatuses.has(status)) {
+    // Release the keep-alive socket for a body we are about to abandon.
+    const cancellation = response.body?.cancel?.();
+    void Promise.resolve(cancellation).catch(() => {});
     throw new Error(`unexpected status ${status}`);
   }
 }
@@ -235,42 +245,42 @@ async function retryTransientProbe<T>(operation: () => Promise<T>): Promise<T> {
   return retryTransientNetwork(operation, { maxAttempts: PROBE_MAX_ATTEMPTS, delayMs: 0 });
 }
 
-function socketConnect(host: string, port: number, timeoutMs: number): Promise<net.Socket> {
+function waitForHandshake(socket: tls.TLSSocket, timeoutMs: number): Promise<void> {
   return new Promise((resolve, reject) => {
-    const socket = net.createConnection({ host, port });
-    const timer = setTimeout(() => {
+    let settled = false;
+    const cleanup = (): void => {
+      clearTimeout(timer);
+      socket.off('secureConnect', onSecureConnect);
+      socket.off('error', onError);
+    };
+    const fail = (error: Error): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
       socket.destroy();
-      reject(new Error(`proxy connection timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
-    socket.once('connect', () => {
-      clearTimeout(timer);
-      resolve(socket);
-    });
-    socket.once('error', (error) => {
-      clearTimeout(timer);
       reject(error);
-    });
+    };
+    const timer = setTimeout(() => {
+      const error = new Error(`TLS handshake timed out after ${timeoutMs}ms`) as Error & { code?: string };
+      error.code = 'AUTOVPN_INTERNAL_TIMEOUT';
+      fail(error);
+    }, timeoutMs);
+    function onSecureConnect(): void {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      resolve();
+    }
+    function onError(error: Error): void {
+      fail(error);
+    }
+    socket.once('secureConnect', onSecureConnect);
+    socket.once('error', onError);
   });
-}
-
-function splitHttpHeaders(buffer: Buffer): { head: Buffer; body: Buffer } | undefined {
-  const marker = buffer.indexOf('\r\n\r\n');
-  if (marker < 0) {
-    return undefined;
-  }
-  return {
-    head: buffer.subarray(0, marker).subarray(0),
-    body: buffer.subarray(marker + 4).subarray(0)
-  };
-}
-
-function parseHttpStatus(head: Buffer): number {
-  const firstLine = head.toString('latin1').split('\r\n')[0] ?? '';
-  const match = /^HTTP\/\d(?:\.\d)?\s+(\d+)/i.exec(firstLine);
-  if (!match) {
-    throw new Error(`invalid HTTP response: ${firstLine}`);
-  }
-  return Number(match[1]);
 }
 
 function readHttpBodyBytes(socket: net.Socket | tls.TLSSocket, maxBytes: number, timeoutMs: number): Promise<number> {
@@ -278,58 +288,80 @@ function readHttpBodyBytes(socket: net.Socket | tls.TLSSocket, maxBytes: number,
     let buffered = Buffer.alloc(0);
     let headersParsed = false;
     let total = 0;
-    const timer = setTimeout(() => {
-      cleanup();
-      socket.destroy();
-      reject(new Error(`proxy download timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
+    let settled = false;
     const cleanup = (): void => {
       clearTimeout(timer);
       socket.off('data', onData);
       socket.off('end', onEnd);
       socket.off('error', onError);
     };
-    const finish = (bytes: number): void => {
+    // Single terminal point: stop listening, close the handle, then settle once.
+    const settle = (action: () => void): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
       cleanup();
       socket.destroy();
-      resolve(bytes);
+      action();
     };
-    const onError = (error: Error): void => {
-      cleanup();
-      reject(error);
-    };
-    const onEnd = (): void => {
-      cleanup();
-      resolve(total);
-    };
+    const fail = (error: Error): void => settle(() => reject(error));
+    const timer = setTimeout(() => fail(new Error(`proxy download timed out after ${timeoutMs}ms`)), timeoutMs);
+    function onError(error: Error): void {
+      fail(error);
+    }
+    function onEnd(): void {
+      if (!headersParsed) {
+        // A captive portal / block page that closes before a parseable head:
+        // fail this link instead of reporting a zero-byte download.
+        fail(buffered.byteLength > 0
+          ? new Error(`invalid HTTP response: ${httpStatusLine(buffered)}`)
+          : new Error('proxy response ended before HTTP headers were received'));
+        return;
+      }
+      settle(() => resolve(total));
+    }
     const countBody = (chunk: Buffer): void => {
       total += Math.min(chunk.byteLength, Math.max(maxBytes - total, 0));
       if (total >= maxBytes) {
-        finish(maxBytes);
+        settle(() => resolve(maxBytes));
       }
     };
-    const onData = (chunk: Buffer): void => {
-      if (!headersParsed) {
-        buffered = Buffer.concat([buffered, chunk]);
-        const split = splitHttpHeaders(buffered);
-        if (!split) {
-          return;
-        }
-        const status = parseHttpStatus(split.head);
-        if (status < 200 || status >= 300) {
-          cleanup();
-          socket.destroy();
-          reject(new Error(`unexpected status ${status}`));
-          return;
-        }
-        headersParsed = true;
-        if (split.body.byteLength > 0) {
-          countBody(split.body);
-        }
+    function onData(chunk: Buffer): void {
+      if (settled) {
         return;
       }
-      countBody(chunk);
-    };
+      try {
+        if (!headersParsed) {
+          buffered = Buffer.concat([buffered, chunk]);
+          const split = splitHttpResponseHead(buffered);
+          if (!split) {
+            if (buffered.byteLength > HTTP_HEAD_LIMIT_BYTES) {
+              fail(new Error(`invalid HTTP response: ${httpStatusLine(buffered)}`));
+            }
+            return;
+          }
+          const status = safeParseHttpStatus(split.head);
+          if (status === null) {
+            fail(new Error(`invalid HTTP response: ${httpStatusLine(split.head)}`));
+            return;
+          }
+          if (status < 200 || status >= 300) {
+            fail(new Error(`unexpected status ${status}`));
+            return;
+          }
+          headersParsed = true;
+          buffered = Buffer.alloc(0);
+          if (split.body.byteLength > 0) {
+            countBody(split.body);
+          }
+          return;
+        }
+        countBody(chunk);
+      } catch (error) {
+        fail(error instanceof Error ? error : new Error(String(error)));
+      }
+    }
     socket.on('data', onData);
     socket.once('end', onEnd);
     socket.once('error', onError);
@@ -339,36 +371,56 @@ function readHttpBodyBytes(socket: net.Socket | tls.TLSSocket, maxBytes: number,
 function readConnectResponse(socket: net.Socket, timeoutMs: number): Promise<void> {
   return new Promise((resolve, reject) => {
     let buffered = Buffer.alloc(0);
-    const timer = setTimeout(() => {
-      cleanup();
-      socket.destroy();
-      reject(new Error(`proxy CONNECT timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
+    let settled = false;
     const cleanup = (): void => {
       clearTimeout(timer);
       socket.off('data', onData);
+      socket.off('end', onEnd);
       socket.off('error', onError);
     };
-    const onError = (error: Error): void => {
+    const fail = (error: Error): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
       cleanup();
+      socket.destroy();
       reject(error);
     };
-    const onData = (chunk: Buffer): void => {
+    const timer = setTimeout(() => fail(new Error(`proxy CONNECT timed out after ${timeoutMs}ms`)), timeoutMs);
+    function onError(error: Error): void {
+      fail(error);
+    }
+    function onEnd(): void {
+      fail(new Error('proxy CONNECT response ended before HTTP headers were received'));
+    }
+    function onData(chunk: Buffer): void {
+      if (settled) {
+        return;
+      }
       buffered = Buffer.concat([buffered, chunk]);
-      const split = splitHttpHeaders(buffered);
+      const split = splitHttpResponseHead(buffered);
       if (!split) {
+        if (buffered.byteLength > HTTP_HEAD_LIMIT_BYTES) {
+          fail(new Error(`invalid HTTP response: ${httpStatusLine(buffered)}`));
+        }
         return;
       }
-      const status = parseHttpStatus(split.head);
-      cleanup();
+      const status = safeParseHttpStatus(split.head);
+      if (status === null) {
+        fail(new Error(`invalid HTTP response: ${httpStatusLine(split.head)}`));
+        return;
+      }
       if (status < 200 || status >= 300) {
-        socket.destroy();
-        reject(new Error(`proxy CONNECT failed with status ${status}`));
+        fail(new Error(`proxy CONNECT failed with status ${status}`));
         return;
       }
+      settled = true;
+      cleanup();
       resolve();
-    };
+    }
     socket.on('data', onData);
+    socket.once('end', onEnd);
     socket.once('error', onError);
   });
 }
@@ -380,60 +432,62 @@ export async function downloadUrlViaHttpProxy(
   timeoutSeconds: number
 ): Promise<number> {
   const target = new URL(url);
-  const proxy = new URL(proxyUrl);
   const timeoutMs = Math.max(1, timeoutSeconds) * 1000;
-  const proxyPort = Number(proxy.port || 80);
-  const socket = await socketConnect(proxy.hostname, proxyPort, timeoutMs);
+  if (target.protocol !== 'http:' && target.protocol !== 'https:') {
+    throw new Error(`unsupported speedtest URL protocol: ${target.protocol}`);
+  }
+  const endpoint = parseProxyEndpoint(proxyUrl);
+  const socket = await connectProxySocket(endpoint, timeoutMs);
   const requestPath = `${target.pathname || '/'}${target.search}`;
   const targetPort = Number(target.port || (target.protocol === 'https:' ? 443 : 80));
+  const proxyAuthorization = endpoint.authorization ? [`Proxy-Authorization: ${endpoint.authorization}`] : [];
+  let secureSocket: tls.TLSSocket | undefined;
 
-  if (target.protocol === 'http:') {
+  try {
+    if (target.protocol === 'http:') {
+      socket.write([
+        `GET ${target.toString()} HTTP/1.1`,
+        `Host: ${target.host}`,
+        ...proxyAuthorization,
+        'Connection: close',
+        '',
+        ''
+      ].join('\r\n'));
+      return await readHttpBodyBytes(socket, Math.max(1, maxBytes), timeoutMs);
+    }
+
     socket.write([
-      `GET ${target.toString()} HTTP/1.1`,
+      `CONNECT ${target.hostname}:${targetPort} HTTP/1.1`,
+      `Host: ${target.hostname}:${targetPort}`,
+      ...proxyAuthorization,
+      'Connection: keep-alive',
+      '',
+      ''
+    ].join('\r\n'));
+    await readConnectResponse(socket, timeoutMs);
+    secureSocket = tls.connect({
+      socket,
+      servername: target.hostname,
+      rejectUnauthorized: false
+    });
+    // Destroying a TLSSocket after the request-scoped listeners are removed
+    // must not surface as an uncaught 'error'.
+    secureSocket.on('error', () => {});
+    await waitForHandshake(secureSocket, timeoutMs);
+    secureSocket.write([
+      `GET ${requestPath} HTTP/1.1`,
       `Host: ${target.host}`,
       'Connection: close',
       '',
       ''
     ].join('\r\n'));
-    return await readHttpBodyBytes(socket, Math.max(1, maxBytes), timeoutMs);
-  }
-
-  if (target.protocol !== 'https:') {
+    return await readHttpBodyBytes(secureSocket, Math.max(1, maxBytes), timeoutMs);
+  } finally {
+    // Every terminal branch (success, non-2xx, parse failure, timeout, handshake
+    // failure) releases both handles. destroy() is idempotent.
+    secureSocket?.destroy();
     socket.destroy();
-    throw new Error(`unsupported speedtest URL protocol: ${target.protocol}`);
   }
-
-  socket.write([
-    `CONNECT ${target.hostname}:${targetPort} HTTP/1.1`,
-    `Host: ${target.hostname}:${targetPort}`,
-    'Connection: keep-alive',
-    '',
-    ''
-  ].join('\r\n'));
-  await readConnectResponse(socket, timeoutMs);
-  const secureSocket = tls.connect({
-    socket,
-    servername: target.hostname,
-    rejectUnauthorized: false
-  });
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      secureSocket.destroy();
-      const error = new Error(`TLS handshake timed out after ${timeoutMs}ms`) as Error & { code?: string };
-      error.code = 'AUTOVPN_INTERNAL_TIMEOUT';
-      reject(error);
-    }, timeoutMs);
-    secureSocket.once('secureConnect', () => { clearTimeout(timer); resolve(); });
-    secureSocket.once('error', (error) => { clearTimeout(timer); reject(error); });
-  });
-  secureSocket.write([
-    `GET ${requestPath} HTTP/1.1`,
-    `Host: ${target.host}`,
-    'Connection: close',
-    '',
-    ''
-  ].join('\r\n'));
-  return await readHttpBodyBytes(secureSocket, Math.max(1, maxBytes), timeoutMs);
 }
 
 async function probeLinksDirect(
@@ -448,13 +502,17 @@ async function probeLinksDirect(
   }
   const now = options.now ?? defaultNow;
   const timeoutMs = Math.max(1, Number(config.timeout_seconds)) * 1000;
-  return mapWithConcurrency(links, config.concurrency, async (link) => {
+  return mapWithCompletion(links, config.concurrency, async (link) => {
     try {
       return await retryTransientProbe(async () => {
         const started = now();
         const response = await fetchWithTimeout(fetchImpl, config.probe_url, timeoutMs);
         const elapsed = Math.max(now() - started, 1);
         requireOkResponse(response, new Set([200, 204]));
+        // A reachability probe never reads the body; cancel it so the
+        // keep-alive connection goes back to the pool instead of leaking.
+        const cancellation = response.body?.cancel?.();
+        void Promise.resolve(cancellation).catch(() => {});
         return { link, reachable: true, latency_ms: Math.max(Math.round(elapsed), 1), error: '' };
       });
     } catch (error) {
@@ -472,7 +530,7 @@ async function probeLinksMihomo(
 ): Promise<ProbeResult[]> {
   const openRuntime = options.openMihomoRuntime ?? defaultOpenMihomoRuntime;
   const probeDelay = options.probeMihomoProxyDelay ?? defaultProbeMihomoProxyDelay;
-  return mapWithConcurrency(links, config.concurrency, async (link) => {
+  return mapWithCompletion(links, config.concurrency, async (link) => {
     try {
       return await retryTransientProbe(async () => {
         let runtime: Pick<MihomoRuntime, 'controllerUrl' | 'proxyName' | 'close'> | undefined;
@@ -651,7 +709,7 @@ async function speedtestInNode(input: SpeedTestInput, options: SpeedTestBackendO
       error: probe.error ?? ''
     }));
 
-  const testedResults = await mapWithConcurrency(candidateLinks, config.concurrency, async (link) => (
+  const testedResults = await mapWithCompletion(candidateLinks, config.concurrency, async (link) => (
     testLink(link, config, { runtime_path: runtimePath })
   ), (result, _index, completed) => {
     if (result.reachable && result.latency_ms <= 0) {

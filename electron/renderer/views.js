@@ -1,12 +1,32 @@
 import { buildStageModel, PAGE_INDEX, PAGE_ORDER, resolveRunControlState } from './state.js';
 import { icon } from './icons.js';
 
+// Defaults for a source row that has never stored a value. A round is one
+// cursor step over that brand's fixed area list (one region by default), so the
+// count is per platform and per region: 4/2 would fetch only a handful of nodes.
+export const SOURCE_ROUND_DEFAULTS = {
+  max_iterations: 200,
+  plateau_limit: 50,
+  areas_per_round: 1,
+  area_concurrency: 4
+};
+export const SOURCE_ROUND_LIMITS = {
+  max_iterations: [1, Number.POSITIVE_INFINITY],
+  plateau_limit: [1, Number.POSITIVE_INFINITY],
+  areas_per_round: [1, 64],
+  area_concurrency: [1, 16]
+};
+export const NETWORK_DEFAULTS = {
+  proxy_mode: 'proxy',
+  proxy_url: 'http://127.0.0.1:7897'
+};
+
 const FALLBACK_PROFILE = {
   sources: {
-    leiting: { mode: 'credential', official_site: 'https://www.68123836.com', enabled: true, max_iterations: 4, plateau_limit: 2 },
-    heidong: { mode: 'credential', official_site: 'https://www.67986457.com', enabled: true, max_iterations: 4, plateau_limit: 2 },
-    mifeng: { mode: 'credential', official_site: 'https://www.86933221.com', enabled: true, max_iterations: 4, plateau_limit: 2 },
-    xuanfeng: { mode: 'credential', official_site: 'https://www.16863988.com', enabled: true, max_iterations: 4, plateau_limit: 2 }
+    leiting: { mode: 'credential', official_site: 'https://www.68123836.com', enabled: true, ...SOURCE_ROUND_DEFAULTS },
+    heidong: { mode: 'credential', official_site: 'https://www.67986457.com', enabled: true, ...SOURCE_ROUND_DEFAULTS },
+    mifeng: { mode: 'credential', official_site: 'https://www.86933221.com', enabled: true, ...SOURCE_ROUND_DEFAULTS },
+    xuanfeng: { mode: 'credential', official_site: 'https://www.16863988.com', enabled: true, ...SOURCE_ROUND_DEFAULTS }
   },
   speed_test: {
     min_download_mb_s: 1,
@@ -569,6 +589,7 @@ function buildSettingsPage(vm, messages) {
           ${buildSettingsCard('speed_test', '测速配置', `最低 ${vm.profile.speed_test.min_download_mb_s} MB/s · 并发 ${vm.profile.speed_test.concurrency}`)}
           ${buildSettingsCard('availability_targets', 'AI可达性检测', `已启用 ${enabledAvailabilityTargetCount(vm.profile.availability_targets)} / ${Object.keys(vm.profile.availability_targets ?? {}).length} 个网站`)}
           ${buildSettingsCard('deploy', '部署配置', `项目 ${vm.profile.deploy.project_name || '未设置'}`)}
+          ${buildSettingsCard('network', '网络出口', networkSummary(vm.profile.network))}
         </div>
       </article>
 
@@ -633,12 +654,24 @@ export function buildAccountPoolRecords(pool = EMPTY_ACCOUNT_POOL) {
           ${rows.map((account) => {
             const meta = ACCOUNT_STATUS_META[account.status] ?? { label: account.status, tone: 'neutral' };
             const retired = account.status !== 'active';
+            const expiry = String(account.expires_at ?? '').trim();
+            const editingExpiry = pool.canSetExpiry && Number(pool.expiryEditorId) === Number(account.id);
             return `
               <tr data-account-row="${account.id}">
                 <td data-field-label="账号"><code class="account-mask">${escapeHtml(account.account_masked)}</code>${account.note ? `<span class="account-note">${escapeHtml(account.note)}</span>` : ''}</td>
                 <td data-field-label="加速器">${escapeHtml(SOURCE_NAMES[account.brand] ?? account.brand)}</td>
                 <td data-field-label="状态">${renderBadge(meta.label, meta.tone)}${account.status_reason ? `<span class="account-note">${escapeHtml(account.status_reason)}</span>` : ''}</td>
-                <td data-field-label="到期">${escapeHtml(account.expires_at || '—')}</td>
+                <td data-field-label="到期">
+                  <span class="account-expiry-value ${expiry ? '' : 'unknown'}">${escapeHtml(expiry || '未知')}</span>
+                  ${pool.canSetExpiry ? (editingExpiry
+                    ? `<div class="account-expiry-editor">
+                        <input type="date" aria-label="${escapeHtml(account.account_masked)}：到期日期" data-account-expiry-input="${account.id}" value="${escapeHtml(expiry.slice(0, 10))}" ${pool.busy ? 'disabled' : ''} />
+                        <button class="btn btn-primary small" data-account-action="expiry-save" data-account-id="${account.id}" type="button" ${pool.busy ? 'disabled' : ''}>保存</button>
+                        <button class="btn btn-secondary small" data-account-action="expiry-cancel" data-account-id="${account.id}" type="button" ${pool.busy ? 'disabled' : ''}>取消</button>
+                      </div>`
+                    : `<button class="btn btn-secondary small account-expiry-edit" data-account-action="expiry-edit" data-account-id="${account.id}" type="button" ${pool.busy ? 'disabled' : ''}>${expiry ? '改期' : '设置到期'}</button>`)
+                    : ''}
+                </td>
                 <td data-field-label="使用"><span class="account-usage">${Number(account.use_count ?? 0)} 次</span><span class="account-note">${Number(account.success_count ?? 0)} 成功 / ${Number(account.fail_count ?? 0)} 失败</span></td>
                 <td data-field-label="操作"><button class="btn btn-secondary small ${retired ? '' : 'destructive'}" data-account-action="toggle" data-account-id="${account.id}" type="button" ${pool.busy ? 'disabled' : ''}>${retired ? '启用' : '停用'}</button></td>
               </tr>
@@ -679,6 +712,7 @@ export function buildAccountPoolPanel(vm) {
           `).join('')}
         </div>
         ${Number(stats.expiring_soon ?? 0) > 0 ? `<p class="account-pool-expiry">7 天内到期 ${Number(stats.expiring_soon)} 个</p>` : ''}
+        ${Number.isFinite(Number(stats.expiry_unknown)) && Number(stats.expiry_unknown) > 0 ? `<p class="account-pool-expiry unknown">到期时间未知 ${Number(stats.expiry_unknown)}</p>` : ''}
       </div>
 
       <div class="account-pool-toolbar">
@@ -767,7 +801,8 @@ function buildSettingsDrawer(vm) {
     sources: '数据源配置',
     speed_test: '测速配置',
     availability_targets: 'AI可达性检测',
-    deploy: '部署配置'
+    deploy: '部署配置',
+    network: '网络出口'
   }[section] ?? '设置';
 
   const style = vm.modalTransform ? `style="transform: ${escapeHtml(vm.modalTransform)};"` : '';
@@ -830,7 +865,11 @@ const EMPTY_ACCOUNT_POOL = {
   statusFilter: 'all',
   brandFilter: 'all',
   sortBy: 'brand',
-  busy: false
+  busy: false,
+  // Feature-detected from the preload bridge. The H5/browser build has no
+  // setAccountExpiry, so the row simply omits the affordance there.
+  canSetExpiry: false,
+  expiryEditorId: null
 };
 
 /** Credential sources are also configured by their official site. */
@@ -849,7 +888,13 @@ function buildSettingsDrawerBody(section, draft, vm = null) {
       <div class="source-drawer-settings">
         <div class="source-drawer-settings-copy">
           <strong>每个加速器只填官网</strong>
-          <span>密钥从 APK 自动发现，账号密码由账号池提供。Android 与 iOS 两个通道同时抓取，每条线路按「轮数」循环请求，连续「早停」轮没有新节点就停止。</span>
+          <span>密钥从 APK 自动发现，账号密码由账号池提供。Android 与 iOS 两个通道同时抓取；「轮数」由两端各自独立跑满，1000 就是 Android 1000 轮加 iOS 1000 轮，不是 500+500。</span>
+        </div>
+        <div class="source-drawer-settings-copy">
+          <span>每次运行先按该加速器的节点列表生成一份固定区域列表（去掉中国大陆与免费区域、去重、保持原顺序），运行中不再改变。每一轮用游标依次取出「每轮区域数」个区域（默认 1 个，取完回绕），因此默认一轮就是一个区域请求；「区域并发」控制该轮这些区域请求同时发出的数量。</span>
+        </div>
+        <div class="source-drawer-settings-copy">
+          <span>「早停」按连续无新增节点的轮数计数。是否为新节点按节点指纹判断（address / port / id / transport / host / path / tls / sni），并在 Android 与 iOS 之间统一去重：改名重复的节点、或另一端已经抓到的节点，都不会让计数归零。</span>
         </div>
       </div>
       </details>
@@ -884,14 +929,22 @@ function buildSettingsDrawerBody(section, draft, vm = null) {
                   <div class="source-credential-rounds">
                     <label class="source-field">
                       <span>轮数</span>
-                      <input type="number" min="1" step="1" inputmode="numeric" aria-label="${label}：抓取轮数" title="每条线路循环请求的次数；每轮服务端会返回不同落地机" data-drawer-source="${escapeHtml(name)}" data-drawer-key="max_iterations" value="${escapeHtml(source.max_iterations ?? 4)}" />
+                      <input type="number" min="1" step="1" inputmode="numeric" aria-label="${label}：抓取轮数" title="Android 与 iOS 各自独立跑满该轮数（1000 = 两端各 1000 轮）；每轮是固定区域列表上的一个游标步，默认只取 1 个区域" data-drawer-source="${escapeHtml(name)}" data-drawer-key="max_iterations" value="${escapeHtml(source.max_iterations ?? SOURCE_ROUND_DEFAULTS.max_iterations)}" />
                     </label>
                     <label class="source-field">
                       <span>早停</span>
-                      <input type="number" min="1" step="1" inputmode="numeric" aria-label="${label}：连续空轮早停次数" title="连续多少轮没有新节点就停止" data-drawer-source="${escapeHtml(name)}" data-drawer-key="plateau_limit" value="${escapeHtml(source.plateau_limit ?? 2)}" />
+                      <input type="number" min="1" step="1" inputmode="numeric" aria-label="${label}：连续空轮早停次数" title="连续多少轮没有真正新增节点就停止；节点指纹在双端之间统一去重" data-drawer-source="${escapeHtml(name)}" data-drawer-key="plateau_limit" value="${escapeHtml(source.plateau_limit ?? SOURCE_ROUND_DEFAULTS.plateau_limit)}" />
+                    </label>
+                    <label class="source-field">
+                      <span>每轮区域数</span>
+                      <input type="number" min="1" max="64" step="1" inputmode="numeric" aria-label="${label}：每轮区域数" title="每轮从固定区域列表按游标取出的区域数，列表在运行中不变；取完回绕" data-drawer-source="${escapeHtml(name)}" data-drawer-key="areas_per_round" value="${escapeHtml(source.areas_per_round ?? SOURCE_ROUND_DEFAULTS.areas_per_round)}" />
+                    </label>
+                    <label class="source-field">
+                      <span>区域并发</span>
+                      <input type="number" min="1" max="16" step="1" inputmode="numeric" aria-label="${label}：区域并发" title="该轮区域请求同时发出的数量" data-drawer-source="${escapeHtml(name)}" data-drawer-key="area_concurrency" value="${escapeHtml(source.area_concurrency ?? SOURCE_ROUND_DEFAULTS.area_concurrency)}" />
                     </label>
                   </div>
-                  <span class="source-round-summary">双端并发</span>
+                  <span class="source-round-summary">双端各自计轮 · 每轮按固定区域列表推进</span>
                 </td>
               </tr>
             `;
@@ -965,12 +1018,54 @@ function buildSettingsDrawerBody(section, draft, vm = null) {
     `;
   }
 
+  if (section === 'network') {
+    const network = buildNetworkDraft(draft);
+    return `
+      <details class="context-help">
+        <summary>出口与回退规则</summary>
+        <p>代理模式通过 proxy_url 抓取；direct 直连；auto 先走代理，代理不可达时回退直连。默认走本机 127.0.0.1:7897 代理。</p>
+      </details>
+      <div class="form-grid compact-form-grid network-form-grid">
+        <label class="field compact">
+          <span>出口模式</span>
+          <select data-drawer-path="network.proxy_mode" aria-label="出口模式">
+            ${[['proxy', '代理'], ['auto', '自动（代理失败直连）'], ['direct', '直连']].map(([value, label]) => `<option value="${value}" ${network.proxy_mode === value ? 'selected' : ''}>${label}</option>`).join('')}
+          </select>
+        </label>
+        ${renderDrawerField('代理地址', 'text', network.proxy_url, 'network.proxy_url', true, 'inputmode="url" spellcheck="false" placeholder="http://127.0.0.1:7897"')}
+      </div>
+    `;
+  }
+
   return `
     <div class="notice-card">
       <strong>无可用配置</strong>
       <p>该分组暂无可供编辑的内容。</p>
     </div>
   `;
+}
+
+export function buildNetworkDraft(network = {}) {
+  const mode = String(network?.proxy_mode ?? '').trim().toLowerCase();
+  const url = String(network?.proxy_url ?? '').trim();
+  return {
+    proxy_mode: ['proxy', 'direct', 'auto'].includes(mode) ? mode : NETWORK_DEFAULTS.proxy_mode,
+    proxy_url: url || NETWORK_DEFAULTS.proxy_url
+  };
+}
+
+export function applyNetworkDraft(draft = {}) {
+  const network = buildNetworkDraft(draft);
+  return {
+    proxy_mode: network.proxy_mode,
+    proxy_url: network.proxy_url
+  };
+}
+
+function networkSummary(network = {}) {
+  const resolved = buildNetworkDraft(network);
+  const modeLabel = { proxy: '代理', auto: '自动', direct: '直连' }[resolved.proxy_mode];
+  return resolved.proxy_mode === 'direct' ? modeLabel : `${modeLabel} ${resolved.proxy_url}`;
 }
 
 function formatAvailabilityName(name) {
@@ -1057,8 +1152,10 @@ function buildSourceRows(profile) {
     enabled: source.enabled !== false,
     mode: 'credential',
     officialSite: source.official_site ?? '',
-    maxIterations: Number(source.max_iterations ?? 4),
-    plateauLimit: Number(source.plateau_limit ?? 2)
+    maxIterations: Number(source.max_iterations ?? SOURCE_ROUND_DEFAULTS.max_iterations),
+    plateauLimit: Number(source.plateau_limit ?? SOURCE_ROUND_DEFAULTS.plateau_limit),
+    areasPerRound: Number(source.areas_per_round ?? SOURCE_ROUND_DEFAULTS.areas_per_round),
+    areaConcurrency: Number(source.area_concurrency ?? SOURCE_ROUND_DEFAULTS.area_concurrency)
   }));
 }
 
@@ -1122,8 +1219,10 @@ export function buildSourceIterationDraft(sources = {}) {
   const firstSource = Object.values(normalized)[0] ?? {};
   return {
     sources: normalized,
-    maxIterations: coercePositiveInteger(firstSource.max_iterations, 4),
-    plateauLimit: coercePositiveInteger(firstSource.plateau_limit, 2)
+    maxIterations: coercePositiveInteger(firstSource.max_iterations, SOURCE_ROUND_DEFAULTS.max_iterations),
+    plateauLimit: coercePositiveInteger(firstSource.plateau_limit, SOURCE_ROUND_DEFAULTS.plateau_limit),
+    areasPerRound: coerceBoundedInteger(firstSource.areas_per_round, SOURCE_ROUND_DEFAULTS.areas_per_round, 1, 64),
+    areaConcurrency: coerceBoundedInteger(firstSource.area_concurrency, SOURCE_ROUND_DEFAULTS.area_concurrency, 1, 16)
   };
 }
 
@@ -1186,13 +1285,21 @@ export function applySourceIterationDraft(sources = {}, draft = {}) {
   if (draft?.sources) {
     return normalizeOfficialSourceDraft(draft.sources);
   }
-  const maxIterations = coercePositiveInteger(draft.maxIterations, 4);
-  const plateauLimit = coercePositiveInteger(draft.plateauLimit, 2);
+  const maxIterations = coercePositiveInteger(draft.maxIterations, SOURCE_ROUND_DEFAULTS.max_iterations);
+  const plateauLimit = coercePositiveInteger(draft.plateauLimit, SOURCE_ROUND_DEFAULTS.plateau_limit);
+  const areasPerRound = coerceBoundedInteger(draft.areasPerRound, SOURCE_ROUND_DEFAULTS.areas_per_round, 1, 64);
+  const areaConcurrency = coerceBoundedInteger(draft.areaConcurrency, SOURCE_ROUND_DEFAULTS.area_concurrency, 1, 16);
   const normalized = normalizeOfficialSourceDraft(sources);
   return Object.fromEntries(
     Object.entries(normalized).map(([name, source]) => [
       name,
-      { ...source, max_iterations: maxIterations, plateau_limit: plateauLimit }
+      {
+        ...source,
+        max_iterations: maxIterations,
+        plateau_limit: plateauLimit,
+        areas_per_round: areasPerRound,
+        area_concurrency: areaConcurrency
+      }
     ])
   );
 }
@@ -1222,6 +1329,20 @@ export function validateSourceDraft(draft = {}) {
   if (!Number.isFinite(Number(draft.plateauLimit)) || Number(draft.plateauLimit) < 1) {
     return '早停轮数至少为 1';
   }
+  for (const [name, source] of Object.entries(sources)) {
+    if (!SOURCE_DISPLAY_ORDER.includes(name)) continue;
+    for (const [key, label, [, max]] of [
+      ['areas_per_round', '每轮区域数', SOURCE_ROUND_LIMITS.areas_per_round],
+      ['area_concurrency', '区域并发', SOURCE_ROUND_LIMITS.area_concurrency]
+    ]) {
+      const raw = source?.[key];
+      if (raw === undefined || raw === null || raw === '') continue;
+      const value = Number(raw);
+      if (!Number.isFinite(value) || value < 1 || value > max) {
+        return `${SOURCE_NAMES[name] ?? name}：${label}必须是 1-${max} 之间的整数`;
+      }
+    }
+  }
   return '';
 }
 
@@ -1237,6 +1358,16 @@ function coercePositiveInteger(value, fallback) {
     return fallback;
   }
   return Math.trunc(parsed);
+}
+
+// The two area controls have a closed range; a stored value from outside it is
+// clamped rather than rejected, so an older or hand-edited profile still opens.
+function coerceBoundedInteger(value, fallback, min, max) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, Math.trunc(parsed)));
 }
 
 function coerceAreaValue(value, fallback) {
@@ -1374,6 +1505,8 @@ export function normalizeOfficialSourceDraft(sources = {}) {
           // not overwrite them just by appearing later in the file.
           max_iterations: existing.max_iterations ?? source.max_iterations,
           plateau_limit: existing.plateau_limit ?? source.plateau_limit,
+          areas_per_round: existing.areas_per_round ?? source.areas_per_round,
+          area_concurrency: existing.area_concurrency ?? source.area_concurrency,
           enabled: existing.enabled !== false || source.enabled !== false
         }
       : { ...source };
@@ -1391,8 +1524,10 @@ export function normalizeOfficialSourceDraft(sources = {}) {
         ? (OFFICIAL_SITES[name] ?? '')
         : String(source.official_site).trim(),
       enabled: source.enabled !== false,
-      max_iterations: wasCredential ? coercePositiveInteger(source.max_iterations, 4) : 4,
-      plateau_limit: wasCredential ? coercePositiveInteger(source.plateau_limit, 2) : 2
+      max_iterations: wasCredential ? coercePositiveInteger(source.max_iterations, SOURCE_ROUND_DEFAULTS.max_iterations) : SOURCE_ROUND_DEFAULTS.max_iterations,
+      plateau_limit: wasCredential ? coercePositiveInteger(source.plateau_limit, SOURCE_ROUND_DEFAULTS.plateau_limit) : SOURCE_ROUND_DEFAULTS.plateau_limit,
+      areas_per_round: wasCredential ? coerceBoundedInteger(source.areas_per_round, SOURCE_ROUND_DEFAULTS.areas_per_round, 1, 64) : SOURCE_ROUND_DEFAULTS.areas_per_round,
+      area_concurrency: wasCredential ? coerceBoundedInteger(source.area_concurrency, SOURCE_ROUND_DEFAULTS.area_concurrency, 1, 16) : SOURCE_ROUND_DEFAULTS.area_concurrency
     };
     for (const field of OBSOLETE_SOURCE_FIELDS) delete normalized[field];
     // A URL-mode floor is the same mismatch as its URL-mode cap: 10 URL fetches
@@ -1419,6 +1554,7 @@ function mergeProfile(profile) {
     availability_targets: profile?.availability_targets ?? DEFAULT_AVAILABILITY_TARGETS,
     speed_test: buildSpeedTestDraft(profile?.speed_test),
     deploy: { ...FALLBACK_PROFILE.deploy, ...(profile?.deploy ?? {}) },
+    network: buildNetworkDraft(profile?.network),
     paths: mergedPaths,
     workspace: mergedPaths
   };

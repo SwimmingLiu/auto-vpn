@@ -8,8 +8,8 @@ const TABLES = {
   ],
   accounts: [
     ['account', '账号', 240, 160], ['brand', '加速器', 110, 90],
-    ['status', '状态', 160, 120], ['expiry', '到期', 150, 120],
-    ['usage', '使用', 180, 140], ['actions', '操作', 96, 80]
+    ['status', '状态', 150, 120], ['expiry', '到期', 180, 130],
+    ['usage', '使用', 150, 120], ['actions', '操作', 96, 80]
   ]
 };
 const initialized = new WeakSet();

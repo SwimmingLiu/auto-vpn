@@ -17,7 +17,7 @@ const EXPECTED_DIGESTS_BY_PLATFORM = {
     runs: '19af2f410354c1213f41977dfade2b663f076e2a9055c6f83d63aac3a4e7f127',
     results: 'c92bb9774e2ce2e183567c77f1a15c44c795c2ed80492f9c53c6f189820e6502',
     logs: 'bb7090d73681b5bf54719f733e187ee32f0968a4c255d68f09b21217006675db',
-    settings: '23c22ff9abedd85be00f9d8d086b3776f9cd6cb2fed4a1b1a84704d97b9845cc'
+    settings: '9c4d478df50c59e089d5f0ced16e36fc7805b95f953fc707db7115cb6dce2333'
   },
   linux: {
     dashboard: '8bea8b2f219b6e461f84530026409fc40acb2180c4b1aa9092b35cb366da835b',

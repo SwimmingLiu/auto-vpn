@@ -99,6 +99,7 @@ const BACKEND_COMMANDS = new Map([
   ['accounts-import', ['accounts', 'import', '--stdin', '--allow-issues']],
   ['accounts-disable', ['accounts', 'disable']],
   ['accounts-enable', ['accounts', 'enable']],
+  ['accounts-expire', ['accounts', 'expire']],
   ['accounts-template', ['accounts', 'template']],
   ['artifact-latest', ['artifacts', 'latest']],
   ['artifact-list', ['artifacts', 'list']],

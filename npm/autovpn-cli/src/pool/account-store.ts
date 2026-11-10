@@ -74,6 +74,8 @@ export interface PoolBrandStats {
   disabled: number;
   expired: number;
   invalid: number;
+  /** Live rows whose membership date has never been learned. */
+  expiry_unknown: number;
 }
 
 export interface PoolStats {
@@ -86,6 +88,8 @@ export interface PoolStats {
   expiring_soon: number;
   by_brand: PoolBrandStats[];
   db_path: string;
+  /** Live rows whose membership date has never been learned. */
+  expiry_unknown: number;
 }
 
 export interface ImportOutcome {
@@ -424,7 +428,8 @@ export class AccountStore {
       deleted: 0,
       expiring_soon: 0,
       by_brand: [],
-      db_path: this.dbPath
+      db_path: this.dbPath,
+      expiry_unknown: 0
     };
     const soon = isoDay(new Date(this.now().getTime() + 7 * 86_400_000));
     const today = isoDay(this.now());
@@ -432,12 +437,25 @@ export class AccountStore {
     for (const row of rows) {
       stats[row.status] += 1;
       if (row.deleted_at !== null) stats.deleted += 1;
+      // Only live rows count: a retired row's unknown date is history, not a
+      // gap the operator can still close by refreshing the pool.
+      const expiryUnknown = row.deleted_at === null && row.expires_at === '';
+      if (expiryUnknown) stats.expiry_unknown += 1;
       if (row.status === 'active' && row.expires_at && row.expires_at >= today && row.expires_at <= soon) {
         stats.expiring_soon += 1;
       }
-      const bucket = brands.get(row.brand) ?? { brand: row.brand, total: 0, active: 0, disabled: 0, expired: 0, invalid: 0 };
+      const bucket = brands.get(row.brand) ?? {
+        brand: row.brand,
+        total: 0,
+        active: 0,
+        disabled: 0,
+        expired: 0,
+        invalid: 0,
+        expiry_unknown: 0
+      };
       bucket.total += 1;
       bucket[row.status] += 1;
+      if (expiryUnknown) bucket.expiry_unknown += 1;
       brands.set(row.brand, bucket);
     }
     stats.by_brand = [...brands.values()].sort((left, right) => left.brand.localeCompare(right.brand));
@@ -523,8 +541,21 @@ export class AccountStore {
     this.setStatus(id, 'invalid', reason, 'invalidated');
   }
 
+  /**
+   * Retire a row because its membership is gone.
+   *
+   * Same semantics as `expireDue`: status='expired', a soft delete, and a
+   * 'expired' event, so a row retired by the date sweep and one retired by the
+   * pipeline's login (a vendor that rejects a lapsed credential without
+   * stating a date) are indistinguishable in the UI. `setExpiryById` revives
+   * exactly this shape once a fresh date is learned.
+   */
   markExpired(id: number, reason = 'membership expired'): void {
-    this.setStatus(id, 'expired', reason, 'expired');
+    // `setExpiryById` revives a lapse only when the reason is the canonical one,
+    // so a caller passing an empty string must not create a row no renewal can
+    // bring back.
+    const detail = String(reason ?? '').trim() || 'membership expired';
+    this.setStatus(id, 'expired', detail, 'expired');
   }
 
   disable(brand: BrandKey | string, account: string, reason = 'disabled by operator'): boolean {
@@ -581,14 +612,28 @@ export class AccountStore {
    * a stored `2026/1/5` would sort above every ISO date and never retire the
    * row. Returns null when the value is not a date, so the caller can refuse
    * instead of writing something the sweep will skip forever.
+   *
+   * Renewing a row this function itself retired brings it back: a fresh date on
+   * or after today clears the 'membership expired' retirement, exactly as an
+   * import revives a row. Only that exact shape is revived — `invalid` rows and
+   * operator-disabled rows keep their retirement, because a new membership date
+   * says nothing about a rejected password or an explicit disable.
    */
   setExpiryById(id: number, expiresAt: string): boolean | null {
-    if (!this.hasId(id)) return false;
+    const row = this.db.prepare('SELECT status, status_reason FROM accounts WHERE id = ?').get(Math.trunc(id)) as
+      { status: AccountStatus; status_reason: string } | undefined;
+    if (!row) return false;
     const normalized = normalizeExpiry(expiresAt);
     if (normalized === null) return null;
     const stamp = isoNow(this.now());
     this.db.prepare('UPDATE accounts SET expires_at = ?, updated_at = ? WHERE id = ?').run(normalized, stamp, id);
     this.event(id, 'expiry_set', normalized || '(cleared)');
+    if (normalized && normalized >= isoDay(this.now()) && row.status === 'expired' && row.status_reason === 'membership expired') {
+      this.db
+        .prepare(`UPDATE accounts SET status = 'active', status_reason = '', deleted_at = NULL, updated_at = ? WHERE id = ?`)
+        .run(stamp, Math.trunc(id));
+      this.event(id, 'revived', normalized);
+    }
     this.expireDue();
     return true;
   }

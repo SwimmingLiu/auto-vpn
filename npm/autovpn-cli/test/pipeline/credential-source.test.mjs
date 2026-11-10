@@ -262,11 +262,13 @@ test('isCredentialSource prefers mode and falls back to the field shape', () => 
   assert.equal(isCredentialSource({ url: 'https://x', key: 'k', account: 'a' }), false);
 });
 
-test('the round policy defaults to a single pass', () => {
+test('the round policy defaults to the cursor-run budget', () => {
   const policy = resolveRoundPolicy({});
-  assert.equal(policy.max_iterations, 1);
+  // A round is one cursor step (one area by default), so the shipped budget is
+  // 200 rounds with a 50-round meaningful-novelty plateau.
+  assert.equal(policy.max_iterations, 200);
   assert.equal(policy.min_iterations, 0);
-  assert.equal(policy.plateau_limit, 2);
+  assert.equal(policy.plateau_limit, 50);
   assert.equal(policy.max_runtime_seconds, 0);
 });
 
@@ -276,10 +278,12 @@ test('min_iterations is clamped to max_iterations', () => {
   assert.equal(policy.min_iterations, 3);
 });
 
-test('a non-positive or malformed cap still runs one round', () => {
+test('a non-positive cap floors at one round and a malformed cap uses the default', () => {
   assert.equal(resolveRoundPolicy({ max_iterations: 0 }).max_iterations, 1);
   assert.equal(resolveRoundPolicy({ max_iterations: -5 }).max_iterations, 1);
-  assert.equal(resolveRoundPolicy({ max_iterations: Number.NaN }).max_iterations, 1);
+  // A non-numeric cap is "unset", so it falls back to the shipped default
+  // rather than silently disabling the run.
+  assert.equal(resolveRoundPolicy({ max_iterations: Number.NaN }).max_iterations, 200);
   assert.equal(resolveRoundPolicy({ plateau_limit: 0 }).plateau_limit, 1);
 });
 

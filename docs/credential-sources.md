@@ -16,16 +16,20 @@ site and a round budget, nothing else:
 mode = "credential"
 official_site = "https://<OFFICIAL_SITE>"
 enabled = true
-max_iterations = 4
-plateau_limit = 2
+max_iterations = 200
+plateau_limit = 50
+areas_per_round = 1
+area_concurrency = 4
 ```
 
 | Field | Required | Meaning |
 |---|---|---|
 | `mode` | yes | `credential` (the four vendor rows are always credential) |
 | `official_site` | yes | Official site; the current APK is located from here |
-| `max_iterations` | no | Upper bound on route-loop rounds; `4` when omitted |
-| `plateau_limit` | no | Consecutive rounds with no new node that stop the run; `2` when omitted |
+| `max_iterations` | no | Rounds per platform — Android and iOS each run this many; `200` when omitted |
+| `plateau_limit` | no | Consecutive rounds with no genuinely new node; `50` when omitted |
+| `areas_per_round` | no | Areas taken from the fixed list each round; `1` when omitted |
+| `area_concurrency` | no | Concurrent area requests inside one round; `4` when omitted (max 16) |
 | `min_iterations` | no | Rounds that always run before early stopping; `0` when omitted |
 | `max_runtime_seconds` | no | Wall-clock budget past `min_iterations`; `0` means unlimited |
 | `device_id` | no | Fixed device id; a built-in default when omitted |
@@ -102,32 +106,116 @@ the drawer never sets them.
 request, so asking the same route again usually yields a different node — the
 route list bounds the regions you can reach, not the number of nodes.
 
-One pass over all routes therefore collects only one host per route. `max_iterations`
-repeats the pass, merging each round into the pool and skipping links already
-seen:
+### The area list is fixed; a cursor walks it
+
+Every run builds one area list before the first request: all regions the node
+list advertises, minus China and the free tier, deduped by area id, in vendor
+order. That list is frozen for the whole run. Each round takes the next
+`areas_per_round` entries from it and the cursor wraps at the end, so a run cut
+short by the round cap or by an early stop still reaches the tail of the list —
+the old loop re-asked the same head every round and starved later regions.
+
+The areas inside one round are requested concurrently (`area_concurrency`,
+default 4). Measured on 黑洞: 31 areas sequentially cost ~30s per sweep; at
+concurrency 4–8 the same work finishes in 2–4s.
+
+### Rounds are per platform
+
+`max_iterations` is the budget for **each** channel. `1000` means 1000 rounds on
+Android **and** 1000 rounds on iOS, running at the same time — never 500 + 500,
+never a shared counter.
 
 | Setting | Effect |
 |---|---|
-| `max_iterations` | Upper bound on rounds |
+| `max_iterations` | Rounds each platform runs |
+| `areas_per_round` | Areas taken from the fixed list per round |
+| `area_concurrency` | Concurrent area requests within a round |
 | `min_iterations` | Rounds that always run, even after the pool stops growing |
-| `plateau_limit` | Consecutive dry rounds that end the run, once past `min_iterations` |
+| `plateau_limit` | Consecutive rounds with no genuinely new node that end the run |
 | `max_runtime_seconds` | Wall-clock budget, likewise only after `min_iterations` |
 
-The four vendor rows ship `max_iterations = 4` / `plateau_limit = 2`, the
-documented scheduled-run default. Raising the cap trades run time for pool
-size; the gain is front-loaded.
+### Early stop counts node identity, not link strings
 
-Measured on one account, all routes, one machine:
+A "new node" is a new canonical fingerprint — `add`, `port`, `id`, `net`,
+`host`, `path`, `tls`, `sni` — deduped **across both platforms**. The display
+name (`ps`) is not part of it. So:
 
-| Rounds | Unique nodes | Gain | Time |
-|---|---|---|---|
-| 1 | 42 | — | 37s |
-| 3 | 57 | +36% | 93s |
-| 8 | 78 | +86% | 234s |
+- a node the server relabels on every request is delivered once and then no
+  longer counts as new;
+- a node iOS already produced does not reset Android's counter.
 
-Each round costs roughly 30s, and the per-round gain falls from +15 to +2 by the
-sixth. `max_iterations = 4` with `plateau_limit = 2` is a reasonable default for
-a scheduled run; raise it when a wider pool matters more than the wait.
+`plateau_limit = 50` therefore means exactly what it says: 50 consecutive rounds
+in which this channel produced no node neither platform had seen before. Raw
+link delivery is tracked separately, so a relabelled duplicate still reaches the
+downstream pool.
+
+A round where every candidate host failed is not a dry round — it is an outage.
+Those rounds do not advance the plateau; after five in a row the channel stops
+with an explicit error, and a direct run escalates to the upstream proxy first.
+
+### A placeholder-only channel stops itself
+
+黑洞's Android channel answers `1.1.1.1:443` for every area, on every account,
+with or without the client's `kbox` parameter. A channel that has produced only
+placeholder nodes for 8 consecutive rounds is stopped and reported; the other
+channel keeps running. See the next section.
+
+## 黑洞: the iOS channel is the whole node pool
+
+The Android channel of 黑洞 answers the vendor's placeholder template
+(`1.1.1.1:443`, `ps=431`) for every area. This is a server-side downgrade scoped
+to `/api/evmess`: login, `/myapi/apinodelist` and the parameter set all behave
+normally, and the same account on the iOS channel returns real nodes. It was
+reproduced with the decompiled client's exact parameters, with and without
+`kbox`, and across four device ids and every pooled account.
+
+The iOS channel is real but small, and that is a property of the vendor, not of
+the client:
+
+| Measure | 黑洞 | 雷霆 (for scale) |
+|---|---|---|
+| Advertised areas (after filtering) | 31 | 30 |
+| Distinct hosts the areas resolve to | 8 | 30 |
+| Distinct outbound ids | 3 | — |
+| Unique nodes after 20 full sweeps | 8 | 54 after 6 |
+
+Blanking 31 areas maps onto only 8 landing hosts, so repeating the sweep cannot
+produce more than those 8 nodes; the pool saturates on the first pass. 雷霆 maps
+one area to one host and keeps yielding new machines per round.
+
+Consequence for the run: 黑洞 produces ~8 nodes per run, all from iOS, and its
+Android channel is stopped after 8 placeholder rounds instead of spending 200
+rounds × concurrency on nothing.
+
+## Crawl egress
+
+The crawl goes through an upstream proxy by default (`[network]` in the profile):
+
+```toml
+[network]
+proxy_mode = "proxy"        # proxy | direct | auto
+proxy_url = "http://127.0.0.1:7897"
+```
+
+| `proxy_mode` | Behaviour |
+|---|---|
+| `proxy` (default) | Crawl through `proxy_url`. If nothing is listening, the run drops to direct rather than failing every request. |
+| `auto` | Start direct; the first response that looks like an IP block pins the proxy for the rest of the run. |
+| `direct` | Never use a proxy. |
+
+A separate, sticky escalation exists inside `proxy` as well: a round in which
+every candidate host failed, or a 403/407/429/451 response, switches a direct
+run to the proxy once. The switch is recorded in the run's diagnostics
+(`egress_transport`, `egress_switches`) and logged.
+
+`VPN_AUTOMATION_PROXY_MODE` and `VPN_AUTOMATION_UPSTREAM_PROXY` override the
+profile when set on the command line. The older
+`VPN_AUTOMATION_USE_UPSTREAM_PROXY=0|1` still works and maps to `direct|proxy`.
+The standard `HTTPS_PROXY` family is used only as a URL fallback — exporting it
+for other tools does not silently change the crawl's transport.
+
+Per-node measurement (speed test, availability) is deliberately excluded: those
+transports must reach the node itself, not the crawl proxy.
 
 ## The APK is not fetched on every run
 
@@ -160,17 +248,9 @@ measured: without it the server issues nodes from `apps`, which is
 `MD5(cert SHA1 + device id)`. That is why no white-box AES port is needed on the
 Node side.
 
-## One brand's Android channel answers with placeholders
-
-`/api/evmess` for 黑洞 answers with a fixed `1.1.1.1:443` template and ignores
-`area` on the Android channel, while the same account works on iOS. On the same
-host `/api/rules` and `/myapi/apinodelist` answer normally with identical Android
-parameters, so the downgrade is scoped to that one endpoint rather than the
-client being rejected.
-
-Because both channels run for every source, this brand still produces its real
-nodes from the iOS channel in the same run; its Android placeholders are counted
-and dropped. No per-profile `platform` switch is needed.
+This was re-verified for 黑洞 with the real `libcryptbox.so` emulated and the
+parameter appended: `kbox` present and absent produce the identical placeholder
+body on the Android channel, so it is not the cause of the downgrade.
 
 ## Compatibility with the URL mode
 

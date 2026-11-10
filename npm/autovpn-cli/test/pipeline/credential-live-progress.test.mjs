@@ -207,6 +207,9 @@ test('a round that adds nothing still reports the running total', async () => {
         max_iterations: 4,
         min_iterations: 4,
         plateau_limit: 9,
+        // A full sweep per round (the list has 3 rows), so rounds 3 and 4
+        // re-ask the same areas once their address sequences run dry.
+        areas_per_round: 3,
         key: FIXTURE_KEY
       }
     },

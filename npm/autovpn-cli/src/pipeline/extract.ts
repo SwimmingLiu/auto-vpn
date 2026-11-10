@@ -3,12 +3,14 @@ import { spawn as defaultSpawn, ChildProcess } from 'node:child_process';
 
 import type { FingerprintStore } from './brand-cache.js';
 import type { FingerprintMemo } from './credential-source.js';
+import { EgressSession, resolveEgressPolicy, defaultCurlFetch as egressCurlFetch } from './egress.js';
 
 type SpawnLike = (command: string, args: string[], options?: Record<string, unknown>) => ChildProcess;
 type FetchLike = (url: string, init?: Record<string, unknown>) => Promise<{
   ok?: boolean;
   status?: number;
   text(): Promise<string>;
+  body?: { cancel?(): Promise<void> | void } | null;
 }>;
 type CurlFetchLike = (url: string, proxyUrl: string) => Promise<string>;
 type ExtractEventCallback = (type: string, payload: Record<string, unknown>) => void;
@@ -46,6 +48,10 @@ export interface SourceConfigInput {
   brand_flags?: string;
   code?: string;
   max_areas?: number;
+  /** Areas taken from the fixed area list each round (credential mode). */
+  areas_per_round?: number;
+  /** Concurrent area requests within one round (credential mode). */
+  area_concurrency?: number;
   timeout_ms?: number;
 }
 
@@ -62,6 +68,11 @@ export interface ExtractedSourceResult {
   links: string[];
   /** Human-readable failures from a credential source, for the event log. */
   errors?: string[];
+  /** Rounds actually executed on one platform (its own full budget). */
+  rounds?: number;
+  /** Sum of the per-platform rounds, so progress is not just the request cap. */
+  rounds_total?: number;
+  platforms?: string[];
 }
 
 export interface ExtractBackendOptions {
@@ -229,11 +240,9 @@ function isEnabled(value: unknown): boolean {
 }
 
 function resolveUpstreamProxyUrl(env: NodeJS.ProcessEnv): string {
-  if (!isEnabled(env.VPN_AUTOMATION_USE_UPSTREAM_PROXY)) {
-    return '';
-  }
-  const value = String(env.VPN_AUTOMATION_UPSTREAM_PROXY ?? 'http://127.0.0.1:7897').trim();
-  return ['', 'off', 'none', 'false', '0'].includes(value.toLowerCase()) ? '' : value;
+  // One resolver for both extract modes, so a run cannot half-use a proxy.
+  const policy = resolveEgressPolicy(env);
+  return policy.mode === 'direct' ? '' : policy.proxyUrl;
 }
 
 function isTlsFailure(error: unknown): boolean {
@@ -305,11 +314,31 @@ async function fetchSourceText(
   attempt: number,
   fetchImpl: FetchLike,
   options: ExtractBackendOptions,
-  upstreamProxy: string
+  upstreamProxy: string,
+  session?: EgressSession
 ): Promise<{ text: string; via: string }> {
+  // The shared session is the egress authority for both modes: it owns the
+  // proxy dispatcher, cancels abandoned bodies and switches direct -> proxy
+  // when the vendor starts answering with a block page.
+  if (session) {
+    const result = await session.text(url, 20_000);
+    const via = result.transport === 'proxy' ? 'upstream_proxy' : 'direct';
+    emitExtractEvent(options, 'extract_request_result', {
+      source_name: input.source_name,
+      iteration: attempt,
+      success: result.ok,
+      via,
+      ...(result.ok ? {} : { error: result.blocked ? 'blocked' : `HTTP ${result.status}` })
+    });
+    if (!result.ok) {
+      throw new Error(result.blocked ? 'egress blocked' : `HTTP ${result.status}`);
+    }
+    return { text: result.text, via };
+  }
   try {
     const response = await fetchWithTimeout(fetchImpl, url, 20_000);
     if (response.ok === false || Number(response.status ?? 200) >= 400) {
+      await response.body?.cancel?.();
       throw new Error(`HTTP ${Number(response.status ?? 0)}`);
     }
     const text = await response.text();
@@ -377,6 +406,10 @@ async function fetchSourceLinksInNode(input: ExtractInput, options: ExtractBacke
   let failures = 0;
   const startedAt = Date.now();
   const upstreamProxy = resolveUpstreamProxyUrl(options.env ?? process.env);
+  const session = await EgressSession.open(options.env ?? process.env, {
+    fetchImpl: fetchImpl as never,
+    curlFetch: options.curlFetch ?? ((url, proxyUrl) => egressCurlFetch(url, proxyUrl, options.spawn))
+  });
 
   emitExtractEvent(options, 'extract_source_started', {
     source_name: input.source_name,
@@ -385,6 +418,7 @@ async function fetchSourceLinksInNode(input: ExtractInput, options: ExtractBacke
     resume_from_iteration: startIteration
   });
 
+  try {
   for (let iteration = startIteration - 1; iteration < maxIterations; iteration += 1) {
     const attempt = iteration + 1;
     if (maxRuntimeSeconds > 0 && attempt > minIterations && (Date.now() - startedAt) / 1000 >= maxRuntimeSeconds) {
@@ -393,7 +427,7 @@ async function fetchSourceLinksInNode(input: ExtractInput, options: ExtractBacke
 
     try {
       const url = buildRuntimeSourceUrl(source, iteration);
-      const response = await fetchSourceText(input, url, attempt, fetchImpl, options, upstreamProxy);
+      const response = await fetchSourceText(input, url, attempt, fetchImpl, options, upstreamProxy, session);
       let plaintext = '';
       try {
         plaintext = decryptPayload(response.text.trim(), source.key);
@@ -454,6 +488,9 @@ async function fetchSourceLinksInNode(input: ExtractInput, options: ExtractBacke
       }
     }
   }
+  } finally {
+    await session.close();
+  }
 
   emitExtractEvent(options, 'extract_source_completed', {
     source_name: input.source_name,
@@ -496,7 +533,12 @@ export async function fetchSourceLinksWithBackend(input: ExtractInput, options: 
       successful_iterations: result.successful_iterations,
       failed_iterations: result.failed_iterations,
       links: result.links,
-      errors: result.diagnostics.errors
+      errors: result.diagnostics.errors,
+      // Without these the orchestrator could only report the requested cap,
+      // so an early-stopped 1000-round run still read as 1000/1000.
+      rounds: result.diagnostics.rounds,
+      rounds_total: result.diagnostics.rounds_total,
+      platforms: result.diagnostics.platforms
     };
   }
   return fetchSourceLinksInNode(input, options);

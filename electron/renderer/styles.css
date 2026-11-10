@@ -1390,6 +1390,8 @@ body[data-page="logs"] #logCenterTable {
 
 .source-credential-rounds {
   display: grid;
+  /* Four controls in a 232px column: two per line, so the labels stay readable
+     next to a 36px number input. */
   grid-template-columns: repeat(2, minmax(72px, 1fr));
   gap: 8px;
 }
@@ -1478,7 +1480,7 @@ body[data-page="logs"] #logCenterTable {
 }
 
 .settings-col-rounds {
-  width: 196px;
+  width: 232px;
 }
 
 .availability-col-url {
@@ -1704,11 +1706,39 @@ body[data-page="logs"] #logCenterTable {
 }
 
 .account-col-expiry {
-  width: 110px;
+  width: 178px;
 }
 
 .account-col-usage {
   width: 132px;
+}
+
+.account-expiry-value {
+  display: block;
+  font-size: 13px;
+}
+
+.account-expiry-value.unknown {
+  color: var(--text-soft);
+}
+
+.account-expiry-edit {
+  margin-top: 4px;
+}
+
+.account-expiry-editor {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.account-expiry-editor input {
+  min-height: 32px;
+  min-width: 132px;
+  padding-inline: 8px;
+  font-size: 12px;
 }
 
 .account-col-actions {

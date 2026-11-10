@@ -16,13 +16,66 @@ import { CliUsageError } from './errors.js';
 import { readOptionValue } from './global-options.js';
 import type { CliIo } from './output.js';
 
-export const ACCOUNTS_SUBCOMMANDS = ['import', 'list', 'stats', 'snapshot', 'disable', 'enable', 'expire', 'export', 'template'] as const;
+export const ACCOUNTS_SUBCOMMANDS = ['import', 'list', 'stats', 'snapshot', 'disable', 'enable', 'expire', 'export', 'template', 'refresh-expiry'] as const;
 export type AccountsSubcommand = (typeof ACCOUNTS_SUBCOMMANDS)[number];
 
 /** Options that consume the next argv slot, so positionals can be found. */
 const VALUE_OPTIONS = new Set([
-  '--project-root', '--format', '--output', '--brand', '--status', '--reason', '--date', '--file', '--limit', '--query', '--id'
+  '--project-root', '--format', '--output', '--brand', '--status', '--reason', '--date', '--file', '--limit', '--query', '--id',
+  '--concurrency'
 ]);
+
+/**
+ * One account's outcome from `accounts refresh-expiry`.
+ *
+ * The worker lives in the pipeline (`../pipeline/credential-source.js`) because
+ * only it knows how to log in to each brand; this module owns only parsing,
+ * rendering and the store seam.
+ */
+export interface RefreshExpiryEvent {
+  brand: string;
+  account_masked: string;
+  expires_at: string;
+  status: 'updated' | 'expired' | 'failed';
+  error?: string;
+}
+
+export interface RefreshExpiryResult {
+  checked: number;
+  updated: number;
+  expired: number;
+  failed: number;
+  results: RefreshExpiryEvent[];
+}
+
+export interface RefreshExpiryInput {
+  brand?: string;
+  limit?: number;
+  concurrency?: number;
+  env?: NodeJS.ProcessEnv;
+  store?: AccountStore;
+  now?: () => Date;
+  onProgress?: (event: RefreshExpiryEvent) => void;
+}
+
+export type RefreshAccountExpiry = (input: RefreshExpiryInput) => Promise<RefreshExpiryResult>;
+
+/**
+ * Resolve the pipeline worker lazily.
+ *
+ * The worker is owned by the pipeline module; a build that predates it (or a
+ * stripped install) must still let the rest of `accounts` work, so the command
+ * reports `refresh_expiry_unavailable` instead of failing at import time.
+ */
+async function loadRefreshAccountExpiry(): Promise<RefreshAccountExpiry | null> {
+  try {
+    const module = await import('../pipeline/credential-source.js') as unknown as Record<string, unknown>;
+    const worker = module.refreshAccountExpiry;
+    return typeof worker === 'function' ? (worker as RefreshAccountExpiry) : null;
+  } catch {
+    return null;
+  }
+}
 
 export function accountsPositionals(argv: string[]): string[] {
   const out: string[] = [];
@@ -72,6 +125,18 @@ export function validateAccountsCommand(argv: string[]): void {
   if (subcommand === 'import' && !positionals[0] && readOptionValue(argv, '--file') === undefined && !argv.includes('--stdin')) {
     throw new CliUsageError('accounts import requires a file path or --stdin');
   }
+  if (subcommand === 'refresh-expiry') {
+    for (const option of ['--limit', '--concurrency']) {
+      const value = readOptionValue(argv, option);
+      if (value === undefined) continue;
+      if (!/^\d+$/.test(value)) {
+        throw new CliUsageError(`accounts refresh-expiry ${option} must be a non-negative integer`);
+      }
+    }
+    if (Number(readOptionValue(argv, '--concurrency') ?? 3) < 1) {
+      throw new CliUsageError('accounts refresh-expiry --concurrency must be a positive integer');
+    }
+  }
   if (['disable', 'enable', 'expire'].includes(subcommand)) {
     const id = readOptionValue(argv, '--id');
     if (id !== undefined) {
@@ -91,20 +156,22 @@ function renderStatsHuman(stats: ReturnType<AccountStore['stats']>): string {
   const lines = [
     `account pool: ${stats.total} total, ${stats.active} active`,
     `  retired: ${stats.disabled} disabled, ${stats.expired} expired, ${stats.invalid} invalid`,
-    `  expiring within 7 days: ${stats.expiring_soon}`
+    `  expiring within 7 days: ${stats.expiring_soon}`,
+    `  expiry unknown: ${stats.expiry_unknown}`
   ];
   for (const brand of stats.by_brand) {
     lines.push(
       `  ${brandLabel(brand.brand).padEnd(8)} total=${String(brand.total).padStart(3)} active=${String(brand.active).padStart(3)}` +
-      ` disabled=${brand.disabled} expired=${brand.expired} invalid=${brand.invalid}`
+      ` disabled=${brand.disabled} expired=${brand.expired} invalid=${brand.invalid} unknown=${brand.expiry_unknown}`
     );
   }
   lines.push(`  db: ${stats.db_path}`);
   return `${lines.join('\n')}\n`;
 }
 
-function renderListHuman(rows: PublicAccount[]): string {
-  if (rows.length === 0) return 'account pool: no matching accounts\n';
+function renderListHuman(rows: PublicAccount[], hiddenRetired = 0): string {
+  const footer = hiddenRetired > 0 ? `${hiddenRetired} retired row(s) hidden; use --all to show them\n` : '';
+  if (rows.length === 0) return footer || 'account pool: no matching accounts\n';
   const lines = ['brand     account        status    expires     uses  ok/fail  note'];
   for (const row of rows) {
     lines.push(
@@ -113,6 +180,20 @@ function renderListHuman(rows: PublicAccount[]): string {
       `${row.success_count}/${row.fail_count}`.padEnd(8) + `  ${row.status_reason || row.note}`
     );
   }
+  // A sweep that retires an expired row hides it from the default view without
+  // a trace, which reads as "the pool lost accounts". Say how many are hidden
+  // and how to see them. English, like the rest of this table and the command's
+  // operator messages.
+  return `${lines.join('\n')}\n${footer}`;
+}
+
+function renderRefreshLine(event: RefreshExpiryEvent): string {
+  return `${event.brand.padEnd(9)} ${event.account_masked.padEnd(14)} ${(event.expires_at || '-').padEnd(11)} ${event.status}${event.error ? `  ${event.error}` : ''}`;
+}
+
+function renderRefreshHuman(rows: readonly RefreshExpiryEvent[], result: RefreshExpiryResult): string {
+  const lines = rows.map(renderRefreshLine);
+  lines.push(`checked=${result.checked} updated=${result.updated} expired=${result.expired} failed=${result.failed}`);
   return `${lines.join('\n')}\n`;
 }
 
@@ -137,6 +218,59 @@ export interface AccountsContext {
   readStdin?: () => string | Promise<string>;
   /** Test seam: an already-open store, so `:memory:` can be injected. */
   store?: AccountStore;
+  /** Test seam: replaces the pipeline's login worker so tests never hit the network. */
+  refreshExpiry?: RefreshAccountExpiry | null;
+}
+
+/**
+ * `accounts refresh-expiry`: log in to pool accounts to learn their real
+ * membership date.
+ *
+ * The worker (brand-specific login, membership-date parsing, retries) lives in
+ * the pipeline; this function parses the flags, supplies the store and renders
+ * the result. Without the worker — an install whose dist predates it — the
+ * command refuses instead of pretending it checked anything.
+ */
+async function runRefreshExpiry(argv: string[], context: AccountsContext): Promise<number> {
+  const worker = context.refreshExpiry === null
+    ? null
+    : context.refreshExpiry ?? await loadRefreshAccountExpiry();
+  if (!worker) {
+    context.io.writeStdout(jsonLine({ ok: false, error: 'refresh_expiry_unavailable' }));
+    context.io.writeStderr('accounts refresh-expiry: the installed build has no expiry refresh worker\n');
+    return 1;
+  }
+  const limit = Number(readOptionValue(argv, '--limit') ?? 0);
+  const concurrency = Number(readOptionValue(argv, '--concurrency') ?? 3);
+  const store = context.store ?? new AccountStore({ env: context.env, now: context.now });
+  const ownsStore = !context.store;
+  try {
+    let streamed = 0;
+    const result = await worker({
+      brand: readOptionValue(argv, '--brand'),
+      limit: Number.isFinite(limit) ? Math.max(0, Math.trunc(limit)) : 0,
+      concurrency: Number.isFinite(concurrency) ? Math.max(1, Math.trunc(concurrency)) : 3,
+      env: context.env,
+      store,
+      now: context.now,
+      // A refresh logs in to every account, which takes minutes per brand; the
+      // human view prints each outcome as it lands instead of going silent.
+      onProgress: wantsHuman(argv)
+        ? (event) => {
+            context.io.writeStdout(`${renderRefreshLine(event)}\n`);
+            streamed += 1;
+          }
+        : undefined
+    });
+    // Any result the worker did not stream (or a worker version that never
+    // calls onProgress) is still printed once, so human and JSON output cover
+    // exactly the same accounts.
+    const remaining = result.results.slice(streamed);
+    context.io.writeStdout(wantsHuman(argv) ? renderRefreshHuman(remaining, result) : jsonLine(result));
+    return result.failed > 0 ? 1 : 0;
+  } finally {
+    if (ownsStore) store.close();
+  }
 }
 
 export async function runAccountsCommand(argv: string[], context: AccountsContext): Promise<number> {
@@ -146,6 +280,9 @@ export async function runAccountsCommand(argv: string[], context: AccountsContex
   if (subcommand === 'template') {
     context.io.writeStdout(accountsTemplate());
     return 0;
+  }
+  if (subcommand === 'refresh-expiry') {
+    return await runRefreshExpiry(argv, context);
   }
   const dryRun = subcommand === 'import' && argv.includes('--dry-run');
   // A preview must not write: the store's getters sweep expired rows, so even
@@ -191,7 +328,22 @@ export async function runAccountsCommand(argv: string[], context: AccountsContex
         query: readOptionValue(argv, '--query'),
         limit
       });
-      context.io.writeStdout(wantsHuman(argv) ? renderListHuman(rows) : jsonLine({ ok: true, count: rows.length, accounts: rows }));
+      if (wantsHuman(argv)) {
+        // The default view hides every soft-deleted row, so an expiry retirement
+        // would look like an account that vanished. Count what the filter hid;
+        // `--all` and a retired-status filter already show those rows.
+        const hiddenRetired = includeDeleted
+          ? 0
+          : store.list({
+              brand: readOptionValue(argv, '--brand'),
+              status: 'all',
+              includeDeleted: true,
+              query: readOptionValue(argv, '--query')
+            }).filter((row) => row.deleted).length;
+        context.io.writeStdout(renderListHuman(rows, hiddenRetired));
+      } else {
+        context.io.writeStdout(jsonLine({ ok: true, count: rows.length, accounts: rows }));
+      }
       return 0;
     }
 

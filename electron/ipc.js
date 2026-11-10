@@ -6,7 +6,7 @@ import { clipboard, ipcMain, shell } from 'electron';
 import QRCode from 'qrcode';
 
 import { mergeLatestArtifactPreview, previewArtifactDirectory } from './lib/artifact-preview.js';
-import { buildBackendEnv, buildBackendInvocation, createNdjsonDecoder } from './lib/backend.js';
+import { buildBackendEnv, buildBackendInvocation, createNdjsonDecoder, resolveNodeCliEntry } from './lib/backend.js';
 import { pipelineStopResponse, requestProcessTreeStop } from './lib/process-lifecycle.js';
 import { attachPipelineChildFinalizer } from './lib/pipeline-child-finalizer.js';
 import { resolveStateProfilePath } from './paths.js';
@@ -19,6 +19,7 @@ const IPC_CHANNELS = [
   'accounts:snapshot',
   'accounts:import',
   'accounts:status',
+  'accounts:expiry',
   'accounts:template',
   'shell:open-path',
   'clipboard:write-text',
@@ -36,6 +37,28 @@ const IPC_CHANNELS = [
 
 function profilePath(projectRoot, runtimeProfilePath) {
   return runtimeProfilePath || resolveStateProfilePath(projectRoot);
+}
+
+/**
+ * Invocation for a backend command whose BACKEND_COMMANDS entry may not exist yet.
+ *
+ * `lib/backend.js` owns the command map. `accounts-expire` is new; until its
+ * one-line map entry lands, this builds the identical invocation the map would
+ * (same CLI entry, same --project-root placement, same run-as-node rule) rather
+ * than throwing 'Unsupported Electron backend command'.
+ */
+function backendInvocationFor(command, extraArgs, { projectRoot, isPackaged }) {
+  try {
+    return buildBackendInvocation(projectRoot, command, extraArgs, { isPackaged });
+  } catch (error) {
+    if (!/Unsupported Electron backend command/.test(String(error?.message ?? error))) throw error;
+    const runAsNode = Boolean(isPackaged) || (Boolean(process.versions.electron) && !process.env.npm_node_execpath);
+    return {
+      command: runAsNode ? process.execPath : (process.env.npm_node_execpath || process.execPath),
+      args: [resolveNodeCliEntry(projectRoot, { isPackaged }), 'accounts', 'expire', '--project-root', projectRoot, ...extraArgs],
+      runAsNode
+    };
+  }
 }
 
 export function registerIpcHandlers({
@@ -193,6 +216,47 @@ export function registerIpcHandlers({
       invocation.runAsNode
     );
     return JSON.parse(output.stdout);
+  });
+
+  ipcMain.handle('accounts:expiry', async (_event, payload = {}) => {
+    const id = Number(payload?.id);
+    const rawDate = payload?.expires_at ?? payload?.date ?? payload?.value;
+    if (!Number.isInteger(id) || id < 1 || rawDate === undefined || rawDate === null) {
+      return { ok: false, error: 'invalid_account_expiry_payload' };
+    }
+    const date = String(rawDate);
+    // An empty date means "cleared": the CLI spells that as --clear, because a
+    // bare `accounts expire` without a date used to erase a known expiry.
+    const extraArgs = date === '' ? ['--id', String(id), '--clear'] : ['--id', String(id), '--date', date];
+    // The sibling accounts handlers call buildBackendInvocation directly; this
+    // one needs `accounts-expire`, whose BACKEND_COMMANDS entry lives in
+    // lib/backend.js (another owner). Resolve it through that map when the
+    // entry exists and fall back to the identical invocation shape otherwise,
+    // so the renderer is not blocked on the one-line map addition.
+    const invocation = backendInvocationFor('accounts-expire', extraArgs, { projectRoot, isPackaged });
+    try {
+      const output = await runCommand(
+        invocation.command,
+        invocation.args,
+        projectRoot,
+        runtimeProfilePath,
+        bundledProfilePath,
+        '',
+        runtimeArtifactsPath,
+        invocation.runAsNode
+      );
+      return JSON.parse(output.stdout);
+    } catch (error) {
+      // `accounts expire` exits 1 with a JSON body for a bad date; the CLI
+      // prints that body on stdout and only its message on stderr, so surface
+      // the parsed payload rather than an opaque "Command failed".
+      const message = error instanceof Error ? error.message : String(error);
+      try {
+        return JSON.parse(message);
+      } catch {
+        return { ok: false, error: message };
+      }
+    }
   });
 
   ipcMain.handle('accounts:template', async () => {

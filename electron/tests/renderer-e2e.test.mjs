@@ -99,24 +99,28 @@ test('renderer updates live global dedupe counts from canonical extract fingerpr
       window.__emitPipelineEvent({
         type: 'extract_iteration',
         source_name: 'leiting',
+        platform: 'android',
         iteration: 1,
         requested_iterations: 1,
         new_items: 1,
         extracted_links: 1,
         total_links: 1,
         deduped_links: 1,
-        new_item_fingerprints: [fingerprint]
+        new_item_fingerprints: [fingerprint],
+        new_item_link_ids: ['link-1']
       });
       window.__emitPipelineEvent({
         type: 'extract_iteration',
         source_name: 'heidong',
+        platform: 'ios',
         iteration: 1,
         requested_iterations: 1,
         new_items: 1,
         extracted_links: 1,
         total_links: 1,
         deduped_links: 1,
-        new_item_fingerprints: [fingerprint]
+        new_item_fingerprints: [fingerprint],
+        new_item_link_ids: ['link-1']
       });
     }, duplicateFingerprint);
 
@@ -194,7 +198,7 @@ test('renderer updates live global dedupe counts from canonical extract fingerpr
     }
     assert.deepEqual(
       await page.evaluate(() => Object.keys(window.__extractEvents.find((event) => event.type === 'extract_iteration')).sort()),
-      ['deduped_links', 'extracted_links', 'iteration', 'new_item_fingerprints', 'new_items', 'requested_iterations', 'source_name', 'total_links', 'type'].sort()
+      ['deduped_links', 'extracted_links', 'iteration', 'new_item_fingerprints', 'new_items', 'new_item_link_ids', 'platform', 'requested_iterations', 'source_name', 'total_links', 'type'].sort()
     );
 
     await page.evaluate(() => window.__emitPipelineEvent({ type: 'finished', ok: true, code: 0 }));
@@ -475,10 +479,10 @@ test('renderer matches the five-page workspace and supports page navigation', as
         loadAccounts: async () => ({
           ok: true,
           stats: {
-            total: 6, active: 5, disabled: 0, expired: 0, invalid: 1, expiring_soon: 1,
+            total: 6, active: 5, disabled: 0, expired: 0, invalid: 1, expiring_soon: 1, expiry_unknown: 1,
             by_brand: [
-              { brand: 'leiting', total: 3, active: 2, disabled: 0, expired: 0, invalid: 1 },
-              { brand: 'xuanfeng', total: 3, active: 3, disabled: 0, expired: 0, invalid: 0 }
+              { brand: 'leiting', total: 3, active: 2, disabled: 0, expired: 0, invalid: 1, expiry_unknown: 1 },
+              { brand: 'xuanfeng', total: 3, active: 3, disabled: 0, expired: 0, invalid: 0, expiry_unknown: 0 }
             ]
           },
           accounts: [
@@ -493,6 +497,10 @@ test('renderer matches the five-page workspace and supports page navigation', as
         setAccountStatus: async (payload) => {
           window.__accountStatusCalls = [...(window.__accountStatusCalls ?? []), payload];
           return { ok: true };
+        },
+        setAccountExpiry: async (id, date) => {
+          window.__accountExpiryCalls = [...(window.__accountExpiryCalls ?? []), [id, date]];
+          return { ok: true, id, expires_at: date, action: 'expiry_set' };
         },
         accountsTemplate: async () => ({ ok: true, content: 'brand,account,password,official_site,expires_at,status,note\nleiting,ACCOUNT,PASSWORD,https://www.68123836.com,,active,\n' }),
         artifactList: async () => ({
@@ -786,9 +794,10 @@ test('renderer matches the five-page workspace and supports page navigation', as
     assert.match(settingsText, /测速配置/);
     assert.match(settingsText, /AI可达性检测/);
     assert.match(settingsText, /部署配置/);
+    assert.match(settingsText, /网络出口/);
     assert.doesNotMatch(settingsText, /点击卡片后|统一管理|弹窗中编辑/);
     assert.doesNotMatch(settingsText, /右侧抽屉|顶部统一保存/);
-    assert.equal(await page.locator('.settings-overview-card').count(), 4);
+    assert.equal(await page.locator('.settings-overview-card').count(), 5);
     assert.equal(await page.locator('.settings-source-table').count(), 0);
     assert.equal(await page.locator('#pageActions [data-action="save-profile"]').count(), 0);
 
@@ -835,10 +844,10 @@ test('renderer matches the five-page workspace and supports page navigation', as
     const sourceFields = await page.evaluate(() => [...document.querySelectorAll('.settings-source-table [data-drawer-key]')]
       .map((node) => `${node.dataset.drawerSource}:${node.dataset.drawerKey}`));
     assert.deepEqual(sourceFields.sort(), [
-      'heidong:enabled', 'heidong:max_iterations', 'heidong:official_site', 'heidong:plateau_limit',
-      'leiting:enabled', 'leiting:max_iterations', 'leiting:official_site', 'leiting:plateau_limit',
-      'mifeng:enabled', 'mifeng:max_iterations', 'mifeng:official_site', 'mifeng:plateau_limit',
-      'xuanfeng:enabled', 'xuanfeng:max_iterations', 'xuanfeng:official_site', 'xuanfeng:plateau_limit'
+      'heidong:area_concurrency', 'heidong:areas_per_round', 'heidong:enabled', 'heidong:max_iterations', 'heidong:official_site', 'heidong:plateau_limit',
+      'leiting:area_concurrency', 'leiting:areas_per_round', 'leiting:enabled', 'leiting:max_iterations', 'leiting:official_site', 'leiting:plateau_limit',
+      'mifeng:area_concurrency', 'mifeng:areas_per_round', 'mifeng:enabled', 'mifeng:max_iterations', 'mifeng:official_site', 'mifeng:plateau_limit',
+      'xuanfeng:area_concurrency', 'xuanfeng:areas_per_round', 'xuanfeng:enabled', 'xuanfeng:max_iterations', 'xuanfeng:official_site', 'xuanfeng:plateau_limit'
     ]);
     for (const selector of [
       '[data-drawer-mode]',
@@ -858,12 +867,19 @@ test('renderer matches the five-page workspace and supports page navigation', as
     await page.locator('[data-drawer-source="leiting"][data-drawer-key="official_site"]').fill('https://leiting.example');
     await page.locator('[data-drawer-source="leiting"][data-drawer-key="max_iterations"]').fill('6');
     await page.locator('[data-drawer-source="leiting"][data-drawer-key="plateau_limit"]').fill('3');
+    await page.locator('[data-drawer-source="leiting"][data-drawer-key="areas_per_round"]').fill('5');
+    await page.locator('[data-drawer-source="leiting"][data-drawer-key="area_concurrency"]').fill('12');
     await page.locator('[data-drawer-save="save"]').click();
     await page.waitForSelector('#settingsDrawer[data-open="false"]');
     const savedSources = await page.evaluate(() => window.__savedProfiles.at(-1).sources);
     assert.equal(savedSources.leiting.official_site, 'https://leiting.example');
     assert.equal(savedSources.leiting.max_iterations, 6);
     assert.equal(savedSources.leiting.plateau_limit, 3);
+    assert.equal(savedSources.leiting.areas_per_round, 5);
+    assert.equal(savedSources.leiting.area_concurrency, 12);
+    // A row that never stored the new fields saves the shipped defaults.
+    assert.equal(savedSources.heidong.areas_per_round, 1);
+    assert.equal(savedSources.heidong.area_concurrency, 4);
     assert.equal(savedSources.leiting.mode, 'credential');
     assert.equal(savedSources.leiting.url, undefined);
     assert.equal(savedSources.leiting.key, undefined);
@@ -898,6 +914,17 @@ test('renderer matches the five-page workspace and supports page navigation', as
     await page.locator('[data-account-action="toggle"][data-account-id="1"]').click();
     await page.waitForFunction(() => (window.__accountStatusCalls ?? []).length === 1);
     assert.deepEqual(await page.evaluate(() => window.__accountStatusCalls[0]), { id: 1, status: 'disabled', reason: '停用（界面操作）' });
+
+    // Account expiry: an empty date reads 未知, expiry_unknown is shown, and
+    // the bridge method is called with (id, 'YYYY-MM-DD').
+    assert.match(await page.locator('#accountPoolPanel').innerText(), /到期时间未知 1/);
+    assert.equal(await page.locator('[data-account-row="1"] [data-field-label="到期"]').innerText(), '未知\n设置到期');
+    await page.locator('[data-account-action="expiry-edit"][data-account-id="1"]').click();
+    await page.locator('[data-account-expiry-input="1"]').fill('2027-03-15');
+    await page.locator('[data-account-action="expiry-save"][data-account-id="1"]').click();
+    await page.waitForFunction(() => (window.__accountExpiryCalls ?? []).length === 1);
+    assert.deepEqual(await page.evaluate(() => window.__accountExpiryCalls[0]), [1, '2027-03-15']);
+    await page.waitForFunction(() => /到期日已设为 2027-03-15/.test(document.querySelector('#accountPoolPanel')?.innerText ?? '') || /到期日已设为 2027-03-15/.test(document.body.innerText));
 
     const fileChooserPromise = page.waitForEvent('filechooser');
     await page.locator('[data-account-action="upload"]').click();
@@ -1099,6 +1126,25 @@ test('renderer matches the five-page workspace and supports page navigation', as
     assert.match(extractLogText, /leiting #1 direct_curl_tls_fallback 成功/);
     assert.match(extractLogText, /leiting #1 新增 1 个，本次解析 2 个，累计 4 个/);
     assert.match(extractLogText, /leiting.*完成/);
+
+    // Both channels emit the same round number, so the per-platform events and
+    // the iteration line carry a compact channel tag. A source-level event
+    // without a platform keeps the original untagged line.
+    await page.evaluate(() => {
+      window.__emitPipelineEvent({ type: 'extract_platform_started', source_name: 'heidong', platform: 'android', requested_iterations: 1000, min_iterations: 0 });
+      window.__emitPipelineEvent({ type: 'extract_platform_started', source_name: 'heidong', platform: 'ios', requested_iterations: 1000, min_iterations: 0 });
+      window.__emitPipelineEvent({ type: 'extract_iteration', source_name: 'heidong', platform: 'android', iteration: 7, new_items: 2, extracted_links: 2, total_links: 9, deduped_links: 8 });
+      window.__emitPipelineEvent({ type: 'extract_iteration', source_name: 'heidong', platform: 'ios', iteration: 7, new_items: 1, extracted_links: 1, total_links: 10, deduped_links: 8 });
+      window.__emitPipelineEvent({ type: 'extract_platform_completed', source_name: 'heidong', platform: 'android', requested_iterations: 1000, successful_iterations: 7, failed_iterations: 0, raw_links: 9 });
+      window.__emitPipelineEvent({ type: 'extract_platform_completed', source_name: 'heidong', platform: 'ios', requested_iterations: 1000, successful_iterations: 6, failed_iterations: 1, raw_links: 10 });
+    });
+    const platformLogText = await page.locator('#logCenterTable').innerText();
+    assert.match(platformLogText, /heidong \[android\] 开始提取，最多 1000 次，最少 0 次/);
+    assert.match(platformLogText, /heidong \[ios\] 开始提取，最多 1000 次，最少 0 次/);
+    assert.match(platformLogText, /heidong \[android\] #7 新增 2 个，本次解析 2 个，累计 9 个/);
+    assert.match(platformLogText, /heidong \[ios\] #7 新增 1 个，本次解析 1 个，累计 10 个/);
+    assert.match(platformLogText, /heidong \[android\] 完成，成功 7 次，失败 0 次，原始节点 9 个/);
+    assert.match(platformLogText, /heidong \[ios\] 完成，成功 6 次，失败 1 次，原始节点 10 个/);
 
     await page.locator('#navRuns').click();
     await page.waitForSelector('#runsWorkspace');

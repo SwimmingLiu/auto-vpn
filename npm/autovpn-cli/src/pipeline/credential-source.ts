@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-import { fetch as upstreamFetch, ProxyAgent } from 'undici';
 
 import {
   androidChunkUrls,
@@ -28,9 +27,18 @@ import {
   type RouteNode
 } from './brand-protocol.js';
 import { decryptPayload, extractLinksFromPlaintext, linkDigest, linkFingerprint } from './extract.js';
-import { AccountStore, type StoredAccount } from '../pool/account-store.js';
-import { brandFromSite, normalizeBrand } from '../pool/brands.js';
-import type { FingerprintStore } from './brand-cache.js';
+import { mapWithConcurrency, resolveConcurrency } from './concurrency.js';
+import {
+  EgressSession,
+  defaultCurlFetch,
+  resolveEgressPolicy,
+  type EgressFetch,
+  type EgressSwitch
+} from './egress.js';
+import { AccountStore, maskAccount, type StoredAccount } from '../pool/account-store.js';
+import { brandFromSite, brandSite, normalizeBrand, type BrandKey } from '../pool/brands.js';
+import { FingerprintStore, resolveFingerprintCacheDir } from './brand-cache.js';
+import { resolveUserRuntimeRoot } from '../runtime/paths.js';
 import type { ExtractedSourceResult, SourceConfigInput, ExtractInput } from './extract.js';
 
 /**
@@ -80,12 +88,27 @@ export interface BrandCredentialSource {
   include_free_routes?: boolean;
   /** Keep mainland and return-to-China rows. Off: wrong direction. */
   include_china_routes?: boolean;
-  /** Upper bound on request rounds; each round asks every enabled route once. */
+  /**
+   * Upper bound on rounds PER PLATFORM. Android and iOS each run this many;
+   * the budget is never split or summed across the two channels.
+   */
   max_iterations?: number;
   /** Rounds that always run before a plateau may stop the run. */
   min_iterations?: number;
-  /** Consecutive rounds without a new link that stop the run. */
+  /**
+   * Consecutive rounds with no genuinely new node that stop the run. Novelty
+   * is the canonical node fingerprint, deduped across both platforms, so a
+   * relabelled duplicate does not reset the counter.
+   */
   plateau_limit?: number;
+  /**
+   * How many areas each round takes from the fixed area list. The list is
+   * built once (all regions, China and free removed, deduped, vendor order)
+   * and never mutated; a cursor walks it and wraps. Default 1.
+   */
+  areas_per_round?: number;
+  /** Concurrent `/api/evmess` requests within one round. Default 4, max 16. */
+  area_concurrency?: number;
   /** Wall-clock budget in seconds; 0 means unlimited. */
   max_runtime_seconds?: number;
   /** Per-request timeout in milliseconds. */
@@ -97,6 +120,7 @@ export type CredentialFetchLike = (url: string, init?: Record<string, unknown>) 
   status?: number;
   text(): Promise<string>;
   arrayBuffer(): Promise<ArrayBuffer>;
+  body?: { cancel?(): Promise<void> | void } | null;
 }>;
 
 /**
@@ -107,6 +131,7 @@ export type CredentialTextFetch = (url: string, init?: Record<string, unknown>) 
   ok?: boolean;
   status?: number;
   text(): Promise<string>;
+  body?: { cancel?(): Promise<void> | void } | null;
 }>;
 
 export interface CredentialExtractOptions {
@@ -129,6 +154,17 @@ export interface CredentialExtractOptions {
    */
   env?: NodeJS.ProcessEnv;
   curlFetch?: (url: string, proxyUrl: string) => Promise<string>;
+  /**
+   * Internal: the wrapper opens one session per source and shares it with both
+   * platforms so the proxy dispatcher has a single owner and a single close.
+   */
+  egressSession?: EgressSession;
+  /**
+   * Internal: the canonical fingerprint union of this attempt, shared by both
+   * platforms. A node the other channel already produced is not a meaningful
+   * new node, so it must not reset this channel's early-stop counter.
+   */
+  sharedFingerprints?: Set<string>;
 }
 
 export interface CredentialDiagnostics {
@@ -145,6 +181,8 @@ export interface CredentialDiagnostics {
   login_ok?: boolean;
   login_rejected?: boolean;
   credential_rejected?: boolean;
+  /** The vendor said the membership itself lapsed; retire as expired. */
+  membership_expired?: boolean;
   membership_expires_at?: string;
   membership_level?: number;
   apk_url: string;
@@ -159,10 +197,21 @@ export interface CredentialDiagnostics {
   routes_dropped?: { free: number; china: number; disabled: number; duplicate: number };
   node_count: number;
   placeholder_count: number;
-  /** Rounds actually executed (one request per enabled route per round). */
+  /** Rounds actually executed on this platform (its own full budget). */
   rounds: number;
-  /** Total `/api/evmess` requests issued. */
+  /** Sum of the per-platform rounds; the merged result reports both. */
+  rounds_total?: number;
+  /** Total `/api/evmess` route requests issued. */
   requests: number;
+  /** HTTP attempts actually made, including the domain walk and retries. */
+  request_attempts?: number;
+  /** Areas taken from the fixed list each round. */
+  areas_per_round?: number;
+  /** Concurrent requests within a round. */
+  area_concurrency?: number;
+  /** Transport the crawl ended on, and every switch that got it there. */
+  egress_transport?: 'proxy' | 'direct';
+  egress_switches?: EgressSwitch[];
   errors: string[];
 }
 
@@ -335,15 +384,87 @@ export interface RoundPolicy {
 }
 
 export function resolveRoundPolicy(source: { max_iterations?: number; min_iterations?: number; plateau_limit?: number; max_runtime_seconds?: number }): RoundPolicy {
-  const maxIterations = Math.max(1, Math.trunc(numberOrDefault(source.max_iterations, 1)));
+  const maxIterations = Math.max(1, Math.trunc(numberOrDefault(source.max_iterations, DEFAULT_MAX_ITERATIONS)));
   const configuredMin = Math.max(0, Math.trunc(numberOrDefault(source.min_iterations, 0)));
   return {
     max_iterations: maxIterations,
     // A minimum above the maximum would otherwise make the cap unreachable.
     min_iterations: Math.min(configuredMin, maxIterations),
-    plateau_limit: Math.max(1, Math.trunc(numberOrDefault(source.plateau_limit, 2))),
+    plateau_limit: Math.max(1, Math.trunc(numberOrDefault(source.plateau_limit, DEFAULT_PLATEAU_LIMIT))),
     max_runtime_seconds: Math.max(0, numberOrDefault(source.max_runtime_seconds, 0))
   };
+}
+
+/**
+ * A round is one cursor step over the fixed area list, not a full sweep, so
+ * the shipped budget is sized in rounds of one area each. 200 rounds × the
+ * default 1 area is roughly the work the old 4 full sweeps performed.
+ */
+export const DEFAULT_MAX_ITERATIONS = 200;
+export const DEFAULT_PLATEAU_LIMIT = 50;
+export const DEFAULT_AREAS_PER_ROUND = 1;
+export const DEFAULT_AREA_CONCURRENCY = 4;
+/**
+ * Consecutive rounds where every candidate host failed before the channel
+ * gives up. `getCommStr` already walks the whole domain list, so one empty
+ * round is a real outage; five in a row is not a transient blip.
+ */
+export const MAX_EMPTY_ROUNDS = 5;
+/**
+ * Consecutive rounds that answered with the placeholder template and nothing
+ * else, after which the channel is treated as downgraded and stopped.
+ *
+ * 黑洞's Android channel answers `1.1.1.1:443` for every area on every account
+ * (verified against the decompiled client's exact parameters, with and without
+ * `kbox`). Left alone it burns the whole round budget and half the run's
+ * concurrency producing nothing, so a channel that has never produced a real
+ * node is stopped explicitly and reported.
+ */
+export const PLACEHOLDER_ONLY_ROUNDS = 8;
+
+/** How many areas one round takes from the immutable list. */
+export function resolveAreasPerRound(value: unknown, areaCount: number): number {
+  const parsed = Math.trunc(Number(value));
+  const requested = Number.isFinite(parsed) && parsed >= 1 ? parsed : DEFAULT_AREAS_PER_ROUND;
+  // Asking for more areas than exist would repeat the same id inside one round.
+  return Math.max(1, Math.min(requested, Math.max(1, areaCount)));
+}
+
+/**
+ * A cursor over a frozen area list.
+ *
+ * The list and its order are decided once per run; the cursor only moves. That
+ * is what keeps later-listed regions reachable when a run is cut short by the
+ * round cap, the runtime budget or an early stop — the old loop re-asked the
+ * same full list in vendor order every round, so the tail was starved.
+ */
+export class AreaCursor<T> {
+  private readonly items: readonly T[];
+  private index = 0;
+
+  constructor(items: readonly T[]) {
+    this.items = Object.freeze([...items]);
+  }
+
+  get length(): number {
+    return this.items.length;
+  }
+
+  get position(): number {
+    return this.index;
+  }
+
+  /** Take the next `count` entries, wrapping. Never mutates the list. */
+  take(count: number): T[] {
+    if (this.items.length === 0) return [];
+    const width = Math.max(1, Math.min(Math.trunc(count) || 1, this.items.length));
+    const out: T[] = [];
+    for (let step = 0; step < width; step += 1) {
+      out.push(this.items[this.index]);
+      this.index = (this.index + 1) % this.items.length;
+    }
+    return out;
+  }
 }
 
 /** The floor always runs; past it, the runtime budget can stop the loop. */
@@ -381,20 +502,10 @@ interface FetchTextResult {
  * both modes must agree, so the settings travel with the context.
  */
 interface Egress {
+  /** Run-scoped transport choice; owns the proxy dispatcher and its lifetime. */
+  session?: EgressSession;
   env?: NodeJS.ProcessEnv;
   curlFetch?: (url: string, proxyUrl: string) => Promise<string>;
-}
-
-function isEnabled(value: unknown): boolean {
-  return ['1', 'true', 'yes', 'on'].includes(String(value ?? '').trim().toLowerCase());
-}
-
-function upstreamProxyUrl(env: NodeJS.ProcessEnv | undefined): string {
-  if (!env || !isEnabled(env.VPN_AUTOMATION_USE_UPSTREAM_PROXY)) {
-    return '';
-  }
-  const value = String(env.VPN_AUTOMATION_UPSTREAM_PROXY ?? 'http://127.0.0.1:7897').trim();
-  return ['', 'off', 'none', 'false', '0'].includes(value.toLowerCase()) ? '' : value;
 }
 
 async function fetchText(
@@ -403,29 +514,44 @@ async function fetchText(
   timeoutMs: number,
   egress?: Egress
 ): Promise<FetchTextResult> {
+  // The session is the single egress authority: transport choice, block
+  // detection, body cancellation and the curl TLS fallback all live there.
+  if (egress?.session) {
+    const result = await egress.session.text(url, timeoutMs);
+    return { text: result.text, url: result.url, ok: result.ok };
+  }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let response: Awaited<ReturnType<CredentialTextFetch>> | null = null;
   try {
-    const response = await fetchImpl(url, { signal: controller.signal, redirect: 'follow' });
-    if (!response.ok) {
+    response = await fetchImpl(url, { signal: controller.signal, redirect: 'follow' });
+    if (response.ok === false) {
+      // An unread body pins its keep-alive socket until GC.
+      await cancelBody(response);
       return { text: '', url, ok: false };
     }
     return { text: await response.text(), url, ok: true };
   } catch {
-    // Same fallback the url mode applies: curl handles a proxy or a
-    // self-signed/intercepted TLS chain that Node's fetch rejects.
-    const proxyUrl = upstreamProxyUrl(egress?.env);
+    await cancelBody(response);
     if (!egress?.curlFetch) {
       return { text: '', url, ok: false };
     }
     try {
-      const text = await egress.curlFetch(url, proxyUrl);
+      const text = await egress.curlFetch(url, '');
       return text.trim() ? { text, url, ok: true } : { text: '', url, ok: false };
     } catch {
       return { text: '', url, ok: false };
     }
   } finally {
     clearTimeout(timer);
+  }
+}
+
+async function cancelBody(response: { body?: { cancel?(): Promise<void> | void } | null } | null): Promise<void> {
+  try {
+    await response?.body?.cancel?.();
+  } catch {
+    // Already consumed or already closed.
   }
 }
 
@@ -713,15 +839,22 @@ async function defaultLoadApk(
       return null;
     }
   }
+  // The binary download must use the same transport as the text calls, or a
+  // configured proxy serves the homepage but the APK bytes go direct.
+  const binaryFetch = egress?.session
+    ? (egress.session.rawFetch() as unknown as CredentialFetchLike)
+    : fetchImpl;
   if (source.apk_url) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), Math.max(timeoutMs, 120_000));
     try {
-      const response = await fetchImpl(source.apk_url, { signal: controller.signal });
+      const response = await binaryFetch(source.apk_url, { signal: controller.signal });
       if (!response.ok || typeof response.arrayBuffer !== 'function') {
+        await cancelBody(response);
         return null;
       }
       if (declaredSizeTooLarge(response)) {
+        await cancelBody(response);
         log(`[extract] apk at ${source.apk_url} exceeds ${MAX_APK_BYTES} bytes; refusing`);
         return null;
       }
@@ -849,11 +982,13 @@ async function defaultLoadApk(
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), Math.max(timeoutMs, 120_000));
     try {
-      const response = await fetchImpl(candidate, { signal: controller.signal });
+      const response = await binaryFetch(candidate, { signal: controller.signal });
       if (!response.ok || typeof response.arrayBuffer !== 'function') {
+        await cancelBody(response);
         continue;
       }
       if (declaredSizeTooLarge(response)) {
+        await cancelBody(response);
         continue;
       }
       const bytes = Buffer.from(await response.arrayBuffer());
@@ -908,11 +1043,23 @@ export function isCredentialLoginRejection(message: string): boolean {
   return /密码错误|密碼錯誤|密码不正确|密碼不正確|账号不存在|帳號不存在|账户不存在|账户或密码|账号或密码|账号已被|帳號已被|密码已|被封禁|已被禁用|登录失败|登錄失敗|does\s*not\s*exist|not\s*(found|exist)|invalid\s*(password|account|credential|user)|incorrect\s*password|wrong\s*password|unauthorized/i.test(text);
 }
 
+/**
+ * Local calendar day, matching the account store's `isoDay`.
+ *
+ * `toISOString().slice(0, 10)` is the UTC day: under Asia/Shanghai a vendor
+ * date of `2027-01-01 00:00:00` became `2026-12-31`, and the pool's local-day
+ * comparison then retired the account a day early.
+ */
+function localDay(date: Date): string {
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
 export function membershipDate(value: unknown): string {
   if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
     const ms = value > 10_000_000_000 ? value : value * 1000;
     const date = new Date(ms);
-    return Number.isNaN(date.getTime()) ? '' : date.toISOString().slice(0, 10);
+    return Number.isNaN(date.getTime()) ? '' : localDay(date);
   }
   const text = String(value ?? '').trim();
   if (!text) return '';
@@ -922,7 +1069,30 @@ export function membershipDate(value: unknown): string {
     return /^\d{10,13}$/.test(text) ? membershipDate(Number(text)) : '';
   }
   const parsed = new Date(text);
-  return Number.isNaN(parsed.getTime()) ? '' : parsed.toISOString().slice(0, 10);
+  return Number.isNaN(parsed.getTime()) ? '' : localDay(parsed);
+}
+
+/** Pick the first field that actually parses to a date; `0` is not a date. */
+function firstMembershipDate(...values: unknown[]): string {
+  for (const value of values) {
+    const parsed = membershipDate(value);
+    if (parsed) return parsed;
+  }
+  return '';
+}
+
+/**
+ * A rejection that means the membership lapsed, not that the password is wrong.
+ *
+ * Checked before `isCredentialLoginRejection`: filing an expired membership as
+ * "invalid" hides the one fact the operator needs, and the row would otherwise
+ * stay active forever because neither classifier matched the wording.
+ */
+export function isMembershipExpiredMessage(message: string): boolean {
+  const text = String(message ?? '');
+  if (!text.trim()) return false;
+  if (TRANSIENT_LOGIN_PATTERN.test(text)) return false;
+  return /会员.*?(过期|到期|已到期)|會員.*?(過期|到期)|账号.*?(到期|过期)|帳號.*?(到期|過期)|账户.*?(到期|过期)|vip.*?(expired|expired)|membership.*?(expired|lapsed)|subscription.*?expired|已过期|已過期|expired/i.test(text);
 }
 
 function credentialRejectionMessage(payload: Record<string, unknown>): string {
@@ -938,31 +1108,43 @@ export async function fetchCredentialSourceLinks(
   input: ExtractInput,
   options: CredentialExtractOptions = {}
 ): Promise<CredentialExtractResult> {
-  const proxyUrl = upstreamProxyUrl(options.env);
-  if (!proxyUrl) {
-    return fetchCredentialSourceLinksWithTransport(input, options);
-  }
-  let proxy: URL;
-  try {
-    proxy = new URL(proxyUrl);
-  } catch {
-    throw new Error('The configured upstream proxy URL is invalid');
-  }
-  if (proxy.protocol !== 'http:' && proxy.protocol !== 'https:') {
-    throw new Error('Credential sources require an HTTP or HTTPS upstream proxy');
+  const policy = resolveEgressPolicy(options.env ?? {});
+  if (policy.proxyUrl) {
+    let proxy: URL;
+    try {
+      proxy = new URL(policy.proxyUrl);
+    } catch {
+      throw new Error('The configured upstream proxy URL is invalid');
+    }
+    if (proxy.protocol !== 'http:' && proxy.protocol !== 'https:') {
+      throw new Error('Credential sources require an HTTP or HTTPS upstream proxy');
+    }
   }
 
-  // The proxy previously reached only a text fallback: native site and APK
-  // requests still went direct. Keep one source-scoped dispatcher for both
-  // response types, without changing the per-node measurement transports.
-  const dispatcher = new ProxyAgent({ uri: proxy.href, proxyTunnel: false });
-  const fetchImpl: CredentialTextFetch = (url, init) => options.fetchImpl
-    ? options.fetchImpl(url, { ...init, dispatcher })
-    : upstreamFetch(url, { ...init, dispatcher });
+  // One session per source: it owns the proxy dispatcher, decides the
+  // transport, and switches direct -> proxy when the vendor starts blocking.
+  // Both platforms share it, so the choice is made once and closed once.
+  const session = options.egressSession ?? await EgressSession.open(options.env, {
+    fetchImpl: options.fetchImpl as EgressFetch | undefined,
+    curlFetch: options.curlFetch ?? ((url, proxyUrl) => defaultCurlFetch(url, proxyUrl)),
+    onSwitch: (switched) => event(options, 'log', {
+      message: `[extract][${input.source_name}] egress ${switched.from} -> ${switched.to} (${switched.reason})`
+    })
+  });
+  const ownsSession = !options.egressSession;
+  if (session.policy.mode === 'proxy' && session.transport === 'direct' && !session.proxyReachable) {
+    event(options, 'log', {
+      message: `[extract][${input.source_name}] upstream proxy ${session.policy.proxyUrl} is not reachable; crawling direct`
+    });
+  }
   try {
-    return await fetchCredentialSourceLinksWithTransport(input, { ...options, fetchImpl });
+    return await fetchCredentialSourceLinksWithTransport(input, {
+      ...options,
+      egressSession: session,
+      curlFetch: options.curlFetch ?? ((url, proxyUrl) => defaultCurlFetch(url, proxyUrl))
+    });
   } finally {
-    await dispatcher.destroy();
+    if (ownsSession) await session.close();
   }
 }
 
@@ -1064,13 +1246,24 @@ async function fetchCredentialSourceLinksWithTransport(
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       liveLinkIds.clear();
       liveFingerprints.clear();
+      // Both channels judge "a genuinely new node" against this one union, so
+      // a node iOS already produced cannot reset Android's early-stop counter.
+      const sharedFingerprints = new Set<string>();
       results = await Promise.all(platforms.map((platform) => {
         const scoped: CredentialExtractOptions = {
           ...options,
           memo,
+          sharedFingerprints,
           eventCallback: (type, payload) => {
             if (type === 'extract_source_started') {
-              event(options, 'extract_platform_started', { ...payload, platform });
+              // The per-platform start used to hardcode 0; the budget is the
+              // same full policy on each channel, never a split of it.
+              event(options, 'extract_platform_started', {
+                ...payload,
+                platform,
+                requested_iterations: policy.max_iterations,
+                min_iterations: policy.min_iterations
+              });
               return;
             }
             if (type === 'extract_source_completed') {
@@ -1088,13 +1281,21 @@ async function fetchCredentialSourceLinksWithTransport(
               for (const id of linkIds) liveLinkIds.add(id);
               event(options, 'extract_iteration', {
                 source_name: input.source_name,
+                // Two channels emit the same round number; without the tag the
+                // log shows two identical `#N` lines and reads like one shared
+                // counter.
+                platform,
                 iteration: Number(payload.iteration ?? 0),
                 requested_iterations: policy.max_iterations,
                 new_items: Number(payload.new_items ?? 0),
+                new_meaningful_items: Number(payload.new_meaningful_items ?? 0),
                 extracted_links: Number(payload.extracted_links ?? 0),
                 total_links: liveLinkIds.size,
                 deduped_links: liveFingerprints.size,
-                new_item_fingerprints: fingerprints
+                new_item_fingerprints: fingerprints,
+                new_item_link_ids: Array.isArray(payload.new_item_link_ids)
+                  ? payload.new_item_link_ids.map((value) => String(value)).filter(Boolean)
+                  : []
               });
               return;
             }
@@ -1138,18 +1339,30 @@ async function fetchCredentialSourceLinksWithTransport(
           store.markSuccess(leased.id);
           const expires = results.map((result) => result.diagnostics.membership_expires_at ?? '').find(Boolean);
           if (expires) store.setExpiry(leased.brand, leased.account, expires);
+          // A login can succeed while the membership it reports has already
+          // lapsed. File that as expired, not as "no paid membership": the
+          // reason is different and the operator acts on it differently.
+          const lapsed = Boolean(expires) && (expires ?? '') < today((options.now ?? (() => new Date()))());
           const level = results.map((result) => result.diagnostics.membership_level).find((value) => value !== undefined);
           const linked = results.some((result) => result.links.length > 0);
-          // A free-tier account (level 0/1) only ever produces placeholders.
-          // Retire it, but only when it actually produced nothing: a paid
-          // account misreported as level 1 must not lose its row.
-          if (level !== undefined && level < 2 && !linked) store.markInvalid(leased.id, 'no paid membership');
+          if (lapsed) {
+            store.markExpired(leased.id, 'membership expired');
+          } else if (level !== undefined && level < 2 && !linked) {
+            // A free-tier account (level 0/1) only ever produces placeholders.
+            // Retire it, but only when it actually produced nothing: a paid
+            // account misreported as level 1 must not lose its row.
+            store.markInvalid(leased.id, 'no paid membership');
+          }
         }
         break;
       }
+      const membershipExpired = results.length > 0
+        && results.every((result) => result.diagnostics.login_rejected)
+        && results.some((result) => result.diagnostics.membership_expired);
       const credentialRejected = results.length > 0 && results.every((result) => result.diagnostics.credential_rejected);
-      if (store && leased && credentialRejected) {
-        store.markInvalid(leased.id, 'login rejected');
+      if (store && leased && (membershipExpired || credentialRejected)) {
+        if (membershipExpired) store.markExpired(leased.id, 'membership expired');
+        else store.markInvalid(leased.id, 'login rejected');
         if (attempt < attempts && brand) {
           leased = store.lease(brand);
           if (leased) {
@@ -1191,8 +1404,19 @@ async function fetchCredentialSourceLinksWithTransport(
   diagnostics.route_tables = Math.max(0, ...results.map((result) => result.diagnostics.route_tables ?? 0));
   diagnostics.node_count = links.length;
   diagnostics.placeholder_count = results.reduce((total, result) => total + result.diagnostics.placeholder_count, 0);
+  // Each platform runs the full budget on its own. `rounds` stays the
+  // per-platform figure (the cap semantics), `rounds_total` is the work done
+  // across channels, and platform_results carries the breakdown.
   diagnostics.rounds = Math.max(0, ...results.map((result) => result.diagnostics.rounds));
+  diagnostics.rounds_total = results.reduce((total, result) => total + result.diagnostics.rounds, 0);
   diagnostics.requests = results.reduce((total, result) => total + result.diagnostics.requests, 0);
+  diagnostics.areas_per_round = results[0]?.diagnostics.areas_per_round;
+  diagnostics.area_concurrency = results[0]?.diagnostics.area_concurrency;
+  if (options.egressSession) {
+    diagnostics.request_attempts = options.egressSession.attempts;
+    diagnostics.egress_transport = options.egressSession.transport;
+    diagnostics.egress_switches = [...options.egressSession.switches];
+  }
   diagnostics.platform_results = results.map((result) => ({
     platform: result.diagnostics.platform as Platform,
     links: result.links.length,
@@ -1200,8 +1424,8 @@ async function fetchCredentialSourceLinksWithTransport(
     requests: result.diagnostics.requests,
     errors: result.diagnostics.errors
   }));
-  const successful = Math.max(0, ...results.map((result) => result.successful_iterations));
-  const failed = results.length === 0 ? 1 : Math.max(0, ...results.map((result) => result.failed_iterations));
+  const successful = results.reduce((total, result) => total + result.successful_iterations, 0);
+  const failed = results.length === 0 ? 1 : results.reduce((total, result) => total + result.failed_iterations, 0);
   if (callbackFailure) {
     // Surfaced rather than logged: the orchestrator treats a thrown extract as
     // a failed source, which is the truth — its downstream already died.
@@ -1225,10 +1449,33 @@ async function fetchCredentialSourceLinksWithTransport(
   };
 }
 
-/** One client channel. The public wrapper runs both and merges the results. */
+/**
+ * One client channel. The public wrapper runs both and merges the results.
+ *
+ * The session is opened here so every early return path still closes it; the
+ * inner worker assumes a live session and never owns one.
+ */
 export async function fetchCredentialPlatformLinks(
   input: ExtractInput,
   options: CredentialExtractOptions = {}
+): Promise<CredentialExtractResult> {
+  if (options.egressSession) {
+    return runCredentialPlatform(input, options);
+  }
+  const session = await EgressSession.open(options.env, {
+    fetchImpl: (options.fetchImpl ?? globalThis.fetch?.bind(globalThis)) as EgressFetch | undefined,
+    curlFetch: options.curlFetch ?? ((url, proxyUrl) => defaultCurlFetch(url, proxyUrl))
+  });
+  try {
+    return await runCredentialPlatform(input, { ...options, egressSession: session });
+  } finally {
+    await session.close();
+  }
+}
+
+async function runCredentialPlatform(
+  input: ExtractInput,
+  options: CredentialExtractOptions
 ): Promise<CredentialExtractResult> {
   const source = input.source as SourceConfigInput & BrandCredentialSource;
   const fetchImpl = options.fetchImpl ?? globalThis.fetch?.bind(globalThis);
@@ -1277,11 +1524,13 @@ export async function fetchCredentialPlatformLinks(
     return empty;
   }
 
+  const startPolicy = resolveRoundPolicy(source);
   event(options, 'extract_source_started', {
     source_name: input.source_name,
-    requested_iterations: 0,
-    min_iterations: 0,
-    resume_from_iteration: 1
+    requested_iterations: startPolicy.max_iterations,
+    min_iterations: startPolicy.min_iterations,
+    resume_from_iteration: 1,
+    platform
   });
 
   // 1) Brand fingerprint: package, version, certificate and seed domains.
@@ -1300,7 +1549,12 @@ export async function fetchCredentialPlatformLinks(
   const storedEntry = store?.read(brandKey) ?? null;
   const staleButUsable = Boolean(storedEntry) && !fresh;
   const cached = staleButUsable ? storedEntry : memo.get();
-  const egress: Egress = { env: options.env, curlFetch: options.curlFetch };
+  const session = options.egressSession as EgressSession;
+  const egress: Egress = {
+    session,
+    env: options.env,
+    curlFetch: options.curlFetch ?? ((url, proxyUrl) => defaultCurlFetch(url, proxyUrl))
+  };
 
   // Report real extraction work instead of making the UI infer APK/domain
   // activity from text logs. Cache reuse remains distinct from executed work.
@@ -1444,7 +1698,8 @@ export async function fetchCredentialPlatformLinks(
         code: ''
       }, resolveBrandLayout({ ...source, brand: input.source_name })),
       keys,
-      timeoutMs
+      timeoutMs,
+      egress
     );
     substage('domain_discovery', resolved ? 'success' : 'failed');
     return resolved;
@@ -1465,7 +1720,10 @@ export async function fetchCredentialPlatformLinks(
     lastActiveDomain: eversion.domain,
     key: eversion.key,
     fetchImpl,
-    timeoutMs
+    timeoutMs,
+    // Without this the curl/TLS fallback never reached login, apinodelist or
+    // evmess: every control-plane call saw `ctx.egress === undefined`.
+    egress
   };
   const apiDomain = selectApiDomain(discovery.seed_domains, device.device_id);
   diagnostics.api_domain = apiDomain;
@@ -1486,7 +1744,8 @@ export async function fetchCredentialPlatformLinks(
     if (Number(payload.code) !== 0) {
       const message = credentialRejectionMessage(payload);
       diagnostics.login_rejected = true;
-      diagnostics.credential_rejected = isCredentialLoginRejection(message);
+      diagnostics.membership_expired = isMembershipExpiredMessage(message);
+      diagnostics.credential_rejected = !diagnostics.membership_expired && isCredentialLoginRejection(message);
       errors.push(`login rejected: code=${String(payload.code)}`);
       // A cached fingerprint whose seeds answer eversion but whose signing
       // cert the vendor rotated keeps failing here on every run. Drop the
@@ -1497,7 +1756,9 @@ export async function fetchCredentialPlatformLinks(
       return { ...empty, failed_iterations: 1 };
     }
     token = String(payload.token ?? '');
-    diagnostics.membership_expires_at = membershipDate(payload.endtime ?? payload.expire_time);
+    // `endtime ?? expire_time` does not fall through on 0, so a valid
+    // expire_time was silently dropped and the row never got a date.
+    diagnostics.membership_expires_at = firstMembershipDate(payload.endtime, payload.expire_time);
     diagnostics.membership_level = Number.isFinite(Number(payload.level)) ? Number(payload.level) : undefined;
   } catch {
     errors.push('login response was not JSON');
@@ -1538,7 +1799,7 @@ export async function fetchCredentialPlatformLinks(
         diagnostics.membership_level = level;
       }
       if (unlimit) ctx.isUnlimited = unlimit === '1';
-      const expires = membershipDate(detail.endtime ?? detail.expire_time ?? info.endtime ?? info.expire_time);
+      const expires = firstMembershipDate(detail.endtime, detail.expire_time, info.endtime, info.expire_time);
       if (expires) diagnostics.membership_expires_at = expires;
     }
   } catch {
@@ -1590,50 +1851,81 @@ export async function fetchCredentialPlatformLinks(
 
   // 5) `/api/evmess?area=ID`, repeated.
   //
-  // The server picks a landing host per request, so asking the same `area` again
-  // usually returns a different machine: the route id chooses the region, not
-  // the host. A single pass therefore sees only one host per route, and the
-  // rounds below are what turn a handful of routes into a full node pool.
+  // The server picks a landing host per request, so asking the same `area`
+  // again usually returns a different machine: the route id chooses the
+  // region, not the host.
   //
-  // Round control mirrors the URL mode's iteration semantics:
-  //   max_iterations   upper bound on rounds (default 1)
+  // The area list is the one built above: every region the node list
+  // advertised, China and free rows removed, duplicates collapsed, vendor
+  // order preserved. It is frozen for the whole run. A cursor walks it and
+  // takes `areas_per_round` entries each round, wrapping at the end — so a run
+  // cut short by the round cap or an early stop still reaches the tail of the
+  // list instead of re-asking the same head forever.
+  //
+  // Round control:
+  //   max_iterations   rounds PER PLATFORM. Android and iOS each run the full
+  //                    budget concurrently; it is never split or summed.
   //   min_iterations   rounds that always run before early stopping is allowed
-  //   plateau_limit    consecutive rounds with no new link that stop the run
+  //   plateau_limit    consecutive rounds with no genuinely new node. Novelty
+  //                    is the canonical fingerprint, deduped across platforms.
   const links: string[] = [];
   const seen = new Set<string>();
   let placeholders = 0;
   let requests = 0;
   const activeRoutes = routes.filter((route) => route.enabled);
-  // The dashboard's dedupe card counts distinct fingerprints, not raw links: a
-  // link repeated across two platforms has to collapse there or the number
-  // only ever grows.
+  // The dashboard's dedupe card counts distinct fingerprints, not raw links.
   const fingerprints = new Set<string>();
+  // Meaningful novelty is judged against the union both platforms share, so a
+  // node the other channel already produced cannot reset this one's plateau.
+  const novelty = options.sharedFingerprints ?? new Set<string>();
   // Raw totals use the exact-string identity the pipeline dedupes with, so the
   // live number and `extract_source_completed.raw_links` agree.
   const linkIds = new Set<string>();
   const policy = resolveRoundPolicy(source);
   const maxIterations = policy.max_iterations;
-  const minIterations = policy.min_iterations;
-  const plateauLimit = policy.plateau_limit;
+  const areasPerRound = resolveAreasPerRound(source.areas_per_round, activeRoutes.length);
+  const areaConcurrency = resolveConcurrency(source.area_concurrency, DEFAULT_AREA_CONCURRENCY);
+  const cursor = new AreaCursor(activeRoutes);
   const startedAt = Date.now();
   let plateau = 0;
   let rounds = 0;
   let successfulRounds = 0;
   let failedRounds = 0;
+  let emptySweep = 0;
+  let placeholderStreak = 0;
+  diagnostics.route_count = activeRoutes.length;
+  diagnostics.areas_per_round = areasPerRound;
+  diagnostics.area_concurrency = areaConcurrency;
+  log(
+    `[extract] area list frozen: ${activeRoutes.length} areas,` +
+    ` ${areasPerRound}/round, concurrency ${areaConcurrency}, egress ${session.transport}`
+  );
 
   for (let round = 1; round <= maxIterations; round += 1) {
     if (!shouldStartRound(round, policy, (Date.now() - startedAt) / 1000)) {
       break;
     }
-    let newInRound = 0;
+    const batch = cursor.take(areasPerRound);
+    requests += batch.length;
+    // Fan the round out. `getCommStr` builds its own candidate list before the
+    // first await, so workers share no iteration state; `lastActiveDomain` is
+    // only a routing hint and last-writer-wins is safe.
+    const answers = await mapWithConcurrency(batch, areaConcurrency, async (route) => ({
+      route,
+      plain: await getCommStr(
+        ctx, eversionFields.apiLinks, apiDomain, '/api/evmess', `&area=${route.area}`, discovery.seed_domains
+      )
+    }));
+    // Delivery and early stop are deliberately separate counters. Every new
+    // raw link is still delivered downstream; only a new node identity resets
+    // the plateau, so a relabelled duplicate cannot keep the run alive.
+    let appendedInRound = 0;
+    let meaningfulInRound = 0;
     let answeredInRound = 0;
+    let placeholderInRound = 0;
     const newFingerprints: string[] = [];
     const newLinkIds: string[] = [];
-    for (const route of activeRoutes) {
-      const plain = await getCommStr(
-        ctx, eversionFields.apiLinks, apiDomain, '/api/evmess', `&area=${route.area}`, discovery.seed_domains
-      );
-      requests += 1;
+    for (const { route, plain } of answers) {
       if (!plain) {
         continue;
       }
@@ -1650,15 +1942,20 @@ export async function fetchCredentialPlatformLinks(
       for (const link of decoded) {
         if (isPlaceholderLink(link)) {
           placeholders += 1;
+          placeholderInRound += 1;
           continue;
         }
+        const fingerprint = linkFingerprint(link);
+        if (!novelty.has(fingerprint)) {
+          novelty.add(fingerprint);
+          meaningfulInRound += 1;
+          newFingerprints.push(fingerprint);
+        }
+        fingerprints.add(fingerprint);
         if (!seen.has(link)) {
           seen.add(link);
           links.push(link);
-          newInRound += 1;
-          const fingerprint = linkFingerprint(link);
-          fingerprints.add(fingerprint);
-          newFingerprints.push(fingerprint);
+          appendedInRound += 1;
           const digest = linkDigest(link);
           linkIds.add(digest);
           newLinkIds.push(digest);
@@ -1668,31 +1965,69 @@ export async function fetchCredentialPlatformLinks(
     rounds = round;
     if (answeredInRound > 0) {
       successfulRounds += 1;
+      emptySweep = 0;
+      plateau = meaningfulInRound === 0 ? plateau + 1 : 0;
+      // A whole round of placeholders and not one real node is a downgraded
+      // channel, not an exhausted pool: it would otherwise spend the entire
+      // budget (and half the run's concurrency) producing nothing.
+      if (placeholderInRound > 0 && appendedInRound === 0 && links.length === 0) {
+        placeholderStreak += 1;
+      } else {
+        placeholderStreak = 0;
+      }
     } else {
       failedRounds += 1;
+      emptySweep += 1;
+      // A round where every candidate failed is a network problem, not "the
+      // pool is exhausted", so it must not advance the plateau. Escalate to
+      // the proxy (a banned IP often gets an empty body rather than a 403)
+      // and stop after a short run of them instead of burning the budget.
+      if (session.reportEmptySweep()) {
+        log('[extract] no route answered; switching to the upstream proxy');
+      }
+      if (emptySweep >= MAX_EMPTY_ROUNDS) {
+        errors.push(`no route answered for ${emptySweep} consecutive rounds`);
+        break;
+      }
     }
-    if (newInRound > 0) {
-      await options.linksCallback?.(links.slice(-newInRound));
+    if (appendedInRound > 0) {
+      await options.linksCallback?.(links.slice(-appendedInRound));
     }
     // The dashboard's raw/dedupe cards read these numbers while the run is in
     // flight. Without a per-round event a credential source stays at 0 until
-    // it finishes, which reads as a stalled run: the URL mode already emits
-    // `extract_iteration` for exactly this reason.
+    // it finishes, which reads as a stalled run.
     event(options, 'extract_iteration', {
       source_name: input.source_name,
+      platform,
       iteration: round,
       requested_iterations: maxIterations,
-      new_items: newInRound,
-      extracted_links: newInRound,
+      new_items: appendedInRound,
+      new_meaningful_items: meaningfulInRound,
+      extracted_links: appendedInRound,
       total_links: links.length,
       deduped_links: fingerprints.size,
       new_item_fingerprints: newFingerprints,
       new_item_link_ids: newLinkIds
     });
-    log(`[extract] round ${round}/${maxIterations} +${newInRound} new (total ${links.length})`);
+    log(
+      `[extract] round ${round}/${maxIterations} area=${batch.map((route) => route.area).join(',')}` +
+      ` +${appendedInRound} new (+${meaningfulInRound} meaningful, total ${links.length},` +
+      ` plateau ${plateau}/${policy.plateau_limit})`
+    );
 
-    plateau = newInRound === 0 ? plateau + 1 : 0;
     if (shouldStopOnPlateau(round, plateau, policy)) {
+      log(`[extract] early stop: ${plateau} consecutive rounds without a meaningful new node`);
+      break;
+    }
+    if (placeholderStreak >= PLACEHOLDER_ONLY_ROUNDS) {
+      errors.push(
+        `channel produced only placeholder nodes for ${placeholderStreak} rounds; stopping it` +
+        ' (this brand does not serve real nodes on this platform)'
+      );
+      log(
+        `[extract] ${platform} channel stopped: ${placeholderStreak} rounds of placeholder nodes only.` +
+        ' The other channel still runs; this platform is not serving real nodes for this brand.'
+      );
       break;
     }
   }
@@ -1700,6 +2035,8 @@ export async function fetchCredentialPlatformLinks(
   diagnostics.node_count = links.length;
   diagnostics.rounds = rounds;
   diagnostics.requests = requests;
+  diagnostics.egress_transport = session.transport;
+  diagnostics.egress_switches = [...session.switches];
 
   event(options, 'extract_source_completed', {
     source_name: input.source_name,
@@ -1717,6 +2054,122 @@ export async function fetchCredentialPlatformLinks(
     links,
     diagnostics
   };
+}
+
+export interface ExpiryRefreshEntry {
+  brand: string;
+  account_masked: string;
+  expires_at: string;
+  status: 'updated' | 'expired' | 'failed';
+  error?: string;
+}
+
+export interface ExpiryRefreshOutcome {
+  checked: number;
+  updated: number;
+  expired: number;
+  failed: number;
+  results: ExpiryRefreshEntry[];
+}
+
+/**
+ * Learn every pooled account's real membership expiry by logging in.
+ *
+ * The date is only written by a successful pooled login, and LRU leasing means
+ * one account per brand per run — so a freshly imported pool stays blank
+ * indefinitely and the UI shows an em dash for almost every row. This walks the
+ * active rows deliberately, reusing the normal credential flow (cached
+ * fingerprint, one node request) so the login path is the same one a run uses.
+ */
+export async function refreshAccountExpiry(input: {
+  brand?: string;
+  limit?: number;
+  concurrency?: number;
+  env?: NodeJS.ProcessEnv;
+  store?: AccountStore;
+  now?: () => Date;
+  onProgress?: (event: ExpiryRefreshEntry) => void;
+} = {}): Promise<ExpiryRefreshOutcome> {
+  const env = input.env ?? process.env;
+  const now = input.now ?? (() => new Date());
+  const store = input.store ?? new AccountStore({ env, now });
+  const ownsStore = !input.store;
+  const concurrency = resolveConcurrency(input.concurrency, 3, 8);
+  const limit = Math.max(0, Math.trunc(Number(input.limit ?? 0)) || 0);
+  const fingerprintStore = new FingerprintStore({
+    cacheDir: resolveFingerprintCacheDir(resolveUserRuntimeRoot(env)),
+    now
+  });
+  const outcome: ExpiryRefreshOutcome = { checked: 0, updated: 0, expired: 0, failed: 0, results: [] };
+  const todayText = today(now());
+  const requested = input.brand ? normalizeBrand(input.brand) : null;
+  const brands: BrandKey[] = requested
+    ? [requested]
+    : (['leiting', 'heidong', 'mifeng', 'xuanfeng'] as BrandKey[]);
+  try {
+    for (const brand of brands) {
+      let accounts = store.leaseAll(brand);
+      if (limit > 0) accounts = accounts.slice(0, limit);
+      if (accounts.length === 0) continue;
+      // One memo per brand: the APK is inspected at most once for the whole
+      // sweep, not once per account.
+      const memo = createFingerprintMemo(fingerprintStore, brand);
+      await mapWithConcurrency(accounts, concurrency, async (leased) => {
+        const entry: ExpiryRefreshEntry = {
+          brand,
+          account_masked: maskAccount(leased.account),
+          expires_at: '',
+          status: 'failed'
+        };
+        outcome.checked += 1;
+        try {
+          const result = await fetchCredentialSourceLinks({
+            source_name: brand,
+            source: {
+              mode: 'credential',
+              official_site: brandSite(brand),
+              account: leased.account,
+              password: leased.password,
+              platforms: ['android'],
+              max_iterations: 1,
+              areas_per_round: 1,
+              plateau_limit: 1
+            } as SourceConfigInput
+          }, { env, now, memo, fingerprintStore });
+          const expires = result.diagnostics.membership_expires_at ?? '';
+          entry.expires_at = expires;
+          if (result.diagnostics.login_ok && expires) {
+            store.setExpiry(brand, leased.account, expires);
+            if (expires < todayText) {
+              store.markExpired(leased.id, 'membership expired');
+              entry.status = 'expired';
+              outcome.expired += 1;
+            } else {
+              entry.status = 'updated';
+              outcome.updated += 1;
+            }
+          } else if (result.diagnostics.membership_expired) {
+            store.markExpired(leased.id, 'membership expired');
+            entry.status = 'expired';
+            outcome.expired += 1;
+          } else {
+            entry.status = 'failed';
+            entry.error = result.diagnostics.errors.join('; ') || 'login did not report an expiry';
+            outcome.failed += 1;
+          }
+        } catch (error) {
+          entry.status = 'failed';
+          entry.error = error instanceof Error ? error.message : String(error);
+          outcome.failed += 1;
+        }
+        outcome.results.push(entry);
+        input.onProgress?.(entry);
+      });
+    }
+  } finally {
+    if (ownsStore) store.close();
+  }
+  return outcome;
 }
 
 function isPlaceholderLink(link: string): boolean {

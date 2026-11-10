@@ -177,6 +177,18 @@ export function renderWebAdapterScript(options: WebAdapterOptions = {}): string 
       method: 'POST',
       body: JSON.stringify(payload || {})
     }),
+    // The H5 build reaches the same expiry editor the Electron preload
+    // exposes; without this the browser UI hides the affordance entirely.
+    // Accepts both shapes the renderer may use: (id, date) like the preload
+    // bridge, or ({id, expires_at}).
+    setAccountExpiry: async (idOrPayload, date) => request('/api/accounts/expiry', {
+      method: 'POST',
+      body: JSON.stringify(
+        idOrPayload && typeof idOrPayload === 'object'
+          ? idOrPayload
+          : { id: idOrPayload, expires_at: date }
+      )
+    }),
     accountsTemplate: async () => ({ ok: true, content: ${JSON.stringify(accountsTemplate())} }),
     runPipeline: async (options = {}) => request('/api/runs', {
       method: 'POST',

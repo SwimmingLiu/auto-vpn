@@ -138,7 +138,7 @@ test('Node extract backend emits source progress events while extracting', async
       max_runtime_seconds: 0
     }
   }, {
-    env: { AUTOVPN_NO_PYTHON: '1' },
+    env: { AUTOVPN_NO_PYTHON: '1', VPN_AUTOMATION_PROXY_MODE: 'direct' },
     eventCallback: (type, payload) => events.push({ type, ...payload }),
     fetch: async () => ({
       ok: true,
@@ -244,7 +244,7 @@ test('Node extract fingerprints ignore VMess display names when canonical fields
   assert.match(expectedFingerprint, /^[a-f0-9]{64}$/);
 });
 
-test('Node extract backend uses curl TLS fallback without enabling proxy by default', async () => {
+test('Node extract backend uses curl TLS fallback without enabling the proxy', async () => {
   const input = JSON.parse(await readFile(path.join(fixtureDir, 'input.json'), 'utf8'));
   const curlCalls = [];
 
@@ -260,7 +260,8 @@ test('Node extract backend uses curl TLS fallback without enabling proxy by defa
       max_runtime_seconds: 0
     }
   }, {
-    env: { AUTOVPN_NO_PYTHON: '1' },
+    // Direct is the explicit opt-out; the crawl defaults to the proxy now.
+    env: { AUTOVPN_NO_PYTHON: '1', VPN_AUTOMATION_PROXY_MODE: 'direct' },
     fetch: async () => {
       throw new Error('certificate has expired');
     },
@@ -290,7 +291,7 @@ test('Node extract backend detects TLS failures wrapped inside fetch causes', as
       max_runtime_seconds: 0
     }
   }, {
-    env: { AUTOVPN_NO_PYTHON: '1' },
+    env: { AUTOVPN_NO_PYTHON: '1', VPN_AUTOMATION_PROXY_MODE: 'direct' },
     fetch: async () => {
       const error = new TypeError('fetch failed');
       error.cause = new Error('certificate has expired');
@@ -379,7 +380,7 @@ test('curl TLS fallback does not expose source URLs in process argv', async () =
       max_runtime_seconds: 0
     }
   }, {
-    env: { AUTOVPN_NO_PYTHON: '1' },
+    env: { AUTOVPN_NO_PYTHON: '1', VPN_AUTOMATION_PROXY_MODE: 'direct' },
     fetch: async () => {
       throw new Error('certificate has expired');
     },
