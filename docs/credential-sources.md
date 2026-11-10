@@ -211,8 +211,10 @@ run to the proxy once. The switch is recorded in the run's diagnostics
 `VPN_AUTOMATION_PROXY_MODE` and `VPN_AUTOMATION_UPSTREAM_PROXY` override the
 profile when set on the command line. The older
 `VPN_AUTOMATION_USE_UPSTREAM_PROXY=0|1` still works and maps to `direct|proxy`.
-The standard `HTTPS_PROXY` family is used only as a URL fallback — exporting it
-for other tools does not silently change the crawl's transport.
+The standard `HTTPS_PROXY` family is consulted only as a URL fallback, and only
+when neither `VPN_AUTOMATION_UPSTREAM_PROXY` nor the profile's `proxy_url` is
+set. It never changes the transport mode: exporting `HTTPS_PROXY` for other
+tools cannot turn a direct run into a proxied one, or the reverse.
 
 Per-node measurement (speed test, availability) is deliberately excluded: those
 transports must reach the node itself, not the crawl proxy.
