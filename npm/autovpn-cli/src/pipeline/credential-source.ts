@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { fetch as upstreamFetch, ProxyAgent } from 'undici';
 
 import {
   androidChunkUrls,
@@ -936,6 +937,38 @@ function credentialRejectionMessage(payload: Record<string, unknown>): string {
 export async function fetchCredentialSourceLinks(
   input: ExtractInput,
   options: CredentialExtractOptions = {}
+): Promise<CredentialExtractResult> {
+  const proxyUrl = upstreamProxyUrl(options.env);
+  if (!proxyUrl) {
+    return fetchCredentialSourceLinksWithTransport(input, options);
+  }
+  let proxy: URL;
+  try {
+    proxy = new URL(proxyUrl);
+  } catch {
+    throw new Error('The configured upstream proxy URL is invalid');
+  }
+  if (proxy.protocol !== 'http:' && proxy.protocol !== 'https:') {
+    throw new Error('Credential sources require an HTTP or HTTPS upstream proxy');
+  }
+
+  // The proxy previously reached only a text fallback: native site and APK
+  // requests still went direct. Keep one source-scoped dispatcher for both
+  // response types, without changing the per-node measurement transports.
+  const dispatcher = new ProxyAgent({ uri: proxy.href, proxyTunnel: false });
+  const fetchImpl: CredentialTextFetch = (url, init) => options.fetchImpl
+    ? options.fetchImpl(url, { ...init, dispatcher })
+    : upstreamFetch(url, { ...init, dispatcher });
+  try {
+    return await fetchCredentialSourceLinksWithTransport(input, { ...options, fetchImpl });
+  } finally {
+    await dispatcher.destroy();
+  }
+}
+
+async function fetchCredentialSourceLinksWithTransport(
+  input: ExtractInput,
+  options: CredentialExtractOptions
 ): Promise<CredentialExtractResult> {
   const source = input.source as SourceConfigInput & BrandCredentialSource;
   const platforms = resolveCredentialPlatforms(source);
