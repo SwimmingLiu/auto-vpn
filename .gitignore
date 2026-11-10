@@ -28,3 +28,4 @@ electron/runtime/playwright-browsers/
 
 # Test-run screenshots (written by the visual suites).
 electron/tests/visual-artifacts/
+electron/runtime/autovpn-cli/
