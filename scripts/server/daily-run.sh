@@ -82,7 +82,7 @@ cli run --skip-deploy --skip-verify --output jsonl 2>&1 | tee -a "$log_file" | g
 run_status=${PIPESTATUS[0]}
 set -e
 
-summary_json="$(grep -a '"type":"summary"' "$log_file" | tail -n 1)"
+summary_json="$(grep -a '"type":"summary"' "$log_file" | tail -n 1 || true)"
 if [ -z "$summary_json" ]; then
   log "run produced no summary event (exit=$run_status); see $log_file"
   printf '{"stamp":"%s","status":"failed","error":"no summary event","run_exit":%s,"log":"%s"}\n' \
@@ -128,7 +128,7 @@ cli retry-stage --artifact-dir "$artifact_dir" --stage deploy --output jsonl 2>&
 deploy_status=${PIPESTATUS[0]}
 set -e
 
-deploy_summary="$(tail -c "+$deploy_log_offset" "$log_file" | grep -a '"type":"summary"' | tail -n 1)"
+deploy_summary="$(tail -c "+$deploy_log_offset" "$log_file" | grep -a '"type":"summary"' | tail -n 1 || true)"
 deploy_state="$("$NODE_BIN" -e '
 try { process.stdout.write(String(JSON.parse(process.argv[1]).run_status ?? "unknown")); } catch { process.stdout.write("unknown"); }
 ' "$deploy_summary" 2>/dev/null || echo unknown)"
