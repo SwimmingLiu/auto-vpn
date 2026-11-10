@@ -25,3 +25,6 @@ electron/runtime/python-vendor/
 electron/runtime/node-vendor/
 electron/runtime/playwright-browsers/
 .idea
+
+# Test-run screenshots (written by the visual suites).
+electron/tests/visual-artifacts/
