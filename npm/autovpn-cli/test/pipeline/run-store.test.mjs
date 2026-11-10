@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { RunStore, readLatestStageStatuses, readRunStatus } from '../../dist/pipeline/run-store.js';
+import { RunStore, readLatestStageStatuses, readRunStatus, readRunProgress } from '../../dist/pipeline/run-store.js';
 import { canonicalVmessKey, parseVmessLink } from '../../dist/pipeline/dedupe.js';
 
 const require = createRequire(import.meta.url);
@@ -26,6 +26,27 @@ async function fixture() {
   context.cleanup = async () => { context.store.close(); await rm(root, { recursive: true, force: true }); };
   return context;
 }
+
+test('progress observation does not create or modify a database and keeps unknown source ownership unknown', async () => {
+  const ctx = await fixture();
+  try {
+    const missing = path.join(ctx.root, 'absent.db');
+    assert.equal(readRunProgress(missing), undefined);
+    assert.equal(existsSync(missing), false);
+    ctx.store.initializeRun('running');
+    const link = vmessLink('snapshot', '203.0.113.1');
+    ctx.store.recordExtractedNode('leiting', link);
+    ctx.store.recordSpeedResult({ link, reachable: true, average_download_mb_s: 2, latency_ms: 1, error: '' }, true);
+    const db = new DatabaseSync(ctx.dbPath);
+    db.prepare('UPDATE pipeline_nodes SET first_source=NULL WHERE run_id=1').run();
+    db.close();
+    const before = statSync(ctx.dbPath).mtimeMs;
+    const result = readRunProgress(ctx.dbPath);
+    assert.deepEqual(result.counts, { raw_links: 1, deduped_links: 1, speedtest_links: 1, availability_links: 0 });
+    assert.deepEqual(result.source_counts, { leiting: { raw_links: 1 } });
+    assert.equal(statSync(ctx.dbPath).mtimeMs, before);
+  } finally { await ctx.cleanup(); }
+});
 
 test('creates the run-local WAL schema and remains compatible with current readers', async () => {
   const ctx = await fixture();

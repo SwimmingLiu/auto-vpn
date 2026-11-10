@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { createServerRuntime, sanitizeProfileForServer } from '../../dist/server/runtime.js';
+import { RunStore } from '../../dist/pipeline/run-store.js';
 
 function writeJson(filePath, payload) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -56,6 +57,46 @@ function writeJobFixture(runtimeRoot, jobId, fields = {}) {
   });
   return job;
 }
+
+test('running state restores SQLite passed totals and repeated follower events carry absolute progress', async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-live-counts-'));
+  const artifact = path.join(root, 'artifacts', '20261110-120000');
+  fs.mkdirSync(artifact, { recursive: true });
+  writeJson(path.join(artifact, 'pipeline_report.json'), { run_status: 'running', stage_status: { extract: 'running' }, counts: {} });
+  const store = RunStore.open(path.join(artifact, 'run.db'));
+  t.after(() => { store.close(); fs.rmSync(root, { recursive: true, force: true }); });
+  store.initializeRun('running');
+  const link = (n, name = 'node') => 'vmess://' + Buffer.from(JSON.stringify({ ps: name, add: `203.0.113.${n}`, port: '443', id: 'fixture-uuid', net: 'ws', path: '/' })).toString('base64');
+  const passed = link(1), failed = link(2), pending = link(3);
+  store.recordExtractedNode('leiting', passed);
+  store.recordExtractedNode('heidong', link(1, 'same endpoint'));
+  store.recordExtractedNode('heidong', failed);
+  store.recordExtractedNode('heidong', pending);
+  store.recordSpeedResult({ link: passed, reachable: true, average_download_mb_s: 2, latency_ms: 1, error: '' }, true);
+  store.recordSpeedResult({ link: failed, reachable: false, average_download_mb_s: 0, latency_ms: 0, error: 'unreachable' }, false);
+  store.markSpeedRunning(pending);
+  store.recordAvailabilityResult({ link: passed, all_passed: true, provider_results: {} });
+  store.recordAvailabilityResult({ link: failed, all_passed: false, provider_results: {} });
+  writeJobFixture(root, 'live-counts', { artifact_dir: artifact });
+  let deliver;
+  const gate = new Promise((resolve) => { deliver = resolve; });
+  const runtime = createServerRuntime({ projectRoot: root, env: { VPN_AUTOMATION_RUNTIME_ROOT: root, AUTOVPN_SERVER_HISTORY_RETENTION_DAYS: '0' }, followLog: async function* () {
+    await gate;
+    yield JSON.stringify({ type: 'speedtest_result', link: passed, passed_threshold: true }) + '\n';
+    yield JSON.stringify({ type: 'speedtest_result', link: passed, passed_threshold: true }) + '\n';
+  } });
+  const received = [];
+  runtime.subscribe((event) => received.push(event));
+  const snapshot = await runtime.loadState();
+  assert.deepEqual(snapshot.artifact.counts, { raw_links: 4, deduped_links: 3, speedtest_links: 1, availability_links: 1 });
+  assert.deepEqual(snapshot.artifact.source_counts, { leiting: { raw_links: 1, deduped_links: 1 }, heidong: { raw_links: 3, deduped_links: 2 } });
+  assert.ok(snapshot.artifact.progress_snapshot);
+  deliver();
+  for (let attempt = 0; attempt < 50 && received.length < 2; attempt++) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(received.length, 2);
+  assert.deepEqual(received[0].progress_snapshot.counts, snapshot.artifact.counts);
+  assert.deepEqual(received[1].progress_snapshot.counts, snapshot.artifact.counts);
+});
 
 test('server profile only redacts Cloudflare token and Pages Secret ADMIN with field labels', () => {
   const profile = sanitizeProfileForServer({

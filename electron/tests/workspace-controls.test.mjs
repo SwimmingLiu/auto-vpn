@@ -333,3 +333,41 @@ test('finishing a web run refreshes the visible contribution calendar without na
   await page.waitForFunction(() => document.querySelector('.analytics-heading')?.textContent?.includes('7 个节点'));
   assert.equal(await page.locator('body').getAttribute('data-page'), 'dashboard');
 });
+
+test('refresh and repeated follower results preserve absolute running counts, including the next zero run', async (t) => {
+  let publish;
+  const counts = { raw_links: 428, deduped_links: 420, speedtest_links: 53, availability_links: 26 };
+  const sourceCounts = { leiting: { raw_links: 428, deduped_links: 420 } };
+  const progress = () => ({ counts: { ...counts }, source_counts: structuredClone(sourceCounts), artifact_dir: '/repo/artifacts/current' });
+  const tail = Array.from({ length: 1000 }, (_, n) => n % 3 === 0
+    ? { type: 'speedtest_result', passed_threshold: true }
+    : n % 3 === 1 ? { type: 'availability_link_result', all_passed: true }
+      : { type: 'extract_iteration', source_name: 'leiting', total_links: 428, deduped_links: 201, new_item_fingerprints: ['tail-' + n] });
+  const service = await createAutoVpnServer({ host: '127.0.0.1', port: 0, projectRoot: '/repo', auth: { enabled: false, token: '' }, runtime: {
+    loadState: async () => ({ profile: { sources: {}, speed_test: {}, deploy: {}, paths: {} }, runState: 'running', retryArtifacts: [], activity: [], artifact: { artifact_dir: '/repo/artifacts/current', counts: { ...counts }, source_counts: sourceCounts, progress_snapshot: progress() }, logEvents: tail }),
+    subscribe: (handler) => { publish = handler; return () => {}; }
+  } });
+  const browser = await chromium.launch();
+  t.after(async () => { await browser.close(); await service.close(); });
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 }, reducedMotion: 'reduce' });
+  const metrics = async () => page.locator('#dashboardMetricsPanel [data-metric-key] strong').allTextContents();
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const connected = page.waitForResponse((response) => response.url().includes('/api/events'));
+    if (attempt === 0) await page.goto(service.origin); else await page.reload();
+    await connected;
+    await page.waitForFunction(() => document.querySelector('[data-metric-key="deduped_links"] strong')?.textContent === '420');
+    assert.deepEqual(await metrics(), ['428', '420', '53', '26']);
+  }
+  for (let n = 0; n < 3; n++) publish({ type: 'speedtest_result', passed_threshold: true, progress_snapshot: progress() });
+  await page.waitForFunction(() => document.querySelector('[data-metric-key="speedtest_links"] strong')?.textContent === '53');
+  assert.deepEqual(await metrics(), ['428', '420', '53', '26']);
+  counts.speedtest_links++;
+  publish({ type: 'speedtest_result', passed_threshold: true, progress_snapshot: progress() });
+  await page.waitForFunction(() => document.querySelector('[data-metric-key="speedtest_links"] strong')?.textContent === '54');
+  publish({ type: 'run_started', artifact_dir: '/repo/artifacts/next' });
+  publish({ type: 'speedtest_result', passed_threshold: false, progress_snapshot: { artifact_dir: '/repo/artifacts/next', counts: { raw_links: 0, deduped_links: 0, speedtest_links: 0, availability_links: 0 }, source_counts: {} } });
+  await page.waitForFunction(() => document.querySelector('[data-metric-key="deduped_links"] strong')?.textContent === '0');
+  assert.deepEqual(await metrics(), ['0', '0', '0', '0']);
+  await fs.mkdir(evidence, { recursive: true });
+  await page.screenshot({ path: path.join(evidence, 'absolute-progress-next-run.png') });
+});

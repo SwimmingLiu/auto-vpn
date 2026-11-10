@@ -1,6 +1,6 @@
 {
   "name": "@swimmingliu/autovpn",
-  "version": "2.0.2",
+  "version": "2.0.3",
   "description": "npm wrapper for the AutoVPN headless CLI",
   "type": "module",
   "repository": {

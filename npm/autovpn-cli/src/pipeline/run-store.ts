@@ -109,6 +109,45 @@ export function readLatestStageStatuses(dbPath: string): Record<string, string> 
   }
 }
 
+export interface RunProgressSnapshot {
+  counts: { raw_links: number; deduped_links: number; speedtest_links: number; availability_links: number };
+  source_counts: Record<string, { raw_links: number; deduped_links?: number }>;
+}
+
+// Reports are written at stage boundaries. A running UI needs current totals,
+// and opening RunStore would migrate/write the database during observation.
+export function readRunProgress(dbPath: string): RunProgressSnapshot | undefined {
+  if (!fs.existsSync(dbPath)) return undefined;
+  let db: Database | undefined;
+  try {
+    db = new DatabaseSync(dbPath, { readOnly: true });
+    db.exec('PRAGMA busy_timeout=5000; BEGIN');
+    const runId = db.prepare('SELECT run_id FROM runs ORDER BY run_id DESC LIMIT 1').get()?.run_id;
+    if (typeof runId !== 'number' && typeof runId !== 'bigint') return undefined;
+    const raw = Number(db.prepare('SELECT COUNT(*) AS n FROM raw_observations WHERE run_id=?').get(runId)?.n ?? 0);
+    const deduped = Number(db.prepare('SELECT COUNT(*) AS n FROM pipeline_nodes WHERE run_id=?').get(runId)?.n ?? 0);
+    const speed = Number(db.prepare("SELECT COUNT(*) AS n FROM speed_results WHERE run_id=? AND status='speed_passed'").get(runId)?.n ?? 0);
+    const availability = Number(db.prepare("SELECT COUNT(*) AS n FROM availability_results WHERE run_id=? AND status='availability_passed'").get(runId)?.n ?? 0);
+    const sources: RunProgressSnapshot['source_counts'] = {};
+    const completeOwnership = Number(db.prepare('SELECT COUNT(*) AS n FROM pipeline_nodes WHERE run_id=? AND first_source IS NULL').get(runId)?.n ?? 0) === 0;
+    for (const row of db.prepare('SELECT source,COUNT(*) AS n FROM raw_observations WHERE run_id=? GROUP BY source ORDER BY MIN(observation_id)').all(runId)) {
+      if (typeof row.source === 'string') sources[row.source] = { raw_links: Number(row.n), ...(completeOwnership ? { deduped_links: 0 } : {}) };
+    }
+    if (completeOwnership) {
+      for (const row of db.prepare('SELECT first_source AS source,COUNT(*) AS n FROM pipeline_nodes WHERE run_id=? AND first_source IS NOT NULL GROUP BY first_source').all(runId)) {
+        if (typeof row.source === 'string') sources[row.source] = { raw_links: sources[row.source]?.raw_links ?? 0, deduped_links: Number(row.n) };
+      }
+    }
+    db.exec('COMMIT');
+    return { counts: { raw_links: raw, deduped_links: deduped, speedtest_links: speed, availability_links: availability }, source_counts: sources };
+  } catch {
+    // Legacy or incomplete databases retain the existing report/event path.
+    return undefined;
+  } finally {
+    db?.close();
+  }
+}
+
 export class RunStore {
   private readonly statements = new Map<string, Statement>();
   private runId: number | undefined;
