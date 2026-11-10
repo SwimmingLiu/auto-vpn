@@ -6,7 +6,7 @@ import {
   MihomoRuntime,
   OpenMihomoRuntimeOptions
 } from './proxy-runtime.js';
-import { mapWithConcurrency } from './concurrency.js';
+import { mapWithCompletion } from './concurrency.js';
 import {
   HTTP_HEAD_LIMIT_BYTES,
   connectProxySocket,
@@ -130,23 +130,6 @@ function defaultNow(): number {
 }
 
 /** Shared-concurrency loop plus the progress hook speedtest emits per finished link. */
-async function mapWithCompletion<T, R>(
-  items: readonly T[],
-  concurrency: number,
-  worker: (item: T, index: number) => Promise<R>,
-  onComplete?: (result: R, index: number, completed: number) => void
-): Promise<R[]> {
-  if (!onComplete) {
-    return mapWithConcurrency(items, concurrency, worker);
-  }
-  let completed = 0;
-  return mapWithConcurrency(items, concurrency, async (item, index) => {
-    const result = await worker(item, index);
-    completed += 1;
-    onComplete(result, index, completed);
-    return result;
-  });
-}
 
 async function fetchWithTimeout(fetchImpl: FetchLike, url: string, timeoutMs: number): Promise<Awaited<ReturnType<FetchLike>>> {
   const controller = new AbortController();

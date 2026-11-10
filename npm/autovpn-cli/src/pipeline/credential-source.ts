@@ -36,9 +36,10 @@ import {
   type EgressSwitch
 } from './egress.js';
 import { AccountStore, maskAccount, type StoredAccount } from '../pool/account-store.js';
-import { brandFromSite, brandSite, normalizeBrand, type BrandKey } from '../pool/brands.js';
+import { BRANDS, brandFromSite, brandSite, normalizeBrand, type BrandKey } from '../pool/brands.js';
 import { FingerprintStore, resolveFingerprintCacheDir } from './brand-cache.js';
 import { resolveUserRuntimeRoot } from '../runtime/paths.js';
+import { redactText } from '../runtime/redaction.js';
 import type { ExtractedSourceResult, SourceConfigInput, ExtractInput } from './extract.js';
 
 /**
@@ -364,11 +365,6 @@ function numberOrDefault(value: unknown, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-function today(now: Date): string {
-  const pad = (value: number) => String(value).padStart(2, '0');
-  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
-}
-
 /**
  * Round control for the repeated `/api/evmess` fetch.
  *
@@ -504,7 +500,6 @@ interface FetchTextResult {
 interface Egress {
   /** Run-scoped transport choice; owns the proxy dispatcher and its lifetime. */
   session?: EgressSession;
-  env?: NodeJS.ProcessEnv;
   curlFetch?: (url: string, proxyUrl: string) => Promise<string>;
 }
 
@@ -1048,9 +1043,10 @@ export function isCredentialLoginRejection(message: string): boolean {
  *
  * `toISOString().slice(0, 10)` is the UTC day: under Asia/Shanghai a vendor
  * date of `2027-01-01 00:00:00` became `2026-12-31`, and the pool's local-day
- * comparison then retired the account a day early.
+ * comparison then retired the account a day early. One formatter for both the
+ * "today" comparisons and the dates learned from the vendor.
  */
-function localDay(date: Date): string {
+export function localDay(date: Date): string {
   const pad = (value: number) => String(value).padStart(2, '0');
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
@@ -1342,7 +1338,7 @@ async function fetchCredentialSourceLinksWithTransport(
           // A login can succeed while the membership it reports has already
           // lapsed. File that as expired, not as "no paid membership": the
           // reason is different and the operator acts on it differently.
-          const lapsed = Boolean(expires) && (expires ?? '') < today((options.now ?? (() => new Date()))());
+          const lapsed = Boolean(expires) && (expires ?? '') < localDay((options.now ?? (() => new Date()))());
           const level = results.map((result) => result.diagnostics.membership_level).find((value) => value !== undefined);
           const linked = results.some((result) => result.links.length > 0);
           if (lapsed) {
@@ -1399,6 +1395,20 @@ async function fetchCredentialSourceLinksWithTransport(
     diagnostics.version_name = first.version_name;
     diagnostics.seed_domains = first.seed_domains;
     diagnostics.api_domain = first.api_domain;
+    // The session facts are per-account, not per-platform: both channels log
+    // the same pooled credential in. Without this copy the merged result looked
+    // like a run that never logged in, and `accounts refresh-expiry` (which
+    // reads the merged diagnostics) reported every account as failed.
+    diagnostics.login_ok = results.some((result) => result.diagnostics.login_ok);
+    diagnostics.login_rejected = results.length > 0 && results.every((result) => result.diagnostics.login_rejected);
+    diagnostics.credential_rejected = results.length > 0 && results.every((result) => result.diagnostics.credential_rejected);
+    diagnostics.membership_expired = results.some((result) => result.diagnostics.membership_expired);
+    diagnostics.membership_expires_at = results
+      .map((result) => result.diagnostics.membership_expires_at ?? '')
+      .find(Boolean);
+    diagnostics.membership_level = results
+      .map((result) => result.diagnostics.membership_level)
+      .find((value) => value !== undefined);
   }
   diagnostics.route_count = Math.max(0, ...results.map((result) => result.diagnostics.route_count));
   diagnostics.route_tables = Math.max(0, ...results.map((result) => result.diagnostics.route_tables ?? 0));
@@ -1484,7 +1494,7 @@ async function runCredentialPlatform(
   const platform: Platform = source.platform === 'ios' ? 'ios' : 'android';
   const device: DeviceIdentity = {
     device_id: source.device_id ?? DEFAULT_DEVICE_ID,
-    install_date: source.install_date ?? today(now)
+    install_date: source.install_date ?? localDay(now)
   };
   const errors: string[] = [];
   const log = (message: string) => event(options, 'log', { message });
@@ -1552,7 +1562,6 @@ async function runCredentialPlatform(
   const session = options.egressSession as EgressSession;
   const egress: Egress = {
     session,
-    env: options.env,
     curlFetch: options.curlFetch ?? ((url, proxyUrl) => defaultCurlFetch(url, proxyUrl))
   };
 
@@ -2101,19 +2110,21 @@ export async function refreshAccountExpiry(input: {
     now
   });
   const outcome: ExpiryRefreshOutcome = { checked: 0, updated: 0, expired: 0, failed: 0, results: [] };
-  const todayText = today(now());
+  const todayText = localDay(now());
   const requested = input.brand ? normalizeBrand(input.brand) : null;
-  const brands: BrandKey[] = requested
-    ? [requested]
-    : (['leiting', 'heidong', 'mifeng', 'xuanfeng'] as BrandKey[]);
+  // Every brand the pool knows, from the registry rather than a second list.
+  const brands: BrandKey[] = requested ? [requested] : BRANDS.map((brand) => brand.key);
   try {
     for (const brand of brands) {
       let accounts = store.leaseAll(brand);
       if (limit > 0) accounts = accounts.slice(0, limit);
       if (accounts.length === 0) continue;
       // One memo per brand: the APK is inspected at most once for the whole
-      // sweep, not once per account.
-      const memo = createFingerprintMemo(fingerprintStore, brand);
+      // sweep, not once per account. The cache key is the short brand key the
+      // normal run writes (`mf`, not `mifeng`); using the long name missed the
+      // cache on every sweep and re-downloaded the APK per account.
+      const brandKey = credentialBrandKey(brand, { official_site: brandSite(brand) });
+      const memo = createFingerprintMemo(fingerprintStore, brandKey);
       await mapWithConcurrency(accounts, concurrency, async (leased) => {
         const entry: ExpiryRefreshEntry = {
           brand,
@@ -2154,12 +2165,14 @@ export async function refreshAccountExpiry(input: {
             outcome.expired += 1;
           } else {
             entry.status = 'failed';
-            entry.error = result.diagnostics.errors.join('; ') || 'login did not report an expiry';
+            // The CLI prints this line, so nothing that can carry a credential
+            // or a request URL may reach it.
+            entry.error = redactText(result.diagnostics.errors.join('; ')) || 'login did not report an expiry';
             outcome.failed += 1;
           }
         } catch (error) {
           entry.status = 'failed';
-          entry.error = error instanceof Error ? error.message : String(error);
+          entry.error = redactText(error instanceof Error ? error.message : String(error));
           outcome.failed += 1;
         }
         outcome.results.push(entry);

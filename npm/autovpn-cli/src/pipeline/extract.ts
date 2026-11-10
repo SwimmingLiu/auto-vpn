@@ -408,7 +408,12 @@ async function fetchSourceLinksInNode(input: ExtractInput, options: ExtractBacke
   const upstreamProxy = resolveUpstreamProxyUrl(options.env ?? process.env);
   const session = await EgressSession.open(options.env ?? process.env, {
     fetchImpl: fetchImpl as never,
-    curlFetch: options.curlFetch ?? ((url, proxyUrl) => egressCurlFetch(url, proxyUrl, options.spawn))
+    curlFetch: options.curlFetch ?? ((url, proxyUrl) => egressCurlFetch(url, proxyUrl, options.spawn)),
+    // The switch has to be visible in the run log for both extract modes; a
+    // credential source logs it from its own wrapper, a url source from here.
+    onSwitch: (switched) => emitExtractEvent(options, 'log', {
+      message: `[extract][${input.source_name}] egress ${switched.from} -> ${switched.to} (${switched.reason})`
+    })
   });
 
   emitExtractEvent(options, 'extract_source_started', {
@@ -497,7 +502,9 @@ async function fetchSourceLinksInNode(input: ExtractInput, options: ExtractBacke
     requested_iterations: maxIterations,
     successful_iterations: successes,
     failed_iterations: failures,
-    raw_links: links.length
+    raw_links: links.length,
+    egress_transport: session.transport,
+    egress_switches: session.switches.length
   });
 
   return {

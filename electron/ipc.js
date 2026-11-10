@@ -6,7 +6,7 @@ import { clipboard, ipcMain, shell } from 'electron';
 import QRCode from 'qrcode';
 
 import { mergeLatestArtifactPreview, previewArtifactDirectory } from './lib/artifact-preview.js';
-import { buildBackendEnv, buildBackendInvocation, createNdjsonDecoder, resolveNodeCliEntry } from './lib/backend.js';
+import { buildBackendEnv, buildBackendInvocation, createNdjsonDecoder } from './lib/backend.js';
 import { pipelineStopResponse, requestProcessTreeStop } from './lib/process-lifecycle.js';
 import { attachPipelineChildFinalizer } from './lib/pipeline-child-finalizer.js';
 import { resolveStateProfilePath } from './paths.js';
@@ -37,28 +37,6 @@ const IPC_CHANNELS = [
 
 function profilePath(projectRoot, runtimeProfilePath) {
   return runtimeProfilePath || resolveStateProfilePath(projectRoot);
-}
-
-/**
- * Invocation for a backend command whose BACKEND_COMMANDS entry may not exist yet.
- *
- * `lib/backend.js` owns the command map. `accounts-expire` is new; until its
- * one-line map entry lands, this builds the identical invocation the map would
- * (same CLI entry, same --project-root placement, same run-as-node rule) rather
- * than throwing 'Unsupported Electron backend command'.
- */
-function backendInvocationFor(command, extraArgs, { projectRoot, isPackaged }) {
-  try {
-    return buildBackendInvocation(projectRoot, command, extraArgs, { isPackaged });
-  } catch (error) {
-    if (!/Unsupported Electron backend command/.test(String(error?.message ?? error))) throw error;
-    const runAsNode = Boolean(isPackaged) || (Boolean(process.versions.electron) && !process.env.npm_node_execpath);
-    return {
-      command: runAsNode ? process.execPath : (process.env.npm_node_execpath || process.execPath),
-      args: [resolveNodeCliEntry(projectRoot, { isPackaged }), 'accounts', 'expire', '--project-root', projectRoot, ...extraArgs],
-      runAsNode
-    };
-  }
 }
 
 export function registerIpcHandlers({
@@ -233,7 +211,7 @@ export function registerIpcHandlers({
     // lib/backend.js (another owner). Resolve it through that map when the
     // entry exists and fall back to the identical invocation shape otherwise,
     // so the renderer is not blocked on the one-line map addition.
-    const invocation = backendInvocationFor('accounts-expire', extraArgs, { projectRoot, isPackaged });
+    const invocation = buildBackendInvocation(projectRoot, 'accounts-expire', extraArgs, { isPackaged });
     try {
       const output = await runCommand(
         invocation.command,

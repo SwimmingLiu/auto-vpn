@@ -1735,7 +1735,6 @@ body[data-page="logs"] #logCenterTable {
 }
 
 .account-expiry-editor input {
-  min-height: 32px;
   min-width: 132px;
   padding-inline: 8px;
   font-size: 12px;

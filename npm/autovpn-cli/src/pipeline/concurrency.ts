@@ -49,3 +49,26 @@ export function resolveConcurrency(value: unknown, fallback: number, max = 16): 
   if (!Number.isFinite(parsed) || parsed < 1) return Math.max(1, Math.min(max, Math.trunc(fallback)));
   return Math.max(1, Math.min(max, parsed));
 }
+
+/**
+ * `mapWithConcurrency` plus a progress counter, for a stage that reports
+ * "N of M done" while it works. The callback runs after the result is
+ * recorded, so `completed` counts settled items, not started ones.
+ */
+export async function mapWithCompletion<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  worker: (item: T, index: number) => Promise<R>,
+  onComplete?: (result: R, index: number, completed: number) => void
+): Promise<R[]> {
+  if (!onComplete) {
+    return mapWithConcurrency(items, concurrency, worker);
+  }
+  let completed = 0;
+  return mapWithConcurrency(items, concurrency, async (item, index) => {
+    const result = await worker(item, index);
+    completed += 1;
+    onComplete(result, index, completed);
+    return result;
+  });
+}

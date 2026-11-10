@@ -7,7 +7,7 @@ import {
   MihomoRuntime,
   OpenMihomoRuntimeOptions
 } from './proxy-runtime.js';
-import { mapWithConcurrency } from './concurrency.js';
+import { mapWithCompletion } from './concurrency.js';
 import {
   HTTP_HEAD_LIMIT_BYTES,
   connectProxySocket,
@@ -383,24 +383,6 @@ function emitEvent(callback: AvailabilityBackendOptions['eventCallback'], eventT
   if (callback) {
     callback(eventType, payload);
   }
-}
-
-async function mapWithCompletion<T, R>(
-  items: readonly T[],
-  concurrency: number,
-  worker: (item: T, index: number) => Promise<R>,
-  onComplete?: (result: R, index: number, completed: number) => void
-): Promise<R[]> {
-  if (!onComplete) {
-    return mapWithConcurrency(items, concurrency, worker);
-  }
-  let completed = 0;
-  return mapWithConcurrency(items, concurrency, async (item, index) => {
-    const result = await worker(item, index);
-    completed += 1;
-    onComplete(result, index, completed);
-    return result;
-  });
 }
 
 function numberOrDefault(value: unknown, fallback: number): number {
