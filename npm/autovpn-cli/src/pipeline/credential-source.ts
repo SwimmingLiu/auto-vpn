@@ -398,7 +398,7 @@ export function resolveRoundPolicy(source: { max_iterations?: number; min_iterat
  */
 export const DEFAULT_MAX_ITERATIONS = 200;
 export const DEFAULT_PLATEAU_LIMIT = 50;
-export const DEFAULT_AREAS_PER_ROUND = 1;
+export const DEFAULT_AREAS_PER_ROUND = 8;
 export const DEFAULT_AREA_CONCURRENCY = 4;
 /**
  * Consecutive rounds where every candidate host failed before the channel

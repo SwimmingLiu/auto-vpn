@@ -18,7 +18,7 @@ official_site = "https://<OFFICIAL_SITE>"
 enabled = true
 max_iterations = 200
 plateau_limit = 50
-areas_per_round = 1
+areas_per_round = 8
 area_concurrency = 4
 ```
 
@@ -28,7 +28,7 @@ area_concurrency = 4
 | `official_site` | yes | Official site; the current APK is located from here |
 | `max_iterations` | no | Rounds per platform — Android and iOS each run this many; `200` when omitted |
 | `plateau_limit` | no | Consecutive rounds with no genuinely new node; `50` when omitted |
-| `areas_per_round` | no | Areas taken from the fixed list each round; `1` when omitted |
+| `areas_per_round` | no | Areas taken from the fixed list each round; `8` when omitted |
 | `area_concurrency` | no | Concurrent area requests inside one round; `4` when omitted (max 16) |
 | `min_iterations` | no | Rounds that always run before early stopping; `0` when omitted |
 | `max_runtime_seconds` | no | Wall-clock budget past `min_iterations`; `0` means unlimited |
@@ -115,9 +115,13 @@ order. That list is frozen for the whole run. Each round takes the next
 short by the round cap or by an early stop still reaches the tail of the list —
 the old loop re-asked the same head every round and starved later regions.
 
-The areas inside one round are requested concurrently (`area_concurrency`,
-default 4). Measured on 黑洞: 31 areas sequentially cost ~30s per sweep; at
-concurrency 4–8 the same work finishes in 2–4s.
+The areas inside one round are requested concurrently, `area_concurrency` at a
+time (default 4). The shipped `areas_per_round = 8` therefore keeps up to 8
+requests in flight, which covers a 31-area list in four rounds. Measured on
+雷霆: 30 areas sequentially cost ~30s per sweep; five rounds of
+`areas_per_round = 6` / `area_concurrency = 6` (30 nodes) finish in 14s. Setting
+`areas_per_round = 1` makes a round one request, and the concurrency setting
+then has nothing to fan out.
 
 ### Rounds are per platform
 
@@ -213,8 +217,9 @@ profile when set on the command line. The older
 `VPN_AUTOMATION_USE_UPSTREAM_PROXY=0|1` still works and maps to `direct|proxy`.
 The standard `HTTPS_PROXY` family is consulted only as a URL fallback, and only
 when neither `VPN_AUTOMATION_UPSTREAM_PROXY` nor the profile's `proxy_url` is
-set. It never changes the transport mode: exporting `HTTPS_PROXY` for other
-tools cannot turn a direct run into a proxied one, or the reverse.
+set. It never changes the transport mode — exporting `HTTPS_PROXY` for other
+tools cannot turn a direct run into a proxied one, or the reverse — but it does
+supply the address when no other proxy URL is configured.
 
 Per-node measurement (speed test, availability) is deliberately excluded: those
 transports must reach the node itself, not the crawl proxy.

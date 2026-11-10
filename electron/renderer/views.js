@@ -7,7 +7,7 @@ import { icon } from './icons.js';
 export const SOURCE_ROUND_DEFAULTS = {
   max_iterations: 200,
   plateau_limit: 50,
-  areas_per_round: 1,
+  areas_per_round: 8,
   area_concurrency: 4
 };
 export const SOURCE_ROUND_LIMITS = {
@@ -891,7 +891,7 @@ function buildSettingsDrawerBody(section, draft, vm = null) {
           <span>密钥从 APK 自动发现，账号密码由账号池提供。Android 与 iOS 两个通道同时抓取；「轮数」由两端各自独立跑满，1000 就是 Android 1000 轮加 iOS 1000 轮，不是 500+500。</span>
         </div>
         <div class="source-drawer-settings-copy">
-          <span>每次运行先按该加速器的节点列表生成一份固定区域列表（去掉中国大陆与免费区域、去重、保持原顺序），运行中不再改变。每一轮用游标依次取出「每轮区域数」个区域（默认 1 个，取完回绕），因此默认一轮就是一个区域请求；「区域并发」控制该轮这些区域请求同时发出的数量。</span>
+          <span>每次运行先按该加速器的节点列表生成一份固定区域列表（去掉中国大陆与免费区域、去重、保持原顺序），运行中不再改变。每一轮用游标依次取出「每轮区域数」个区域（默认 8 个，取完回绕）；「区域并发」控制该轮这些区域请求同时发出的数量（默认 4）。31 个区域默认四轮即可覆盖一遍，轮数按各平台独立计算。</span>
         </div>
         <div class="source-drawer-settings-copy">
           <span>「早停」按连续无新增节点的轮数计数。是否为新节点按节点指纹判断（address / port / id / transport / host / path / tls / sni），并在 Android 与 iOS 之间统一去重：改名重复的节点、或另一端已经抓到的节点，都不会让计数归零。</span>
@@ -1023,13 +1023,13 @@ function buildSettingsDrawerBody(section, draft, vm = null) {
     return `
       <details class="context-help">
         <summary>出口与回退规则</summary>
-        <p>代理模式通过 proxy_url 抓取；direct 直连；auto 先走代理，代理不可达时回退直连。默认走本机 127.0.0.1:7897 代理。</p>
+        <p>代理：全程经 proxy_url 抓取，代理没在监听时自动改为直连；自动：先直连，遇到 IP 被封（403/429 或封锁页）后整轮改走代理；直连：不使用代理。默认走本机 127.0.0.1:7897。</p>
       </details>
       <div class="form-grid compact-form-grid network-form-grid">
         <label class="field compact">
           <span>出口模式</span>
           <select data-drawer-path="network.proxy_mode" aria-label="出口模式">
-            ${[['proxy', '代理'], ['auto', '自动（代理失败直连）'], ['direct', '直连']].map(([value, label]) => `<option value="${value}" ${network.proxy_mode === value ? 'selected' : ''}>${label}</option>`).join('')}
+            ${[['proxy', '代理'], ['auto', '自动（被封后切代理）'], ['direct', '直连']].map(([value, label]) => `<option value="${value}" ${network.proxy_mode === value ? 'selected' : ''}>${label}</option>`).join('')}
           </select>
         </label>
         ${renderDrawerField('代理地址', 'text', network.proxy_url, 'network.proxy_url', true, 'inputmode="url" spellcheck="false" placeholder="http://127.0.0.1:7897"')}

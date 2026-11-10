@@ -100,7 +100,7 @@ export function normalizeOfficialSources(sources: Record<string, any>): Record<s
       // 50 consecutive rounds with no genuinely new node.
       max_iterations: wasCredential ? positiveInteger(config.max_iterations, 200) : 200,
       plateau_limit: wasCredential ? positiveInteger(config.plateau_limit, 50) : 50,
-      areas_per_round: Math.min(64, positiveInteger(config.areas_per_round, 1)),
+      areas_per_round: Math.min(64, positiveInteger(config.areas_per_round, 8)),
       area_concurrency: Math.min(16, positiveInteger(config.area_concurrency, 4))
     };
     if (!wasCredential) {

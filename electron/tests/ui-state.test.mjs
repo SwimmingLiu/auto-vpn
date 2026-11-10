@@ -330,7 +330,7 @@ test('the source drawer drafts only the four official sites and their rounds', (
   // falls back to 200 rather than the old full-sweep default of 4.
   assert.equal(draft.sources.leiting.max_iterations, 200);
   assert.equal(draft.sources.leiting.plateau_limit, 50);
-  assert.equal(draft.sources.leiting.areas_per_round, 1);
+  assert.equal(draft.sources.leiting.areas_per_round, 8);
   assert.equal(draft.sources.leiting.area_concurrency, 4);
 });
 
@@ -372,7 +372,7 @@ test('saving the source drawer keeps each row\'s own rounds and area controls', 
   assert.equal(saved.xuanfeng.max_iterations, 9);
   assert.equal(saved.xuanfeng.plateau_limit, 5);
   // A row that never stored the new fields gets the shipped defaults.
-  assert.equal(saved.xuanfeng.areas_per_round, 1);
+  assert.equal(saved.xuanfeng.areas_per_round, 8);
   assert.equal(saved.xuanfeng.area_concurrency, 4);
   // A caller that only passes the shared values still stamps every row.
   const shared = applySourceIterationDraft(sources, { maxIterations: 7, plateauLimit: 4, areasPerRound: 3, areaConcurrency: 2 });
@@ -520,7 +520,7 @@ test('the source drawer help states per-platform rounds and cross-platform finge
   // A round is one cursor step over the fixed, wrapping area list.
   assert.match(markup, /固定区域列表/);
   assert.match(markup, /每轮区域数/);
-  assert.match(markup, /默认 1 个/);
+  assert.match(markup, /默认 8 个/);
   // Early stop is judged on a fingerprint deduped across both platforms.
   assert.match(markup, /节点指纹/);
   assert.match(markup, /address \/ port \/ id \/ transport \/ host \/ path \/ tls \/ sni/);

@@ -878,7 +878,7 @@ test('renderer matches the five-page workspace and supports page navigation', as
     assert.equal(savedSources.leiting.areas_per_round, 5);
     assert.equal(savedSources.leiting.area_concurrency, 12);
     // A row that never stored the new fields saves the shipped defaults.
-    assert.equal(savedSources.heidong.areas_per_round, 1);
+    assert.equal(savedSources.heidong.areas_per_round, 8);
     assert.equal(savedSources.heidong.area_concurrency, 4);
     assert.equal(savedSources.leiting.mode, 'credential');
     assert.equal(savedSources.leiting.url, undefined);

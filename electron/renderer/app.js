@@ -1924,7 +1924,8 @@ function normalizeSourceCounts(sourceCounts = {}) {
   );
 }
 
-function updateExtractMetrics(event) {  const sourceName = event.source_name;
+function updateExtractMetrics(event) {
+  const sourceName = event.source_name;
   if (!sourceName) {
     return;
   }

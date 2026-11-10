@@ -125,7 +125,9 @@ function isTlsFailure(error: unknown): boolean {
 export interface EgressResponse {
   ok?: boolean;
   status?: number;
+  headers?: { get(name: string): string | null };
   text(): Promise<string>;
+  arrayBuffer?(): Promise<ArrayBuffer>;
   body?: { cancel?(): Promise<void> | void } | null;
 }
 
@@ -249,6 +251,8 @@ export class EgressSession {
   private readonly curlFetch?: (url: string, proxyUrl: string) => Promise<string>;
   private readonly onSwitch?: (switched: EgressSwitch) => void;
   private proxyEverReachable: boolean;
+  /** A request has already been routed through the proxy this run. */
+  private proxyAttempted = false;
   private closed = false;
 
   private constructor(policy: EgressPolicy, current: EgressTransport, proxyReachable: boolean, options: EgressSessionOptions) {
@@ -282,13 +286,11 @@ export class EgressSession {
         reachable = false;
       }
     }
-    const session = new EgressSession(policy, reachable ? 'proxy' : 'direct', reachable, options);
-    if (!reachable) {
-      // Not recorded as a switch: the run never used the proxy. It is reported
-      // through `proxyEverReachable` so diagnostics can say why direct was used.
-      session.proxyEverReachable = false;
-    }
-    return session;
+    // When the proxy is not listening the run starts direct. `proxyReachable`
+    // stays false so the first blocked response may still try the proxy once
+    // (a local client often starts a moment later), and a failed proxy attempt
+    // is not retried after that.
+    return new EgressSession(policy, reachable ? 'proxy' : 'direct', reachable, options);
   }
 
   get transport(): EgressTransport {
@@ -314,6 +316,10 @@ export class EgressSession {
 
   private switchTo(next: EgressTransport, reason: string): boolean {
     if (this.current === next) return false;
+    // A proxy the probe found unreachable gets exactly one more chance (it may
+    // have just started listening). After that a blocked response does not
+    // bounce the run back onto a transport that already refused it.
+    if (next === 'proxy' && !this.proxyEverReachable && this.proxyAttempted) return false;
     const record: EgressSwitch = { from: this.current, to: next, reason };
     this.current = next;
     this.switches.push(record);
@@ -341,6 +347,7 @@ export class EgressSession {
   }
 
   private async attempt(url: string, timeoutMs: number, transport: EgressTransport): Promise<EgressTextResult & { retryWith?: EgressTransport; reason?: string }> {
+    if (transport === 'proxy') this.proxyAttempted = true;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), Math.max(1, timeoutMs));
     const fetchImpl = this.impl();

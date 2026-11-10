@@ -62,9 +62,9 @@ test('the cursor snapshots the list, so a later mutation cannot change the run',
   assert.deepEqual(cursor.take(9), [1, 2, 3]);
 });
 
-test('areas_per_round clamps to the list size and defaults to one', () => {
-  assert.equal(resolveAreasPerRound(undefined, 31), 1);
-  assert.equal(resolveAreasPerRound(0, 31), 1);
+test('areas_per_round clamps to the list size and defaults to a sweep slice', () => {
+  assert.equal(resolveAreasPerRound(undefined, 31), 8);
+  assert.equal(resolveAreasPerRound(0, 31), 8);
   assert.equal(resolveAreasPerRound(8, 31), 8);
   assert.equal(resolveAreasPerRound(99, 31), 31);
   assert.equal(resolveAreasPerRound(5, 0), 1);
