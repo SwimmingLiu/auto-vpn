@@ -101,7 +101,7 @@ jobs:
         shell: bash
 
       - name: Normalize historical public npm tarball URLs
-        uses: SwimmingLiu/auto-vpn/.github/actions/npm-registry@main
+        uses: SwimmingLiu/auto-vpn/.github/actions/npm-registry@ed9f553012fa098e97eebd32c2a84ee4ba673aa8
 
       - name: Install dependencies
         run: |
@@ -237,7 +237,7 @@ jobs:
             sudo apt-get install -y rpm fakeroot
 
       - name: Normalize historical public npm tarball URLs
-        uses: SwimmingLiu/auto-vpn/.github/actions/npm-registry@main
+        uses: SwimmingLiu/auto-vpn/.github/actions/npm-registry@ed9f553012fa098e97eebd32c2a84ee4ba673aa8
 
       - name: Install dependencies
         run: |
@@ -385,7 +385,7 @@ jobs:
           registry-url: https://registry.npmjs.org
 
       - name: Normalize historical public npm tarball URLs
-        uses: SwimmingLiu/auto-vpn/.github/actions/npm-registry@main
+        uses: SwimmingLiu/auto-vpn/.github/actions/npm-registry@ed9f553012fa098e97eebd32c2a84ee4ba673aa8
 
       - name: Build CLI package
         run: |
