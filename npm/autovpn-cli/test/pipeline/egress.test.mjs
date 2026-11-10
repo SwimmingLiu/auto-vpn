@@ -62,6 +62,19 @@ test('block classification reads status codes and body wording', () => {
   assert.equal(classifyEgressFailure({ error: new Error('connect ECONNRESET') }), 'transient');
 });
 
+test('a welcome page that mentions hiding the visitor IP is not a block page', () => {
+  // 蜜蜂's homepage sells privacy with "隐藏您的IP地址". Reading a bare
+  // `您的IP` as a ban emptied the official-site response, so the APK was never
+  // discovered and the brand produced no links at all.
+  const marketing = '仅需一个免费软件，隐藏您的IP地址并加密您的网络数据，您在线发送和接收的所有数据都通过加密隧道传输，因此没人能看到您在做什么。';
+  assert.equal(classifyEgressFailure({ status: 200, body: marketing }), 'fatal');
+  assert.equal(classifyEgressFailure({ status: 200, body: '网络隐私安全 隐藏您的IP 保护隐私' }), 'fatal');
+  // A real ban still reads as one, with or without the extra words.
+  for (const body of ['您的IP已被封禁', '您的IP被封了', '当前IP已被限制', 'IP被封禁', 'IP 已被封禁']) {
+    assert.equal(classifyEgressFailure({ status: 200, body }), 'blocked', body);
+  }
+});
+
 test('proxy-unreachable is distinguished from a target failure', () => {
   assert.equal(isProxyUnreachable(new Error('connect ECONNREFUSED 127.0.0.1:7897')), true);
   assert.equal(isProxyUnreachable(new Error('UND_ERR_PROXY')), true);

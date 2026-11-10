@@ -79,8 +79,14 @@ export function resolveEgressPolicy(env: NodeJS.ProcessEnv = process.env): Egres
 /** Status codes a vendor or its CDN uses when it stops serving this client. */
 const BLOCK_STATUS = new Set([403, 407, 429, 451, 503]);
 
+/**
+ * Body wording a block page uses. Every phrase needs a ban context: an
+ * accelerator's marketing copy legitimately says "隐藏您的IP地址" (hide your
+ * IP), and a bare `您的IP` read that as a ban, emptied the official-site
+ * response, and made 蜜蜂's APK undiscoverable for the whole run.
+ */
 const BLOCK_BODY_PATTERN =
-  /封禁|封鎖|封锁|禁止访问|禁止訪問|访问受限|訪問受限|您的IP|你的IP|IP\s*被|异常访问|異常訪問|请求过于频繁|請求過於頻繁|操作频繁|操作頻繁|too\s*many\s*requests|rate\s*limit|access\s*denied|forbidden|blocked|cf-browser-verification|just\s*a\s*moment|attention\s*required|captcha/i;
+  /封禁|封鎖|封锁|禁止访问|禁止訪問|(?:访问|訪問)受限|异常访问|異常訪問|请求过于频繁|請求過於頻繁|操作频繁|操作頻繁|(?:您的|你的|当前|當前|该|該)?\s*IP\s*(?:地址|位址)?\s*(?:已)?\s*(?:被|遭)\s*(?:封|禁|鎖|锁|限制|拉黑)|(?:您的|你的|当前|當前)?\s*IP\s*(?:已被|被)\s*(?:封禁|封鎖|封锁|限制|禁止)|too\s*many\s*requests|rate\s*limit|access\s*denied|forbidden|you\s+have\s+been\s+blocked|cf-browser-verification|just\s*a\s*moment|attention\s*required|captcha/i;
 
 export type EgressFailureKind = 'blocked' | 'transient' | 'fatal';
 
