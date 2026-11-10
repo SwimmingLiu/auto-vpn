@@ -17,7 +17,7 @@ autovpn --version
 For a pinned GitHub Release tarball:
 
 ```bash
-export AUTOVPN_VERSION=1.8.0
+export AUTOVPN_VERSION=2.1.0
 npm install -g "https://github.com/SwimmingLiu/auto-vpn/releases/download/v${AUTOVPN_VERSION}/swimmingliu-autovpn-${AUTOVPN_VERSION}.tgz"
 ```
 
@@ -65,4 +65,35 @@ trusted network.
 npm install -g @swimmingliu/autovpn@latest
 autovpn --version
 autovpn doctor --project-root "$PROJECT_ROOT" --output human
+```
+
+## Scheduled run with a node gate
+
+`scripts/server/daily-run.sh` runs the pipeline once and publishes only when
+the node count clears a threshold, so a thin sweep does not replace a working
+subscription:
+
+```bash
+autovpn run --skip-deploy --skip-verify            # always
+autovpn retry-stage --stage deploy                 # only when final_links > min_final_nodes
+```
+
+The threshold lives in `$VPN_AUTOMATION_RUNTIME_ROOT/daily-run.json`:
+
+```json
+{ "min_final_nodes": 50, "enabled": true }
+```
+
+The file is created with the default 50 on first run. Set `enabled` to `false`
+to pause the schedule without removing the crontab entry. Each run writes a
+result record under `$VPN_AUTOMATION_RUNTIME_ROOT/daily-run-results/` with
+`status` of `deployed`, `held`, `failed` or `deploy_failed`, plus the artifact
+directory and the measured node count. Logs land in `logs/daily-run-*.log`.
+
+Install it as a daily job:
+
+```bash
+cp scripts/server/daily-run.sh "$VPN_AUTOMATION_RUNTIME_ROOT/daily-run.sh"
+chmod 700 "$VPN_AUTOMATION_RUNTIME_ROOT/daily-run.sh"
+( crontab -l 2>/dev/null; echo '15 4 * * * /bin/bash "$HOME/.auto-vpn/daily-run.sh"' ) | crontab -
 ```
