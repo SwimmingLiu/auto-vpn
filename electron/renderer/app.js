@@ -138,7 +138,8 @@ const state = {
   qr: createQrState(),
   runStartedAt: null,
   lastUpdateAt: null,
-  modalTransform: ''
+  modalTransform: '',
+  progressSnapshot: null
 };
 
 let settingsDrawerOpener = null;
@@ -222,11 +223,13 @@ function hydrateHistoricalEvents(events = []) {
   }
   const previousRunState = state.runState;
   const previousRunResult = state.runResult;
+  const snapshot = state.progressSnapshot;
   for (const event of events) {
     handlePipelineEvent(event, { historical: true });
   }
   state.runState = previousRunState;
   state.runResult = previousRunState === 'idle' ? previousRunResult : previousRunState;
+  if (snapshot) applyProgressSnapshot(snapshot);
 }
 
 function bindActions() {
@@ -1554,7 +1557,24 @@ function finishRun(result = {}) {
   void hydrateRetryArtifacts();
 }
 
+function applyProgressSnapshot(snapshot) {
+  if (!snapshot?.counts || !snapshot.source_counts) return;
+  state.progressSnapshot = snapshot;
+  state.counts = normalizeCounts({ ...state.counts, ...snapshot.counts });
+  state.sourceCounts = normalizeSourceCounts(snapshot.source_counts);
+}
+
 function handlePipelineEvent(event, options = {}) {
+  handlePipelineEventDetails(event, options);
+  if (event.progress_snapshot && !options.historical
+    && (!event.progress_snapshot.artifact_dir || event.progress_snapshot.artifact_dir === state.artifactDir)) {
+    applyProgressSnapshot(event.progress_snapshot);
+    touchUpdate();
+    renderRuntimeOnly({ chrome: false });
+  }
+}
+
+function handlePipelineEventDetails(event, options = {}) {
   const historical = Boolean(options.historical);
   if (event.type === 'server_state') {
     const nextRunState = String(event.run_state ?? '');
@@ -1703,7 +1723,7 @@ function handlePipelineEvent(event, options = {}) {
   }
 
   if (event.type === 'extract_source_completed') {
-    updateExtractMetrics({ source_name: event.source_name, total_links: event.raw_links });
+    if (!event.progress_snapshot && !(historical && state.progressSnapshot)) updateExtractMetrics({ source_name: event.source_name, total_links: event.raw_links });
     appendLog(`[extract] ${event.source_name} 完成，成功 ${event.successful_iterations ?? 0} 次，失败 ${event.failed_iterations ?? 0} 次，原始节点 ${event.raw_links ?? 0} 个`, {
       kind: 'stage',
       stage: 'extract',
@@ -1713,7 +1733,7 @@ function handlePipelineEvent(event, options = {}) {
   }
 
   if (event.type === 'extract_iteration') {
-    updateExtractMetrics(event);
+    if (!event.progress_snapshot && !(historical && state.progressSnapshot)) updateExtractMetrics(event);
     appendLog(`[extract] ${event.source_name} #${event.iteration ?? 0} 新增 ${event.new_items ?? 0} 个，本次解析 ${event.extracted_links ?? 0} 个，累计 ${event.total_links ?? 0} 个`, {
       kind: 'stage',
       stage: 'extract',
@@ -1723,6 +1743,7 @@ function handlePipelineEvent(event, options = {}) {
   }
 
   if (event.type === 'speedtest_result') {
+    if (event.progress_snapshot || (historical && state.progressSnapshot)) return;
     if (event.passed_threshold) {
       state.counts.speedtest_links = Number(state.counts.speedtest_links ?? 0) + 1;
     }
@@ -1732,6 +1753,7 @@ function handlePipelineEvent(event, options = {}) {
   }
 
   if (event.type === 'availability_link_result') {
+    if (event.progress_snapshot || (historical && state.progressSnapshot)) return;
     if (event.all_passed) {
       state.counts.availability_links = Number(state.counts.availability_links ?? 0) + 1;
     }
@@ -1770,6 +1792,7 @@ function normalizeStageStatuses(stageStatuses = {}) {
 }
 
 function resetRunScopedProgress() {
+  state.progressSnapshot = null;
   state.stageStatus = {};
   state.counts = {};
   state.sourceCounts = {};
@@ -1875,6 +1898,8 @@ function hydrateArtifactState(result) {
   state.artifactDir = result.artifact_dir;
   state.counts = normalizeCounts(result.counts ?? {});
   state.sourceCounts = normalizeSourceCounts(result.source_counts ?? {});
+  // Bounded log history cannot reconstruct metrics that predate its tail.
+  state.progressSnapshot = result.progress_snapshot ?? null;
   state.extractDedupedFingerprints = new Set();
   state.outputFiles = result.outputFiles ?? [];
   state.nodeRows = result.nodeRows ?? [];

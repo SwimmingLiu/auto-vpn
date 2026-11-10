@@ -141,7 +141,7 @@ test('README follows the AutoVPN desktop app structure', () => {
     '.dmg` for Apple Silicon or Intel',
     '.deb` or `.rpm` for x64 or ARM64',
     'portable `.exe` for x64 or ARM64',
-    'export AUTOVPN_VERSION=2.0.2',
+    'export AUTOVPN_VERSION=2.0.3',
     'npm install -g @swimmingliu/autovpn',
     'autovpn --version',
     'autovpn doctor --project-root',
@@ -389,7 +389,7 @@ test('release package version matches the next release tag', () => {
   const packageJson = JSON.parse(readProjectFile('package.json'));
   const packageLock = JSON.parse(readProjectFile('package-lock.json'));
 
-  assert.equal(packageJson.version, '2.0.2');
+  assert.equal(packageJson.version, '2.0.3');
   assert.equal(packageLock.version, packageJson.version);
   assert.equal(packageLock.packages[''].version, packageJson.version);
 });

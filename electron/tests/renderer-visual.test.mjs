@@ -13,11 +13,11 @@ const __dirname = path.dirname(__filename);
 
 const EXPECTED_DIGESTS_BY_PLATFORM = {
   darwin: {
-    dashboard: '8d6886b16a93d36ed8face4030149f112227a7f6fe258da5c3d7980a4e6a9d4f',
-    runs: '9f67283b5af0e27db077162fb02964e7b47c643e836d937cf433bb2cc81514e9',
-    results: '1ddc420235bf3f12e6d536ef6fd44b04c1eeddcffb326980fceb8a9df0c263ad',
-    logs: '998a2e79f4588626d156c64476e585938d2dfa4775a2e8f5f351863b70b2ff9e',
-    settings: '15d7da23fb0f89a1d7055e6299468eb12fbc60d364ea5f6de5857cda1f1cd334'
+    dashboard: '11e6a04f3d7efe14c3e4e665ce0920f67b7ab2b880e349f217528d7288d281b8',
+    runs: '19af2f410354c1213f41977dfade2b663f076e2a9055c6f83d63aac3a4e7f127',
+    results: 'c92bb9774e2ce2e183567c77f1a15c44c795c2ed80492f9c53c6f189820e6502',
+    logs: 'bb7090d73681b5bf54719f733e187ee32f0968a4c255d68f09b21217006675db',
+    settings: '23c22ff9abedd85be00f9d8d086b3776f9cd6cb2fed4a1b1a84704d97b9845cc'
   },
   linux: {
     dashboard: '04eed4e4711a4fa2a7802c94467c08b5eec8fa2f3ae4ddba4e8a8b65cded8d7f',

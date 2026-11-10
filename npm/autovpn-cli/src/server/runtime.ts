@@ -14,6 +14,7 @@ import { latestJobId, loadJob } from '../jobs/read.js';
 import { AccountStore } from '../pool/account-store.js';
 import { normalizeBrand } from '../pool/brands.js';
 import { parseAccountFile } from '../pool/csv.js';
+import { readRunProgress } from '../pipeline/run-store.js';
 import { resolveArtifactsRoot, resolveProfilePath } from '../runtime/paths.js';
 
 export interface ServerState {
@@ -120,9 +121,13 @@ function normalizeLatestArtifact(projectRoot: string, env: NodeJS.ProcessEnv): R
     return undefined;
   }
   const preview = previewArtifact(String(latest.artifact_dir));
+  const progress = readRunProgress(path.join(String(latest.artifact_dir), 'run.db'));
   return {
     ...latest,
     ...preview,
+    // The report can still be empty mid-stage. Its display preview must not
+    // replace the authoritative totals that already exist in the run database.
+    ...(progress ? { counts: { ...(preview.counts ?? {}), ...progress.counts }, source_counts: progress.source_counts, progress_snapshot: progress } : {}),
     outputFiles: (preview.files ?? []),
     nodeRows: []
   };
@@ -392,7 +397,16 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
               if (nextRunState) {
                 runState = nextRunState;
               }
-              publish(event);
+              // A follower can deliver old result lines after loadState. Send
+              // absolute database totals so those lines cannot add twice.
+              const metricEvent = typeof event === 'object' && event !== null && 'type' in event
+                && ['extract_iteration', 'extract_source_completed', 'speedtest_result', 'availability_link_result'].includes(String(event.type));
+              const job = metricEvent ? loadJob(options.projectRoot, jobId, options.env) : undefined;
+              const artifactDir = String(job?.artifact_dir ?? '');
+              const progress = artifactDir ? readRunProgress(path.join(artifactDir, 'run.db')) : undefined;
+              publish(progress && typeof event === 'object'
+                ? { ...event, progress_snapshot: { ...progress, artifact_dir: artifactDir } }
+                : event);
             }
           }
         }
