@@ -20,11 +20,11 @@ const EXPECTED_DIGESTS_BY_PLATFORM = {
     settings: '15d7da23fb0f89a1d7055e6299468eb12fbc60d364ea5f6de5857cda1f1cd334'
   },
   linux: {
-    dashboard: 'f6298ce922314cd74b1e3b991cb7614d3e1efb8b1fc2997e9f46712113c811a0',
-    runs: '869e28d0d41e24ba716629387d13eebb764f9f66fcb857be611a4946e9cb1fa3',
-    results: '862b030b19e8c29a3a2c243b7af8e9d14fb42b3e31f73787bb7efcc1d444bcb7',
-    logs: '2e5c1e2f792e16bf584e4191a303375be266f3df489fc98b73a12bc9a0268db2',
-    settings: '71023b852247adfe5b8c24d65085393a225a24e4a5c752f991902348d12b572b'
+    dashboard: '04eed4e4711a4fa2a7802c94467c08b5eec8fa2f3ae4ddba4e8a8b65cded8d7f',
+    runs: '7be7eba90d552fa275bff8b87f6041c886908f69ea2fee0ffe91eadbf67fec4c',
+    results: '16876d450a0fb703dd1a84e46af24ec7608d6e6cc517a3cab4ef2a7b8acb0dc2',
+    logs: '1f262b03a8cf42c1f2d23b7d616a97b603752d277c7d82ff9d9be82b76fe68ef',
+    settings: '959838ec31720e47adf0b46eccad243f291331c4d4e622f882b7af9f0ec7d473'
   }
 };
 
