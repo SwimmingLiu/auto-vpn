@@ -19,6 +19,10 @@ permissions:
 
 env:
   RELEASE_TAG_NAME: ${{ github.event.inputs.tag_name || github.event.release.tag_name || github.ref_name }}
+  # Older release tags pin mirror tarballs that can return 503 on hosted runners.
+  # Rewrite only that registry host while keeping versions and integrity checks.
+  NPM_CONFIG_REGISTRY: "https://registry.npmjs.org/"
+  NPM_CONFIG_REPLACE_REGISTRY_HOST: "registry.npmmirror.com"
   NPM_CONFIG_AUDIT: "false"
   NPM_CONFIG_FETCH_RETRIES: "5"
   NPM_CONFIG_FETCH_RETRY_FACTOR: "2"

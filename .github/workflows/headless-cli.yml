@@ -10,6 +10,9 @@ permissions:
   contents: read
 
 env:
+  # Use the canonical source even when a historical lockfile pins mirror URLs.
+  NPM_CONFIG_REGISTRY: "https://registry.npmjs.org/"
+  NPM_CONFIG_REPLACE_REGISTRY_HOST: "registry.npmmirror.com"
   NPM_CONFIG_AUDIT: "false"
   NPM_CONFIG_FETCH_RETRIES: "5"
   NPM_CONFIG_FETCH_RETRY_FACTOR: "2"

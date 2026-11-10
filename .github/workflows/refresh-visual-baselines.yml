@@ -23,6 +23,9 @@ permissions:
   contents: write
 
 env:
+  # Match the test/release registry policy instead of depending on mirror uptime.
+  NPM_CONFIG_REGISTRY: "https://registry.npmjs.org/"
+  NPM_CONFIG_REPLACE_REGISTRY_HOST: "registry.npmmirror.com"
   NPM_CONFIG_AUDIT: "false"
   NPM_CONFIG_FUND: "false"
   NPM_CONFIG_PREFER_OFFLINE: "true"
