@@ -17,7 +17,7 @@ autovpn --version
 For a pinned GitHub Release tarball:
 
 ```bash
-export AUTOVPN_VERSION=2.1.0
+export AUTOVPN_VERSION=2.1.1
 npm install -g "https://github.com/SwimmingLiu/auto-vpn/releases/download/v${AUTOVPN_VERSION}/swimmingliu-autovpn-${AUTOVPN_VERSION}.tgz"
 ```
 
@@ -81,14 +81,22 @@ autovpn retry-stage --stage deploy                 # only when final_links > min
 The threshold lives in `$VPN_AUTOMATION_RUNTIME_ROOT/daily-run.json`:
 
 ```json
-{ "min_final_nodes": 50, "enabled": true }
+{ "min_final_nodes": 50, "source_runtime_seconds": 900, "enabled": true }
 ```
 
-The file is created with the default 50 on first run. Set `enabled` to `false`
-to pause the schedule without removing the crontab entry. Each run writes a
-result record under `$VPN_AUTOMATION_RUNTIME_ROOT/daily-run-results/` with
-`status` of `deployed`, `held`, `failed` or `deploy_failed`, plus the artifact
-directory and the measured node count. Logs land in `logs/daily-run-*.log`.
+The file is created with those defaults on first run. `min_final_nodes` is the
+gate: the deploy only happens above it. `source_runtime_seconds` bounds each
+brand's extraction (0 disables the bound); the scheduled default is finite so a
+nightly job cannot still be extracting when the next one starts. Set `enabled`
+to `false` to pause the schedule without removing the crontab entry. Each run
+writes a result record under `$VPN_AUTOMATION_RUNTIME_ROOT/daily-run-results/`
+with `status` of `deployed`, `held`, `failed` or `deploy_failed`, plus the
+artifact directory and the measured node count. Logs land in
+`logs/daily-run-*.log`.
+
+The live `profile.toml` is never edited: the job writes a copy with the runtime
+budget to `$VPN_AUTOMATION_RUNTIME_ROOT/daily-run-profile.toml` and selects it
+through `VPN_AUTOMATION_PROFILE_PATH` for both the run and its deploy.
 
 Install it as a daily job:
 
