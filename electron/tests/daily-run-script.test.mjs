@@ -43,9 +43,14 @@ test('the daily run serializes ticks and refuses to start without the CLI', asyn
   const script = await readScript();
   assert.match(script, /flock -n 9/);
   assert.match(script, /CLI entry not found/);
-  // A run that produced no summary is a real failure, not a quiet skip.
+  // A run that produced no summary is a real failure, not a quiet skip — and
+  // the script has to survive reaching that branch: under `set -e` a grep with
+  // no match would abort the assignment before the check runs.
   assert.match(script, /no summary event/);
   assert.match(script, /"status":"failed"/);
+  for (const line of script.split('\n').filter((text) => text.includes("grep -a '\"type\":\"summary\"'"))) {
+    assert.match(line, /\|\| true/, `unguarded summary grep under set -e: ${line.trim()}`);
+  }
 });
 
 test('the daily run reads its threshold from the runtime root', async () => {
