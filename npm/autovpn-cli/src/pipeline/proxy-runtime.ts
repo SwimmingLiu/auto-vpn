@@ -3,6 +3,7 @@ import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { createBoundedLogRing } from './http-transport.js';
 
 export interface VmessPayload {
   add: string;
@@ -37,6 +38,8 @@ export interface MihomoRuntime {
   configPath: string;
   controllerUrl: string;
   proxyName: string;
+  /** Bounded tail of the runtime's stdout/stderr, kept for diagnostics. */
+  recentLog: () => string;
   close: () => Promise<void>;
 }
 
@@ -64,6 +67,7 @@ export const PROXY_ENV_KEYS = [
 ] as const;
 
 const MIHOMO_DELAY_TIMEOUT_MAX_MS = 30_000;
+const MIHOMO_LOG_RING_BYTES = 8 * 1024;
 const reservedAutomaticPorts = new Set<number>();
 
 function padBase64(encoded: string): string {
@@ -385,6 +389,14 @@ export async function openMihomoRuntime(link: string, options: OpenMihomoRuntime
   let tempDir = '';
   let configPath = '';
   let child: ChildProcess;
+  // stdout/stderr must be drained: an unread 64 KB pipe buffer blocks the child
+  // and the controller would never answer. Keep only a bounded tail.
+  const logRing = createBoundedLogRing(MIHOMO_LOG_RING_BYTES);
+  const recentLog = (): string => logRing.text();
+  const logTailSuffix = (): string => {
+    const tail = recentLog().trim();
+    return tail ? ` (runtime output: ${tail})` : '';
+  };
   try {
     const config = buildMihomoRuntimeConfig(payload, { mixedPort, controllerPort });
     tempDir = await mkdtemp(path.join(os.tmpdir(), 'autovpn-mihomo-'));
@@ -395,6 +407,18 @@ export async function openMihomoRuntime(link: string, options: OpenMihomoRuntime
       stdio: ['ignore', 'pipe', 'pipe'],
       env: stripProxyEnv(options.env ?? process.env)
     });
+    const appendChunk = (chunk: unknown): void => {
+      if (Buffer.isBuffer(chunk)) {
+        logRing.append(chunk);
+      } else if (typeof chunk === 'string') {
+        logRing.append(chunk);
+      }
+    };
+    child.stdout?.on('data', appendChunk);
+    child.stderr?.on('data', appendChunk);
+    // A closed pipe (child already gone) must never surface as an uncaught error.
+    child.stdout?.on('error', () => {});
+    child.stderr?.on('error', () => {});
   } catch (error) {
     try {
       if (tempDir) await rm(tempDir, { recursive: true, force: true });
@@ -408,6 +432,10 @@ export async function openMihomoRuntime(link: string, options: OpenMihomoRuntime
     rejectStartupError = reject;
   });
   const onStartupError = (error: Error): void => {
+    const tail = logTailSuffix();
+    if (tail && !error.message.includes('runtime output:')) {
+      error.message = `${error.message}${tail}`;
+    }
     rejectStartupError?.(error);
   };
   child.once('error', onStartupError);
@@ -416,7 +444,7 @@ export async function openMihomoRuntime(link: string, options: OpenMihomoRuntime
     rejectStartupExit = reject;
   });
   const onStartupExit = (code: number | null, signal: NodeJS.Signals | null): void => {
-    const error = new Error(`mihomo exited during startup with code ${code ?? 'unknown'}${signal ? ` signal ${signal}` : ''}`) as Error & { code?: string };
+    const error = new Error(`mihomo exited during startup with code ${code ?? 'unknown'}${signal ? ` signal ${signal}` : ''}${logTailSuffix()}`) as Error & { code?: string };
     error.code = 'AUTOVPN_INTERNAL_TIMEOUT';
     rejectStartupExit?.(error);
   };
@@ -452,11 +480,16 @@ export async function openMihomoRuntime(link: string, options: OpenMihomoRuntime
     child.off('error', onStartupError);
     child.off('exit', onStartupExit);
     child.on('error', () => {});
+    // Attach the runtime's own output so a silent controller is diagnosable.
+    const tail = logTailSuffix();
+    if (tail && error instanceof Error && !error.message.includes('runtime output:')) {
+      error.message = `${error.message}${tail}`;
+    }
     await close();
     if (
       error instanceof Error
       && error.name !== 'AbortError'
-      && /^proxy port \d+ did not open in time$/.test(error.message)
+      && /^proxy port \d+ did not open in time/.test(error.message)
     ) {
       (error as Error & { code?: string }).code = 'AUTOVPN_INTERNAL_TIMEOUT';
     }
@@ -472,6 +505,7 @@ export async function openMihomoRuntime(link: string, options: OpenMihomoRuntime
     configPath,
     controllerUrl,
     proxyName,
+    recentLog,
     close
   };
 }

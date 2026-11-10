@@ -7,6 +7,9 @@ contextBridge.exposeInMainWorld('vpnAutomation', {
   loadAccounts: () => ipcRenderer.invoke('accounts:snapshot'),
   importAccounts: (content, format) => ipcRenderer.invoke('accounts:import', { content, format }),
   setAccountStatus: (payload) => ipcRenderer.invoke('accounts:status', payload),
+  // Agreed contract for the renderer: setAccountExpiry(id, date) where `date`
+  // is YYYY-MM-DD, or '' to clear the stored date.
+  setAccountExpiry: (id, date) => ipcRenderer.invoke('accounts:expiry', { id, expires_at: date }),
   accountsTemplate: () => ipcRenderer.invoke('accounts:template'),
   runPipeline: (options) => ipcRenderer.invoke('pipeline:run', options),
   stopPipeline: () => ipcRenderer.invoke('pipeline:stop'),

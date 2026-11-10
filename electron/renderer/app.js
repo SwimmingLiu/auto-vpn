@@ -9,8 +9,10 @@ import { renderAnalytics, clearAnalytics } from './analytics.bundle.js';
 import {
   addAvailabilityTargetDraft,
   applyAvailabilityTargetDraft,
+  applyNetworkDraft,
   applySourceIterationDraft,
   buildAvailabilityTargetDraft,
+  buildNetworkDraft,
   buildPageMarkup,
   buildDashboardMetricsMarkup,
   buildDashboardStateMarkup,
@@ -25,6 +27,7 @@ import {
   buildAccountPoolRecords,
   removeAvailabilityTargetDraft,
   resolveDashboardRunSummary,
+  SOURCE_ROUND_DEFAULTS,
   validateSourceDraft,
   classifyLogEntry,
   escapeHtml,
@@ -36,10 +39,10 @@ initializeAppearance();
 
 const demoProfile = {
   sources: {
-    leiting: { mode: 'credential', official_site: 'https://www.68123836.com', enabled: true, max_iterations: 4, plateau_limit: 2 },
-    heidong: { mode: 'credential', official_site: 'https://www.67986457.com', enabled: true, max_iterations: 4, plateau_limit: 2 },
-    mifeng: { mode: 'credential', official_site: 'https://www.86933221.com', enabled: true, max_iterations: 4, plateau_limit: 2 },
-    xuanfeng: { mode: 'credential', official_site: 'https://www.16863988.com', enabled: true, max_iterations: 4, plateau_limit: 2 }
+    leiting: { mode: 'credential', official_site: 'https://www.68123836.com', enabled: true, ...SOURCE_ROUND_DEFAULTS },
+    heidong: { mode: 'credential', official_site: 'https://www.67986457.com', enabled: true, ...SOURCE_ROUND_DEFAULTS },
+    mifeng: { mode: 'credential', official_site: 'https://www.86933221.com', enabled: true, ...SOURCE_ROUND_DEFAULTS },
+    xuanfeng: { mode: 'credential', official_site: 'https://www.16863988.com', enabled: true, ...SOURCE_ROUND_DEFAULTS }
   },
   speed_test: {
     min_download_mb_s: 1.0,
@@ -114,7 +117,9 @@ const state = {
     statusFilter: 'all',
     brandFilter: 'all',
     sortBy: 'brand',
-    busy: false
+    busy: false,
+    canSetExpiry: typeof window.vpnAutomation?.setAccountExpiry === 'function',
+    expiryEditorId: null
   },
   isDemo: false,
   runtime: document.body.dataset.runtime === 'web' ? 'web' : 'electron',
@@ -198,7 +203,10 @@ function hydrateInitialRuntimeState(loadedState = {}) {
   const loadedProfile = loadedState.profile ?? {};
   state.activity = Array.isArray(loadedState.activity) ? loadedState.activity : [];
   state.activityUnavailable = Number(loadedState.activityUnavailable ?? 0);
-  state.profile = loadedProfile;
+  // An older profile has no [network] section. Seeding the displayed defaults
+  // here means saving any other drawer writes the section the pipeline reads
+  // instead of leaving it absent, and the network drawer opens on real values.
+  state.profile = { ...loadedProfile, network: buildNetworkDraft(loadedProfile.network) };
   state.savedProfile = structuredClone(loadedProfile);
   const nextRunState = String(loadedState.runState ?? '');
   if (['idle', 'running', 'stopping', 'failed', 'success'].includes(nextRunState)) {
@@ -642,6 +650,10 @@ function handleDocumentInput(event) {
         const floor = SOURCE_MINIMUM_ONE_KEYS.has(key) ? 1 : 0;
         sourceDraft[sourceName][key] = Math.max(floor, Math.trunc(parsed));
       }
+      // The area controls have a hard ceiling the backend also clamps to.
+      if (SOURCE_MAXIMUM_KEYS.has(key)) {
+        sourceDraft[sourceName][key] = Math.min(SOURCE_MAXIMUM_KEYS.get(key), sourceDraft[sourceName][key]);
+      }
     }
     return;
   }
@@ -793,6 +805,8 @@ const SOURCE_NUMERIC_KEYS = new Set([
   'max_iterations',
   'min_iterations',
   'plateau_limit',
+  'areas_per_round',
+  'area_concurrency',
   'max_runtime_seconds',
   'max_areas',
   'area_min',
@@ -802,7 +816,15 @@ const SOURCE_NUMERIC_KEYS = new Set([
 /** Of those, the ones the runner clamps to at least one. */
 const SOURCE_MINIMUM_ONE_KEYS = new Set([
   'max_iterations',
-  'plateau_limit'
+  'plateau_limit',
+  'areas_per_round',
+  'area_concurrency'
+]);
+
+/** Numeric source fields with a hard upper bound, matching the backend clamp. */
+const SOURCE_MAXIMUM_KEYS = new Map([
+  ['areas_per_round', 64],
+  ['area_concurrency', 16]
 ]);
 
 function resolveErrorMessage(error) {
@@ -1037,6 +1059,7 @@ function buildSettingsDraft(section) {
   if (section === 'speed_test') return buildSpeedTestDraft(state.profile.speed_test);
   if (section === 'availability_targets') return buildAvailabilityTargetDraft(state.profile.availability_targets);
   if (section === 'deploy') return buildDeployDraft(state.profile.deploy);
+  if (section === 'network') return buildNetworkDraft(state.profile.network);
   if (section === 'paths') return structuredClone(state.profile.paths);
   if (section === 'about') return { version: getMessages(state.language).sidebarVersion };
   return null;
@@ -1091,6 +1114,9 @@ async function saveSettingsDrawer() {
 
 async function hydrateAccountPool() {
   state.accountPool.status = 'loading';
+  // Re-detect each hydration: the preload bridge is fixed for the page, but a
+  // test harness or a future H5 adapter may attach it after bootstrap.
+  state.accountPool.canSetExpiry = typeof window.vpnAutomation?.setAccountExpiry === 'function';
   touchUpdate();
   renderAccountPoolPanelOnly();
   if (!window.vpnAutomation?.loadAccounts) {
@@ -1154,7 +1180,54 @@ async function handleAccountPoolAction(button) {
   }
   if (action === 'toggle') {
     await toggleAccountStatus(Number(button.dataset.accountId));
+    return;
   }
+  if (action === 'expiry-edit') {
+    state.accountPool.expiryEditorId = Number(button.dataset.accountId);
+    renderAll();
+    queueMicrotask(() => document.querySelector(`[data-account-expiry-input="${CSS.escape(String(button.dataset.accountId))}"]`)?.focus());
+    return;
+  }
+  if (action === 'expiry-cancel') {
+    state.accountPool.expiryEditorId = null;
+    renderAll();
+    return;
+  }
+  if (action === 'expiry-save') {
+    const id = Number(button.dataset.accountId);
+    const input = document.querySelector(`[data-account-expiry-input="${CSS.escape(String(id))}"]`);
+    await setAccountExpiry(id, input?.value ?? '');
+  }
+}
+
+async function setAccountExpiry(id, expiresAt) {
+  const account = (state.accountPool.accounts ?? []).find((item) => item.id === id);
+  // Feature-detected: the browser build has no preload bridge, so this path is
+  // never reachable there and the row hides the affordance.
+  if (!account || typeof window.vpnAutomation?.setAccountExpiry !== 'function') {
+    return;
+  }
+  const value = String(expiresAt ?? '').trim();
+  if (value && !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    showToast({ tone: 'danger', message: '请选择有效的到期日期' });
+    return;
+  }
+  state.accountPool.busy = true;
+  renderAccountPoolPanelOnly();
+  try {
+    // Preload bridge signature: setAccountExpiry(id, 'YYYY-MM-DD'); '' clears it.
+    const result = await window.vpnAutomation.setAccountExpiry(id, value);
+    if (!result?.ok) {
+      throw new Error(result?.error || '操作失败');
+    }
+    state.accountPool.expiryEditorId = null;
+    showToast({ tone: 'success', message: value ? `${account.account_masked} 到期日已设为 ${value}` : `${account.account_masked} 到期日已清除` });
+  } catch (error) {
+    showToast({ tone: 'danger', message: resolveErrorMessage(error) });
+  } finally {
+    state.accountPool.busy = false;
+  }
+  await hydrateAccountPool();
 }
 
 async function downloadAccountsTemplate() {
@@ -1290,6 +1363,9 @@ function resolveSettingsDraftPayload(section, draft) {
   }
   if (section === 'deploy') {
     return sanitizeDeployDraft(draft);
+  }
+  if (section === 'network') {
+    return applyNetworkDraft(draft);
   }
   return structuredClone(draft);
 }
@@ -1693,6 +1769,24 @@ function handlePipelineEventDetails(event, options = {}) {
     return;
   }
 
+  if (event.type === 'extract_platform_started') {
+    appendLog(`[extract] ${event.source_name} ${platformTag(event.platform)}开始提取，最多 ${event.requested_iterations ?? 0} 次，最少 ${event.min_iterations ?? 0} 次`, {
+      kind: 'stage',
+      stage: 'extract',
+      level: 'info'
+    });
+    return;
+  }
+
+  if (event.type === 'extract_platform_completed') {
+    appendLog(`[extract] ${event.source_name} ${platformTag(event.platform)}完成，成功 ${event.successful_iterations ?? 0} 次，失败 ${event.failed_iterations ?? 0} 次，原始节点 ${event.raw_links ?? 0} 个`, {
+      kind: 'stage',
+      stage: 'extract',
+      level: 'info'
+    });
+    return;
+  }
+
   if (event.type === 'extract_source_started') {
     appendLog(`[extract] ${event.source_name} 开始提取，最多 ${event.requested_iterations ?? 0} 次，最少 ${event.min_iterations ?? 0} 次`, {
       kind: 'stage',
@@ -1705,7 +1799,7 @@ function handlePipelineEventDetails(event, options = {}) {
   if (event.type === 'extract_request_result') {
     const status = event.success ? '成功' : '失败';
     const retry = event.will_retry ? '，将重试' : '';
-    appendLog(`[extract] ${event.source_name} #${event.iteration} ${event.via} ${status}${retry}`, {
+    appendLog(`[extract] ${event.source_name} ${platformTag(event.platform)}#${event.iteration} ${event.via} ${status}${retry}`, {
       kind: 'stage',
       stage: 'extract',
       level: event.success ? 'info' : 'warning'
@@ -1714,7 +1808,7 @@ function handlePipelineEventDetails(event, options = {}) {
   }
 
   if (event.type === 'extract_decrypt_result' && !event.success) {
-    appendLog(`[extract] ${event.source_name} #${event.iteration} 解密失败`, {
+    appendLog(`[extract] ${event.source_name} ${platformTag(event.platform)}#${event.iteration} 解密失败`, {
       kind: 'stage',
       stage: 'extract',
       level: 'error'
@@ -1734,7 +1828,10 @@ function handlePipelineEventDetails(event, options = {}) {
 
   if (event.type === 'extract_iteration') {
     if (!event.progress_snapshot && !(historical && state.progressSnapshot)) updateExtractMetrics(event);
-    appendLog(`[extract] ${event.source_name} #${event.iteration ?? 0} 新增 ${event.new_items ?? 0} 个，本次解析 ${event.extracted_links ?? 0} 个，累计 ${event.total_links ?? 0} 个`, {
+    // Android and iOS run the same round numbers independently, so a bare `#N`
+    // shows two identical lines. The tag only appears when the event carries a
+    // platform, which keeps older backends and the URL-mode stream unchanged.
+    appendLog(`[extract] ${event.source_name} ${platformTag(event.platform)}#${event.iteration ?? 0} 新增 ${event.new_items ?? 0} 个，本次解析 ${event.extracted_links ?? 0} 个，累计 ${event.total_links ?? 0} 个`, {
       kind: 'stage',
       stage: 'extract',
       level: 'info'
@@ -1974,6 +2071,14 @@ function resolveDefaultRetryStage(artifact) {
   }
   const failedStage = retryableStages.find((stage) => artifact?.stage_status?.[stage] === 'failed');
   return failedStage || retryableStages.at(-1) || '';
+}
+
+// Both channels emit the same round numbers, so the log needs the channel on
+// the line. `[android] ` keeps the rest of the format untouched; an event with
+// no platform (older backend, URL-mode extract) renders exactly as before.
+function platformTag(platform) {
+  const value = String(platform ?? '').trim().toLowerCase();
+  return value === 'android' || value === 'ios' ? `[${value}] ` : '';
 }
 
 function appendLog(message, overrides = {}) {

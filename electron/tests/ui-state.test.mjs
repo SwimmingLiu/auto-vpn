@@ -11,11 +11,13 @@ import {
 import { getMessages, resolveLanguage } from '../renderer/i18n.js';
 import {
   addAvailabilityTargetDraft,
+  applyNetworkDraft,
   applySourceIterationDraft,
   applyAvailabilityTargetDraft,
   buildAccountPoolRecords,
   buildAvailabilityTargetDraft,
   buildDashboardMetricsMarkup,
+  buildNetworkDraft,
   buildPageMarkup,
   buildSidebarNav,
   buildViewModel,
@@ -324,7 +326,12 @@ test('the source drawer drafts only the four official sites and their rounds', (
   // 10 route-loop rounds, so it goes with the other URL-mode caps.
   assert.equal(draft.sources.xuanfeng.min_iterations, 10);
   assert.equal(draft.sources.leiting.min_iterations, undefined);
-  assert.equal(draft.sources.leiting.max_iterations, 4);
+  // A round is one cursor step over one region now, so an unset round budget
+  // falls back to 200 rather than the old full-sweep default of 4.
+  assert.equal(draft.sources.leiting.max_iterations, 200);
+  assert.equal(draft.sources.leiting.plateau_limit, 50);
+  assert.equal(draft.sources.leiting.areas_per_round, 8);
+  assert.equal(draft.sources.leiting.area_concurrency, 4);
 });
 
 test('a custom url source survives saving the sources drawer', () => {
@@ -347,25 +354,49 @@ test('a cleared official site is not refilled from the vendor default mid-edit',
   assert.equal(fresh.leiting.official_site, 'https://www.68123836.com');
 });
 
-test('saving the source drawer keeps each row\'s own rounds', () => {
+test('saving the source drawer keeps each row\'s own rounds and area controls', () => {
   const sources = {
-    leiting: { mode: 'credential', official_site: 'https://site.example', max_iterations: 3, plateau_limit: 2 },
+    leiting: { mode: 'credential', official_site: 'https://site.example', max_iterations: 3, plateau_limit: 2, areas_per_round: 5, area_concurrency: 8 },
     xuanfeng: { mode: 'credential', official_site: 'https://xf.example', max_iterations: 9, plateau_limit: 5 }
   };
   const draft = buildSourceIterationDraft(sources);
   draft.sources.leiting.max_iterations = 6;
   draft.sources.leiting.plateau_limit = 3;
+  draft.sources.leiting.areas_per_round = 2;
+  draft.sources.leiting.area_concurrency = 6;
   const saved = applySourceIterationDraft(draft.sources, draft);
   assert.equal(saved.leiting.max_iterations, 6);
   assert.equal(saved.leiting.plateau_limit, 3);
+  assert.equal(saved.leiting.areas_per_round, 2);
+  assert.equal(saved.leiting.area_concurrency, 6);
   assert.equal(saved.xuanfeng.max_iterations, 9);
   assert.equal(saved.xuanfeng.plateau_limit, 5);
+  // A row that never stored the new fields gets the shipped defaults.
+  assert.equal(saved.xuanfeng.areas_per_round, 8);
+  assert.equal(saved.xuanfeng.area_concurrency, 4);
   // A caller that only passes the shared values still stamps every row.
-  const shared = applySourceIterationDraft(sources, { maxIterations: 7, plateauLimit: 4 });
+  const shared = applySourceIterationDraft(sources, { maxIterations: 7, plateauLimit: 4, areasPerRound: 3, areaConcurrency: 2 });
   const stamped = Object.values(shared);
   assert.equal(stamped.length, 4);
   assert.deepEqual([...new Set(stamped.map((source) => source.max_iterations))], [7]);
   assert.deepEqual([...new Set(stamped.map((source) => source.plateau_limit))], [4]);
+  assert.deepEqual([...new Set(stamped.map((source) => source.areas_per_round))], [3]);
+  assert.deepEqual([...new Set(stamped.map((source) => source.area_concurrency))], [2]);
+});
+
+test('the source drawer rejects area values outside their documented bounds', () => {
+  const draft = buildSourceIterationDraft({});
+  assert.equal(validateSourceDraft(draft), '');
+  draft.sources.leiting.areas_per_round = 65;
+  assert.match(validateSourceDraft(draft), /每轮区域数/);
+  draft.sources.leiting.areas_per_round = 64;
+  assert.equal(validateSourceDraft(draft), '');
+  draft.sources.leiting.area_concurrency = 0;
+  assert.match(validateSourceDraft(draft), /区域并发/);
+  draft.sources.leiting.area_concurrency = 16;
+  assert.equal(validateSourceDraft(draft), '');
+  draft.sources.leiting.area_concurrency = 17;
+  assert.match(validateSourceDraft(draft), /区域并发/);
 });
 
 test('the source drawer refuses an enabled row with no official site', () => {
@@ -457,12 +488,63 @@ test('settings drawer is inert and has no actions while closed, with explicit so
     settingsDrawer: { section: 'sources', draft: { sources: profile.sources } }
   };
   const openMarkup = buildPageMarkup('settings', buildViewModel(openState, messages, 'zh-CN'), messages, 'zh-CN');
-  // The drawer asks for an official site and a round budget, nothing else:
+  // The drawer asks for an official site and the round controls, nothing else:
   // credentials come from the pool and the control-plane key from the APK.
   assert.match(openMarkup, /aria-label="雷霆：官网地址"/);
   assert.match(openMarkup, /aria-label="雷霆：抓取轮数"/);
+  assert.match(openMarkup, /aria-label="雷霆：每轮区域数"/);
+  assert.match(openMarkup, /aria-label="雷霆：区域并发"/);
+  assert.match(openMarkup, /每轮区域数/);
+  assert.match(openMarkup, /区域并发/);
   assert.doesNotMatch(openMarkup, /aria-label="雷霆：密钥"|aria-label="雷霆：账号"|aria-label="雷霆：密码"/);
   assert.doesNotMatch(openMarkup, /data-drawer-mode/);
+});
+
+test('the source drawer help states per-platform rounds and cross-platform fingerprints', () => {
+  const messages = getMessages('zh-CN');
+  const profile = {
+    sources: { leiting: { mode: 'credential', official_site: 'https://example.com', max_iterations: 1000, plateau_limit: 50 } },
+    availability_targets: {},
+    speed_test: {},
+    deploy: {}
+  };
+  const markup = buildPageMarkup(
+    'settings',
+    buildViewModel({ profile, settingsDrawer: { section: 'sources', draft: buildSourceIterationDraft(profile.sources) } }, messages, 'zh-CN'),
+    messages,
+    'zh-CN'
+  );
+  // 1000 rounds means 1000 on each platform, never 500 + 500.
+  assert.match(markup, /Android 与 iOS 两个通道同时抓取/);
+  assert.match(markup, /1000 就是 Android 1000 轮加 iOS 1000 轮，不是 500\+500/);
+  // A round is one cursor step over the fixed, wrapping area list.
+  assert.match(markup, /固定区域列表/);
+  assert.match(markup, /每轮区域数/);
+  assert.match(markup, /默认 8 个/);
+  // Early stop is judged on a fingerprint deduped across both platforms.
+  assert.match(markup, /节点指纹/);
+  assert.match(markup, /address \/ port \/ id \/ transport \/ host \/ path \/ tls \/ sni/);
+  assert.match(markup, /另一端已经抓到的节点/);
+});
+
+test('renderer network defaults round-trip through the drawer and save path', () => {
+  const messages = getMessages('zh-CN');
+  const state = {
+    profile: { sources: {}, availability_targets: {}, speed_test: {}, deploy: {} },
+    settingsDrawer: { section: 'network', draft: buildNetworkDraft({}) }
+  };
+  const markup = buildPageMarkup('settings', buildViewModel(state, messages, 'zh-CN'), messages, 'zh-CN');
+  assert.match(markup, /data-settings-card="network"/);
+  assert.match(markup, /网络出口/);
+  assert.match(markup, /data-drawer-path="network.proxy_mode"/);
+  assert.match(markup, /data-drawer-path="network.proxy_url"/);
+  assert.match(markup, /value="proxy" selected/);
+  assert.match(markup, /value="http:\/\/127\.0\.0\.1:7897"/);
+
+  assert.deepEqual(buildNetworkDraft(undefined), { proxy_mode: 'proxy', proxy_url: 'http://127.0.0.1:7897' });
+  assert.deepEqual(buildNetworkDraft({ proxy_mode: 'direct', proxy_url: '' }), { proxy_mode: 'direct', proxy_url: 'http://127.0.0.1:7897' });
+  assert.deepEqual(buildNetworkDraft({ proxy_mode: 'bogus' }).proxy_mode, 'proxy');
+  assert.deepEqual(applyNetworkDraft({ proxy_mode: 'auto', proxy_url: 'http://10.0.0.2:8080' }), { proxy_mode: 'auto', proxy_url: 'http://10.0.0.2:8080' });
 });
 
 test('settings page renders deploy card and drawer fields', () => {
@@ -685,8 +767,8 @@ test('the account pool panel shows the four vendors and a masked total', () => {
     accountPool: {
       status: 'ready',
       stats: {
-        total: 6, active: 4, disabled: 1, expired: 1, invalid: 0, expiring_soon: 1,
-        by_brand: [{ brand: 'leiting', total: 6, active: 4, disabled: 1, expired: 1, invalid: 0 }]
+        total: 6, active: 4, disabled: 1, expired: 1, invalid: 0, expiring_soon: 1, expiry_unknown: 3,
+        by_brand: [{ brand: 'leiting', total: 6, active: 4, disabled: 1, expired: 1, invalid: 0, expiry_unknown: 3 }]
       },
       accounts: []
     }
@@ -695,10 +777,50 @@ test('the account pool panel shows the four vendors and a masked total', () => {
   assert.match(markup, /账号池/);
   assert.match(markup, /4<\/strong>[\s\S]*?可用账号 \/ 共 6 个/);
   assert.match(markup, /7 天内到期 1 个/);
+  assert.match(markup, /到期时间未知 3/);
   for (const label of ['雷霆', '黑洞', '蜜蜂', '旋风']) {
     assert.match(markup, new RegExp(label));
   }
   assert.match(markup, /上传 CSV/);
+});
+
+test('the account pool renders an unknown expiry as 未知 and hides NaN for an older backend', () => {
+  const messages = getMessages('zh-CN');
+  const pool = {
+    status: 'ready',
+    stats: { total: 2, active: 2, expiring_soon: 0, by_brand: [] },
+    accounts: [
+      { id: 1, brand: 'leiting', account_masked: 'y1***56', status: 'active', expires_at: '', use_count: 0, success_count: 0, fail_count: 0 }
+    ],
+    statusFilter: 'all', brandFilter: 'all', query: '', sortBy: 'brand'
+  };
+  const records = buildAccountPoolRecords(pool);
+  assert.match(records, /未知/);
+  assert.doesNotMatch(records, /—/);
+  // An older backend omits expiry_unknown; the banner must not print NaN.
+  const vm = buildViewModel({ profile: { sources: {}, speed_test: {}, availability_targets: {}, deploy: {} }, accountPool: pool }, messages, 'zh-CN');
+  const markup = buildPageMarkup('settings', vm, messages, 'zh-CN');
+  assert.doesNotMatch(markup, /到期时间未知/);
+  assert.doesNotMatch(markup, /NaN|undefined/);
+  // Without the preload bridge there is no set-expiry control at all.
+  assert.equal(pool.canSetExpiry, undefined);
+  assert.doesNotMatch(records, /data-account-action="expiry-edit"/);
+});
+
+test('the account expiry affordance appears only when the bridge exists', () => {
+  const profile = { sources: {}, speed_test: {}, availability_targets: {}, deploy: {} };
+  const messages = getMessages('zh-CN');
+  const baseAccount = { id: 7, brand: 'leiting', account_masked: 'zz**99', status: 'active', expires_at: '2027-05-01', use_count: 0, success_count: 0, fail_count: 0 };
+  const pool = { status: 'ready', stats: { total: 1, active: 1, by_brand: [] }, accounts: [baseAccount], statusFilter: 'all', brandFilter: 'all', query: '', sortBy: 'brand' };
+  const hidden = buildPageMarkup('settings', buildViewModel({ profile, accountPool: pool }, messages, 'zh-CN'), messages, 'zh-CN');
+  assert.doesNotMatch(hidden, /data-account-action="expiry-edit"/);
+  const shown = buildPageMarkup('settings', buildViewModel({
+    profile,
+    accountPool: { ...pool, canSetExpiry: true, expiryEditorId: 7 }
+  }, messages, 'zh-CN'), messages, 'zh-CN');
+  assert.match(shown, /data-account-action="expiry-save" data-account-id="7"/);
+  assert.match(shown, /data-account-expiry-input="7"/);
+  assert.match(shown, /value="2027-05-01"/);
 });
 
 

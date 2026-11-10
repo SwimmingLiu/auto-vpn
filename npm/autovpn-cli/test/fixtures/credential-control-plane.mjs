@@ -21,8 +21,8 @@ export function encryptControlPlane(plaintext, key = FIXTURE_KEY) {
   return Buffer.concat([cipher.update(padded), cipher.final()]).toString('base64');
 }
 
-/** One `add|outbound-json` body, which is what `/api/evmess` returns. */
-export function evmessBody(address, port) {
+/** One `ps|outbound-json` body, which is what `/api/evmess` returns. */
+export function evmessBody(address, port, ps = 'fixture-node') {
   const outbound = {
     outbounds: [
       {
@@ -32,7 +32,7 @@ export function evmessBody(address, port) {
       }
     ]
   };
-  return `fixture-node|${JSON.stringify(outbound)}`;
+  return `${ps}|${JSON.stringify(outbound)}`;
 }
 
 export function createControlPlane(options = {}) {
@@ -44,10 +44,11 @@ export function createControlPlane(options = {}) {
     3: ['198.51.100.20', '198.51.100.21', '198.51.100.22']
   };
   const requestedAreas = [];
-  // Areas are counted per channel: both platforms ask every route in the same
-  // round, and one shared counter would advance twice per round.
+  // The vendor picks a landing host per request, so each (channel, area) pair
+  // walks its own address sequence independently. The client's round model is
+  // a cursor over a fixed area list, not a full sweep, so the fixture must not
+  // assume one round equals one pass over every route.
   const areaCounters = new Map();
-  let round = 0;
 
   const routeList = {
     res: [
@@ -91,13 +92,18 @@ export function createControlPlane(options = {}) {
       // asks independently, so its own counter decides which round it is in;
       // `platform` names the channel on the request.
       const caller = parsed.searchParams.get('platform') ?? 'single';
-      const seen = (areaCounters.get(caller) ?? 0) + 1;
-      areaCounters.set(caller, seen);
-      if (seen % 2 === 0) round = Math.floor(seen / 2);
-      const list = perRound[area] ?? [];
-      const index = Math.min(round, rounds) - 1;
-      const address = list[index];
-      return ok(address ? encryptControlPlane(evmessBody(address, 443)) : '');
+      const key = `${caller}:${area}`;
+      const seen = areaCounters.get(key) ?? 0;
+      areaCounters.set(key, seen + 1);
+      // `rounds` caps how many distinct hosts an area hands out before it runs
+      // dry; an exhausted area answers empty, which is what a plateau looks like.
+      const list = (perRound[area] ?? []).slice(0, rounds);
+      const address = list[seen];
+      // `relabel` varies the display name per request while the node identity
+      // stays fixed: a relabelled duplicate is a new raw string but the same
+      // fingerprint, which is exactly what the early-stop counter must ignore.
+      const ps = options.relabel ? `node-${area}-${seen}` : 'fixture-node';
+      return ok(address ? encryptControlPlane(evmessBody(address, 443, ps)) : '');
     }
     return { ok: false, status: 404, text: async () => '', arrayBuffer: async () => new ArrayBuffer(0) };
   };

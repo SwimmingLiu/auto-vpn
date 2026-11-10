@@ -679,7 +679,7 @@ test('served web ui handles visible browser controls across all pages', { timeou
         ]
       }),
       saveProfile: async (profile) => {
-        calls.push(['profile', profile.deploy?.project_name ?? '']);
+        calls.push(['profile', profile.deploy?.project_name ?? '', profile.network ?? null]);
         return { ok: true };
       },
       startRun: async (options) => {
@@ -717,7 +717,7 @@ test('served web ui handles visible browser controls across all pages', { timeou
     await page.locator('#navSettings').click();
     await page.waitForSelector('#settingsWorkspace');
 
-    for (const section of ['sources', 'speed_test', 'availability_targets', 'deploy']) {
+    for (const section of ['sources', 'speed_test', 'availability_targets', 'deploy', 'network']) {
       await page.setViewportSize({ width: 390, height: 844 });
       const opener = page.locator(`[data-settings-card="${section}"]`);
       await opener.click();
@@ -737,6 +737,9 @@ test('served web ui handles visible browser controls across all pages', { timeou
         await page.locator('[data-availability-key="url"]').last().fill('https://custom.example.test');
       } else if (section === 'deploy') {
         await page.locator('[data-drawer-path="deploy.project_name"]').fill('web-sub-nodes');
+      } else if (section === 'network') {
+        await page.locator('[data-drawer-path="network.proxy_mode"]').selectOption('auto');
+        await page.locator('[data-drawer-path="network.proxy_url"]').fill('http://10.1.2.3:7897');
       }
       await page.locator('[data-drawer-save="save"]').click();
       await page.waitForSelector('#settingsDrawer[hidden]');
@@ -751,6 +754,9 @@ test('served web ui handles visible browser controls across all pages', { timeou
         assert.ok((await page.locator('[data-availability-key="name"]').evaluateAll((nodes) => nodes.map((node) => node.value))).includes('custom'));
       } else if (section === 'deploy') {
         assert.equal(await page.locator('[data-drawer-path="deploy.project_name"]').inputValue(), 'web-sub-nodes');
+      } else if (section === 'network') {
+        assert.equal(await page.locator('[data-drawer-path="network.proxy_mode"]').inputValue(), 'auto');
+        assert.equal(await page.locator('[data-drawer-path="network.proxy_url"]').inputValue(), 'http://10.1.2.3:7897');
       }
       await page.setViewportSize({ width: 844, height: 390 });
       assert.equal(await page.locator('[data-drawer-save="save"]').isVisible(), true);
@@ -839,6 +845,11 @@ test('served web ui handles visible browser controls across all pages', { timeou
     assert.ok(calls.some(([name]) => name === 'start'));
     assert.ok(calls.some(([name]) => name === 'stop'));
     assert.ok(calls.some(([name, projectName]) => name === 'profile' && projectName === 'web-sub-nodes'));
+    // The [network] section is a top-level profile section the renderer saves
+    // as-is; the server-side profile writer round-trips unknown sections.
+    assert.ok(calls.some(([name, , network]) => name === 'profile'
+      && network?.proxy_mode === 'auto'
+      && network?.proxy_url === 'http://10.1.2.3:7897'));
   } finally {
     await browser?.close();
     await service.close();

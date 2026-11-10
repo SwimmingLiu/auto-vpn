@@ -4,7 +4,7 @@ import path from 'node:path';
 import { parse } from '@iarna/toml';
 
 import { AutoVpnEvent } from '../events/schema.js';
-import { normalizeOfficialSources } from '../config/profile.js';
+import { normalizeOfficialSources, networkEnv } from '../config/profile.js';
 import { mergeProjectEnv } from '../runtime/env.js';
 import { resolveArtifactsRoot, resolveProfilePath, resolveUserRuntimeRoot } from '../runtime/paths.js';
 import { redactText } from '../runtime/redaction.js';
@@ -273,8 +273,28 @@ function errorMessage(error: unknown): string {
   return redactText(String(error));
 }
 
-function defaultRuntimeStageEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  return { ...env };
+function defaultRuntimeStageEnv(env: NodeJS.ProcessEnv, projectRoot?: string): NodeJS.ProcessEnv {
+  const merged = { ...env };
+  if (!projectRoot) return merged;
+  // The profile's [network] section is the GUI's egress setting. Apply it as a
+  // default only: an operator who exported VPN_AUTOMATION_PROXY_MODE (or the
+  // legacy boolean) on the command line keeps that choice.
+  if (merged.VPN_AUTOMATION_PROXY_MODE !== undefined || merged.VPN_AUTOMATION_USE_UPSTREAM_PROXY !== undefined) {
+    return merged;
+  }
+  try {
+    const profilePath = resolveProfilePath(projectRoot, env);
+    if (fs.existsSync(profilePath)) {
+      const raw = asProfile(parse(fs.readFileSync(profilePath, 'utf8'))) as Record<string, unknown>;
+      const defaults = networkEnv(raw.network);
+      merged.VPN_AUTOMATION_PROXY_MODE = defaults.VPN_AUTOMATION_PROXY_MODE;
+      merged.VPN_AUTOMATION_UPSTREAM_PROXY = defaults.VPN_AUTOMATION_UPSTREAM_PROXY;
+    }
+  } catch {
+    // A missing or malformed profile must not fail env construction; the
+    // pipeline's own resolver falls back to the proxy default.
+  }
+  return merged;
 }
 
 function createCountryLookup(context: RunNodePipelineContext): NodePipelineStageOverrides['countryLookup'] {
@@ -526,7 +546,7 @@ async function writeWorkerArtifacts(artifactDir: string, profile: PipelineProfil
 export async function runNodePipeline(options: NodePipelineOptions, context: RunNodePipelineContext = {}): Promise<PipelineSummary> {
   const projectRoot = path.resolve(options.projectRoot);
   const env = mergeProjectEnv(projectRoot, { ...process.env, ...(context.env ?? {}) });
-  const runtimeStageEnv = defaultRuntimeStageEnv(env);
+  const runtimeStageEnv = defaultRuntimeStageEnv(env, projectRoot);
   const artifactDir = await uniqueArtifactDir(resolveArtifactsRoot(projectRoot, env), formatTimestamp((context.now ?? (() => new Date()))()));
   const runStore = RunStore.open(path.join(artifactDir, 'run.db'));
   try {
@@ -754,8 +774,12 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
       if (sourceFailed) {
         emit('log', { message: `[extract] ${result.source_name} produced no links: ${sourceErrors.join('; ')}` });
       }
+      // Report rounds actually run, not the cap: an early-stopped 1000-round
+      // source must not read as 1000/1000. `rounds` is the per-platform figure,
+      // which shares the cap's units; fall back to the cap for adapters that
+      // do not report it.
       runStore.recordSourceProgress(sourceName, {
-        processed: result.requested_iterations,
+        processed: Math.max(0, Math.min(result.rounds ?? result.requested_iterations, result.requested_iterations)),
         total: result.requested_iterations,
         status: sourceFailed ? 'failed' : 'success',
         ...(sourceFailed ? { error: sourceErrors.join('; ') } : {})
@@ -986,7 +1010,7 @@ export async function retryNodePipelineStage(options: NodeRetryStageOptions, con
   }
   const stage = normalizeRetryStage(options.stage);
   const env = mergeProjectEnv(projectRoot, { ...process.env, ...(context.env ?? {}) });
-  const runtimeStageEnv = defaultRuntimeStageEnv(env);
+  const runtimeStageEnv = defaultRuntimeStageEnv(env, projectRoot);
   const profile = await readProfile(projectRoot, env);
   const retryArtifactDir = await uniqueArtifactDir(resolveArtifactsRoot(projectRoot, env), formatTimestamp((context.now ?? (() => new Date()))()));
   const retryContext = {
@@ -1431,7 +1455,7 @@ export async function resumeNodePipeline(options: NodeResumeOptions, context: Ru
   const eventLog = options.eventLog ?? String(sessionPayload.event_log ?? path.join(sessionDir, 'events.jsonl'));
   const humanLog = options.humanLog ?? String(sessionPayload.human_log ?? path.join(sessionDir, 'human.log'));
   const env = mergeProjectEnv(projectRoot, { ...process.env, ...(context.env ?? {}) });
-  const runtimeStageEnv = defaultRuntimeStageEnv(env);
+  const runtimeStageEnv = defaultRuntimeStageEnv(env, projectRoot);
   const profile = await readProfile(projectRoot, env);
   const report = await readJson<Record<string, unknown>>(path.join(artifactDir, 'pipeline_report.json'), {});
   const summary = pipelineSummaryFromReport(artifactDir, report);
@@ -1577,7 +1601,7 @@ export async function resumeNodePipeline(options: NodeResumeOptions, context: Ru
             emit('log', { message: `[extract] ${result.source_name} produced no links: ${resumeErrors.join('; ')}` });
           }
           runStore.recordSourceProgress(sourceName, {
-            processed: result.requested_iterations,
+            processed: Math.max(0, Math.min(result.rounds ?? result.requested_iterations, result.requested_iterations)),
             total: result.requested_iterations,
             status: resumeFailed ? 'failed' : 'success',
             ...(resumeFailed ? { error: resumeErrors.join('; ') } : {})

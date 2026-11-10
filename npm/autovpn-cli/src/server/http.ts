@@ -246,6 +246,18 @@ export async function createAutoVpnServer(options: CreateAutoVpnServerOptions): 
         return;
       }
 
+      if (request.method === 'POST' && url.pathname === '/api/accounts/expiry') {
+        const body = await readJsonBody(request);
+        const result = await options.runtime.setAccountExpiry?.({
+          id: Number(body.id ?? 0),
+          brand: String(body.brand ?? ''),
+          account: String(body.account ?? ''),
+          expires_at: body.expires_at === undefined ? undefined : String(body.expires_at)
+        }) ?? { ok: false, error: 'accounts_unavailable' };
+        writeJson(response, result.ok === false ? 400 : 200, result);
+        return;
+      }
+
       if (request.method === 'POST' && url.pathname === '/api/qr') {
         const body = await readJsonBody(request);
         const text = String(body.text ?? '');

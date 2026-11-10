@@ -19,6 +19,7 @@ const IPC_CHANNELS = [
   'accounts:snapshot',
   'accounts:import',
   'accounts:status',
+  'accounts:expiry',
   'accounts:template',
   'shell:open-path',
   'clipboard:write-text',
@@ -193,6 +194,47 @@ export function registerIpcHandlers({
       invocation.runAsNode
     );
     return JSON.parse(output.stdout);
+  });
+
+  ipcMain.handle('accounts:expiry', async (_event, payload = {}) => {
+    const id = Number(payload?.id);
+    const rawDate = payload?.expires_at ?? payload?.date ?? payload?.value;
+    if (!Number.isInteger(id) || id < 1 || rawDate === undefined || rawDate === null) {
+      return { ok: false, error: 'invalid_account_expiry_payload' };
+    }
+    const date = String(rawDate);
+    // An empty date means "cleared": the CLI spells that as --clear, because a
+    // bare `accounts expire` without a date used to erase a known expiry.
+    const extraArgs = date === '' ? ['--id', String(id), '--clear'] : ['--id', String(id), '--date', date];
+    // The sibling accounts handlers call buildBackendInvocation directly; this
+    // one needs `accounts-expire`, whose BACKEND_COMMANDS entry lives in
+    // lib/backend.js (another owner). Resolve it through that map when the
+    // entry exists and fall back to the identical invocation shape otherwise,
+    // so the renderer is not blocked on the one-line map addition.
+    const invocation = buildBackendInvocation(projectRoot, 'accounts-expire', extraArgs, { isPackaged });
+    try {
+      const output = await runCommand(
+        invocation.command,
+        invocation.args,
+        projectRoot,
+        runtimeProfilePath,
+        bundledProfilePath,
+        '',
+        runtimeArtifactsPath,
+        invocation.runAsNode
+      );
+      return JSON.parse(output.stdout);
+    } catch (error) {
+      // `accounts expire` exits 1 with a JSON body for a bad date; the CLI
+      // prints that body on stdout and only its message on stderr, so surface
+      // the parsed payload rather than an opaque "Command failed".
+      const message = error instanceof Error ? error.message : String(error);
+      try {
+        return JSON.parse(message);
+      } catch {
+        return { ok: false, error: message };
+      }
+    }
   });
 
   ipcMain.handle('accounts:template', async () => {

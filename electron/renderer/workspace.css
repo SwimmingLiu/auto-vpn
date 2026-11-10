@@ -203,6 +203,10 @@ body[data-page="logs"] #logsWorkspace > .panel { grid-template-rows: auto minmax
 .account-pool-toolbar input, .account-pool-toolbar select { min-height: 36px; }
 .settings-drawer-panel { width: min(800px, calc(100vw - 48px)); max-width: 800px; padding: 24px; border-radius: 14px; background: var(--surface); }
 .settings-drawer-shell[data-section="speed_test"] .settings-drawer-panel { width: min(560px, calc(100vw - 48px)); }
+.settings-drawer-shell[data-section="network"] .settings-drawer-panel { width: min(620px, calc(100vw - 48px)); }
+.settings-drawer-shell[data-section="network"] .network-form-grid { grid-template-columns: minmax(0, 220px) minmax(0, 1fr); align-items: end; }
+.settings-drawer-shell[data-section="network"] .field select { width: 100%; min-height: 36px; }
+.settings-drawer-shell[data-section="network"] .field input { width: 100%; max-width: 100%; min-height: 36px; }
 .settings-drawer-head h3 { font-size: 19px; margin: 4px 0; letter-spacing: -.02em; }
 .settings-drawer-shell[data-section="speed_test"] .compact-form-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .settings-drawer-shell[data-section="speed_test"] .field input { width: 100%; max-width: 100%; min-height: 36px; }
@@ -351,6 +355,7 @@ body[data-page="logs"] #logsWorkspace > .panel { grid-template-rows: auto minmax
   .settings-drawer-panel, .settings-drawer-shell[data-section] .settings-drawer-panel { width: 100vw; max-width: none; padding: 0; border-radius: 0; background: var(--surface); }
   .settings-drawer-actions { background: var(--surface); }
   .settings-drawer-shell[data-section="speed_test"] .compact-form-grid { grid-template-columns: 1fr; }
+  .settings-drawer-shell[data-section="network"] .network-form-grid { grid-template-columns: 1fr; }
   .settings-drawer-shell[data-section="deploy"] .compact-form-grid { grid-template-columns: 1fr; }
   .settings-drawer-shell[data-section="speed_test"] .field input { width: 100%; min-height: 44px; }
   .field-wide { grid-column: auto; }

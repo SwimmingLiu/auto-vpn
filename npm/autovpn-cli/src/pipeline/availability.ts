@@ -1,4 +1,5 @@
 import http from 'node:http';
+import https from 'node:https';
 import net from 'node:net';
 import tls from 'node:tls';
 import {
@@ -6,6 +7,15 @@ import {
   MihomoRuntime,
   OpenMihomoRuntimeOptions
 } from './proxy-runtime.js';
+import { mapWithCompletion } from './concurrency.js';
+import {
+  HTTP_HEAD_LIMIT_BYTES,
+  connectProxySocket,
+  httpStatusLine,
+  parseProxyEndpoint,
+  safeParseHttpStatus,
+  splitHttpResponseHead
+} from './http-transport.js';
 import { isTransientNetworkError, retryTransientNetwork } from './network-retry.js';
 
 type FetchLike = (url: string, init?: Record<string, unknown>) => Promise<{
@@ -375,30 +385,6 @@ function emitEvent(callback: AvailabilityBackendOptions['eventCallback'], eventT
   }
 }
 
-async function mapWithConcurrency<T, R>(
-  items: T[],
-  concurrency: number,
-  worker: (item: T, index: number) => Promise<R>,
-  onComplete?: (result: R, index: number, completed: number) => void
-): Promise<R[]> {
-  const limit = Math.max(1, Math.trunc(Number(concurrency) || 1));
-  const results = new Array<R>(items.length);
-  let nextIndex = 0;
-  let completed = 0;
-  async function runWorker(): Promise<void> {
-    while (nextIndex < items.length) {
-      const index = nextIndex;
-      nextIndex += 1;
-      const result = await worker(items[index], index);
-      results[index] = result;
-      completed += 1;
-      onComplete?.(result, index, completed);
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => runWorker()));
-  return results;
-}
-
 function numberOrDefault(value: unknown, fallback: number): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
@@ -456,44 +442,6 @@ async function checkLinkAvailabilityDirect(
   };
 }
 
-function socketConnect(host: string, port: number, timeoutMs: number): Promise<net.Socket> {
-  return new Promise((resolve, reject) => {
-    const socket = net.createConnection({ host, port });
-    const timer = setTimeout(() => {
-      socket.destroy();
-      reject(new Error(`proxy connection timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
-    socket.once('connect', () => {
-      clearTimeout(timer);
-      resolve(socket);
-    });
-    socket.once('error', (error) => {
-      clearTimeout(timer);
-      reject(error);
-    });
-  });
-}
-
-function splitHttpHeaders(buffer: Buffer): { head: Buffer; body: Buffer } | undefined {
-  const marker = buffer.indexOf('\r\n\r\n');
-  if (marker < 0) {
-    return undefined;
-  }
-  return {
-    head: buffer.subarray(0, marker),
-    body: buffer.subarray(marker + 4)
-  };
-}
-
-function parseHttpStatus(head: Buffer): number {
-  const firstLine = head.toString('latin1').split('\r\n')[0] ?? '';
-  const match = /^HTTP\/\d(?:\.\d)?\s+(\d+)/i.exec(firstLine);
-  if (!match) {
-    throw new Error(`invalid HTTP response: ${firstLine}`);
-  }
-  return Number(match[1]);
-}
-
 function parseHttpHeaders(head: Buffer): Record<string, string | string[] | undefined> {
   const headers: Record<string, string | string[] | undefined> = {};
   for (const line of head.toString('latin1').split('\r\n').slice(1)) {
@@ -530,13 +478,24 @@ function redirectTarget(current: URL, response: ProxiedHttpResponse): URL | unde
 
 function fetchHttpUrlViaHttpProxy(target: URL, proxy: URL, timeoutMs: number): Promise<ProxiedHttpResponse> {
   return new Promise((resolve, reject) => {
-    const request = http.request({
-      hostname: proxy.hostname,
-      port: Number(proxy.port || 80),
+    let settled = false;
+    const settle = (action: () => void): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      action();
+    };
+    const endpoint = parseProxyEndpoint(proxy);
+    const requestModule = endpoint.protocol === 'https:' ? https : http;
+    const request = requestModule.request({
+      hostname: endpoint.hostname,
+      port: endpoint.port,
       method: 'GET',
       path: target.toString(),
       headers: {
         Host: target.host,
+        ...(endpoint.authorization ? { 'Proxy-Authorization': endpoint.authorization } : {}),
         Connection: 'close'
       },
       agent: false,
@@ -545,20 +504,46 @@ function fetchHttpUrlViaHttpProxy(target: URL, proxy: URL, timeoutMs: number): P
       const chunks: Buffer[] = [];
       response.on('data', (chunk: Buffer) => chunks.push(chunk));
       response.once('end', () => {
-        resolve({
+        settle(() => resolve({
           final_url: target.toString(),
           status_code: Number(response.statusCode ?? 0),
           body: Buffer.concat(chunks).toString('utf8'),
           headers: response.headers
-        });
+        }));
+        // `agent: false` + Connection: close, but destroy explicitly so a
+        // keep-alive-capable agent can never retain the socket.
+        request.destroy();
+      });
+      // A response that errors mid-body used to abort the process; surface it as
+      // a per-target failure and tear the request down instead.
+      response.once('error', (error: Error) => {
+        settle(() => reject(error));
+        request.destroy();
+      });
+      response.once('aborted', () => {
+        settle(() => reject(new Error('proxy response aborted before the body was received')));
+        request.destroy();
       });
     });
     request.once('timeout', () => {
       request.destroy(new Error(`proxy fetch timed out after ${timeoutMs}ms`));
     });
-    request.once('error', reject);
+    request.once('error', (error: Error) => {
+      settle(() => reject(error));
+    });
     request.end();
   });
+}
+
+function destroyQuietly(socket: net.Socket | tls.TLSSocket | undefined): void {
+  if (!socket || socket.destroyed) {
+    return;
+  }
+  try {
+    socket.destroy();
+  } catch {
+    // already torn down
+  }
 }
 
 function readHttpResponse(socket: net.Socket | tls.TLSSocket, timeoutMs: number): Promise<{ status: number; headers: Record<string, string | string[] | undefined>; body: string }> {
@@ -568,46 +553,67 @@ function readHttpResponse(socket: net.Socket | tls.TLSSocket, timeoutMs: number)
     let status = 0;
     let headers: Record<string, string | string[] | undefined> = {};
     const chunks: Buffer[] = [];
-    const timer = setTimeout(() => {
-      cleanup();
-      socket.destroy();
-      reject(new Error(`proxy fetch timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
+    let settled = false;
     const cleanup = (): void => {
       clearTimeout(timer);
       socket.off('data', onData);
       socket.off('end', onEnd);
       socket.off('error', onError);
     };
-    const onError = (error: Error): void => {
-      cleanup();
-      reject(error);
-    };
-    const onEnd = (): void => {
-      cleanup();
-      if (!headersParsed) {
-        reject(new Error('proxy response ended before HTTP headers were received'));
+    const settle = (action: () => void): void => {
+      if (settled) {
         return;
       }
-      resolve({ status, headers, body: Buffer.concat(chunks).toString('utf8') });
+      settled = true;
+      cleanup();
+      destroyQuietly(socket);
+      action();
     };
-    const onData = (chunk: Buffer): void => {
+    const fail = (error: Error): void => settle(() => reject(error));
+    const timer = setTimeout(() => fail(new Error(`proxy fetch timed out after ${timeoutMs}ms`)), timeoutMs);
+    function onError(error: Error): void {
+      fail(error);
+    }
+    function onEnd(): void {
       if (!headersParsed) {
-        buffered = Buffer.concat([buffered, chunk]);
-        const split = splitHttpHeaders(buffered);
-        if (!split) {
+        fail(new Error('proxy response ended before HTTP headers were received'));
+        return;
+      }
+      settle(() => resolve({ status, headers, body: Buffer.concat(chunks).toString('utf8') }));
+    }
+    function onData(chunk: Buffer): void {
+      if (settled) {
+        return;
+      }
+      try {
+        if (!headersParsed) {
+          buffered = Buffer.concat([buffered, chunk]);
+          const split = splitHttpResponseHead(buffered);
+          if (!split) {
+            if (buffered.byteLength > HTTP_HEAD_LIMIT_BYTES) {
+              fail(new Error(`invalid HTTP response: ${httpStatusLine(buffered)}`));
+            }
+            return;
+          }
+          const parsed = safeParseHttpStatus(split.head);
+          if (parsed === null) {
+            fail(new Error(`invalid HTTP response: ${httpStatusLine(split.head)}`));
+            return;
+          }
+          status = parsed;
+          headers = parseHttpHeaders(split.head);
+          headersParsed = true;
+          buffered = Buffer.alloc(0);
+          if (split.body.byteLength > 0) {
+            chunks.push(split.body);
+          }
           return;
         }
-        status = parseHttpStatus(split.head);
-        headers = parseHttpHeaders(split.head);
-        headersParsed = true;
-        if (split.body.byteLength > 0) {
-          chunks.push(split.body);
-        }
-        return;
+        chunks.push(chunk);
+      } catch (error) {
+        fail(error instanceof Error ? error : new Error(String(error)));
       }
-      chunks.push(chunk);
-    };
+    }
     socket.on('data', onData);
     socket.once('end', onEnd);
     socket.once('error', onError);
@@ -617,60 +623,89 @@ function readHttpResponse(socket: net.Socket | tls.TLSSocket, timeoutMs: number)
 function readConnectResponse(socket: net.Socket, timeoutMs: number): Promise<void> {
   return new Promise((resolve, reject) => {
     let buffered = Buffer.alloc(0);
-    const timer = setTimeout(() => {
-      cleanup();
-      socket.destroy();
-      reject(new Error(`proxy CONNECT timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
+    let settled = false;
     const cleanup = (): void => {
       clearTimeout(timer);
       socket.off('data', onData);
+      socket.off('end', onEnd);
       socket.off('error', onError);
     };
-    const onError = (error: Error): void => {
+    const fail = (error: Error): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
       cleanup();
+      destroyQuietly(socket);
       reject(error);
     };
-    const onData = (chunk: Buffer): void => {
+    const timer = setTimeout(() => fail(new Error(`proxy CONNECT timed out after ${timeoutMs}ms`)), timeoutMs);
+    function onError(error: Error): void {
+      fail(error);
+    }
+    function onEnd(): void {
+      fail(new Error('proxy CONNECT response ended before HTTP headers were received'));
+    }
+    function onData(chunk: Buffer): void {
+      if (settled) {
+        return;
+      }
       buffered = Buffer.concat([buffered, chunk]);
-      const split = splitHttpHeaders(buffered);
+      const split = splitHttpResponseHead(buffered);
       if (!split) {
+        if (buffered.byteLength > HTTP_HEAD_LIMIT_BYTES) {
+          fail(new Error(`invalid HTTP response: ${httpStatusLine(buffered)}`));
+        }
         return;
       }
-      const status = parseHttpStatus(split.head);
-      cleanup();
+      const status = safeParseHttpStatus(split.head);
+      if (status === null) {
+        fail(new Error(`invalid HTTP response: ${httpStatusLine(split.head)}`));
+        return;
+      }
       if (status < 200 || status >= 300) {
-        socket.destroy();
-        reject(new Error(`proxy CONNECT failed with status ${status}`));
+        fail(new Error(`proxy CONNECT failed with status ${status}`));
         return;
       }
+      settled = true;
+      cleanup();
       resolve();
-    };
+    }
     socket.on('data', onData);
+    socket.once('end', onEnd);
     socket.once('error', onError);
   });
 }
 
 function waitForSecureConnect(socket: tls.TLSSocket, timeoutMs: number): Promise<void> {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      cleanup();
-      socket.destroy();
-      reject(new Error(`proxy TLS handshake timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
+    let settled = false;
     const cleanup = (): void => {
       clearTimeout(timer);
       socket.off('secureConnect', onSecureConnect);
       socket.off('error', onError);
     };
-    const onSecureConnect = (): void => {
+    const fail = (error: Error): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
       cleanup();
-      resolve();
-    };
-    const onError = (error: Error): void => {
-      cleanup();
+      destroyQuietly(socket);
       reject(error);
     };
+    const timer = setTimeout(() => fail(new Error(`proxy TLS handshake timed out after ${timeoutMs}ms`)), timeoutMs);
+    function onSecureConnect(): void {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+      resolve();
+    }
+    function onError(error: Error): void {
+      fail(error);
+    }
     socket.once('secureConnect', onSecureConnect);
     socket.once('error', onError);
   });
@@ -702,49 +737,62 @@ async function fetchUrlViaHttpProxyTarget(
     throw new Error(`unsupported availability URL protocol: ${target.protocol}`);
   }
 
-  const proxyPort = Number(proxy.port || 80);
-  const socket = await socketConnect(proxy.hostname, proxyPort, timeoutMs);
+  const endpoint = parseProxyEndpoint(proxy);
   const targetPort = Number(target.port || 443);
-  socket.write([
-    `CONNECT ${target.hostname}:${targetPort} HTTP/1.1`,
-    `Host: ${target.hostname}:${targetPort}`,
-    'Connection: keep-alive',
-    '',
-    ''
-  ].join('\r\n'));
-  await readConnectResponse(socket, timeoutMs);
-  const secureSocket = tls.connect({
-    socket,
-    servername: target.hostname,
-    rejectUnauthorized: true
-  });
-  await waitForSecureConnect(secureSocket, timeoutMs);
-  secureSocket.write([
-    `GET ${target.pathname || '/'}${target.search} HTTP/1.1`,
-    `Host: ${target.host}`,
-    'Connection: close',
-    '',
-    ''
-  ].join('\r\n'));
-  const response = await readHttpResponse(secureSocket, timeoutMs);
-  const proxiedResponse: ProxiedHttpResponse = {
-    final_url: target.toString(),
-    status_code: response.status,
-    body: response.body,
-    headers: response.headers
-  };
-  const next = redirectTarget(target, proxiedResponse);
-  if (next) {
-    if (redirectsRemaining <= 0) {
-      throw new Error(`too many redirects while fetching ${target.toString()}`);
+  const proxyAuthorization = endpoint.authorization ? [`Proxy-Authorization: ${endpoint.authorization}`] : [];
+  const socket = await connectProxySocket(endpoint, timeoutMs);
+  let secureSocket: tls.TLSSocket | undefined;
+  try {
+    socket.write([
+      `CONNECT ${target.hostname}:${targetPort} HTTP/1.1`,
+      `Host: ${target.hostname}:${targetPort}`,
+      ...proxyAuthorization,
+      'Connection: keep-alive',
+      '',
+      ''
+    ].join('\r\n'));
+    await readConnectResponse(socket, timeoutMs);
+    secureSocket = tls.connect({
+      socket,
+      servername: target.hostname,
+      rejectUnauthorized: true
+    });
+    // Destroying a TLSSocket after the request-scoped listeners are removed
+    // must not surface as an uncaught 'error'.
+    secureSocket.on('error', () => {});
+    await waitForSecureConnect(secureSocket, timeoutMs);
+    secureSocket.write([
+      `GET ${target.pathname || '/'}${target.search} HTTP/1.1`,
+      `Host: ${target.host}`,
+      'Connection: close',
+      '',
+      ''
+    ].join('\r\n'));
+    const response = await readHttpResponse(secureSocket, timeoutMs);
+    const proxiedResponse: ProxiedHttpResponse = {
+      final_url: target.toString(),
+      status_code: response.status,
+      body: response.body,
+      headers: response.headers
+    };
+    const next = redirectTarget(target, proxiedResponse);
+    if (next) {
+      if (redirectsRemaining <= 0) {
+        throw new Error(`too many redirects while fetching ${target.toString()}`);
+      }
+      return await fetchUrlViaHttpProxyTarget(next, proxy, timeoutMs, redirectsRemaining - 1);
     }
-    return fetchUrlViaHttpProxyTarget(next, proxy, timeoutMs, redirectsRemaining - 1);
+    return {
+      final_url: target.toString(),
+      status_code: response.status,
+      body: response.body
+    };
+  } finally {
+    // Every terminal branch (success, redirect, parse failure, timeout) must
+    // release both handles; destroy() is idempotent so the readers can too.
+    destroyQuietly(secureSocket);
+    destroyQuietly(socket);
   }
-  return {
-    final_url: target.toString(),
-    status_code: response.status,
-    body: response.body
-  };
 }
 
 export async function fetchUrlViaHttpProxy(
@@ -817,7 +865,7 @@ async function checkBatchInNode(input: AvailabilityBatchInput, options: Availabi
       })
       : checkLinkAvailabilityDirect(speedResult, config, { targets, fetch: options.fetch })
   ));
-  return mapWithConcurrency(input.results, numberOrDefault(input.config.concurrency, 1), async (speedResult) => {
+  return mapWithCompletion(input.results, numberOrDefault(input.config.concurrency, 1), async (speedResult) => {
     let availability: AvailabilityResultDict;
     try {
       availability = availabilityResultToDict(await checkLinkAvailability(speedResult, input.config, {

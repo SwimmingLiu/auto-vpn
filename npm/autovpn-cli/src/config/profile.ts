@@ -94,19 +94,21 @@ export function normalizeOfficialSources(sources: Record<string, any>): Record<s
       mode: 'credential',
       official_site: String(config.official_site ?? '').trim() || brandSite(brand),
       enabled: config.enabled !== false,
-      // 4 / 2 is the documented scheduled-run default for every row, so a
-      // credential row that never set rounds behaves like the shipped one.
-      max_iterations: wasCredential ? positiveInteger(config.max_iterations, 4) : 4,
-      plateau_limit: wasCredential ? positiveInteger(config.plateau_limit, 2) : 2
+      // A round is now one cursor step over the fixed area list (one region by
+      // default), not a full sweep of every region. 200 / 50 preserves roughly
+      // the work the old 4 full sweeps did and matches the early-stop rule:
+      // 50 consecutive rounds with no genuinely new node.
+      max_iterations: wasCredential ? positiveInteger(config.max_iterations, 200) : 200,
+      plateau_limit: wasCredential ? positiveInteger(config.plateau_limit, 50) : 50,
+      areas_per_round: Math.min(64, positiveInteger(config.areas_per_round, 8)),
+      area_concurrency: Math.min(16, positiveInteger(config.area_concurrency, 4))
     };
     if (!wasCredential) {
       // A legacy URL row's caps describe a different operation; start the
-      // route-loop flow at the documented scheduled-run default instead.
-      // 20 dry rounds meant 20 URL fetches; here each round is one request per
-      // route per platform, so the stored value would idle for minutes. A floor
+      // cursor flow at the documented scheduled-run default instead. A floor
       // carried over from URL mode is the same mismatch and is dropped with it.
-      normalized.max_iterations = 4;
-      normalized.plateau_limit = 2;
+      normalized.max_iterations = 200;
+      normalized.plateau_limit = 50;
       delete normalized.min_iterations;
     }
     for (const field of OBSOLETE_SOURCE_FIELDS) delete normalized[field];
@@ -117,6 +119,35 @@ export function normalizeOfficialSources(sources: Record<string, any>): Record<s
 
 function state(value: unknown): string {
   return String(value ?? '').trim() ? 'set' : 'missing';
+}
+
+/**
+ * Crawl egress defaults, surfaced so the settings drawer can render them.
+ *
+ * `proxy` is the product default: the crawl goes through the upstream proxy and
+ * drops to direct only when the proxy is not listening. `auto` starts direct
+ * and pins the proxy on the first blocked response; `direct` never proxies.
+ * The pipeline reads the same values from the environment, which the
+ * orchestrator and the Electron backend env build from this section.
+ */
+export function normalizeNetworkSection(value: unknown): Record<string, any> {
+  const raw = (value && typeof value === 'object' ? value : {}) as Record<string, any>;
+  const mode = String(raw.proxy_mode ?? 'proxy').trim().toLowerCase();
+  return {
+    ...raw,
+    proxy_mode: ['proxy', 'direct', 'auto'].includes(mode) ? mode : 'proxy',
+    proxy_url: String(raw.proxy_url ?? 'http://127.0.0.1:7897').trim() || 'http://127.0.0.1:7897'
+  };
+}
+
+/** Map the profile's [network] section onto the env the pipeline reads. */
+export function networkEnv(section: unknown, base: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const network = normalizeNetworkSection(section);
+  return {
+    ...base,
+    VPN_AUTOMATION_PROXY_MODE: network.proxy_mode,
+    VPN_AUTOMATION_UPSTREAM_PROXY: network.proxy_url
+  };
 }
 
 function readProfile(profilePath: string): Record<string, any> {
@@ -190,6 +221,7 @@ export function profilePayload(projectRoot: string, env: NodeJS.ProcessEnv = pro
   return {
     ...raw,
     sources: normalizeOfficialSources((raw.sources ?? {}) as Record<string, any>),
+    network: normalizeNetworkSection(raw.network),
     paths,
     workspace: paths
   };
@@ -202,6 +234,7 @@ export function saveProfilePayload(projectRoot: string, payload: Record<string, 
   delete (persisted as Record<string, unknown>).paths;
   delete (persisted as Record<string, unknown>).workspace;
   persisted.sources = normalizeOfficialSources((persisted.sources ?? {}) as Record<string, any>);
+  persisted.network = normalizeNetworkSection((persisted as Record<string, any>).network);
   fs.writeFileSync(profilePath, stringify(persisted as any), 'utf8');
   return profilePayload(projectRoot, env);
 }

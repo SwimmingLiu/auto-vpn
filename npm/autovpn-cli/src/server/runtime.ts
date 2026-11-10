@@ -13,7 +13,7 @@ import { followLog as defaultFollowLog } from '../jobs/logs.js';
 import { latestJobId, loadJob } from '../jobs/read.js';
 import { AccountStore } from '../pool/account-store.js';
 import { normalizeBrand } from '../pool/brands.js';
-import { parseAccountFile } from '../pool/csv.js';
+import { parseAccountFile, normalizeExpiry } from '../pool/csv.js';
 import { readRunProgress } from '../pipeline/run-store.js';
 import { resolveArtifactsRoot, resolveProfilePath } from '../runtime/paths.js';
 
@@ -34,6 +34,7 @@ export interface ServerRuntime {
   loadAccounts?(): Promise<Record<string, unknown>>;
   importAccounts?(input: { content?: string; format?: string }): Promise<Record<string, unknown>>;
   setAccountStatus?(input: { id?: number; brand?: string; account?: string; status?: string; reason?: string }): Promise<Record<string, unknown>>;
+  setAccountExpiry?(input: { id?: number; brand?: string; account?: string; expires_at?: string }): Promise<Record<string, unknown>>;
   startRun?(options: { skipDeploy?: boolean; skipVerify?: boolean; resumeLatest?: boolean }): Promise<Record<string, unknown>>;
   startRetry?(options: { artifactDir?: string; stage?: string }): Promise<Record<string, unknown>>;
   stopRun?(): Promise<Record<string, unknown>>;
@@ -515,6 +516,27 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
             ? (byId ? store.disableById(id, reason) : store.disable(brand!, account, reason))
             : false;
         return ok ? { ok, ...(byId ? { id } : { brand }), status } : { ok: false, error: 'account_not_found_or_status_invalid' };
+      } finally {
+        store.close();
+      }
+    },
+    async setAccountExpiry(input = {}) {
+      const id = Number(input.id);
+      const brand = normalizeBrand(input.brand);
+      const account = String(input.account ?? '').trim();
+      const byId = Number.isInteger(id) && id > 0;
+      if (!byId && (!brand || !account)) return { ok: false, error: 'id_or_brand_and_account_required' };
+      // An absent `expires_at` is a bad request, not "clear the date": the old
+      // CLI wrote '' on a missing flag and erased known expiries. Clearing is
+      // spelled as an explicit empty string.
+      if (input.expires_at === undefined) return { ok: false, error: 'expires_at_required' };
+      const expiresAt = String(input.expires_at);
+      const store = new AccountStore({ env: options.env, now: options.now });
+      try {
+        const ok = byId ? store.setExpiryById(id, expiresAt) : store.setExpiry(brand!, account, expiresAt);
+        if (ok === null) return { ok: false, error: 'invalid_date', ...(byId ? { id } : { brand }) };
+        if (!ok) return { ok: false, error: 'account_not_found' };
+        return { ok: true, ...(byId ? { id } : { brand }), expires_at: normalizeExpiry(expiresAt) };
       } finally {
         store.close();
       }
