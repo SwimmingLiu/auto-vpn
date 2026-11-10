@@ -120,12 +120,15 @@ if [ "$final_links" -le "$min_final_nodes" ]; then
 fi
 
 log "deploying artifact $artifact_dir (final_links=$final_links > $min_final_nodes)"
+# Summaries from the measurement run are already in this log; only what the
+# deploy appends may decide the deploy outcome.
+deploy_log_offset=$(( $(wc -c < "$log_file") + 1 ))
 set +e
 cli retry-stage --artifact-dir "$artifact_dir" --stage deploy --output jsonl 2>&1 | tee -a "$log_file" | grep --line-buffered -E '"(summary|run_failed|stage)"' >&2
 deploy_status=${PIPESTATUS[0]}
 set -e
 
-deploy_summary="$(grep -a '"type":"summary"' "$log_file" | tail -n 1)"
+deploy_summary="$(tail -c "+$deploy_log_offset" "$log_file" | grep -a '"type":"summary"' | tail -n 1)"
 deploy_state="$("$NODE_BIN" -e '
 try { process.stdout.write(String(JSON.parse(process.argv[1]).run_status ?? "unknown")); } catch { process.stdout.write("unknown"); }
 ' "$deploy_summary" 2>/dev/null || echo unknown)"
