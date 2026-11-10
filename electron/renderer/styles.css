@@ -2870,6 +2870,12 @@ body[data-page="logs"] #logCenterTable {
     min-height: 44px;
   }
 
+  /* The expiry editor sits in that same action cell at phone widths, so its
+     date input has to meet the same tap-target floor. */
+  .account-expiry-editor input {
+    min-height: 44px;
+  }
+
   .app-frame {
     display: block;
     height: auto;
