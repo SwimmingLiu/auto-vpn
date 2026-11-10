@@ -1,6 +1,6 @@
 {
   "name": "@swimmingliu/autovpn",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "description": "npm wrapper for the AutoVPN headless CLI",
   "type": "module",
   "repository": {
@@ -35,6 +35,7 @@
   },
   "dependencies": {
     "@iarna/toml": "^2.2.5",
-    "qrcode": "^1.5.4"
+    "qrcode": "^1.5.4",
+    "undici": "7.30.2"
   }
 }

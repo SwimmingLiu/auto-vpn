@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { createServer } from 'node:http';
 import test from 'node:test';
 
 import {
@@ -42,6 +43,45 @@ const identity = {
   lite_version: '5.29.4'
 };
 const device = { device_id: '6C3B3033-4FAD-42FA-B8AD-DF3EDBCFA872', install_date: '2026-11-08' };
+
+test('credential discovery sends official-site text and APK bytes through the configured upstream proxy', async (t) => {
+  const requested = [];
+  const events = [];
+  const apk = Buffer.alloc(1_000_001);
+  apk.write('PK');
+  // These origins deliberately cannot resolve directly. Only the loopback
+  // proxy can serve their homepage, CDN config and binary download.
+  const proxy = createServer((request, response) => {
+    const url = new URL(request.url);
+    requested.push(url);
+    if (url.pathname === '/') {
+      response.end('<html>official download page</html>');
+    } else if (url.pathname === '/cdn.js') {
+      response.end('var cdnurl="http://download.invalid"; const apk_interval=1;');
+    } else if (url.pathname.endsWith('.apk')) {
+      response.setHeader('Content-Length', apk.length);
+      response.end(apk);
+    } else {
+      response.writeHead(404).end();
+    }
+  });
+  await new Promise((resolve) => proxy.listen(0, '127.0.0.1', resolve));
+  t.after(async () => {
+    proxy.closeAllConnections();
+    await new Promise((resolve) => proxy.close(resolve));
+  });
+  const port = proxy.address().port;
+  await fetchCredentialSourceLinks({
+    source_name: 'leiting',
+    source: { mode: 'credential', official_site: 'http://official.invalid', account: 'fixture-user', password: 'fixture-password', timeout_ms: 500 }
+  }, {
+    env: { VPN_AUTOMATION_USE_UPSTREAM_PROXY: '1', VPN_AUTOMATION_UPSTREAM_PROXY: `http://127.0.0.1:${port}` },
+    eventCallback: (type, payload) => events.push({ type, ...payload })
+  });
+  assert.ok(requested.some((url) => url.hostname === 'official.invalid'), 'the configured proxy must receive official-site requests');
+  assert.ok(requested.some((url) => url.hostname === 'download.invalid' && url.pathname.endsWith('.apk')), 'the configured proxy must receive the APK request');
+  assert.ok(events.some((event) => event.type === 'extract_substage' && event.substage === 'apk_download' && event.status === 'success'), 'APK response bytes must reach inspection');
+});
 
 test('apiDomainIndex uses the character code, not the hex value', () => {
   const digest = createHash('md5').update(device.device_id).digest('hex');

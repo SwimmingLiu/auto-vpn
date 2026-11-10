@@ -13,18 +13,18 @@ const __dirname = path.dirname(__filename);
 
 const EXPECTED_DIGESTS_BY_PLATFORM = {
   darwin: {
-    dashboard: 'b81b37c979b906834c6f2287e25146902e97aa1e402c85b7ed85e3f634b4bd53',
-    runs: '061f496d88a5d902b0028fa4588d8eb94cad843df80f246f7f49e3a1f257e80f',
-    results: 'c1a4087454eed00652cf161b2c32a10b46931f6aec4d2dd6dc9b9e5621cef1f0',
-    logs: '5cd733dfc21bd23c4bea4ff9a271d9a2b0f30b80a898d2fd0566a12a8e41a3a0',
-    settings: '2d0d0b1cfd015ce18306a73870d6575c5950ca70711e2ad2a2850b5e1528bf81'
+    dashboard: '8d6886b16a93d36ed8face4030149f112227a7f6fe258da5c3d7980a4e6a9d4f',
+    runs: '9f67283b5af0e27db077162fb02964e7b47c643e836d937cf433bb2cc81514e9',
+    results: '1ddc420235bf3f12e6d536ef6fd44b04c1eeddcffb326980fceb8a9df0c263ad',
+    logs: '998a2e79f4588626d156c64476e585938d2dfa4775a2e8f5f351863b70b2ff9e',
+    settings: '15d7da23fb0f89a1d7055e6299468eb12fbc60d364ea5f6de5857cda1f1cd334'
   },
   linux: {
-    dashboard: 'f6298ce922314cd74b1e3b991cb7614d3e1efb8b1fc2997e9f46712113c811a0',
-    runs: '869e28d0d41e24ba716629387d13eebb764f9f66fcb857be611a4946e9cb1fa3',
-    results: '862b030b19e8c29a3a2c243b7af8e9d14fb42b3e31f73787bb7efcc1d444bcb7',
-    logs: '2e5c1e2f792e16bf584e4191a303375be266f3df489fc98b73a12bc9a0268db2',
-    settings: '71023b852247adfe5b8c24d65085393a225a24e4a5c752f991902348d12b572b'
+    dashboard: '04eed4e4711a4fa2a7802c94467c08b5eec8fa2f3ae4ddba4e8a8b65cded8d7f',
+    runs: '7be7eba90d552fa275bff8b87f6041c886908f69ea2fee0ffe91eadbf67fec4c',
+    results: '16876d450a0fb703dd1a84e46af24ec7608d6e6cc517a3cab4ef2a7b8acb0dc2',
+    logs: '1f262b03a8cf42c1f2d23b7d616a97b603752d277c7d82ff9d9be82b76fe68ef',
+    settings: '959838ec31720e47adf0b46eccad243f291331c4d4e622f882b7af9f0ec7d473'
   }
 };
 
