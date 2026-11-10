@@ -12,7 +12,6 @@ permissions:
 env:
   # Use the canonical source even when a historical lockfile pins mirror URLs.
   NPM_CONFIG_REGISTRY: "https://registry.npmjs.org/"
-  NPM_CONFIG_REPLACE_REGISTRY_HOST: "registry.npmmirror.com"
   NPM_CONFIG_AUDIT: "false"
   NPM_CONFIG_FETCH_RETRIES: "5"
   NPM_CONFIG_FETCH_RETRY_FACTOR: "2"
@@ -57,6 +56,9 @@ jobs:
           key: ${{ runner.os }}-${{ runner.arch }}-browser-runtime-${{ hashFiles('package-lock.json') }}
           restore-keys: |
             ${{ runner.os }}-${{ runner.arch }}-browser-runtime-
+
+      - name: Normalize public npm tarball URLs
+        uses: ./.github/actions/npm-registry
 
       - name: Install Node dependencies
         run: |
@@ -153,6 +155,9 @@ jobs:
           bash scripts/ci/retry-command.sh "apt-get update" -- sudo apt-get update
           bash scripts/ci/retry-command.sh "apt-get install packaging dependencies" -- \
             sudo apt-get install -y rpm fakeroot
+
+      - name: Normalize public npm tarball URLs
+        uses: ./.github/actions/npm-registry
 
       - name: Install dependencies
         run: |
