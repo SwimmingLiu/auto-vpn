@@ -1,0 +1,7 @@
+name: Normalize public npm registries
+description: Use canonical tarball URLs without changing locked versions or integrity
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: node "$GITHUB_ACTION_PATH/normalize.mjs"

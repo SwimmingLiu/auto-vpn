@@ -23,6 +23,8 @@ permissions:
   contents: write
 
 env:
+  # Match the test/release registry policy instead of depending on mirror uptime.
+  NPM_CONFIG_REGISTRY: "https://registry.npmjs.org/"
   NPM_CONFIG_AUDIT: "false"
   NPM_CONFIG_FUND: "false"
   NPM_CONFIG_PREFER_OFFLINE: "true"
@@ -51,6 +53,9 @@ jobs:
           cache-dependency-path: |
             package-lock.json
             npm/autovpn-cli/package-lock.json
+
+      - name: Normalize public npm tarball URLs
+        uses: ./.github/actions/npm-registry
 
       - name: Install Node dependencies
         run: bash scripts/ci/retry-command.sh "npm ci" -- npm ci --prefer-offline --no-audit --fund=false

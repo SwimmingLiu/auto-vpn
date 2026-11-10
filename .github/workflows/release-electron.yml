@@ -19,6 +19,9 @@ permissions:
 
 env:
   RELEASE_TAG_NAME: ${{ github.event.inputs.tag_name || github.event.release.tag_name || github.ref_name }}
+  # Older release tags pin public mirrors that can return 503 on hosted runners.
+  # The pinned normalizer also removes Tencent's /npm/ prefix before installation.
+  NPM_CONFIG_REGISTRY: "https://registry.npmjs.org/"
   NPM_CONFIG_AUDIT: "false"
   NPM_CONFIG_FETCH_RETRIES: "5"
   NPM_CONFIG_FETCH_RETRY_FACTOR: "2"
@@ -96,6 +99,9 @@ jobs:
             exit 1
           fi
         shell: bash
+
+      - name: Normalize historical public npm tarball URLs
+        uses: SwimmingLiu/auto-vpn/.github/actions/npm-registry@ed9f553012fa098e97eebd32c2a84ee4ba673aa8
 
       - name: Install dependencies
         run: |
@@ -229,6 +235,9 @@ jobs:
           bash scripts/ci/retry-command.sh "apt-get update" -- sudo apt-get update
           bash scripts/ci/retry-command.sh "apt-get install packaging dependencies" -- \
             sudo apt-get install -y rpm fakeroot
+
+      - name: Normalize historical public npm tarball URLs
+        uses: SwimmingLiu/auto-vpn/.github/actions/npm-registry@ed9f553012fa098e97eebd32c2a84ee4ba673aa8
 
       - name: Install dependencies
         run: |
@@ -374,6 +383,9 @@ jobs:
             package-lock.json
             npm/autovpn-cli/package-lock.json
           registry-url: https://registry.npmjs.org
+
+      - name: Normalize historical public npm tarball URLs
+        uses: SwimmingLiu/auto-vpn/.github/actions/npm-registry@ed9f553012fa098e97eebd32c2a84ee4ba673aa8
 
       - name: Build CLI package
         run: |
