@@ -33,6 +33,10 @@ function resolveCliDist() {
   return entry.replace(/package\.json$/, 'dist');
 }
 
+// Resolution MUST stay fatal. This tool prints a verdict about live credentials,
+// so resolving to a stale or wrong build would make it confidently wrong. Do not
+// wrap this in try/catch with a fallback: a MODULE_NOT_FOUND here is the correct
+// outcome, and the operator should set AUTOVPN_CLI_DIST explicitly instead.
 const DIST = resolveCliDist().replace(/\/$/, '');
 const mod = await import(`${DIST}/pipeline/credential-source.js`);
 const { fetchCredentialSourceLinks, fingerprintKeyFor, createFingerprintMemo, credentialKeyCandidates } = mod;
