@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 import { artifactLatest, artifactList } from '../artifacts/list.js';
-import { previewArtifact } from '../artifacts/preview.js';
+import { previewArtifact, type FinalNodeRow } from '../artifacts/preview.js';
 import { profilePayload, saveProfilePayload } from '../config/profile.js';
 import {
   startDetachedRetry as defaultStartDetachedRetry,
@@ -121,7 +121,7 @@ function normalizeLatestArtifact(projectRoot: string, env: NodeJS.ProcessEnv): R
   if (!latest.ok || !latest.artifact_dir) {
     return undefined;
   }
-  const preview = previewArtifact(String(latest.artifact_dir));
+  const preview = previewArtifact(String(latest.artifact_dir), { includeNodeRows: true });
   const progress = readRunProgress(path.join(String(latest.artifact_dir), 'run.db'));
   return {
     ...latest,
@@ -130,7 +130,10 @@ function normalizeLatestArtifact(projectRoot: string, env: NodeJS.ProcessEnv): R
     // replace the authoritative totals that already exist in the run database.
     ...(progress ? { counts: { ...(preview.counts ?? {}), ...progress.counts }, source_counts: progress.source_counts, progress_snapshot: progress } : {}),
     outputFiles: (preview.files ?? []),
-    nodeRows: []
+    // The results page and the country donut read these rows. Answering with an
+    // empty array left a browser session at 0 nodes and an empty 国家分布 while
+    // the artifact held the full final list.
+    nodeRows: (preview.nodeRows ?? []) as FinalNodeRow[]
   };
 }
 

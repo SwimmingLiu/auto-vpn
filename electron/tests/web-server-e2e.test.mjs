@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 
 import { chromium } from 'playwright';
 
 import { createAutoVpnServer } from '../../npm/autovpn-cli/dist/server/http.js';
+import { createServerRuntime } from '../../npm/autovpn-cli/dist/server/runtime.js';
 
 test('served web ui loads profile and starts a run through the web adapter', async () => {
   const calls = [];
@@ -980,6 +984,79 @@ test('served web ui supports mobile bottom navigation and run controls', async (
     assert.ok(iconButtonBox.width >= 44 && iconButtonBox.height >= 44, `mobile icon button was ${JSON.stringify(iconButtonBox)}`);
     assert.ok(calls.some(([name]) => name === 'start'));
     assert.ok(calls.some(([name]) => name === 'stop'));
+  } finally {
+    await browser?.close();
+    await service.close();
+  }
+});
+
+test('served web ui renders the country distribution from the real artifact rows', { timeout: 12000 }, async (t) => {
+  // End to end through the real runtime: the artifact on disk holds decorated
+  // vmess lines, `/api/state` must carry them as `nodeRows`, and the browser
+  // must draw the 国家分布 donut and the results-page region statistics from
+  // them. The regression this pins is the old `nodeRows: []`, which left both
+  // empty on a fully successful run.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-web-rows-'));
+  const artifactDir = path.join(root, 'artifacts', '20261111-042453');
+  fs.mkdirSync(artifactDir, { recursive: true });
+  fs.writeFileSync(path.join(root, 'profile.toml'), '[sources.leiting]\nofficial_site = "https://example.test"\n', 'utf8');
+  fs.writeFileSync(path.join(artifactDir, 'pipeline_report.json'), JSON.stringify({
+    run_status: 'success',
+    stage_status: { extract: 'success', deploy: 'success', verify: 'success' },
+    counts: { raw_links: 4, deduped_links: 4, final_links: 4 },
+    source_counts: { leiting: { raw_links: 4, deduped_links: 4 } }
+  }), 'utf8');
+  const link = (ps) => 'vmess://' + Buffer.from(JSON.stringify({ ps, add: '203.0.113.7', port: '443', id: 'fixture-uuid', net: 'ws', path: '/' })).toString('base64');
+  fs.writeFileSync(path.join(artifactDir, 'vpn_node_emoji.txt'), [
+    link('🇺🇸 US 76'), link('🇺🇸 US 77'), link('🇹🇼 TW 972'), link('🇩🇪 DE 111')
+  ].join('\n') + '\n', 'utf8');
+
+  const runtime = createServerRuntime({
+    projectRoot: root,
+    env: { VPN_AUTOMATION_RUNTIME_ROOT: root },
+    followLog: async function* () {}
+  });
+  t.after(async () => {
+    await runtime.close?.();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+  const service = await createAutoVpnServer({
+    host: '127.0.0.1', port: 0, projectRoot: root,
+    auth: { enabled: false, token: '' },
+    runtime
+  });
+
+  let browser;
+  try {
+    browser = await chromium.launch();
+    const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, reducedMotion: 'reduce' });
+    const errors = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    await page.goto(service.origin);
+    await page.waitForSelector('#dashboardAnalytics [data-component-source="beui"]');
+    const countryChart = page.locator('.analytics-distribution').first();
+    assert.equal(await countryChart.locator('svg').count() > 0, true, 'the country donut must draw a plot');
+    // Each row carries the region name and a `<strong>` count; read the count
+    // element itself rather than any digit in the row's text (a share
+    // percentage would match a bare /2/).
+    const legend = await countryChart.locator('[data-donut-legend]').evaluateAll((rows) => rows.map((row) => ({
+      name: row.querySelector('span.min-w-0')?.textContent?.trim() ?? '',
+      value: row.querySelector('strong')?.textContent?.trim() ?? ''
+    })));
+    assert.deepEqual(legend, [
+      { name: 'US', value: '2' },
+      { name: 'TW', value: '1' },
+      { name: 'DE', value: '1' }
+    ]);
+    assert.doesNotMatch(await page.locator('#dashboardAnalytics').innerText(), /暂无数据/);
+
+    await page.locator('#navResults').click();
+    await page.waitForSelector('#resultsWorkspace');
+    const resultsText = await page.locator('#resultsWorkspace').innerText();
+    assert.match(resultsText, /4 个节点/);
+    assert.match(resultsText, /区域统计/);
+    assert.doesNotMatch(resultsText, /暂无区域统计/);
+    assert.deepEqual(errors, []);
   } finally {
     await browser?.close();
     await service.close();

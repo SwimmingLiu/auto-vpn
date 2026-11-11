@@ -105,7 +105,7 @@ export interface BrandCredentialSource {
   /**
    * How many areas each round takes from the fixed area list. The list is
    * built once (all regions, China and free removed, deduped, vendor order)
-   * and never mutated; a cursor walks it and wraps. Default 1.
+   * and never mutated; a cursor walks it and wraps. Default 8.
    */
   areas_per_round?: number;
   /** Concurrent `/api/evmess` requests within one round. Default 4, max 16. */
@@ -392,9 +392,9 @@ export function resolveRoundPolicy(source: { max_iterations?: number; min_iterat
 }
 
 /**
- * A round is one cursor step over the fixed area list, not a full sweep, so
- * the shipped budget is sized in rounds of one area each. 200 rounds × the
- * default 1 area is roughly the work the old 4 full sweeps performed.
+ * A round is one cursor step over the fixed area list, not a full sweep.
+ * 200 rounds × the default 8 areas covers the whole list many times over, and
+ * the plateau stop ends a channel the moment the server has nothing new left.
  */
 export const DEFAULT_MAX_ITERATIONS = 200;
 export const DEFAULT_PLATEAU_LIMIT = 50;

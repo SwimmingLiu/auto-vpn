@@ -94,10 +94,9 @@ export function normalizeOfficialSources(sources: Record<string, any>): Record<s
       mode: 'credential',
       official_site: String(config.official_site ?? '').trim() || brandSite(brand),
       enabled: config.enabled !== false,
-      // A round is now one cursor step over the fixed area list (one region by
-      // default), not a full sweep of every region. 200 / 50 preserves roughly
-      // the work the old 4 full sweeps did and matches the early-stop rule:
-      // 50 consecutive rounds with no genuinely new node.
+      // A round is one cursor step over the fixed area list, not a full sweep
+      // of every region. 200 rounds × the default 8 areas / 50 with no new
+      // node matches the documented defaults.
       max_iterations: wasCredential ? positiveInteger(config.max_iterations, 200) : 200,
       plateau_limit: wasCredential ? positiveInteger(config.plateau_limit, 50) : 50,
       areas_per_round: Math.min(64, positiveInteger(config.areas_per_round, 8)),

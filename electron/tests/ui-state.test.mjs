@@ -116,7 +116,7 @@ test('resolveLanguage ignores saved and system language and always returns zh-CN
 test('getMessages exposes Chinese-only copy', () => {
   assert.equal(getMessages().appTitle, 'AutoVPN');
   assert.equal(getMessages().sidebarTitle, 'AutoVPN');
-  assert.equal(getMessages().sidebarVersion, 'v.2.1.1');
+  assert.equal(getMessages().sidebarVersion, 'v.2.1.2');
   assert.equal(getMessages().runButton, '立即运行');
   assert.equal(getMessages('en-US').pageTitles.results, '结果');
   assert.equal(
@@ -326,8 +326,8 @@ test('the source drawer drafts only the four official sites and their rounds', (
   // 10 route-loop rounds, so it goes with the other URL-mode caps.
   assert.equal(draft.sources.xuanfeng.min_iterations, 10);
   assert.equal(draft.sources.leiting.min_iterations, undefined);
-  // A round is one cursor step over one region now, so an unset round budget
-  // falls back to 200 rather than the old full-sweep default of 4.
+  // A round is one cursor step over the fixed area list, so an unset round
+  // budget falls back to 200 rather than the old full-sweep default of 4.
   assert.equal(draft.sources.leiting.max_iterations, 200);
   assert.equal(draft.sources.leiting.plateau_limit, 50);
   assert.equal(draft.sources.leiting.areas_per_round, 8);

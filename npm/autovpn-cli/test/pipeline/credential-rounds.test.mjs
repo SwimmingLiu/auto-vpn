@@ -11,7 +11,9 @@ import {
   fetchCredentialSourceLinks,
   createFingerprintMemo,
   DEFAULT_MAX_ITERATIONS,
-  DEFAULT_PLATEAU_LIMIT
+  DEFAULT_PLATEAU_LIMIT,
+  DEFAULT_AREAS_PER_ROUND,
+  DEFAULT_AREA_CONCURRENCY
 } from '../../dist/pipeline/credential-source.js';
 import { resolveConcurrency } from '../../dist/pipeline/concurrency.js';
 import { AccountStore } from '../../dist/pool/account-store.js';
@@ -176,4 +178,6 @@ test('the shipped defaults are the cursor-run budget', () => {
   const policy = resolveRoundPolicy({});
   assert.equal(policy.max_iterations, DEFAULT_MAX_ITERATIONS);
   assert.equal(policy.plateau_limit, DEFAULT_PLATEAU_LIMIT);
+  assert.equal(DEFAULT_AREAS_PER_ROUND, 8);
+  assert.equal(DEFAULT_AREA_CONCURRENCY, 4);
 });
