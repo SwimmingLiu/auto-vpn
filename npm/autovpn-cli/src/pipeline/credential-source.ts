@@ -105,7 +105,7 @@ export interface BrandCredentialSource {
   /**
    * How many areas each round takes from the fixed area list. The list is
    * built once (all regions, China and free removed, deduped, vendor order)
-   * and never mutated; a cursor walks it and wraps. Default 1.
+   * and never mutated; a cursor walks it and wraps. Default 8.
    */
   areas_per_round?: number;
   /** Concurrent `/api/evmess` requests within one round. Default 4, max 16. */

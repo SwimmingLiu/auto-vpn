@@ -57,9 +57,10 @@ function fileInventory(artifactDir: string): Array<Record<string, unknown>> {
  */
 export function parseFinalNode(link: string): FinalNodeRow {
   const value = link.trim();
-  const fallback: FinalNodeRow = { name: '', address: '', protocol: 'vmess', path: '', link: value, regionCode: 'OTHER' };
+  const fallback: FinalNodeRow = { name: '', address: '', protocol: 'unknown', path: '', link: value, regionCode: 'OTHER' };
   if (!value.startsWith('vmess://')) {
-    return { ...fallback, protocol: value.split('://')[0] || 'unknown' };
+    const scheme = value.match(/^([a-z0-9+.-]+):\/\//i);
+    return { ...fallback, protocol: scheme ? scheme[1].toLowerCase() : 'unknown' };
   }
   let encoded = value.slice('vmess://'.length);
   encoded += '='.repeat((4 - (encoded.length % 4)) % 4);
@@ -100,8 +101,7 @@ function regionCounts(rows: FinalNodeRow[]): Array<{ region_code: string; count:
     .map(([region_code, count]) => ({ region_code, count }));
 }
 
-function safeNodeCounts(artifactDir: string): Record<string, unknown> {
-  const { nodeSource, rows } = readFinalNodes(artifactDir);
+function safeNodeCounts(rows: FinalNodeRow[], nodeSource: string): Record<string, unknown> {
   return {
     node_source: nodeSource,
     final_node_count: rows.length,
@@ -110,25 +110,22 @@ function safeNodeCounts(artifactDir: string): Record<string, unknown> {
 }
 
 /**
- * The rows the results page and its country donut read.
+ * Preview one artifact directory.
  *
- * The serve runtime used to answer `nodeRows: []` here, so a browser session
- * showed 0 nodes, no region statistics and an empty 国家分布 donut while the
- * artifact itself was complete. Rows are already safe to ship: a vmess link
- * carries no credential, and the deployment's own secrets are redacted
- * separately in `safeDeployment`.
+ * `includeNodeRows` is what the serve runtime asks for: the results page and
+ * the 国家分布 donut read those rows, and answering `nodeRows: []` left a
+ * browser session at 0 nodes and an empty donut on a complete artifact. The
+ * CLI's `artifact preview` keeps them out of its JSON so a 400-node artifact
+ * does not print every link.
  */
-export function safeNodeRows(artifactDir: string): FinalNodeRow[] {
-  return readFinalNodes(artifactDir).rows;
-}
-
-export function previewArtifact(artifactDir: string): Record<string, unknown> {
+export function previewArtifact(artifactDir: string, options: { includeNodeRows?: boolean } = {}): Record<string, unknown> {
   const absolute = path.resolve(artifactDir);
   const resolved = fs.existsSync(absolute) ? fs.realpathSync(absolute) : absolute;
   if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) {
     return { ok: false, artifact_dir: resolved };
   }
   const report = loadJson(path.join(resolved, 'pipeline_report.json'));
+  const finalNodes = readFinalNodes(resolved);
   return {
     ok: true,
     artifact_dir: resolved,
@@ -140,6 +137,7 @@ export function previewArtifact(artifactDir: string): Record<string, unknown> {
     retry_context: report.retry_context ?? {},
     error: redactText(String(report.error ?? '')),
     files: fileInventory(resolved),
-    safe_node_counts: safeNodeCounts(resolved)
+    safe_node_counts: safeNodeCounts(finalNodes.rows, finalNodes.nodeSource),
+    ...(options.includeNodeRows ? { nodeRows: finalNodes.rows } : {})
   };
 }

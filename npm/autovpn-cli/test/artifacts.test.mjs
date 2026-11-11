@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { artifactLatest, artifactList } from '../dist/artifacts/list.js';
-import { parseFinalNode, previewArtifact, safeNodeRows } from '../dist/artifacts/preview.js';
+import { parseFinalNode, previewArtifact } from '../dist/artifacts/preview.js';
 
 function vmess(ps, extra = {}) {
   const payload = { v: '2', ps, add: '203.0.113.7', port: '443', id: 'fixture-uuid', net: 'ws', path: '/edge', ...extra };
@@ -116,10 +116,10 @@ test('final node rows carry the decorated country so the browser UI can chart it
     vmess('🇩🇪 DE Frankfurt', { path: '/path/350214042616' })
   ].join('\n') + '\n', 'utf8');
 
-  const rows = safeNodeRows(artifactDir);
-  assert.equal(rows.length, 4);
-  assert.deepEqual(rows.map((row) => row.regionCode), ['US', 'US', 'TW', 'DE']);
-  assert.deepEqual(rows[3], {
+  const preview = previewArtifact(artifactDir, { includeNodeRows: true });
+  assert.equal(preview.nodeRows.length, 4);
+  assert.deepEqual(preview.nodeRows.map((row) => row.regionCode), ['US', 'US', 'TW', 'DE']);
+  assert.deepEqual(preview.nodeRows[3], {
     name: '🇩🇪 DE Frankfurt',
     address: '203.0.113.7',
     protocol: 'vmess',
@@ -127,13 +127,13 @@ test('final node rows carry the decorated country so the browser UI can chart it
     link: vmess('🇩🇪 DE Frankfurt', { path: '/path/350214042616' }),
     regionCode: 'DE'
   });
-
-  const preview = previewArtifact(artifactDir);
   assert.deepEqual(preview.safe_node_counts, {
     node_source: 'vpn_node_emoji.txt',
     final_node_count: 4,
     regions: [{ region_code: 'DE', count: 1 }, { region_code: 'TW', count: 1 }, { region_code: 'US', count: 2 }]
   });
+  // The CLI's own `artifact preview` stays compact: counts and regions only.
+  assert.equal('nodeRows' in previewArtifact(artifactDir), false);
 });
 
 test('a node name without a decorated prefix is unknown, not silently a country', () => {
