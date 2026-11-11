@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { AutoVpnEvent } from '../events/schema.js';
+import { artifactWorkedAt } from '../artifacts/list.js';
 import { resumeNodePipeline, retryNodePipelineStage, runNodePipeline } from '../pipeline/orchestrator.js';
 import { resolveArtifactsRoot } from '../runtime/paths.js';
 import { readLatestStageStatuses, readRunStatus } from '../pipeline/run-store.js';
@@ -43,7 +44,9 @@ function latestIncompleteRunArtifact(projectRoot: string, env: NodeJS.ProcessEnv
       return { artifactDir, dbPath };
     })
     .filter((candidate) => fs.existsSync(candidate.dbPath))
-    .sort((left, right) => fs.statSync(right.artifactDir).mtimeMs - fs.statSync(left.artifactDir).mtimeMs);
+    // The run's own files date it; the directory mtime moves whenever a
+    // read-only progress query creates WAL sidecars beside `run.db`.
+    .sort((left, right) => artifactWorkedAt(right.artifactDir) - artifactWorkedAt(left.artifactDir));
 
   for (const candidate of candidates) {
     const runStatus = readRunStatus(candidate.dbPath);

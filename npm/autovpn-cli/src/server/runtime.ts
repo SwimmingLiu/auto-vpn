@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { artifactLatest, artifactList } from '../artifacts/list.js';
+import { artifactLatest, artifactList, artifactWorkedAt } from '../artifacts/list.js';
 import { previewArtifact, type FinalNodeRow } from '../artifacts/preview.js';
 import { profilePayload, saveProfilePayload } from '../config/profile.js';
 import {
@@ -308,12 +308,10 @@ function terminalRunStateFromArtifact(artifact: Record<string, unknown> | undefi
   const status = String(artifact?.run_status ?? '');
   if (!['success', 'failed'].includes(status)) return undefined;
   const artifactDir = String(artifact?.artifact_dir ?? '');
-  let updatedAt = 0;
-  try {
-    updatedAt = artifactDir ? fs.statSync(artifactDir).mtimeMs : 0;
-  } catch {
-    updatedAt = 0;
-  }
+  // The run's own files, not the directory: a read-only progress query creates
+  // WAL sidecars and touches the directory, which would keep a terminal state
+  // alive indefinitely on a host whose page is simply left open.
+  const updatedAt = artifactDir ? artifactWorkedAt(artifactDir) : 0;
   if (!updatedAt || nowMs - updatedAt > ttlMs) return undefined;
   return status as ServerState['runState'];
 }

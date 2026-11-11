@@ -42,6 +42,45 @@ test('artifactLatest restores missing counts from artifact files', () => {
   });
 });
 
+test('the newest run wins even when reading an older one touched its directory', () => {
+  // `run.db` is WAL-mode: a read-only progress query creates and removes
+  // `-wal`/`-shm`, which bumps the artifact DIRECTORY mtime. The server does
+  // that on every state load, so an abandoned run kept outranking the run that
+  // finished after it and the page showed its `running` stages forever.
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-artifact-order-'));
+  const artifactsRoot = path.join(projectRoot, 'artifacts');
+  const abandoned = path.join(artifactsRoot, '20261112-025027');
+  const finished = path.join(artifactsRoot, '20261112-034532');
+  fs.mkdirSync(abandoned, { recursive: true });
+  fs.mkdirSync(finished, { recursive: true });
+  writeJson(path.join(abandoned, 'pipeline_report.json'), {
+    run_status: 'running', stage_status: { extract: 'running' }, counts: {}
+  });
+  writeJson(path.join(finished, 'pipeline_report.json'), {
+    run_status: 'success', stage_status: { extract: 'success' }, counts: { final_links: 53 }
+  });
+  const workedAt = new Date('2026-11-12T03:09:00Z');
+  const finishedAt = new Date('2026-11-12T03:46:00Z');
+  fs.writeFileSync(path.join(abandoned, 'run.db'), '', 'utf8');
+  fs.writeFileSync(path.join(finished, 'run.db'), '', 'utf8');
+  fs.utimesSync(path.join(abandoned, 'run.db'), workedAt, workedAt);
+  fs.utimesSync(path.join(abandoned, 'pipeline_report.json'), workedAt, workedAt);
+  fs.utimesSync(path.join(finished, 'run.db'), finishedAt, finishedAt);
+  fs.utimesSync(path.join(finished, 'pipeline_report.json'), finishedAt, finishedAt);
+  // The serve process just read the abandoned run: its directory is now newer
+  // than everything, while none of its own files moved.
+  const now = new Date('2026-11-12T04:00:00Z');
+  fs.utimesSync(abandoned, now, now);
+
+  const env = { VPN_AUTOMATION_ARTIFACTS_ROOT: artifactsRoot };
+  assert.equal(artifactLatest(projectRoot, env).artifact_dir, finished);
+  const list = artifactList(projectRoot, env);
+  assert.equal(list.items[0].artifact_dir, finished);
+  assert.equal(list.items[0].run_status, 'success');
+  // The displayed timestamp is the run's, not the reader's.
+  assert.match(list.items[1].updated_at, /^2026-11-12T03:09:00/);
+});
+
 test('artifactList restores missing counts from each artifact directory', () => {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-artifact-list-'));
   const artifactsRoot = path.join(projectRoot, 'artifacts');
