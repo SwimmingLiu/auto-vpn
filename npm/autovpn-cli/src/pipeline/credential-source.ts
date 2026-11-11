@@ -309,7 +309,7 @@ export function resolveBrandLayout(source: BrandCredentialSource & { brand?: str
  * downloader uses a Chinese product name, so both are mapped. The official
  * host is the last resort when a profile uses a custom source name.
  */
-const BRAND_APK_PREFIXES: Record<string, string> = {
+export const BRAND_APK_PREFIXES: Record<string, string> = {
   雷霆: 'lt',
   旋风: 'xf',
   黑洞: 'hd',
@@ -867,6 +867,25 @@ function declaredSizeTooLarge(response: unknown): boolean {
   return Number.isFinite(length) && length > MAX_APK_BYTES;
 }
 
+/**
+ * Test seam: `defaultLoadApk` with the brand name spelled out.
+ *
+ * The archive prefix is chosen from this name, and a redirected row must pass
+ * its backend's name rather than the row's. Exported so a test can prove which
+ * name reaches the loader without standing up a whole extraction.
+ */
+export async function loadApkWithBrand(
+  source: BrandCredentialSource,
+  fetchImpl: CredentialFetchLike,
+  timeoutMs: number,
+  now: Date,
+  log: (message: string) => void,
+  brandName: string,
+  egress?: Egress
+): Promise<Buffer | null> {
+  return defaultLoadApk(source, fetchImpl, timeoutMs, now, log, brandName, egress);
+}
+
 async function defaultLoadApk(
   source: BrandCredentialSource,
   fetchImpl: CredentialFetchLike,
@@ -1298,8 +1317,18 @@ async function fetchCredentialSourceLinksWithTransport(
 
   // Keyed by the data plane, not the storefront: a redirected row downloads and
   // inspects the backend's APK, so it must share that brand's cached entry.
+  //
+  // A caller-supplied memo cannot be trusted here. The orchestrator builds one
+  // per row name before the redirect exists, so `options.memo` for a `heidong`
+  // row is seeded from 黑洞's entry while every read and write below goes to the
+  // 雷霆 one. That pairing sends the 黑洞 APK's package and seeds to the 雷霆
+  // backend on a cached run, and it hides the 雷霆 entry the next run should
+  // reuse. A redirect therefore always gets a memo of its own key; the shared
+  // one is used only when the two brands agree.
   const memoBrandKey = source.brand_override ?? credentialBrandKey(input.source_name, source);
-  const memo = options.memo ?? createFingerprintMemo(options.fingerprintStore ?? null, memoBrandKey);
+  const memo = source.brand_override
+    ? createFingerprintMemo(options.fingerprintStore ?? null, memoBrandKey)
+    : (options.memo ?? createFingerprintMemo(options.fingerprintStore ?? null, memoBrandKey));
   let linkQueue = Promise.resolve();
   // A non-numeric retry limit (a hand-edited `account_retry_limit = "three"`)
   // must not turn the attempt loop into zero passes, which reported the source
@@ -1420,11 +1449,33 @@ async function fetchCredentialSourceLinksWithTransport(
           const linked = results.some((result) => result.links.length > 0);
           if (lapsed) {
             store.markExpired(leased.id, 'membership expired');
-          } else if (level !== undefined && level < 2 && !linked) {
+          } else if (level !== undefined && level < 2 && !linked && !source.brand_override) {
             // A free-tier account (level 0/1) only ever produces placeholders.
             // Retire it, but only when it actually produced nothing: a paid
             // account misreported as level 1 must not lose its row.
+            //
+            // A redirected row is exempt: the level it reports is the *row*
+            // brand's backend grading it, not the backend it now reads, so a
+            // low level there says nothing about whether the account works.
+            // Retiring on it would discard exactly the accounts the rotation
+            // below is trying to find.
             store.markInvalid(leased.id, 'no paid membership');
+          }
+        }
+        // A login is not proof the account is usable. On a backend that gates
+        // routes by membership, a free-tier account logs in fine and then sees
+        // every paid row disabled, so the vendor filter leaves nothing to ask.
+        // Publishing that as a finished source was the bug; rotate instead.
+        // The account itself is valid, so it is not retired — only skipped.
+        const producedRoutes = results.some((result) => result.diagnostics.route_count > 0);
+        const producedLinks = results.some((result) => result.links.length > 0);
+        if (!producedRoutes && !producedLinks && store && leased && attempt < attempts && brand) {
+          const next = store.lease(brand);
+          if (next) {
+            leased = next;
+            account = next.account;
+            password = next.password;
+            continue;
           }
         }
         break;
@@ -1433,14 +1484,6 @@ async function fetchCredentialSourceLinksWithTransport(
         && results.every((result) => result.diagnostics.login_rejected)
         && results.some((result) => result.diagnostics.membership_expired);
       const credentialRejected = results.length > 0 && results.every((result) => result.diagnostics.credential_rejected);
-      // Logging in is not enough on a backend that gates routes by membership:
-      // a free-tier account sees the paid rows disabled, so the vendor filter
-      // leaves nothing to ask and the run reports an empty source. That account
-      // is valid, so it is not retired — the loop simply leases the next one.
-      const unusableRouteTable = results.length > 0
-        && results.every((result) => result.diagnostics.route_count === 0 && result.diagnostics.login_ok)
-        && !credentialRejected
-        && !membershipExpired;
       if (store && leased && (membershipExpired || credentialRejected)) {
         if (membershipExpired) store.markExpired(leased.id, 'membership expired');
         else store.markInvalid(leased.id, 'login rejected');
@@ -1451,13 +1494,6 @@ async function fetchCredentialSourceLinksWithTransport(
             password = leased.password;
             continue;
           }
-        }
-      } else if (unusableRouteTable && store && leased && attempt < attempts && brand) {
-        leased = store.lease(brand);
-        if (leased) {
-          account = leased.account;
-          password = leased.password;
-          continue;
         }
       }
       break;
@@ -1644,7 +1680,11 @@ async function runCredentialPlatform(
   // inspects the backend's APK, so it must share that brand's cached entry.
   const brandKey = source.brand_override ?? credentialBrandKey(input.source_name, source);
   const store = options.fingerprintStore ?? null;
-  const memo = options.memo ?? createFingerprintMemo(store, brandKey);
+  // Same rule as the outer memo: a caller-supplied memo is keyed by the row
+  // name, so a redirected row must not read or write through it.
+  const memo = source.brand_override
+    ? createFingerprintMemo(store, brandKey)
+    : (options.memo ?? createFingerprintMemo(store, brandKey));
   // A fingerprint past its trust window is still used when its seeds answer,
   // but it is re-verified against the APK rather than trusted indefinitely: a
   // vendor can rotate the signing certificate while the old seeds still serve
@@ -1672,7 +1712,20 @@ async function runCredentialPlatform(
     try {
       apkBytes = options.loadApk
         ? await options.loadApk(source)
-        : await defaultLoadApk(source, fetchImpl as CredentialFetchLike, timeoutMs, now, log, input.source_name, egress);
+        : await defaultLoadApk(
+          source,
+          fetchImpl as CredentialFetchLike,
+          timeoutMs,
+          now,
+          log,
+          // The archive prefix names the *backend's* build (`_lt`, not `_hd`):
+          // a redirected row downloads from the backend's CDN, which publishes
+          // only the backend's own archives. Passing the row name here made
+          // every candidate `_hd<N>.apk` against a 雷霆 host, so all lookback
+          // slots missed and the run failed with "APK could not be located".
+          source.brand_override ?? input.source_name,
+          egress
+        );
     } catch (error) {
       errors.push(`apk: ${error instanceof Error ? error.message : String(error)}`);
     }
