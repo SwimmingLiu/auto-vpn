@@ -40,7 +40,18 @@ export async function assertMobileLayout(page, { width, height }) {
     // Calendar cells are data marks with tooltip/keyboard checks below; action
     // controls retain the full touch target requirement.
     .filter((node) => !node.closest('[hidden], [aria-hidden="true"]') && !node.hasAttribute('data-heat-cell'))
-    .map((node) => { const box = node.getBoundingClientRect(); return { tag: node.tagName, text: node.textContent?.trim().slice(0, 32), width: box.width, height: box.height }; })
+    .map((node) => {
+      // The pointer sits wherever the previous breakpoint left it, so a control
+      // can be mid press/hover spring. Its transform scales the measured box
+      // (44px reads as 43.99998), which is animation, not an undersized target:
+      // measure the layout box instead.
+      const style = getComputedStyle(node);
+      const borderY = parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth);
+      const borderX = parseFloat(style.borderLeftWidth) + parseFloat(style.borderRightWidth);
+      const width = style.boxSizing === 'border-box' ? node.offsetWidth : node.clientWidth + borderX;
+      const height = style.boxSizing === 'border-box' ? node.offsetHeight : node.clientHeight + borderY;
+      return { tag: node.tagName, text: node.textContent?.trim().slice(0, 32), width, height };
+    })
     .filter(({ width: targetWidth, height: targetHeight }) => targetWidth < 44 || targetHeight < 44));
   assert.deepEqual(undersized, [], `undersized visible page controls at ${width}x${height}`);
 

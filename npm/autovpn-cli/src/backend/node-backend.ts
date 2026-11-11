@@ -89,20 +89,25 @@ function pushEvent(queue: EventQueueState, event: AutoVpnEvent): void {
  * `--event-log`, the orchestrator is writing it and the mirror stays out of the
  * way rather than appending every line twice.
  */
-function createArtifactEventMirror(explicitEventLog?: string): { write(event: AutoVpnEvent): void } {
-  let file: string | undefined;
+function createArtifactEventMirror(explicitEventLog?: string, knownArtifactDir?: string): { write(event: AutoVpnEvent): void } {
+  let file = '';
   let disabled = false;
+  const open = (artifactDir: string): void => {
+    file = path.join(artifactDir, 'events.jsonl');
+    if (explicitEventLog && path.resolve(explicitEventLog) === path.resolve(file)) {
+      disabled = true;
+    }
+  };
+  if (knownArtifactDir) open(knownArtifactDir);
   return {
     write(event: AutoVpnEvent): void {
       if (disabled) return;
       if (!file) {
         const artifactDir = String((event as Record<string, unknown>).artifact_dir ?? '');
-        if (event.type !== 'run_started' || !artifactDir) return;
-        file = path.join(artifactDir, 'events.jsonl');
-        if (explicitEventLog && path.resolve(explicitEventLog) === path.resolve(file)) {
-          disabled = true;
-          return;
-        }
+        // A resumed run emits no `run_started`; its artifact is known up front.
+        if (!artifactDir || (event.type !== 'run_started' && event.type !== 'resume_latest_state')) return;
+        open(artifactDir);
+        if (disabled) return;
       }
       try {
         // The stream carries request URLs and vendor messages, so the mirror
@@ -113,6 +118,16 @@ function createArtifactEventMirror(explicitEventLog?: string): { write(event: Au
       }
     }
   };
+}
+
+/** The artifact a resume session belongs to, or '' when it cannot be read. */
+function resumeArtifactDir(session: string): string {
+  try {
+    const payload = JSON.parse(fs.readFileSync(path.join(session, 'session.json'), 'utf8')) as Record<string, unknown>;
+    return String(payload.artifact_dir ?? '');
+  } catch {
+    return '';
+  }
 }
 
 function finishQueue(queue: EventQueueState, error?: unknown): void {
@@ -148,7 +163,10 @@ export class NodeBackend implements AutoVpnBackend {
         if (!artifactDir) {
           throw new Error('No incomplete run.db found to resume');
         }
-        pushEvent(queue, { type: 'resume_latest_state', artifact_dir: artifactDir });
+        const resumeMirror = createArtifactEventMirror(options.eventLog, artifactDir);
+        const stateEvent: AutoVpnEvent = { type: 'resume_latest_state', artifact_dir: artifactDir };
+        resumeMirror.write(stateEvent);
+        pushEvent(queue, stateEvent);
         const session = writeResumeLatestSession(artifactDir, options);
         return resumeNodePipeline({
           projectRoot: options.projectRoot,
@@ -161,7 +179,10 @@ export class NodeBackend implements AutoVpnBackend {
           humanLog: options.humanLog
         }, {
           env: this.env,
-          emit: (event) => pushEvent(queue, event)
+          emit: (event) => {
+            resumeMirror.write(event);
+            pushEvent(queue, event);
+          }
         });
       }
       : async () => runNodePipeline(options, {
@@ -221,6 +242,10 @@ export class NodeBackend implements AutoVpnBackend {
 
   async *resume(options: ResumeOptions): AsyncIterable<AutoVpnEvent> {
     const queue: EventQueueState = { events: [], wake: [], done: false };
+    // A resumed run emits no `run_started`, so the mirror is seeded from the
+    // session's artifact directory: without it the artifact log would keep the
+    // interrupted run's `running` stages forever.
+    const mirror = createArtifactEventMirror(options.eventLog, resumeArtifactDir(options.session));
     void resumeNodePipeline({
         projectRoot: options.projectRoot,
         mode: options.mode,
@@ -230,7 +255,10 @@ export class NodeBackend implements AutoVpnBackend {
         humanLog: options.humanLog
       }, {
         env: this.env,
-        emit: (event) => pushEvent(queue, event)
+        emit: (event) => {
+          mirror.write(event);
+          pushEvent(queue, event);
+        }
       })
       .then(() => finishQueue(queue))
       .catch((error) => finishQueue(queue, error));

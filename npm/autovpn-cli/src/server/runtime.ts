@@ -570,7 +570,13 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
           runState = nextRunState;
           terminal = true;
         }
-        publish(event);
+        // Same contract as the job follower: a result line replayed after a
+        // page load must carry absolute database totals, or the renderer adds
+        // it on top of the snapshot it already hydrated and doubles the count.
+        const record = event as Record<string, any>;
+        const metricEvent = ['extract_iteration', 'extract_source_completed', 'speedtest_result', 'availability_link_result'].includes(String(record.type));
+        const progress = metricEvent ? readRunProgress(path.join(artifactDir, 'run.db')) : undefined;
+        publish(progress ? { ...record, progress_snapshot: { ...progress, artifact_dir: artifactDir } } : event);
         if (nextRunState) publish({ type: 'server_state', run_state: runState });
       }
       // The run is over: stop polling instead of stat-ing a finished file every
@@ -637,10 +643,23 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
   }
 
   function restoreRunState(artifact: Record<string, unknown> | undefined): void {
-    if (runState !== 'idle') {
+    const env = options.env ?? process.env;
+    // A terminal state is a report about the *previous* run, not a latch. A new
+    // artifact whose log is still growing is a new run, and it must be followed
+    // even though the last one ended in success — otherwise the page stays
+    // frozen on yesterday's outcome until the server restarts.
+    const artifactDir = String(artifact?.artifact_dir ?? '');
+    const liveArtifact = artifactDir && artifactEventLog(artifactDir).active ? artifactDir : '';
+    if (runState !== 'idle' && !liveArtifact) {
       return;
     }
-    const env = options.env ?? process.env;
+    if (liveArtifact && runState !== 'running' && runState !== 'stopping') {
+      unsubscribeLogs?.();
+      activeJobId = '';
+      runState = 'running';
+      followArtifactEvents(liveArtifact);
+      return;
+    }
     const job = latestJob(options.projectRoot, env);
     if (job && ['running', 'stopping'].includes(String(job.status ?? ''))) {
       runState = String(job.status) as ServerState['runState'];
@@ -657,14 +676,6 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
       ?? 'idle';
     if (runState !== 'running' && runState !== 'stopping') {
       activeJobId = '';
-      // A scheduled run has no job to follow, but its artifact log may still
-      // be growing. Restoring that follow is what makes the page live again
-      // after the server restarts mid-run.
-      const artifactDir = String(artifact?.artifact_dir ?? '');
-      if (artifactDir && artifactEventLog(artifactDir).active) {
-        runState = 'running';
-        followArtifactEvents(artifactDir);
-      }
     }
   }
 

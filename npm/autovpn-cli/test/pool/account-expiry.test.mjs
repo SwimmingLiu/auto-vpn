@@ -282,7 +282,7 @@ test('accounts refresh-expiry passes defaults and renders the worker result', as
   assert.equal(calls[0].concurrency, 2);
   const human = out.join('');
   assert.match(human, /leiting\s+a1\s+2027-01-01\s+updated/);
-  assert.match(human, /checked=2 updated=1 expired=1 failed=0/);
+  assert.match(human, /checked=2 updated=1 expired=1 retired=0 failed=0/);
 
   // A failed login is a non-zero exit but still a rendered result.
   out.length = 0;
@@ -297,6 +297,58 @@ test('accounts refresh-expiry passes defaults and renders the worker result', as
   assert.equal(code3, 1);
   assert.match(out.join(''), /failed\s+login rejected/);
   store.close();
+});
+
+test('the membership sweep retires free-tier and rejected rows, not just lapsed ones', async () => {
+  // The sweep passes explicit credentials, so the run path's leased-row
+  // retirement never fires for it. A free-tier account reports a date years
+  // ahead and would otherwise stay in rotation forever.
+  const { classifyMembershipRefresh } = await import('../../dist/pipeline/credential-source.js');
+  const today = '2026-11-12';
+  assert.deepEqual(
+    classifyMembershipRefresh({ login_ok: true, membership_expires_at: '2027-06-07', membership_level: 2 }, today),
+    { status: 'updated', reason: '' }
+  );
+  assert.deepEqual(
+    classifyMembershipRefresh({ login_ok: true, membership_expires_at: '2026-01-01', membership_level: 2 }, today),
+    { status: 'expired', reason: 'membership expired' }
+  );
+  // Free tier with a future date: retired, and the reason names the real cause.
+  assert.deepEqual(
+    classifyMembershipRefresh({ login_ok: true, membership_expires_at: '2027-06-07', membership_level: 1 }, today),
+    { status: 'retired', reason: 'no paid membership' }
+  );
+  assert.deepEqual(
+    classifyMembershipRefresh({ login_ok: true, membership_expires_at: '2027-06-07', membership_level: 0, route_count: 0 }, today),
+    { status: 'retired', reason: 'no paid membership' }
+  );
+  // A paid row the vendor misreports as level 1 keeps its place when it produced.
+  assert.deepEqual(
+    classifyMembershipRefresh({ login_ok: true, membership_expires_at: '2027-06-07', membership_level: 1, produced_links: 3 }, today),
+    { status: 'updated', reason: '' }
+  );
+  assert.deepEqual(
+    classifyMembershipRefresh({ login_ok: true, membership_expires_at: '2027-06-07', membership_level: 0, route_count: 12 }, today),
+    { status: 'updated', reason: '' }
+  );
+  // An unreported level is not evidence of a free account.
+  assert.deepEqual(
+    classifyMembershipRefresh({ login_ok: true, membership_expires_at: '2027-06-07' }, today),
+    { status: 'updated', reason: '' }
+  );
+  assert.deepEqual(
+    classifyMembershipRefresh({ login_ok: false, membership_expired: true }, today),
+    { status: 'expired', reason: 'membership expired' }
+  );
+  assert.deepEqual(
+    classifyMembershipRefresh({ login_ok: false, credential_rejected: true }, today),
+    { status: 'retired', reason: 'login rejected' }
+  );
+  // A throttle or a transport failure is neither: the row must survive it.
+  assert.deepEqual(
+    classifyMembershipRefresh({ login_ok: false }, today),
+    { status: 'failed', reason: '' }
+  );
 });
 
 test('POST /api/accounts/expiry routes {id, expires_at} to the runtime', async () => {

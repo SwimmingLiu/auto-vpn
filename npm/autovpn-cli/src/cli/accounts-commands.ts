@@ -36,7 +36,7 @@ export interface RefreshExpiryEvent {
   brand: string;
   account_masked: string;
   expires_at: string;
-  status: 'updated' | 'expired' | 'failed';
+  status: 'updated' | 'expired' | 'retired' | 'failed';
   error?: string;
 }
 
@@ -44,6 +44,8 @@ export interface RefreshExpiryResult {
   checked: number;
   updated: number;
   expired: number;
+  /** Free-tier or rejected rows removed from rotation. */
+  retired?: number;
   failed: number;
   results: RefreshExpiryEvent[];
 }
@@ -193,7 +195,10 @@ function renderRefreshLine(event: RefreshExpiryEvent): string {
 
 function renderRefreshHuman(rows: readonly RefreshExpiryEvent[], result: RefreshExpiryResult): string {
   const lines = rows.map(renderRefreshLine);
-  lines.push(`checked=${result.checked} updated=${result.updated} expired=${result.expired} failed=${result.failed}`);
+  lines.push(
+    `checked=${result.checked} updated=${result.updated} expired=${result.expired}` +
+    ` retired=${result.retired ?? 0} failed=${result.failed}`
+  );
   return `${lines.join('\n')}\n`;
 }
 

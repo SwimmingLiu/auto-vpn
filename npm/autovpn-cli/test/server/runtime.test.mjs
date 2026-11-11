@@ -797,6 +797,70 @@ test('a scheduled run is followed live and the follower stops at its summary', a
   assert.equal(seen.length, afterSummary, 'the follower must stop once the run reported its summary');
 });
 
+test('a new scheduled run is followed even after the previous one reported success', async (t) => {
+  // The terminal state belongs to the run that produced it. A cron run the next
+  // night writes a fresh artifact log, and the page must pick it up without a
+  // server restart — the old code returned early on any non-idle state.
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-artifact-reattach-'));
+  t.after(() => fs.rmSync(projectRoot, { recursive: true, force: true }));
+  const runtimeRoot = path.join(projectRoot, 'state');
+  const previous = path.join(runtimeRoot, 'artifacts', '20261112-030000');
+  const current = path.join(runtimeRoot, 'artifacts', '20261113-030000');
+  fs.mkdirSync(previous, { recursive: true });
+  fs.mkdirSync(current, { recursive: true });
+  writeJson(path.join(previous, 'pipeline_report.json'), { run_status: 'success', counts: { final_links: 2 } });
+  fs.writeFileSync(path.join(previous, 'events.jsonl'),
+    JSON.stringify({ type: 'summary', run_status: 'success', artifact_dir: previous }) + '\n', 'utf8');
+  writeJson(path.join(current, 'pipeline_report.json'), { run_status: 'running', stage_status: { extract: 'running' }, counts: {} });
+  const log = path.join(current, 'events.jsonl');
+  fs.writeFileSync(log, JSON.stringify({ type: 'run_started', artifact_dir: current }) + '\n', 'utf8');
+
+  const runtime = createServerRuntime({ projectRoot, env: { VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot }, followLog: async function* () {} });
+  t.after(async () => { await runtime.close?.(); });
+  const seen = [];
+  runtime.subscribe((event) => seen.push(event));
+  const state = await runtime.loadState();
+  assert.equal(state.runState, 'running');
+
+  fs.appendFileSync(log, JSON.stringify({ type: 'stage', stage: 'dedupe', status: 'success' }) + '\n', 'utf8');
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  assert.ok(
+    seen.some((event) => event.type === 'stage' && event.stage === 'dedupe' && event.status === 'success'),
+    'the new artifact log must be followed after a terminal previous run'
+  );
+});
+
+test('a followed artifact result line carries absolute database totals', async (t) => {
+  // Replayed result lines arrive after the page already hydrated a snapshot;
+  // without absolute totals the renderer adds them on top and doubles counts.
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-artifact-progress-'));
+  const runtimeRoot = path.join(projectRoot, 'state');
+  const artifactDir = path.join(runtimeRoot, 'artifacts', '20261112-050000');
+  fs.mkdirSync(artifactDir, { recursive: true });
+  writeJson(path.join(artifactDir, 'pipeline_report.json'), { run_status: 'running', stage_status: { extract: 'running' }, counts: {} });
+  const store = RunStore.open(path.join(artifactDir, 'run.db'));
+  t.after(() => { store.close(); fs.rmSync(projectRoot, { recursive: true, force: true }); });
+  store.initializeRun('running');
+  const link = (n) => 'vmess://' + Buffer.from(JSON.stringify({ ps: 'node', add: `203.0.113.${n}`, port: '443', id: 'fixture-uuid', net: 'ws', path: '/' })).toString('base64');
+  store.recordExtractedNode('leiting', link(1));
+  store.recordExtractedNode('leiting', link(2));
+  const log = path.join(artifactDir, 'events.jsonl');
+  fs.writeFileSync(log, JSON.stringify({ type: 'run_started', artifact_dir: artifactDir }) + '\n', 'utf8');
+
+  const runtime = createServerRuntime({ projectRoot, env: { VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot }, followLog: async function* () {} });
+  t.after(async () => { await runtime.close?.(); });
+  const seen = [];
+  runtime.subscribe((event) => seen.push(event));
+  await runtime.loadState();
+
+  fs.appendFileSync(log, JSON.stringify({ type: 'extract_iteration', source_name: 'leiting', iteration: 1 }) + '\n', 'utf8');
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  const metric = seen.find((event) => event.type === 'extract_iteration');
+  assert.ok(metric, 'the appended result line must reach subscribers');
+  assert.deepEqual(metric.progress_snapshot?.counts, { raw_links: 2, deduped_links: 2, speedtest_links: 0, availability_links: 0 });
+  assert.equal(fs.realpathSync(String(metric.progress_snapshot?.artifact_dir)), fs.realpathSync(artifactDir));
+});
+
 test('the membership sweep guard resets after the sweep settles', async (t) => {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-expiry-guard-'));
   t.after(() => fs.rmSync(projectRoot, { recursive: true, force: true }));
