@@ -560,13 +560,24 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
       }
       const lines = chunk.split(/\r?\n/);
       pending = lines.pop() ?? '';
+      let terminal = false;
       for (const line of lines) {
         const event = parseJsonLine(line);
         if (!event) continue;
         const nextRunState = eventRunState(event as Record<string, any>);
-        if (nextRunState) runState = nextRunState;
+        if (nextRunState) {
+          runState = nextRunState;
+          terminal = true;
+        }
         publish(event);
         if (nextRunState) publish({ type: 'server_state', run_state: runState });
+      }
+      // The run is over: stop polling instead of stat-ing a finished file every
+      // 800ms for the life of the server. A later run follows its own artifact.
+      if (terminal) {
+        unsubscribeArtifactLogs?.();
+        unsubscribeArtifactLogs = undefined;
+        followedArtifactDir = '';
       }
     }, 800);
     timer.unref?.();
@@ -841,6 +852,11 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
     },
     async stopRun() {
       if (runState !== 'running' || !activeJobId) {
+        // A scheduled run has no managed job to signal; stop following its log
+        // so the page does not keep reporting a run the operator ended.
+        unsubscribeArtifactLogs?.();
+        unsubscribeArtifactLogs = undefined;
+        followedArtifactDir = '';
         return { ok: true, requested: false, run_state: runState };
       }
       runState = 'stopping';

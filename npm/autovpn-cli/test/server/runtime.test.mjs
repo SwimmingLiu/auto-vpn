@@ -767,3 +767,32 @@ test('log retention prunes yesterday\'s daily-run logs and keeps today\'s', asyn
   // The daemon's own log is not this job's record, however old it looks.
   assert.equal(fs.existsSync(serverLog), true);
 });
+
+test('a scheduled run is followed live and the follower stops at its summary', async (t) => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-artifact-follow-'));
+  t.after(() => fs.rmSync(projectRoot, { recursive: true, force: true }));
+  const runtimeRoot = path.join(projectRoot, 'state');
+  const artifactDir = path.join(runtimeRoot, 'artifacts', '20261112-040000');
+  fs.mkdirSync(artifactDir, { recursive: true });
+  writeJson(path.join(artifactDir, 'pipeline_report.json'), { run_status: 'running', stage_status: { extract: 'running' }, counts: {} });
+  const log = path.join(artifactDir, 'events.jsonl');
+  fs.writeFileSync(log, JSON.stringify({ type: 'run_started', artifact_dir: artifactDir }) + '\n', 'utf8');
+  const runtime = createServerRuntime({ projectRoot, env: { VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot }, followLog: async function* () {} });
+  t.after(async () => { await runtime.close?.(); });
+  const seen = [];
+  runtime.subscribe((event) => seen.push(event));
+  const state = await runtime.loadState();
+  assert.equal(state.runState, 'running', 'a growing artifact log means the run is live');
+
+  fs.appendFileSync(log, JSON.stringify({ type: 'stage', stage: 'extract', status: 'success' }) + '\n', 'utf8');
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  assert.ok(seen.some((event) => event.type === 'stage' && event.status === 'success'), 'the appended stage must reach subscribers');
+
+  fs.appendFileSync(log, JSON.stringify({ type: 'summary', run_status: 'success', artifact_dir: artifactDir }) + '\n', 'utf8');
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  assert.ok(seen.some((event) => event.type === 'server_state' && event.run_state === 'success'));
+  const afterSummary = seen.length;
+  fs.appendFileSync(log, JSON.stringify({ type: 'log', message: 'late line' }) + '\n', 'utf8');
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  assert.equal(seen.length, afterSummary, 'the follower must stop once the run reported its summary');
+});
