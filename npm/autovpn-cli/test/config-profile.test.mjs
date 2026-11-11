@@ -98,3 +98,44 @@ test('an unknown or self-referential backend_brand is dropped', async () => {
   assert.equal(out.heidong.backend_brand, undefined);
   assert.equal(out.leiting.backend_brand, undefined);
 });
+
+test('lap keys survive normalization and a save, and the legacy keys stay beside them', async () => {
+  const { normalizeOfficialSources, saveProfilePayload } = await import('../dist/config/profile.js');
+  const row = {
+    mode: 'credential',
+    official_site: 'https://s.example',
+    max_laps: 50,
+    dry_laps: 13,
+    min_laps: 2,
+    max_iterations: 1000,
+    plateau_limit: 50,
+    areas_per_round: 8,
+    area_concurrency: 4,
+    max_runtime_seconds: 900
+  };
+  const out = normalizeOfficialSources({ leiting: row });
+  assert.equal(out.leiting.max_laps, 50);
+  assert.equal(out.leiting.dry_laps, 13);
+  assert.equal(out.leiting.min_laps, 2);
+  // Nothing is deleted: the legacy policy must survive for a row that later
+  // drops its lap keys, and daily-run.sh still rewrites max_runtime_seconds.
+  assert.equal(out.leiting.max_iterations, 1000);
+  assert.equal(out.leiting.plateau_limit, 50);
+  assert.equal(out.leiting.areas_per_round, 8);
+  assert.equal(out.leiting.max_runtime_seconds, 900);
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-lap-save-'));
+  const profilePath = path.join(root, 'profile.toml');
+  const env = { VPN_AUTOMATION_PROFILE_PATH: profilePath };
+  saveProfilePayload(root, { sources: { leiting: row } }, env);
+  const written = fs.readFileSync(profilePath, 'utf8');
+  assert.match(written, /max_laps = 50/);
+  assert.match(written, /dry_laps = 13/);
+  assert.match(written, /min_laps = 2/);
+  assert.match(written, /areas_per_round = 8/);
+  assert.match(written, /max_runtime_seconds = 900/);
+  // A legacy row without lap keys is not converted on save.
+  saveProfilePayload(root, { sources: { heidong: { mode: 'credential', official_site: 'https://h.example', max_iterations: 200 } } }, env);
+  const legacyWritten = fs.readFileSync(profilePath, 'utf8');
+  assert.doesNotMatch(legacyWritten, /max_laps|dry_laps|min_laps/);
+});

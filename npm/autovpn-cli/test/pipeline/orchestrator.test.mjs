@@ -2808,3 +2808,44 @@ test('resumeNodePipeline speedtest mode restores terminal sqlite results without
   ]);
   resumed.close();
 });
+
+test('area_count flows from the extract adapter into source_counts and survives refresh', async () => {
+  const projectRoot = await makeProject();
+  const link = vmessLink('lap-node', 'lap.example');
+  const result = await runNodePipeline({
+    projectRoot,
+    skipDeploy: true,
+    skipVerify: true,
+    output: 'jsonl'
+  }, {
+    env: {
+      VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'),
+      VPN_AUTOMATION_PROFILE_PATH: path.join(projectRoot, 'state', 'profile.toml')
+    },
+    now: () => new Date('2026-06-29T01:02:03Z'),
+    emit: () => {},
+    stages: {
+      extract: async () => ({ source_name: 'fixture', requested_iterations: 3, successful_iterations: 3, failed_iterations: 0, links: [link], area_count: 30 }),
+      speedtest: async (links) => links.map((entry) => ({ link: entry, reachable: true, average_download_mb_s: 3, latency_ms: 20, error: '' })),
+      availability: async (results) => results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: { custom: { provider: 'custom', passed: true, reason: 'ok', status_code: 200, final_url: 'https://custom.example/', matched_phrase: '' } } })),
+      countryLookup: () => 'US',
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { main_module: '_worker.js', modules: [] } })
+    }
+  });
+  assert.equal(result.source_counts.fixture.area_count, 30);
+  const pipelineReport = JSON.parse(await readFile(path.join(result.artifact_dir, 'pipeline_report.json'), 'utf8'));
+  assert.equal(pipelineReport.source_counts.fixture.area_count, 30);
+  // A later refresh spreads the previous object, so the measured count is not
+  // clobbered when only raw/deduped numbers change.
+  refreshSourceCounts(pipelineReport, {
+    sourceRawCounts: () => ({ fixture: 1 }),
+    sourceDedupedCounts: () => ({ fixture: 1 }),
+    sourceProgress: () => [],
+    hasCompleteSourceOwnership: () => true
+  });
+  assert.equal(pipelineReport.source_counts.fixture.area_count, 30);
+  // An adapter that reports no area_count keeps the pinned three-key object.
+  const bare = { source_counts: {} };
+  bare.source_counts.plain = { raw_links: 1, successful_iterations: 1, failed_iterations: 0 };
+  assert.equal('area_count' in bare.source_counts.plain, false);
+});

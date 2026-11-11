@@ -673,3 +673,143 @@ test('page refresh retains early extraction substages beyond the bounded text lo
   assert.deepEqual(state.logEvents[0], step);
   assert.equal(state.logEvents.filter((event) => event.type === 'log').length, 1000);
 });
+
+test('a finished stage stays finished when its success lands inside the log tail', async (t) => {
+  // The regression: the fold only looked at events *before* the bounded tail,
+  // so extract/dedupe/speedtest/availability whose final `success` fell inside
+  // the tail were replayed as `running` and the run page never left 运行中.
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-stage-tail-'));
+  t.after(() => fs.rmSync(projectRoot, { recursive: true, force: true }));
+  const runtimeRoot = path.join(projectRoot, 'state');
+  const job = writeJobFixture(runtimeRoot, 'finished-job', { project_root: projectRoot, status: 'success' });
+  const stages = ['doctor', 'extract', 'dedupe', 'speedtest', 'availability'];
+  const events = [];
+  for (const stage of stages) {
+    events.push({ type: 'stage', stage, status: 'running' });
+    events.push(...Array(300).fill({ type: 'log', message: `[${stage}] working` }));
+    events.push({ type: 'stage', stage, status: 'success' });
+  }
+  fs.writeFileSync(job.event_log, events.map((event) => JSON.stringify(event)).join('\n') + '\n', 'utf8');
+  const runtime = createServerRuntime({
+    projectRoot,
+    env: { VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot },
+    now: () => new Date('2026-07-09T01:00:00Z'),
+    followLog: async function* () {}
+  });
+  const state = await runtime.loadState();
+  const replayed = Object.fromEntries(
+    state.logEvents.filter((event) => event.type === 'stage').map((event) => [event.stage, event.status])
+  );
+  assert.deepEqual(replayed, { doctor: 'success', extract: 'success', dedupe: 'success', speedtest: 'success', availability: 'success' });
+});
+
+test('a scheduled run with no job directory still hydrates its stages and logs', async (t) => {
+  // cron runs `autovpn run` directly: there is no job record, so the only
+  // history is the mirror the CLI writes beside the artifact.
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-artifact-log-'));
+  t.after(() => fs.rmSync(projectRoot, { recursive: true, force: true }));
+  const runtimeRoot = path.join(projectRoot, 'state');
+  const artifactDir = path.join(runtimeRoot, 'artifacts', '20261112-030000');
+  fs.mkdirSync(artifactDir, { recursive: true });
+  writeJson(path.join(artifactDir, 'pipeline_report.json'), {
+    run_status: 'success',
+    stage_status: { extract: 'success', dedupe: 'success', speedtest: 'success', availability: 'success' },
+    counts: { raw_links: 3, deduped_links: 3, final_links: 3 }
+  });
+  fs.writeFileSync(path.join(artifactDir, 'events.jsonl'), [
+    { type: 'run_started', artifact_dir: artifactDir },
+    { type: 'stage', stage: 'extract', status: 'running' },
+    { type: 'log', message: '[extract] leiting 开始提取' },
+    { type: 'stage', stage: 'extract', status: 'success' },
+    { type: 'summary', run_status: 'success', artifact_dir: artifactDir }
+  ].map((event) => JSON.stringify(event)).join('\n') + '\n', 'utf8');
+  const runtime = createServerRuntime({ projectRoot, env: { VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot }, followLog: async function* () {} });
+  const state = await runtime.loadState();
+  assert.deepEqual(state.logEvents.map((event) => event.type), ['stage', 'run_started', 'log', 'summary']);
+  assert.equal(state.logEvents[0].status, 'success');
+  assert.equal(state.logEvents[2].message, '[extract] leiting 开始提取');
+});
+
+test('log retention prunes yesterday\'s daily-run logs and keeps today\'s', async (t) => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-log-retention-'));
+  t.after(() => fs.rmSync(projectRoot, { recursive: true, force: true }));
+  const runtimeRoot = path.join(projectRoot, 'state');
+  fs.mkdirSync(runtimeRoot, { recursive: true });
+  const logs = path.join(runtimeRoot, 'logs');
+  const results = path.join(runtimeRoot, 'daily-run-results');
+  fs.mkdirSync(logs, { recursive: true });
+  fs.mkdirSync(results, { recursive: true });
+  const oldLog = path.join(logs, 'daily-run-20261110-032000.log');
+  const todayLog = path.join(logs, 'daily-run-20261112-032000.log');
+  const oldResult = path.join(results, '20261110-032000.json');
+  const todayResult = path.join(results, '20261112-032000.json');
+  // systemd keeps the serve unit's own stdout file open in the same directory.
+  const serverLog = path.join(logs, 'server-v201.log');
+  for (const file of [oldLog, todayLog, oldResult, todayResult, serverLog]) fs.writeFileSync(file, 'record\n', 'utf8');
+  const yesterday = new Date('2026-11-10T03:20:00Z');
+  const today = new Date('2026-11-12T03:20:00Z');
+  fs.utimesSync(oldLog, yesterday, yesterday);
+  fs.utimesSync(oldResult, yesterday, yesterday);
+  fs.utimesSync(todayLog, today, today);
+  fs.utimesSync(todayResult, today, today);
+  fs.utimesSync(serverLog, yesterday, yesterday);
+  const runtime = createServerRuntime({
+    projectRoot,
+    env: { VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot, AUTOVPN_SERVER_LOG_RETENTION_DAYS: '1' },
+    now: () => new Date('2026-11-12T04:00:00Z'),
+    followLog: async function* () {}
+  });
+  await runtime.loadState();
+  assert.equal(fs.existsSync(oldLog), false);
+  assert.equal(fs.existsSync(oldResult), false);
+  assert.equal(fs.existsSync(todayLog), true);
+  assert.equal(fs.existsSync(todayResult), true);
+  // The daemon's own log is not this job's record, however old it looks.
+  assert.equal(fs.existsSync(serverLog), true);
+});
+
+test('a scheduled run is followed live and the follower stops at its summary', async (t) => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-artifact-follow-'));
+  t.after(() => fs.rmSync(projectRoot, { recursive: true, force: true }));
+  const runtimeRoot = path.join(projectRoot, 'state');
+  const artifactDir = path.join(runtimeRoot, 'artifacts', '20261112-040000');
+  fs.mkdirSync(artifactDir, { recursive: true });
+  writeJson(path.join(artifactDir, 'pipeline_report.json'), { run_status: 'running', stage_status: { extract: 'running' }, counts: {} });
+  const log = path.join(artifactDir, 'events.jsonl');
+  fs.writeFileSync(log, JSON.stringify({ type: 'run_started', artifact_dir: artifactDir }) + '\n', 'utf8');
+  const runtime = createServerRuntime({ projectRoot, env: { VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot }, followLog: async function* () {} });
+  t.after(async () => { await runtime.close?.(); });
+  const seen = [];
+  runtime.subscribe((event) => seen.push(event));
+  const state = await runtime.loadState();
+  assert.equal(state.runState, 'running', 'a growing artifact log means the run is live');
+
+  fs.appendFileSync(log, JSON.stringify({ type: 'stage', stage: 'extract', status: 'success' }) + '\n', 'utf8');
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  assert.ok(seen.some((event) => event.type === 'stage' && event.status === 'success'), 'the appended stage must reach subscribers');
+
+  fs.appendFileSync(log, JSON.stringify({ type: 'summary', run_status: 'success', artifact_dir: artifactDir }) + '\n', 'utf8');
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  assert.ok(seen.some((event) => event.type === 'server_state' && event.run_state === 'success'));
+  const afterSummary = seen.length;
+  fs.appendFileSync(log, JSON.stringify({ type: 'log', message: 'late line' }) + '\n', 'utf8');
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  assert.equal(seen.length, afterSummary, 'the follower must stop once the run reported its summary');
+});
+
+test('the membership sweep guard resets after the sweep settles', async (t) => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-expiry-guard-'));
+  t.after(() => fs.rmSync(projectRoot, { recursive: true, force: true }));
+  const runtimeRoot = path.join(projectRoot, 'state');
+  fs.mkdirSync(runtimeRoot, { recursive: true });
+  const runtime = createServerRuntime({ projectRoot, env: { VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot }, followLog: async function* () {} });
+  t.after(async () => { await runtime.close?.(); });
+  // An empty pool makes the real worker return at once. What matters here is
+  // that a completed sweep does not leave the guard latched: a second call must
+  // not be refused as in-progress.
+  const first = await runtime.refreshAccountExpiry({ brand: 'leiting', limit: 1 });
+  assert.equal(first.ok, true);
+  assert.equal(first.checked, 0);
+  const second = await runtime.refreshAccountExpiry({ brand: 'leiting', limit: 1 });
+  assert.equal(second.ok, true);
+});

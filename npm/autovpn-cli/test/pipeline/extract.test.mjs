@@ -467,3 +467,58 @@ function encryptPayload(plaintext, key) {
   cipher.setAutoPadding(false);
   return Buffer.concat([cipher.update(padded), cipher.final()]).toString('base64');
 }
+
+test('the credential backend reports the frozen area count for the lap drawer', async () => {
+  const { AccountStore } = await import('../../dist/pool/account-store.js');
+  const { createFingerprintMemo } = await import('../../dist/pipeline/credential-source.js');
+  const { FIXTURE_KEY, createControlPlane } = await import('../fixtures/credential-control-plane.mjs');
+  const os = await import('node:os');
+  const fs = await import('node:fs');
+  const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-extract-lap-'));
+  const store = new AccountStore({ dbPath: path.join(runtimeRoot, 'accounts.db') });
+  store.importRecords([{ brand: 'leiting', account: 'fixture-account', password: 'fixture-password', official_site: 'https://www.68123836.com', expires_at: '', status: 'active', note: '' }]);
+  store.close();
+  const plane = createControlPlane({
+    rounds: 2,
+    perRound: {
+      1: ['198.51.100.30'],
+      2: ['198.51.100.10'],
+      3: ['198.51.100.20']
+    }
+  });
+  const memo = createFingerprintMemo(null, 'lt');
+  memo.set({
+    apk_url: 'https://apk.example/lt.apk',
+    key_candidates: [FIXTURE_KEY],
+    package_name: 'com.leiting.lt',
+    version_name: '3.17940.98243',
+    cert_sha1: '0390D4D33CB1C0E52DEC94D26726249AF384D553',
+    seed_domains: ['https://seed.example:20000'],
+    protocol: 'v7',
+    core_version: '5.12.1',
+    lite_version: '5.29.4'
+  });
+  try {
+    const result = await fetchSourceLinksWithBackend({
+      source_name: 'leiting',
+      source: {
+        mode: 'credential',
+        official_site: 'https://www.68123836.com',
+        platforms: ['android'],
+        max_laps: 2,
+        min_laps: 2,
+        dry_laps: 99,
+        key: FIXTURE_KEY
+      }
+    }, {
+      env: { VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot, VPN_AUTOMATION_PROXY_MODE: 'direct' },
+      fetch: plane.fetchImpl,
+      fingerprintMemo: memo
+    });
+    // route_count from the diagnostics becomes the drawer's measured N.
+    assert.equal(result.area_count, 3);
+    assert.equal(result.rounds, 2);
+  } finally {
+    fs.rmSync(runtimeRoot, { recursive: true, force: true });
+  }
+});

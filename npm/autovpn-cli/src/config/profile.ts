@@ -75,6 +75,19 @@ function positiveInteger(value: unknown, fallback: number): number {
 }
 
 /**
+ * A lap count as stored, or null when the key is absent or unusable.
+ *
+ * Null is what keeps a legacy row legacy: the caller must be able to tell "no
+ * lap key" from "lap key of 0", because only the former leaves the round
+ * policy in charge. `min_laps` legitimately accepts 0.
+ */
+function positiveLapValue(value: unknown): number | null {
+  if (value === undefined || value === null || value === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.trunc(parsed) : null;
+}
+
+/**
  * Migrate the four vendor rows to the final input contract: official site only.
  *
  * Credentials live in the account pool and the control-plane key is discovered
@@ -93,6 +106,11 @@ export function normalizeOfficialSources(sources: Record<string, any>): Record<s
       continue;
     }
     const wasCredential = config.mode === 'credential';
+    // A lap row is already expressed in the unit the operator chose. Rewriting
+    // its legacy caps to the round defaults would silently change the budget
+    // the drawer just displayed, so those keys pass through verbatim and only
+    // the lap keys are normalized.
+    const hasLapKey = ['max_laps', 'dry_laps', 'min_laps'].some((key) => positiveLapValue(config[key]) !== null);
     const normalized: Record<string, any> = {
       ...config,
       mode: 'credential',
@@ -101,8 +119,12 @@ export function normalizeOfficialSources(sources: Record<string, any>): Record<s
       // A round is one cursor step over the fixed area list, not a full sweep
       // of every region. 200 rounds × the default 8 areas / 50 with no new
       // node matches the documented defaults.
-      max_iterations: wasCredential ? positiveInteger(config.max_iterations, 200) : 200,
-      plateau_limit: wasCredential ? positiveInteger(config.plateau_limit, 50) : 50,
+      max_iterations: hasLapKey
+        ? positiveInteger(config.max_iterations, 200)
+        : wasCredential ? positiveInteger(config.max_iterations, 200) : 200,
+      plateau_limit: hasLapKey
+        ? positiveInteger(config.plateau_limit, 50)
+        : wasCredential ? positiveInteger(config.plateau_limit, 50) : 50,
       areas_per_round: Math.min(64, positiveInteger(config.areas_per_round, 8)),
       area_concurrency: Math.min(16, positiveInteger(config.area_concurrency, 4))
     };
@@ -117,7 +139,16 @@ export function normalizeOfficialSources(sources: Record<string, any>): Record<s
         delete normalized.backend_brand;
       }
     }
-    if (!wasCredential) {
+    if (hasLapKey) {
+      const maxLaps = positiveLapValue(config.max_laps);
+      const dryLaps = positiveLapValue(config.dry_laps);
+      const minLaps = positiveLapValue(config.min_laps);
+      if (maxLaps !== null) normalized.max_laps = maxLaps;
+      if (dryLaps !== null) normalized.dry_laps = dryLaps;
+      // A floor of 0 is meaningful ("no guaranteed laps"), so it is kept.
+      if (minLaps !== null) normalized.min_laps = minLaps;
+    }
+    if (!wasCredential && !hasLapKey) {
       // A legacy URL row's caps describe a different operation; start the
       // cursor flow at the documented scheduled-run default instead. A floor
       // carried over from URL mode is the same mismatch and is dropped with it.

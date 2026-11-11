@@ -258,6 +258,17 @@ export async function createAutoVpnServer(options: CreateAutoVpnServerOptions): 
         return;
       }
 
+      if (request.method === 'POST' && url.pathname === '/api/accounts/refresh-expiry') {
+        const body = await readJsonBody(request);
+        const result = await options.runtime.refreshAccountExpiry?.({
+          brand: String(body.brand ?? ''),
+          limit: Number(body.limit ?? 0),
+          concurrency: Number(body.concurrency ?? 0)
+        }) ?? { ok: false, error: 'refresh_expiry_unavailable' };
+        writeJson(response, result.ok === false ? 400 : 200, result);
+        return;
+      }
+
       if (request.method === 'POST' && url.pathname === '/api/qr') {
         const body = await readJsonBody(request);
         const text = String(body.text ?? '');

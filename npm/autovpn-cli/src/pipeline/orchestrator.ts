@@ -763,7 +763,10 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
       summary.source_counts[result.source_name] = {
         raw_links: result.links.length,
         successful_iterations: result.successful_iterations,
-        failed_iterations: result.failed_iterations
+        failed_iterations: result.failed_iterations,
+        // Only credential adapters report the frozen area list; URL rows and
+        // older adapters keep the pinned three-key object.
+        ...(result.area_count ? { area_count: result.area_count } : {})
       };
       // A credential source reports its own failures (rejected login, APK not
       // located) as zero links rather than an exception. Recording that as
@@ -1606,7 +1609,12 @@ export async function resumeNodePipeline(options: NodeResumeOptions, context: Ru
             status: resumeFailed ? 'failed' : 'success',
             ...(resumeFailed ? { error: resumeErrors.join('; ') } : {})
           });
-          summary.source_counts[sourceName] = { raw_links: result.links.length, successful_iterations: result.successful_iterations, failed_iterations: result.failed_iterations };
+          summary.source_counts[sourceName] = {
+            raw_links: result.links.length,
+            successful_iterations: result.successful_iterations,
+            failed_iterations: result.failed_iterations,
+            ...(result.area_count ? { area_count: result.area_count } : {})
+          };
         } catch (error) {
           runStore.recordSourceProgress(sourceName, { processed: 0, total: 0, status: 'failed', error: errorMessage(error) });
           await setStage('extract', 'failed');
