@@ -504,6 +504,7 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
   let unsubscribeLogs: (() => void) | undefined;
   let unsubscribeArtifactLogs: (() => void) | undefined;
   let followedArtifactDir = '';
+  let expiryRefreshInFlight = false;
   const pruneHistory = createHistoryPruner(options);
   const subscribers = new Set<(event: unknown) => void>();
   const startDetachedRun = options.startDetachedRun ?? defaultStartDetachedRun;
@@ -781,6 +782,10 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
         worker = undefined;
       }
       if (!worker) return { ok: false, error: 'refresh_expiry_unavailable' };
+      // One sweep at a time: it logs in to every active row, and two overlapping
+      // sweeps would double the vendor load and race on the same rows.
+      if (expiryRefreshInFlight) return { ok: false, error: 'refresh_expiry_in_progress' };
+      expiryRefreshInFlight = true;
       const store = new AccountStore({ env: options.env, now: options.now });
       try {
         const outcome = await worker({
@@ -795,6 +800,7 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
       } catch (error) {
         return { ok: false, error: error instanceof Error ? error.message : String(error) };
       } finally {
+        expiryRefreshInFlight = false;
         store.close();
       }
     },

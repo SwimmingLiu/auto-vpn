@@ -796,3 +796,20 @@ test('a scheduled run is followed live and the follower stops at its summary', a
   await new Promise((resolve) => setTimeout(resolve, 1100));
   assert.equal(seen.length, afterSummary, 'the follower must stop once the run reported its summary');
 });
+
+test('the membership sweep guard resets after the sweep settles', async (t) => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-expiry-guard-'));
+  t.after(() => fs.rmSync(projectRoot, { recursive: true, force: true }));
+  const runtimeRoot = path.join(projectRoot, 'state');
+  fs.mkdirSync(runtimeRoot, { recursive: true });
+  const runtime = createServerRuntime({ projectRoot, env: { VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot }, followLog: async function* () {} });
+  t.after(async () => { await runtime.close?.(); });
+  // An empty pool makes the real worker return at once. What matters here is
+  // that a completed sweep does not leave the guard latched: a second call must
+  // not be refused as in-progress.
+  const first = await runtime.refreshAccountExpiry({ brand: 'leiting', limit: 1 });
+  assert.equal(first.ok, true);
+  assert.equal(first.checked, 0);
+  const second = await runtime.refreshAccountExpiry({ brand: 'leiting', limit: 1 });
+  assert.equal(second.ok, true);
+});
