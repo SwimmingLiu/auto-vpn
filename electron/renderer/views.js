@@ -1,10 +1,10 @@
 import { buildStageModel, PAGE_INDEX, PAGE_ORDER, resolveRunControlState } from './state.js';
 import { icon } from './icons.js';
 
-// Defaults for a source row that has never stored a value. A round advances a
-// cursor over that brand's fixed area list and pulls `areas_per_round` ids, so
-// the count is per platform and per round: 4/2 would fetch only a handful of
-// nodes.
+// Legacy round defaults, kept for a row that carries no lap key. A round
+// advances a cursor over that brand's fixed area list and pulls
+// `areas_per_round` ids, so the count is per platform and per round. The drawer
+// no longer edits these; lap mode below is what it shows.
 export const SOURCE_ROUND_DEFAULTS = {
   max_iterations: 200,
   plateau_limit: 50,
