@@ -1036,9 +1036,18 @@ test('served web ui renders the country distribution from the real artifact rows
     await page.waitForSelector('#dashboardAnalytics [data-component-source="beui"]');
     const countryChart = page.locator('.analytics-distribution').first();
     assert.equal(await countryChart.locator('svg').count() > 0, true, 'the country donut must draw a plot');
-    const legend = await countryChart.innerText();
-    for (const region of ['US', 'TW', 'DE']) assert.match(legend, new RegExp(`\\b${region}\\b`));
-    assert.match(legend, /2/);
+    // Each row carries the region name and a `<strong>` count; read the count
+    // element itself rather than any digit in the row's text (a share
+    // percentage would match a bare /2/).
+    const legend = await countryChart.locator('[data-donut-legend]').evaluateAll((rows) => rows.map((row) => ({
+      name: row.querySelector('span.min-w-0')?.textContent?.trim() ?? '',
+      value: row.querySelector('strong')?.textContent?.trim() ?? ''
+    })));
+    assert.deepEqual(legend, [
+      { name: 'US', value: '2' },
+      { name: 'TW', value: '1' },
+      { name: 'DE', value: '1' }
+    ]);
     assert.doesNotMatch(await page.locator('#dashboardAnalytics').innerText(), /暂无数据/);
 
     await page.locator('#navResults').click();

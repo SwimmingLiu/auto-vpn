@@ -143,7 +143,10 @@ test('a node name without a decorated prefix is unknown, not silently a country'
   assert.equal(parseFinalNode(vmess('US 76')).regionCode, 'OTHER');
   assert.equal(parseFinalNode(vmess('plain node')).regionCode, 'OTHER');
   assert.equal(parseFinalNode(vmess('🇶🇶 QQ fake')).regionCode, 'OTHER');
-  assert.equal(parseFinalNode('ps|{"ps":"🇯🇵 JP 1"}').regionCode, 'OTHER');
-  assert.equal(parseFinalNode('vmess://not-base64!!').regionCode, 'OTHER');
-  assert.equal(parseFinalNode('trojan://example').protocol, 'trojan');
+  // A line the desktop preview would drop is dropped here too; counting it
+  // would report a node the results table cannot render.
+  assert.equal(parseFinalNode('ps|{"ps":"🇯🇵 JP 1"}'), null);
+  assert.equal(parseFinalNode('vmess://not-base64!!'), null);
+  assert.equal(parseFinalNode('vmess://'), null);
+  assert.equal(parseFinalNode('   '), null);
 });

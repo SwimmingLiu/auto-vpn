@@ -54,13 +54,15 @@ function fileInventory(artifactDir: string): Array<Record<string, unknown>> {
  * Country comes from the decorated name, never from the address: the pipeline
  * writes `<flag> <CC> <vendor name>`, so the prefix is authoritative and a name
  * without one is unknown rather than a guess.
+ *
+ * A line that is not a decodable vmess link returns null, matching the desktop
+ * preview (`electron/lib/artifact-preview.js`): counting it would report a
+ * "node" the results table cannot show.
  */
-export function parseFinalNode(link: string): FinalNodeRow {
+export function parseFinalNode(link: string): FinalNodeRow | null {
   const value = link.trim();
-  const fallback: FinalNodeRow = { name: '', address: '', protocol: 'unknown', path: '', link: value, regionCode: 'OTHER' };
   if (!value.startsWith('vmess://')) {
-    const scheme = value.match(/^([a-z0-9+.-]+):\/\//i);
-    return { ...fallback, protocol: scheme ? scheme[1].toLowerCase() : 'unknown' };
+    return null;
   }
   let encoded = value.slice('vmess://'.length);
   encoded += '='.repeat((4 - (encoded.length % 4)) % 4);
@@ -78,7 +80,7 @@ export function parseFinalNode(link: string): FinalNodeRow {
       regionCode
     };
   } catch {
-    return fallback;
+    return null;
   }
 }
 
@@ -88,13 +90,17 @@ function readFinalNodes(artifactDir: string): { nodeSource: string; rows: FinalN
     return { nodeSource, rows: [] };
   }
   const lines = fs.readFileSync(path.join(artifactDir, nodeSource), 'utf8').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  return { nodeSource, rows: lines.map((line) => parseFinalNode(line)) };
+  const rows = lines.map((line) => parseFinalNode(line)).filter((row): row is FinalNodeRow => row !== null);
+  return { nodeSource, rows };
 }
 
 function regionCounts(rows: FinalNodeRow[]): Array<{ region_code: string; count: number }> {
   const counts = new Map<string, number>();
   for (const row of rows) {
-    counts.set(row.regionCode, (counts.get(row.regionCode) ?? 0) + 1);
+    // The UI folds an undecorated name into US when it charts (buildRegionStats),
+    // so the summary must report the same number or the two disagree.
+    const regionCode = row.regionCode === 'OTHER' ? 'US' : row.regionCode;
+    counts.set(regionCode, (counts.get(regionCode) ?? 0) + 1);
   }
   return [...counts.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
