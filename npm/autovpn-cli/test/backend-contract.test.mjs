@@ -1009,3 +1009,45 @@ test('an explicit --event-log at the mirror path is not written twice', async (t
   const after = (await readFile(explicit, 'utf8')).split('\n').filter(Boolean).length;
   assert.equal(after - before, again.length);
 });
+
+test('a run mirrors its events beside the artifact, once, with owner-only mode', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'autovpn-event-mirror-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const artifactsRoot = path.join(root, 'artifacts');
+  const backend = new NodeBackend({ env: { VPN_AUTOMATION_RUNTIME_ROOT: root }, cwd: root });
+  const events = [];
+  await assert.rejects(() => (async () => {
+    for await (const event of backend.run({ projectRoot: root, output: 'jsonl' })) events.push(event);
+  })());
+  const started = events.find((event) => event.type === 'run_started');
+  assert.ok(started?.artifact_dir, 'the run must name its artifact before failing');
+  const mirror = path.join(started.artifact_dir, 'events.jsonl');
+  assert.equal(existsSync(mirror), true);
+  const lines = (await readFile(mirror, 'utf8')).split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  // One line per emitted event: the mirror must not duplicate the stream.
+  assert.equal(lines.length, events.length);
+  assert.equal(lines.filter((line) => line.type === 'run_started').length, 1);
+  assert.equal((await stat(mirror)).mode & 0o777, 0o600);
+  assert.equal(existsSync(artifactsRoot), true);
+});
+
+test('an explicit --event-log at the mirror path is not written twice', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'autovpn-event-mirror-explicit-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const backend = new NodeBackend({ env: { VPN_AUTOMATION_RUNTIME_ROOT: root }, cwd: root });
+  const first = [];
+  await assert.rejects(() => (async () => {
+    for await (const event of backend.run({ projectRoot: root, output: 'jsonl' })) first.push(event);
+  })());
+  const artifactDir = first.find((event) => event.type === 'run_started').artifact_dir;
+  const explicit = path.join(artifactDir, 'events.jsonl');
+  const before = (await readFile(explicit, 'utf8')).split('\n').filter(Boolean).length;
+  // A second run writing the same path through --event-log must leave the
+  // mirror alone: the orchestrator already appends there.
+  const again = [];
+  await assert.rejects(() => (async () => {
+    for await (const event of backend.run({ projectRoot: root, output: 'jsonl', eventLog: explicit })) again.push(event);
+  })());
+  const after = (await readFile(explicit, 'utf8')).split('\n').filter(Boolean).length;
+  assert.equal(after - before, again.length);
+});

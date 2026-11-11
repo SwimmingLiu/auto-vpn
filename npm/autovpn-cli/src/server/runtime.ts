@@ -676,6 +676,14 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
       ?? 'idle';
     if (runState !== 'running' && runState !== 'stopping') {
       activeJobId = '';
+      // A scheduled run has no job to follow, but its artifact log may still
+      // be growing. Restoring that follow is what makes the page live again
+      // after the server restarts mid-run.
+      const artifactDir = String(artifact?.artifact_dir ?? '');
+      if (artifactDir && artifactEventLog(artifactDir).active) {
+        runState = 'running';
+        followArtifactEvents(artifactDir);
+      }
     }
   }
 
