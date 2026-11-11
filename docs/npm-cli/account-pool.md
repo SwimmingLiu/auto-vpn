@@ -135,8 +135,17 @@ autovpn accounts refresh-expiry --output human
 autovpn accounts refresh-expiry --brand heidong --limit 20 --concurrency 4
 ```
 
-输出里的 `checked / updated / expired / failed` 是真正发生的数量。`failed` 是
-没能登录、因而无法判断的行，它们保持原状，不会被当成过期剔除。
+输出里的 `checked / updated / expired / retired / failed` 是真正发生的数量：
+
+| 结果 | 判定依据 | 行的去向 |
+|---|---|---|
+| `updated` | 登录成功，会员日期在今天之后 | 写回到期日，保持可用 |
+| `expired` | 日期已过，或厂商说会员已到期 | 标记过期，退出轮换 |
+| `retired` | 登录成功但等级为免费且没产出任何线路；或厂商明确拒绝了这个账号/密码 | 标记失效，退出轮换 |
+| `failed` | 限流、网络失败等无法判断的情况 | 保持原状 |
+
+免费等级的行也会返回一个几年后的日期，所以只看日期不足以剔除它——等级和
+"有没有产出"一起判断。厂商把付费行误报成等级 1 时，只要它产出了线路就保留。
 
 设置抽屉的账号池面板有同一个动作（核对会员到期），走
 `POST /api/accounts/refresh-expiry`；桌面端走同一条 CLI 命令。

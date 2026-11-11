@@ -99,6 +99,30 @@ test('an unknown or self-referential backend_brand is dropped', async () => {
   assert.equal(out.leiting.backend_brand, undefined);
 });
 
+test('account_retry_limit survives normalization and a save on a redirected row', async () => {
+  // A thin backend pool needs a wider hunt than the default 24 leases. The
+  // operator sets it in the profile; a drawer save must not silently drop it
+  // back to the default and re-break the source.
+  const { normalizeOfficialSources, saveProfilePayload } = await import('../dist/config/profile.js');
+  const row = {
+    mode: 'credential',
+    official_site: 'https://www.heidongm.com',
+    backend_brand: 'leiting',
+    account_retry_limit: 120,
+    max_iterations: 1000,
+    plateau_limit: 50
+  };
+  assert.equal(normalizeOfficialSources({ heidong: row }).heidong.account_retry_limit, 120);
+
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-retry-limit-'));
+  const profilePath = path.join(root, 'profile.toml');
+  const env = { VPN_AUTOMATION_PROFILE_PATH: profilePath };
+  saveProfilePayload(root, { sources: { heidong: row } }, env);
+  const written = fs.readFileSync(profilePath, 'utf8');
+  assert.match(written, /account_retry_limit = 120/);
+  assert.match(written, /backend_brand = "leiting"/);
+});
+
 test('lap keys survive normalization and a save, and the legacy keys stay beside them', async () => {
   const { normalizeOfficialSources, saveProfilePayload } = await import('../dist/config/profile.js');
   const row = {
