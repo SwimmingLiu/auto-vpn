@@ -17,6 +17,15 @@ export const SOURCE_ROUND_LIMITS = {
   areas_per_round: [1, 64],
   area_concurrency: [1, 16]
 };
+// Lap mode: one lap asks every area on the vendor's frozen list exactly once,
+// so the drawer only asks for laps and concurrency — no round/area conversion.
+export const SOURCE_LAP_DEFAULTS = {
+  max_laps: 50,
+  dry_laps: 13
+};
+// Used only to seed a legacy row and to estimate before the first run has
+// measured the list; the pipeline itself never reads this number.
+export const REFERENCE_AREA_COUNT = 31;
 export const NETWORK_DEFAULTS = {
   proxy_mode: 'proxy',
   proxy_url: 'http://127.0.0.1:7897'
@@ -742,6 +751,7 @@ export function buildAccountPoolPanel(vm) {
         </div>
         <div class="account-pool-actions">
           <button class="btn btn-secondary small icon-only" data-account-action="refresh" type="button" ${pool.busy ? 'disabled' : ''} aria-label="刷新账号池" title="刷新账号池">${icon('refresh')}</button>
+          ${pool.canRefreshExpiry ? `<button class="btn btn-secondary small" data-account-action="refresh-expiry" type="button" ${pool.busy ? 'disabled' : ''} title="逐个登录账号池，读取真实会员到期日；已过期和非会员账号会被停用并退出轮换">${icon('shield')}${pool.refreshingExpiry ? '核对中…' : '核对会员到期'}</button>` : ''}
           <button class="btn btn-secondary small icon-only" data-account-action="template" type="button" ${pool.busy ? 'disabled' : ''} aria-label="下载模板" title="下载模板">${icon('download')}</button>
           <button class="btn btn-primary small" data-account-action="upload" type="button" ${pool.busy ? 'disabled' : ''}>${icon('upload')}${pool.busy ? '导入中…' : '上传 CSV'}</button>
           <input id="accountPoolFile" data-account-file type="file" accept=".csv,.txt,text/csv,text/plain" hidden aria-hidden="true" tabindex="-1" />
@@ -870,6 +880,8 @@ const EMPTY_ACCOUNT_POOL = {
   // Feature-detected from the preload bridge. The H5/browser build has no
   // setAccountExpiry, so the row simply omits the affordance there.
   canSetExpiry: false,
+  canRefreshExpiry: false,
+  refreshingExpiry: false,
   expiryEditorId: null
 };
 
@@ -889,13 +901,13 @@ function buildSettingsDrawerBody(section, draft, vm = null) {
       <div class="source-drawer-settings">
         <div class="source-drawer-settings-copy">
           <strong>每个加速器只填官网</strong>
-          <span>密钥从 APK 自动发现，账号密码由账号池提供。Android 与 iOS 两个通道同时抓取；「轮数」由两端各自独立跑满，1000 就是 Android 1000 轮加 iOS 1000 轮，不是 500+500。</span>
+          <span>密钥从 APK 自动发现，账号密码由账号池提供。Android 与 iOS 两个通道同时抓取；「遍数」由两端各自独立跑满，50 遍就是 Android 50 遍加 iOS 50 遍，不是 25+25。</span>
         </div>
         <div class="source-drawer-settings-copy">
-          <span>每次运行先按该加速器的节点列表生成一份固定区域列表（去掉中国大陆与免费区域、去重、保持原顺序），运行中不再改变。每一轮用游标依次取出「每轮区域数」个区域（默认 8 个，取完回绕）；「区域并发」控制该轮这些区域请求同时发出的数量（默认 4）。31 个区域默认四轮即可覆盖一遍，轮数按各平台独立计算。</span>
+          <span>每次运行先按该加速器的节点列表生成一份固定区域列表（去掉中国大陆与免费区域、去重、保持原顺序），运行中不再改变。一遍 = 把该加速器全部区域各请求一次（实测 雷霆 30 / 黑洞 31 / 蜜蜂 31 / 旋风 26）；一遍就是一轮，双端各自计遍。「同时请求数」控制一遍内同时发出的请求数量（默认 4），每遍分 ceil(区域数 ÷ 同时请求数) 批依次发出。</span>
         </div>
         <div class="source-drawer-settings-copy">
-          <span>「早停」按连续无新增节点的轮数计数。是否为新节点按节点指纹判断（address / port / id / transport / host / path / tls / sni），并在 Android 与 iOS 之间统一去重：改名重复的节点、或另一端已经抓到的节点，都不会让计数归零。</span>
+          <span>「空转早停」按连续没有新增节点的遍数计数：连续几遍一个新节点都没有，就提前停止该通道。是否为新节点按节点指纹判断（address / port / id / transport / host / path / tls / sni），并在 Android 与 iOS 之间统一去重：改名重复的节点、或另一端已经抓到的节点，都不会让计数归零。</span>
         </div>
       </div>
       </details>
@@ -907,7 +919,7 @@ function buildSettingsDrawerBody(section, draft, vm = null) {
             <col class="settings-col-connection" />
             <col class="settings-col-rounds" />
           </colgroup>
-          <thead><tr><th>启用</th><th>加速器</th><th>官网</th><th>循环</th></tr></thead>
+          <thead><tr><th>启用</th><th>加速器</th><th>官网</th><th>抓取</th></tr></thead>
           <tbody>
             ${SOURCE_DISPLAY_ORDER.map((name) => {
               const source = sourceDraft[name];
@@ -926,26 +938,22 @@ function buildSettingsDrawerBody(section, draft, vm = null) {
                 <td data-field-label="官网">
                   <input aria-label="${label}：官网地址" inputmode="url" spellcheck="false" class="mono" data-drawer-source="${escapeHtml(name)}" data-drawer-key="official_site" placeholder="${escapeHtml(OFFICIAL_SITES[name] ?? '')}" value="${escapeHtml(source.official_site ?? '')}" />
                 </td>
-                <td data-field-label="循环">
+                <td data-field-label="抓取">
                   <div class="source-credential-rounds">
                     <label class="source-field">
-                      <span>轮数</span>
-                      <input type="number" min="1" step="1" inputmode="numeric" aria-label="${label}：抓取轮数" title="Android 与 iOS 各自独立跑满该轮数（1000 = 两端各 1000 轮）；每轮是固定区域列表上的一个游标步，按「每轮区域数」取区域" data-drawer-source="${escapeHtml(name)}" data-drawer-key="max_iterations" value="${escapeHtml(source.max_iterations ?? SOURCE_ROUND_DEFAULTS.max_iterations)}" />
+                      <span>抓取遍数</span>
+                      <input type="number" min="1" step="1" inputmode="numeric" aria-label="${label}：抓取遍数" title="Android 与 iOS 各自独立跑满该遍数（50 = 两端各 50 遍）；一遍把该加速器全部区域各请求一次" data-drawer-source="${escapeHtml(name)}" data-drawer-key="max_laps" value="${escapeHtml(source.max_laps ?? SOURCE_LAP_DEFAULTS.max_laps)}" />
                     </label>
                     <label class="source-field">
-                      <span>早停</span>
-                      <input type="number" min="1" step="1" inputmode="numeric" aria-label="${label}：连续空轮早停次数" title="连续多少轮没有真正新增节点就停止；节点指纹在双端之间统一去重" data-drawer-source="${escapeHtml(name)}" data-drawer-key="plateau_limit" value="${escapeHtml(source.plateau_limit ?? SOURCE_ROUND_DEFAULTS.plateau_limit)}" />
+                      <span>空转早停（遍）</span>
+                      <input type="number" min="1" step="1" inputmode="numeric" aria-label="${label}：空转早停（遍）" title="连续多少遍没有真正新增节点就停止该通道；节点指纹在双端之间统一去重" data-drawer-source="${escapeHtml(name)}" data-drawer-key="dry_laps" value="${escapeHtml(source.dry_laps ?? SOURCE_LAP_DEFAULTS.dry_laps)}" />
                     </label>
                     <label class="source-field">
-                      <span>每轮区域数</span>
-                      <input type="number" min="1" max="64" step="1" inputmode="numeric" aria-label="${label}：每轮区域数" title="每轮从固定区域列表按游标取出的区域数，列表在运行中不变；取完回绕" data-drawer-source="${escapeHtml(name)}" data-drawer-key="areas_per_round" value="${escapeHtml(source.areas_per_round ?? SOURCE_ROUND_DEFAULTS.areas_per_round)}" />
-                    </label>
-                    <label class="source-field">
-                      <span>区域并发</span>
-                      <input type="number" min="1" max="16" step="1" inputmode="numeric" aria-label="${label}：区域并发" title="该轮区域请求同时发出的数量" data-drawer-source="${escapeHtml(name)}" data-drawer-key="area_concurrency" value="${escapeHtml(source.area_concurrency ?? SOURCE_ROUND_DEFAULTS.area_concurrency)}" />
+                      <span>同时请求数</span>
+                      <input type="number" min="1" max="16" step="1" inputmode="numeric" aria-label="${label}：同时请求数" title="一遍内同时发出的区域请求数量；每遍分 ceil(区域数 ÷ 同时请求数) 批依次发出" data-drawer-source="${escapeHtml(name)}" data-drawer-key="area_concurrency" value="${escapeHtml(source.area_concurrency ?? SOURCE_ROUND_DEFAULTS.area_concurrency)}" />
                     </label>
                   </div>
-                  <span class="source-round-summary">双端各自计轮 · 每轮按固定区域列表推进</span>
+                  <span class="source-round-summary" data-source-estimate="${escapeHtml(name)}">${escapeHtml(buildSourceLapEstimate(source, vm?.sourceCounts?.[name]?.area_count))}</span>
                 </td>
               </tr>
             `;
@@ -1156,7 +1164,9 @@ function buildSourceRows(profile) {
     maxIterations: Number(source.max_iterations ?? SOURCE_ROUND_DEFAULTS.max_iterations),
     plateauLimit: Number(source.plateau_limit ?? SOURCE_ROUND_DEFAULTS.plateau_limit),
     areasPerRound: Number(source.areas_per_round ?? SOURCE_ROUND_DEFAULTS.areas_per_round),
-    areaConcurrency: Number(source.area_concurrency ?? SOURCE_ROUND_DEFAULTS.area_concurrency)
+    areaConcurrency: Number(source.area_concurrency ?? SOURCE_ROUND_DEFAULTS.area_concurrency),
+    maxLaps: Number(source.max_laps ?? SOURCE_LAP_DEFAULTS.max_laps),
+    dryLaps: Number(source.dry_laps ?? SOURCE_LAP_DEFAULTS.dry_laps)
   }));
 }
 
@@ -1215,8 +1225,68 @@ export function buildSpeedTestDraft(config = {}) {
   return structuredClone({ ...FALLBACK_PROFILE.speed_test, ...config });
 }
 
-export function buildSourceIterationDraft(sources = {}) {
+export function buildSourceIterationDraft(sources = {}, sourceCounts = {}) {
+  // Snapshot which rows actually stored a legacy budget BEFORE normalization
+  // fills every row with the legacy defaults; a fresh row must get the shipped
+  // lap defaults, not a conversion of numbers it never had. Aliases count too.
+  const storedLegacy = new Set();
+  // The stored caps themselves, keyed by canonical name. Normalization fills
+  // every row with the shipped legacy defaults, so converting from the
+  // normalized row would turn a URL row's stored 40 rounds into 200 and then
+  // save 200 back — the operator's number must come from the file.
+  const storedCaps = new Map();
+  for (const [name, source] of Object.entries(sources ?? {})) {
+    const canonical = LEGACY_SOURCE_ALIASES[name] ?? name;
+    if (hasStoredLapValue(source?.max_iterations) || hasStoredLapValue(source?.plateau_limit)) {
+      storedLegacy.add(canonical);
+      if (!storedCaps.has(canonical)) storedCaps.set(canonical, source);
+    }
+  }
   const normalized = normalizeOfficialSourceDraft(sources);
+  // Seeding is draft-only: opening the drawer converts nothing on disk, and
+  // 取消 writes nothing. Saving is the opt-in to lap mode; the estimate line
+  // shows the converted request counts before 保存 is pressed.
+  for (const [name, source] of Object.entries(normalized)) {
+    if (!SOURCE_DISPLAY_ORDER.includes(name)) continue;
+    const storedLaps = hasStoredLapValue(source.max_laps) ? coercePositiveInteger(source.max_laps, SOURCE_LAP_DEFAULTS.max_laps) : null;
+    const storedDry = hasStoredLapValue(source.dry_laps) ? coercePositiveInteger(source.dry_laps, SOURCE_LAP_DEFAULTS.dry_laps) : null;
+    if (storedLaps !== null || storedDry !== null) {
+      source.max_laps = storedLaps ?? SOURCE_LAP_DEFAULTS.max_laps;
+      source.dry_laps = storedDry ?? SOURCE_LAP_DEFAULTS.dry_laps;
+      continue;
+    }
+    // Only a row that actually stored a legacy budget is converted; a fresh
+    // row gets the shipped lap defaults (50 / 13), not a conversion of the
+    // normalization-filled legacy defaults.
+    if (!storedLegacy.has(name)) {
+      source.max_laps = SOURCE_LAP_DEFAULTS.max_laps;
+      source.dry_laps = SOURCE_LAP_DEFAULTS.dry_laps;
+      continue;
+    }
+    // A legacy row is converted at the measured list length when a run has
+    // reported one, else the reference count (labelled 估算 in the drawer).
+    const areas = observedAreaCount(sourceCounts?.[name]?.area_count);
+    const stored = storedCaps.get(name) ?? {};
+    // The stored caps seed the lap estimate. A URL row's caps count URL
+    // fetches rather than route-loop rounds, so the conversion is an estimate
+    // for that row, which the drawer labels 估算.
+    const legacyIterations = coercePositiveInteger(stored.max_iterations, SOURCE_ROUND_DEFAULTS.max_iterations);
+    const legacyPlateau = coercePositiveInteger(stored.plateau_limit, SOURCE_ROUND_DEFAULTS.plateau_limit);
+    const legacyWidth = coerceBoundedInteger(stored.areas_per_round ?? source.areas_per_round, SOURCE_ROUND_DEFAULTS.areas_per_round, 1, 64);
+    // Saving opts the row into lap mode, so the stored budget is kept beside
+    // the lap keys: removing them later restores exactly these rounds. A row
+    // that never stored a budget keeps the normalization default.
+    if (stored.mode === 'credential') {
+      source.max_iterations = legacyIterations;
+      source.plateau_limit = legacyPlateau;
+    }
+    // The estimate uses the stored numbers even for a URL row: 3000 URL
+    // iterations at width 8 is the work that row used to do.
+    const seedIterations = coercePositiveInteger(stored.max_iterations, legacyIterations);
+    const seedPlateau = coercePositiveInteger(stored.plateau_limit, legacyPlateau);
+    source.max_laps = Math.max(1, Math.round((seedIterations * legacyWidth) / areas));
+    source.dry_laps = Math.max(1, Math.round((seedPlateau * legacyWidth) / areas));
+  }
   const firstSource = Object.values(normalized)[0] ?? {};
   return {
     sources: normalized,
@@ -1225,6 +1295,33 @@ export function buildSourceIterationDraft(sources = {}) {
     areasPerRound: coerceBoundedInteger(firstSource.areas_per_round, SOURCE_ROUND_DEFAULTS.areas_per_round, 1, 64),
     areaConcurrency: coerceBoundedInteger(firstSource.area_concurrency, SOURCE_ROUND_DEFAULTS.area_concurrency, 1, 16)
   };
+}
+
+/** A cleared input is '' — still an edit in progress, not an absent field. */
+function hasStoredLapValue(value) {
+  return value !== undefined && value !== null && value !== '';
+}
+
+/** The measured list length when a run reported one, else the reference count. */
+function observedAreaCount(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 1 ? Math.trunc(parsed) : REFERENCE_AREA_COUNT;
+}
+
+/**
+ * The row's derived request budget. Laps × areas is exact arithmetic, so the
+ * operator can check it by hand; waves use min(C, N) because a tiny debug list
+ * clamps the workers to its own length.
+ */
+export function buildSourceLapEstimate(source = {}, areaCount) {
+  const measured = Number.isFinite(Number(areaCount)) && Number(areaCount) >= 1;
+  const areas = observedAreaCount(areaCount);
+  const laps = coercePositiveInteger(source.max_laps, SOURCE_LAP_DEFAULTS.max_laps);
+  const dry = coercePositiveInteger(source.dry_laps, SOURCE_LAP_DEFAULTS.dry_laps);
+  const concurrency = coerceBoundedInteger(source.area_concurrency, SOURCE_ROUND_DEFAULTS.area_concurrency, 1, 16);
+  const waves = Math.ceil(areas / Math.min(concurrency, areas));
+  return `区域 ${areas}（${measured ? '实测' : '估算'}） · 最多 ${laps} 遍 × ${areas} 区域 = ${laps * areas} 次请求/端` +
+    ` · 并发 ${concurrency} → 每遍 ${waves} 批（约 ${waves} 秒/遍） · 早停 ${dry} 遍 = ${dry * areas} 次`;
 }
 
 export function buildAvailabilityTargetDraft(targets = {}) {
@@ -1332,9 +1429,27 @@ export function validateSourceDraft(draft = {}) {
   }
   for (const [name, source] of Object.entries(sources)) {
     if (!SOURCE_DISPLAY_ORDER.includes(name)) continue;
+    for (const [key, label] of [
+      ['max_laps', '抓取遍数'],
+      ['dry_laps', '空转早停（遍）']
+    ]) {
+      const raw = source?.[key];
+      if (raw === undefined || raw === null || raw === '') continue;
+      const value = Number(raw);
+      if (!Number.isFinite(value) || value < 1 || Math.trunc(value) !== value) {
+        return `${SOURCE_NAMES[name] ?? name}：${label}至少为 1`;
+      }
+    }
+    const laps = Number(source?.max_laps);
+    const dry = Number(source?.dry_laps);
+    // More dry laps than total laps means the early stop could never fire;
+    // that is a typo, not a policy, so it is refused before save.
+    if (Number.isFinite(laps) && Number.isFinite(dry) && laps >= 1 && dry > laps) {
+      return `${SOURCE_NAMES[name] ?? name}：空转早停（遍）不能大于抓取遍数`;
+    }
     for (const [key, label, [, max]] of [
       ['areas_per_round', '每轮区域数', SOURCE_ROUND_LIMITS.areas_per_round],
-      ['area_concurrency', '区域并发', SOURCE_ROUND_LIMITS.area_concurrency]
+      ['area_concurrency', '同时请求数', SOURCE_ROUND_LIMITS.area_concurrency]
     ]) {
       const raw = source?.[key];
       if (raw === undefined || raw === null || raw === '') continue;
@@ -1508,6 +1623,9 @@ export function normalizeOfficialSourceDraft(sources = {}) {
           plateau_limit: existing.plateau_limit ?? source.plateau_limit,
           areas_per_round: existing.areas_per_round ?? source.areas_per_round,
           area_concurrency: existing.area_concurrency ?? source.area_concurrency,
+          max_laps: existing.max_laps ?? source.max_laps,
+          dry_laps: existing.dry_laps ?? source.dry_laps,
+          min_laps: existing.min_laps ?? source.min_laps,
           enabled: existing.enabled !== false || source.enabled !== false
         }
       : { ...source };
@@ -1515,6 +1633,11 @@ export function normalizeOfficialSourceDraft(sources = {}) {
   const vendorRows = Object.fromEntries(SOURCE_DISPLAY_ORDER.map((name) => {
     const source = collapsed[name] ?? {};
     const wasCredential = source.mode === 'credential';
+    // A lap row already carries the budget in the operator's own unit. Its
+    // legacy caps are kept verbatim so removing the lap keys later restores
+    // exactly the rounds that were stored, instead of the shipped default.
+    const hasLapKey = ['max_laps', 'dry_laps', 'min_laps'].some((key) => hasStoredLapValue(source[key]));
+    const keepLegacyCaps = wasCredential || hasLapKey;
     const normalized = {
       ...source,
       mode: 'credential',
@@ -1525,15 +1648,15 @@ export function normalizeOfficialSourceDraft(sources = {}) {
         ? (OFFICIAL_SITES[name] ?? '')
         : String(source.official_site).trim(),
       enabled: source.enabled !== false,
-      max_iterations: wasCredential ? coercePositiveInteger(source.max_iterations, SOURCE_ROUND_DEFAULTS.max_iterations) : SOURCE_ROUND_DEFAULTS.max_iterations,
-      plateau_limit: wasCredential ? coercePositiveInteger(source.plateau_limit, SOURCE_ROUND_DEFAULTS.plateau_limit) : SOURCE_ROUND_DEFAULTS.plateau_limit,
-      areas_per_round: wasCredential ? coerceBoundedInteger(source.areas_per_round, SOURCE_ROUND_DEFAULTS.areas_per_round, 1, 64) : SOURCE_ROUND_DEFAULTS.areas_per_round,
-      area_concurrency: wasCredential ? coerceBoundedInteger(source.area_concurrency, SOURCE_ROUND_DEFAULTS.area_concurrency, 1, 16) : SOURCE_ROUND_DEFAULTS.area_concurrency
+      max_iterations: keepLegacyCaps ? coercePositiveInteger(source.max_iterations, SOURCE_ROUND_DEFAULTS.max_iterations) : SOURCE_ROUND_DEFAULTS.max_iterations,
+      plateau_limit: keepLegacyCaps ? coercePositiveInteger(source.plateau_limit, SOURCE_ROUND_DEFAULTS.plateau_limit) : SOURCE_ROUND_DEFAULTS.plateau_limit,
+      areas_per_round: keepLegacyCaps ? coerceBoundedInteger(source.areas_per_round, SOURCE_ROUND_DEFAULTS.areas_per_round, 1, 64) : SOURCE_ROUND_DEFAULTS.areas_per_round,
+      area_concurrency: keepLegacyCaps ? coerceBoundedInteger(source.area_concurrency, SOURCE_ROUND_DEFAULTS.area_concurrency, 1, 16) : SOURCE_ROUND_DEFAULTS.area_concurrency
     };
     for (const field of OBSOLETE_SOURCE_FIELDS) delete normalized[field];
     // A URL-mode floor is the same mismatch as its URL-mode cap: 10 URL fetches
     // are not 10 route-loop rounds, so it goes with the rest of the old shape.
-    if (!wasCredential) delete normalized.min_iterations;
+    if (!wasCredential && !hasLapKey) delete normalized.min_iterations;
     return [name, normalized];
   }));
   return { ...vendorRows, ...extras };

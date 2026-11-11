@@ -280,17 +280,31 @@ test('beUI charts expose the real node distributions and keyboard heatmap detail
   await page.waitForSelector('[data-component-source="beui"]');
   assert.equal(await page.getByRole('img', { name: '国家分布' }).count(), 1);
   assert.equal(await page.getByRole('img', { name: '加速器贡献' }).count(), 1);
+  // The legend is a horizontal chip flow, not a stacked column: the card must
+  // stay near the ring's height instead of stretching to the country count.
   const chartGeometry = await page.locator('.analytics-distribution').first().evaluate((node) => {
-    const caption = node.querySelector('.overflow-hidden p');
-    const text = caption.getBoundingClientRect(), clip = caption.parentElement.getBoundingClientRect();
-    return { listStyle: getComputedStyle(node.querySelector('ul')).listStyleType, captionVisible: text.top >= clip.top - 1 && text.bottom <= clip.bottom + 1 };
+    const caption = node.querySelector('.ring-caption');
+    const text = caption.getBoundingClientRect();
+    const plot = node.querySelector('.distribution-plot').getBoundingClientRect();
+    const chips = [...node.querySelectorAll('[data-donut-legend]')].map((chip) => chip.getBoundingClientRect());
+    return {
+      listStyle: getComputedStyle(node.querySelector('ul')).listStyleType,
+      captionVisible: text.width > 0 && text.height > 0,
+      chipRows: new Set(chips.map((box) => Math.round(box.top))).size,
+      chipColumns: new Set(chips.map((box) => Math.round(box.left))).size,
+      cardHeight: node.getBoundingClientRect().height,
+      plotHeight: plot.height
+    };
   });
   assert.equal(chartGeometry.listStyle, 'none');
   assert.equal(chartGeometry.captionVisible, true);
+  assert.ok(chartGeometry.chipColumns > 1, `chips must flow sideways, got ${JSON.stringify(chartGeometry)}`);
+  assert.ok(chartGeometry.chipRows < chartGeometry.chipColumns, `chips must not stack one per row: ${JSON.stringify(chartGeometry)}`);
+  assert.ok(chartGeometry.cardHeight < chartGeometry.plotHeight * 2.2, `card stretched by the legend: ${JSON.stringify(chartGeometry)}`);
   assert.equal(await page.locator('.calendar-scroll').evaluate((node) => getComputedStyle(node, '::-webkit-scrollbar').height), '4px');
 
   assert.match(await page.locator('.analytics-distribution').nth(1).innerText(), /雷霆[\s\S]*42/);
-  assert.match(await page.locator('.analytics-heading').innerText(), /30 个节点/);
+  assert.match(await page.locator('.analytics-calendar .analytics-heading').innerText(), /30 个节点/);
   const cell = page.locator('[data-heat-cell]').last();
   await cell.focus();
   await page.waitForSelector('[role="tooltip"]');
@@ -326,11 +340,11 @@ test('finishing a web run refreshes the visible contribution calendar without na
   const connected = page.waitForResponse((response) => response.url().includes('/api/events'));
   await page.goto(service.origin);
   await connected;
-  await page.waitForSelector('.analytics-heading');
-  assert.match(await page.locator('.analytics-heading').innerText(), /0 个节点/);
+  await page.waitForSelector('.analytics-calendar .analytics-heading');
+  assert.match(await page.locator('.analytics-calendar .analytics-heading').innerText(), /0 个节点/);
   activity = [{ date: '2026-11-09', nodes: 7, runs: 1 }];
   publish({ type: 'finished', ok: true });
-  await page.waitForFunction(() => document.querySelector('.analytics-heading')?.textContent?.includes('7 个节点'));
+  await page.waitForFunction(() => document.querySelector('.analytics-calendar .analytics-heading')?.textContent?.includes('7 个节点'));
   assert.equal(await page.locator('body').getAttribute('data-page'), 'dashboard');
 });
 

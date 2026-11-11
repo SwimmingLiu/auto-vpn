@@ -190,6 +190,10 @@ export function renderWebAdapterScript(options: WebAdapterOptions = {}): string 
       )
     }),
     accountsTemplate: async () => ({ ok: true, content: ${JSON.stringify(accountsTemplate())} }),
+    refreshAccountExpiry: async (payload = {}) => request('/api/accounts/refresh-expiry', {
+      method: 'POST',
+      body: JSON.stringify(payload || {})
+    }),
     runPipeline: async (options = {}) => request('/api/runs', {
       method: 'POST',
       body: JSON.stringify({

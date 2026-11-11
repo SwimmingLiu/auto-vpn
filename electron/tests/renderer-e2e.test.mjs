@@ -422,8 +422,8 @@ test('renderer matches the five-page workspace and supports page navigation', as
         loadProfile: async () => ({
           sources: {
             leiting: {
-              url: 'https://capture-1.vpn.example/api/v1/client/subscribe',
-              key: 'lt-demo-key',
+              mode: 'credential',
+              official_site: 'https://www.68123836.com',
               enabled: true,
               max_iterations: 40
             },
@@ -844,10 +844,10 @@ test('renderer matches the five-page workspace and supports page navigation', as
     const sourceFields = await page.evaluate(() => [...document.querySelectorAll('.settings-source-table [data-drawer-key]')]
       .map((node) => `${node.dataset.drawerSource}:${node.dataset.drawerKey}`));
     assert.deepEqual(sourceFields.sort(), [
-      'heidong:area_concurrency', 'heidong:areas_per_round', 'heidong:enabled', 'heidong:max_iterations', 'heidong:official_site', 'heidong:plateau_limit',
-      'leiting:area_concurrency', 'leiting:areas_per_round', 'leiting:enabled', 'leiting:max_iterations', 'leiting:official_site', 'leiting:plateau_limit',
-      'mifeng:area_concurrency', 'mifeng:areas_per_round', 'mifeng:enabled', 'mifeng:max_iterations', 'mifeng:official_site', 'mifeng:plateau_limit',
-      'xuanfeng:area_concurrency', 'xuanfeng:areas_per_round', 'xuanfeng:enabled', 'xuanfeng:max_iterations', 'xuanfeng:official_site', 'xuanfeng:plateau_limit'
+      'heidong:area_concurrency', 'heidong:dry_laps', 'heidong:enabled', 'heidong:max_laps', 'heidong:official_site',
+      'leiting:area_concurrency', 'leiting:dry_laps', 'leiting:enabled', 'leiting:max_laps', 'leiting:official_site',
+      'mifeng:area_concurrency', 'mifeng:dry_laps', 'mifeng:enabled', 'mifeng:max_laps', 'mifeng:official_site',
+      'xuanfeng:area_concurrency', 'xuanfeng:dry_laps', 'xuanfeng:enabled', 'xuanfeng:max_laps', 'xuanfeng:official_site'
     ]);
     for (const selector of [
       '[data-drawer-mode]',
@@ -858,26 +858,35 @@ test('renderer matches the five-page workspace and supports page navigation', as
     ]) {
       assert.equal(await page.locator(selector).count(), 0, `${selector} must be gone`);
     }
-    // A legacy url-mode row is migrated on read: the drawer shows its brand's
-    // site, and saving never writes the old url/key back.
+    // A credential row keeps its stored site and its stored round budget; the
+    // drawer only adds the lap keys beside them.
     assert.equal(
       await page.locator('[data-drawer-source="leiting"][data-drawer-key="official_site"]').inputValue(),
       'https://www.68123836.com'
     );
     await page.locator('[data-drawer-source="leiting"][data-drawer-key="official_site"]').fill('https://leiting.example');
-    await page.locator('[data-drawer-source="leiting"][data-drawer-key="max_iterations"]').fill('6');
-    await page.locator('[data-drawer-source="leiting"][data-drawer-key="plateau_limit"]').fill('3');
-    await page.locator('[data-drawer-source="leiting"][data-drawer-key="areas_per_round"]').fill('5');
+    await page.locator('[data-drawer-source="leiting"][data-drawer-key="max_laps"]').fill('6');
+    await page.locator('[data-drawer-source="leiting"][data-drawer-key="dry_laps"]').fill('3');
     await page.locator('[data-drawer-source="leiting"][data-drawer-key="area_concurrency"]').fill('12');
+    // The estimate line reacts to the edit without a full re-render.
+    assert.match(
+      await page.locator('[data-source-estimate="leiting"]').innerText(),
+      /最多 6 遍 × 31 区域 = 186 次请求\/端 · 并发 12 → 每遍 3 批/
+    );
     await page.locator('[data-drawer-save="save"]').click();
     await page.waitForSelector('#settingsDrawer[data-open="false"]');
     const savedSources = await page.evaluate(() => window.__savedProfiles.at(-1).sources);
     assert.equal(savedSources.leiting.official_site, 'https://leiting.example');
-    assert.equal(savedSources.leiting.max_iterations, 6);
-    assert.equal(savedSources.leiting.plateau_limit, 3);
-    assert.equal(savedSources.leiting.areas_per_round, 5);
+    assert.equal(savedSources.leiting.max_laps, 6);
+    assert.equal(savedSources.leiting.dry_laps, 3);
     assert.equal(savedSources.leiting.area_concurrency, 12);
-    // A row that never stored the new fields saves the shipped defaults.
+    // Saving opts the row into lap mode but never deletes the legacy keys:
+    // the stored 40 rounds survive verbatim for anyone who removes the lap keys.
+    assert.equal(savedSources.leiting.max_iterations, 40);
+    assert.equal(savedSources.leiting.areas_per_round, 8);
+    // A row that never stored a budget saves the shipped lap defaults.
+    assert.equal(savedSources.heidong.max_laps, 50);
+    assert.equal(savedSources.heidong.dry_laps, 13);
     assert.equal(savedSources.heidong.areas_per_round, 8);
     assert.equal(savedSources.heidong.area_concurrency, 4);
     assert.equal(savedSources.leiting.mode, 'credential');

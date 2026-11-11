@@ -21,6 +21,7 @@ const IPC_CHANNELS = [
   'accounts:status',
   'accounts:expiry',
   'accounts:template',
+  'accounts:refresh-expiry',
   'shell:open-path',
   'clipboard:write-text',
   'logs:export',
@@ -228,6 +229,42 @@ export function registerIpcHandlers({
       // `accounts expire` exits 1 with a JSON body for a bad date; the CLI
       // prints that body on stdout and only its message on stderr, so surface
       // the parsed payload rather than an opaque "Command failed".
+      const message = error instanceof Error ? error.message : String(error);
+      try {
+        return JSON.parse(message);
+      } catch {
+        return { ok: false, error: message };
+      }
+    }
+  });
+
+  // Learn every pooled account's real membership date by logging in, then
+  // retire the lapsed and non-member rows. The worker lives in the pipeline;
+  // this only forwards the flags and returns its JSON outcome.
+  ipcMain.handle('accounts:refresh-expiry', async (_event, payload = {}) => {
+    const extraArgs = [];
+    const brand = String(payload?.brand ?? '').trim();
+    if (brand) extraArgs.push('--brand', brand);
+    const limit = Number(payload?.limit);
+    if (Number.isInteger(limit) && limit > 0) extraArgs.push('--limit', String(limit));
+    const concurrency = Number(payload?.concurrency);
+    if (Number.isInteger(concurrency) && concurrency > 0) extraArgs.push('--concurrency', String(concurrency));
+    const invocation = buildBackendInvocation(projectRoot, 'accounts-refresh-expiry', extraArgs, { isPackaged });
+    try {
+      const output = await runCommand(
+        invocation.command,
+        invocation.args,
+        projectRoot,
+        runtimeProfilePath,
+        bundledProfilePath,
+        '',
+        runtimeArtifactsPath,
+        invocation.runAsNode
+      );
+      return JSON.parse(output.stdout);
+    } catch (error) {
+      // The worker exits 1 when some accounts failed, but still prints the
+      // full outcome; that body is more useful than "Command failed".
       const message = error instanceof Error ? error.message : String(error);
       try {
         return JSON.parse(message);

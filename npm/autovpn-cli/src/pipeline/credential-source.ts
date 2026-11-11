@@ -135,6 +135,18 @@ export interface BrandCredentialSource {
   areas_per_round?: number;
   /** Concurrent `/api/evmess` requests within one round. Default 4, max 16. */
   area_concurrency?: number;
+  /**
+   * Lap mode. A lap asks every area on the frozen list exactly once, so one
+   * round IS one lap and the round/area conversion factor disappears. Setting
+   * any of the three lap keys opts this row in; a row with none of them keeps
+   * the legacy round policy byte-for-byte.
+   */
+  /** Laps per platform. Default 50 in lap mode. */
+  max_laps?: number;
+  /** Consecutive laps with no genuinely new node that stop the channel. Default 13. */
+  dry_laps?: number;
+  /** Laps that always run before early stop or the time budget may fire. */
+  min_laps?: number;
   /** Wall-clock budget in seconds; 0 means unlimited. */
   max_runtime_seconds?: number;
   /** Per-request timeout in milliseconds. */
@@ -467,6 +479,79 @@ export const MAX_EMPTY_ROUNDS = 5;
  * node is stopped explicitly and reported.
  */
 export const PLACEHOLDER_ONLY_ROUNDS = 8;
+
+/**
+ * Lap-mode defaults. A lap is one full pass over the frozen area list, so
+ * these numbers mean what they say: 50 laps × N areas is the request ceiling,
+ * 13 empty laps × N areas is the give-up point. The legacy round defaults
+ * above stay untouched for rows that never set a lap key.
+ */
+export const DEFAULT_MAX_LAPS = 50;
+export const DEFAULT_DRY_LAPS = 13;
+
+export interface LapRoundPolicy {
+  policy: RoundPolicy;
+  /** One round is one lap: the batch is the whole frozen list. */
+  areas_per_round: number;
+  /** Outage guard rescaled from rounds-of-8 to laps-of-N. */
+  empty_round_limit: number;
+  placeholder_round_limit: number;
+  round_unit: 'lap';
+}
+
+function finiteLapValue(value: unknown, min: number): boolean {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= min;
+}
+
+/**
+ * Resolve the lap policy, or null when the row never opted in.
+ *
+ * Null is the compatibility contract: the caller then runs the legacy round
+ * path with the same arguments as before, so an untouched profile produces
+ * the same request sequence after an upgrade.
+ */
+export function resolveLapRoundPolicy(
+  source: { max_laps?: number; dry_laps?: number; min_laps?: number; max_runtime_seconds?: number },
+  areaCount: number
+): LapRoundPolicy | null {
+  const optedIn = finiteLapValue(source.max_laps, 1) || finiteLapValue(source.dry_laps, 1) || finiteLapValue(source.min_laps, 0);
+  if (!optedIn) {
+    return null;
+  }
+  const areas = Math.max(1, Math.trunc(numberOrDefault(areaCount, 1)));
+  const cap = Math.max(1, Math.trunc(numberOrDefault(source.max_laps, DEFAULT_MAX_LAPS)));
+  const plateau = Math.max(1, Math.trunc(numberOrDefault(source.dry_laps, DEFAULT_DRY_LAPS)));
+  const floor = Math.min(Math.max(0, Math.trunc(numberOrDefault(source.min_laps, 0))), cap);
+  return {
+    policy: {
+      max_iterations: cap,
+      min_iterations: floor,
+      plateau_limit: plateau,
+      max_runtime_seconds: Math.max(0, numberOrDefault(source.max_runtime_seconds, 0))
+    },
+    areas_per_round: areas,
+    // The guards were tuned in rounds of 8 areas; keep their request volume
+    // when the unit becomes a lap of N areas, never below two laps.
+    empty_round_limit: Math.max(2, Math.ceil((MAX_EMPTY_ROUNDS * DEFAULT_AREAS_PER_ROUND) / areas)),
+    placeholder_round_limit: Math.max(2, Math.ceil((PLACEHOLDER_ONLY_ROUNDS * DEFAULT_AREAS_PER_ROUND) / areas)),
+    round_unit: 'lap'
+  };
+}
+
+/**
+ * The budget to advertise before the area list is known. Pre-flight events
+ * fire before login, so they must report the unit the loop will run in.
+ */
+export function resolveAdvertisedMaxIterations(source: {
+  max_laps?: number; dry_laps?: number; min_laps?: number;
+  max_iterations?: number; min_iterations?: number; plateau_limit?: number; max_runtime_seconds?: number;
+}): number {
+  if (finiteLapValue(source.max_laps, 1) || finiteLapValue(source.dry_laps, 1) || finiteLapValue(source.min_laps, 0)) {
+    return Math.max(1, Math.trunc(numberOrDefault(source.max_laps, DEFAULT_MAX_LAPS)));
+  }
+  return resolveRoundPolicy(source).max_iterations;
+}
 
 /** How many areas one round takes from the immutable list. */
 export function resolveAreasPerRound(value: unknown, areaCount: number): number {
@@ -1202,7 +1287,10 @@ async function fetchCredentialSourceLinksWithTransport(
   // and the caller's config object must not carry that into later stages.
   const source = { ...(input.source as SourceConfigInput & BrandCredentialSource) };
   const platforms = resolveCredentialPlatforms(source);
-  const policy = resolveRoundPolicy(source);
+  // Pre-flight events fire before the area list exists, so the budget is
+  // advertised in the unit the loop will run in: laps or legacy rounds.
+  const advertisedIterations = resolveAdvertisedMaxIterations(source);
+  const legacyPolicy = resolveRoundPolicy(source);
   const errors: string[] = [];
   const diagnostics: CredentialDiagnostics = {
     brand: input.source_name,
@@ -1222,7 +1310,7 @@ async function fetchCredentialSourceLinksWithTransport(
   };
   const empty: CredentialExtractResult = {
     source_name: input.source_name,
-    requested_iterations: policy.max_iterations,
+    requested_iterations: advertisedIterations,
     successful_iterations: 0,
     failed_iterations: 0,
     links: [],
@@ -1230,8 +1318,8 @@ async function fetchCredentialSourceLinksWithTransport(
   };
   event(options, 'extract_source_started', {
     source_name: input.source_name,
-    requested_iterations: policy.max_iterations,
-    min_iterations: policy.min_iterations,
+    requested_iterations: advertisedIterations,
+    min_iterations: legacyPolicy.min_iterations,
     resume_from_iteration: 1,
     platforms
   });
@@ -1288,7 +1376,7 @@ async function fetchCredentialSourceLinksWithTransport(
     if (ownsStore) store?.close();
     event(options, 'extract_source_completed', {
       source_name: input.source_name,
-      requested_iterations: policy.max_iterations,
+      requested_iterations: advertisedIterations,
       successful_iterations: 0,
       failed_iterations: 1,
       raw_links: 0
@@ -1334,8 +1422,8 @@ async function fetchCredentialSourceLinksWithTransport(
               event(options, 'extract_platform_started', {
                 ...payload,
                 platform,
-                requested_iterations: policy.max_iterations,
-                min_iterations: policy.min_iterations
+                requested_iterations: advertisedIterations,
+                min_iterations: legacyPolicy.min_iterations
               });
               return;
             }
@@ -1359,7 +1447,7 @@ async function fetchCredentialSourceLinksWithTransport(
                 // counter.
                 platform,
                 iteration: Number(payload.iteration ?? 0),
-                requested_iterations: policy.max_iterations,
+                requested_iterations: advertisedIterations,
                 new_items: Number(payload.new_items ?? 0),
                 new_meaningful_items: Number(payload.new_meaningful_items ?? 0),
                 extracted_links: Number(payload.extracted_links ?? 0),
@@ -1535,15 +1623,19 @@ async function fetchCredentialSourceLinksWithTransport(
   }
   event(options, 'extract_source_completed', {
     source_name: input.source_name,
-    requested_iterations: policy.max_iterations,
+    requested_iterations: advertisedIterations,
     successful_iterations: successful,
     failed_iterations: failed,
     raw_links: links.length,
-    platforms
+    platforms,
+    // route_count is the max across platforms; both channels freeze the same
+    // vendor list, so this is the drawer's per-row area count.
+    area_count: diagnostics.route_count,
+    round_unit: resolveLapRoundPolicy(source, diagnostics.route_count) ? 'lap' : 'round'
   });
   return {
     source_name: input.source_name,
-    requested_iterations: policy.max_iterations,
+    requested_iterations: advertisedIterations,
     successful_iterations: successful,
     failed_iterations: failed,
     links,
@@ -1626,11 +1718,13 @@ async function runCredentialPlatform(
     return empty;
   }
 
+  // Advertised before the area list is known: lap rows report their lap cap.
+  const startLap = resolveLapRoundPolicy(source, 0);
   const startPolicy = resolveRoundPolicy(source);
   event(options, 'extract_source_started', {
     source_name: input.source_name,
-    requested_iterations: startPolicy.max_iterations,
-    min_iterations: startPolicy.min_iterations,
+    requested_iterations: resolveAdvertisedMaxIterations(source),
+    min_iterations: startLap ? startLap.policy.min_iterations : startPolicy.min_iterations,
     resume_from_iteration: 1,
     platform
   });
@@ -1984,9 +2078,13 @@ async function runCredentialPlatform(
   // Raw totals use the exact-string identity the pipeline dedupes with, so the
   // live number and `extract_source_completed.raw_links` agree.
   const linkIds = new Set<string>();
-  const policy = resolveRoundPolicy(source);
+  // Lap mode: one round is one full sweep of the frozen list, so the cap and
+  // the plateau are laps with no conversion factor. A row with no lap key
+  // keeps the legacy round policy with identical arguments.
+  const lap = resolveLapRoundPolicy(source, activeRoutes.length);
+  const policy = lap ? lap.policy : resolveRoundPolicy(source);
   const maxIterations = policy.max_iterations;
-  const areasPerRound = resolveAreasPerRound(source.areas_per_round, activeRoutes.length);
+  const areasPerRound = lap ? lap.areas_per_round : resolveAreasPerRound(source.areas_per_round, activeRoutes.length);
   const areaConcurrency = resolveConcurrency(source.area_concurrency, DEFAULT_AREA_CONCURRENCY);
   const cursor = new AreaCursor(activeRoutes);
   const startedAt = Date.now();
@@ -2000,8 +2098,11 @@ async function runCredentialPlatform(
   diagnostics.areas_per_round = areasPerRound;
   diagnostics.area_concurrency = areaConcurrency;
   log(
-    `[extract] area list frozen: ${activeRoutes.length} areas,` +
-    ` ${areasPerRound}/round, concurrency ${areaConcurrency}, egress ${session.transport}`
+    lap
+      ? `[extract] area list frozen: ${activeRoutes.length} areas, ${maxIterations} 遍 (1 遍 = 全部区域各一次),` +
+        ` concurrency ${areaConcurrency}, egress ${session.transport}`
+      : `[extract] area list frozen: ${activeRoutes.length} areas,` +
+        ` ${areasPerRound}/round, concurrency ${areaConcurrency}, egress ${session.transport}`
   );
 
   for (let round = 1; round <= maxIterations; round += 1) {
@@ -2088,8 +2189,8 @@ async function runCredentialPlatform(
       if (session.reportEmptySweep()) {
         log('[extract] no route answered; switching to the upstream proxy');
       }
-      if (emptySweep >= MAX_EMPTY_ROUNDS) {
-        errors.push(`no route answered for ${emptySweep} consecutive rounds`);
+      if (emptySweep >= (lap?.empty_round_limit ?? MAX_EMPTY_ROUNDS)) {
+        errors.push(`no route answered for ${emptySweep} consecutive ${lap ? 'laps' : 'rounds'}`);
         break;
       }
     }
@@ -2113,22 +2214,24 @@ async function runCredentialPlatform(
       new_item_link_ids: newLinkIds
     });
     log(
-      `[extract] round ${round}/${maxIterations} area=${batch.map((route) => route.area).join(',')}` +
+      (lap
+        ? `[extract] 遍 ${round}/${maxIterations} area=${batch.map((route) => route.area).join(',')}`
+        : `[extract] round ${round}/${maxIterations} area=${batch.map((route) => route.area).join(',')}`) +
       ` +${appendedInRound} new (+${meaningfulInRound} meaningful, total ${links.length},` +
-      ` plateau ${plateau}/${policy.plateau_limit})`
+      ` plateau ${plateau}/${policy.plateau_limit}${lap ? ' 遍' : ''})`
     );
 
     if (shouldStopOnPlateau(round, plateau, policy)) {
-      log(`[extract] early stop: ${plateau} consecutive rounds without a meaningful new node`);
+      log(`[extract] early stop: ${plateau} consecutive ${lap ? 'laps' : 'rounds'} without a meaningful new node`);
       break;
     }
-    if (placeholderStreak >= PLACEHOLDER_ONLY_ROUNDS) {
+    if (placeholderStreak >= (lap?.placeholder_round_limit ?? PLACEHOLDER_ONLY_ROUNDS)) {
       errors.push(
-        `channel produced only placeholder nodes for ${placeholderStreak} rounds; stopping it` +
+        `channel produced only placeholder nodes for ${placeholderStreak} ${lap ? 'laps' : 'rounds'}; stopping it` +
         ' (this brand does not serve real nodes on this platform)'
       );
       log(
-        `[extract] ${platform} channel stopped: ${placeholderStreak} rounds of placeholder nodes only.` +
+        `[extract] ${platform} channel stopped: ${placeholderStreak} ${lap ? 'laps' : 'rounds'} of placeholder nodes only.` +
         ' The other channel still runs; this platform is not serving real nodes for this brand.'
       );
       break;
@@ -2146,7 +2249,9 @@ async function runCredentialPlatform(
     requested_iterations: maxIterations,
     successful_iterations: successfulRounds,
     failed_iterations: failedRounds,
-    raw_links: links.length
+    raw_links: links.length,
+    area_count: activeRoutes.length,
+    round_unit: lap ? 'lap' : 'round'
   });
 
   return {

@@ -101,6 +101,7 @@ const BACKEND_COMMANDS = new Map([
   ['accounts-enable', ['accounts', 'enable']],
   ['accounts-expire', ['accounts', 'expire']],
   ['accounts-template', ['accounts', 'template']],
+  ['accounts-refresh-expiry', ['accounts', 'refresh-expiry']],
   ['artifact-latest', ['artifacts', 'latest']],
   ['artifact-list', ['artifacts', 'list']],
   ['run', ['run']],

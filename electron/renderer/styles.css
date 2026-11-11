@@ -1390,8 +1390,8 @@ body[data-page="logs"] #logCenterTable {
 
 .source-credential-rounds {
   display: grid;
-  /* Four controls in a 232px column: two per line, so the labels stay readable
-     next to a 36px number input. */
+  /* Three controls in a 232px column: two per line, so the labels stay
+     readable next to a 36px number input. */
   grid-template-columns: repeat(2, minmax(72px, 1fr));
   gap: 8px;
 }

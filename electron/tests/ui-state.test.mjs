@@ -392,11 +392,11 @@ test('the source drawer rejects area values outside their documented bounds', ()
   draft.sources.leiting.areas_per_round = 64;
   assert.equal(validateSourceDraft(draft), '');
   draft.sources.leiting.area_concurrency = 0;
-  assert.match(validateSourceDraft(draft), /区域并发/);
+  assert.match(validateSourceDraft(draft), /同时请求数/);
   draft.sources.leiting.area_concurrency = 16;
   assert.equal(validateSourceDraft(draft), '');
   draft.sources.leiting.area_concurrency = 17;
-  assert.match(validateSourceDraft(draft), /区域并发/);
+  assert.match(validateSourceDraft(draft), /同时请求数/);
 });
 
 test('the source drawer refuses an enabled row with no official site', () => {
@@ -488,19 +488,21 @@ test('settings drawer is inert and has no actions while closed, with explicit so
     settingsDrawer: { section: 'sources', draft: { sources: profile.sources } }
   };
   const openMarkup = buildPageMarkup('settings', buildViewModel(openState, messages, 'zh-CN'), messages, 'zh-CN');
-  // The drawer asks for an official site and the round controls, nothing else:
+  // The drawer asks for an official site and the lap controls, nothing else:
   // credentials come from the pool and the control-plane key from the APK.
   assert.match(openMarkup, /aria-label="雷霆：官网地址"/);
-  assert.match(openMarkup, /aria-label="雷霆：抓取轮数"/);
-  assert.match(openMarkup, /aria-label="雷霆：每轮区域数"/);
-  assert.match(openMarkup, /aria-label="雷霆：区域并发"/);
-  assert.match(openMarkup, /每轮区域数/);
-  assert.match(openMarkup, /区域并发/);
+  assert.match(openMarkup, /aria-label="雷霆：抓取遍数"/);
+  assert.match(openMarkup, /aria-label="雷霆：空转早停（遍）"/);
+  assert.match(openMarkup, /aria-label="雷霆：同时请求数"/);
+  assert.match(openMarkup, /抓取遍数/);
+  assert.match(openMarkup, /同时请求数/);
+  // The round-era controls are gone from the drawer surface.
+  assert.doesNotMatch(openMarkup, /data-drawer-key="max_iterations"|data-drawer-key="plateau_limit"|data-drawer-key="areas_per_round"/);
   assert.doesNotMatch(openMarkup, /aria-label="雷霆：密钥"|aria-label="雷霆：账号"|aria-label="雷霆：密码"/);
   assert.doesNotMatch(openMarkup, /data-drawer-mode/);
 });
 
-test('the source drawer help states per-platform rounds and cross-platform fingerprints', () => {
+test('the source drawer help states per-platform laps and cross-platform fingerprints', () => {
   const messages = getMessages('zh-CN');
   const profile = {
     sources: { leiting: { mode: 'credential', official_site: 'https://example.com', max_iterations: 1000, plateau_limit: 50 } },
@@ -514,17 +516,93 @@ test('the source drawer help states per-platform rounds and cross-platform finge
     messages,
     'zh-CN'
   );
-  // 1000 rounds means 1000 on each platform, never 500 + 500.
+  // 50 laps means 50 on each platform, never 25 + 25.
   assert.match(markup, /Android 与 iOS 两个通道同时抓取/);
-  assert.match(markup, /1000 就是 Android 1000 轮加 iOS 1000 轮，不是 500\+500/);
-  // A round is one cursor step over the fixed, wrapping area list.
+  assert.match(markup, /50 遍就是 Android 50 遍加 iOS 50 遍，不是 25\+25/);
+  // A lap is one full pass over the fixed area list, with the measured counts.
   assert.match(markup, /固定区域列表/);
-  assert.match(markup, /每轮区域数/);
-  assert.match(markup, /默认 8 个/);
+  assert.match(markup, /一遍 = 把该加速器全部区域各请求一次/);
+  assert.match(markup, /雷霆 30 \/ 黑洞 31 \/ 蜜蜂 31 \/ 旋风 26/);
+  assert.match(markup, /一遍就是一轮，双端各自计遍/);
   // Early stop is judged on a fingerprint deduped across both platforms.
   assert.match(markup, /节点指纹/);
   assert.match(markup, /address \/ port \/ id \/ transport \/ host \/ path \/ tls \/ sni/);
   assert.match(markup, /另一端已经抓到的节点/);
+  // The legacy production row seeds to 258 laps at the reference count 31,
+  // and the estimate line shows the converted request budget before saving.
+  assert.match(markup, /data-drawer-key="max_laps" value="258"/);
+  assert.match(markup, /区域 31（估算） · 最多 258 遍 × 31 区域 = 7998 次请求\/端/);
+});
+
+test('the lap estimate uses the measured area count and clamps waves to the list', () => {
+  const messages = getMessages('zh-CN');
+  const profile = {
+    sources: { leiting: { mode: 'credential', official_site: 'https://example.com', max_laps: 50, dry_laps: 13 } },
+    availability_targets: {},
+    speed_test: {},
+    deploy: {}
+  };
+  const state = {
+    profile,
+    sourceCounts: { leiting: { raw_links: 10, area_count: 30 } },
+    settingsDrawer: { section: 'sources', draft: buildSourceIterationDraft(profile.sources, { leiting: { area_count: 30 } }) }
+  };
+  const markup = buildPageMarkup('settings', buildViewModel(state, messages, 'zh-CN'), messages, 'zh-CN');
+  assert.match(markup, /区域 30（实测） · 最多 50 遍 × 30 区域 = 1500 次请求\/端 · 并发 4 → 每遍 8 批（约 8 秒\/遍） · 早停 13 遍 = 390 次/);
+  // A tiny debug list clamps the workers to its own length: 2 areas at
+  // concurrency 4 is one wave, not ceil(2/4) reported as if 4 ran.
+  const tiny = buildSourceIterationDraft({ leiting: { mode: 'credential', official_site: 'https://example.com', max_laps: 4, dry_laps: 2, area_concurrency: 4 } });
+  const tinyMarkup = buildPageMarkup(
+    'settings',
+    buildViewModel({ profile, sourceCounts: { leiting: { area_count: 2 } }, settingsDrawer: { section: 'sources', draft: tiny } }, messages, 'zh-CN'),
+    messages,
+    'zh-CN'
+  );
+  assert.match(tinyMarkup, /区域 2（实测） · 最多 4 遍 × 2 区域 = 8 次请求\/端 · 并发 4 → 每遍 1 批/);
+});
+
+test('the lap draft seeds legacy rows, keeps stored laps, and defaults fresh rows', () => {
+  // Production-shaped row: 1000 rounds x 8 areas converts to 258 laps at the
+  // reference count 31, and to 267 at the measured 30.
+  const legacy = { leiting: { mode: 'credential', official_site: 'https://x.example', max_iterations: 1000, plateau_limit: 50 } };
+  const seeded = buildSourceIterationDraft(legacy);
+  assert.equal(seeded.sources.leiting.max_laps, 258);
+  assert.equal(seeded.sources.leiting.dry_laps, 13);
+  const measured = buildSourceIterationDraft(legacy, { leiting: { area_count: 30 } });
+  assert.equal(measured.sources.leiting.max_laps, 267);
+  // A row that never stored a legacy budget gets the shipped lap defaults.
+  const fresh = buildSourceIterationDraft({});
+  assert.equal(fresh.sources.leiting.max_laps, 50);
+  assert.equal(fresh.sources.leiting.dry_laps, 13);
+  // Stored lap values are kept verbatim; the legacy numbers stay beside them.
+  const stored = buildSourceIterationDraft({ leiting: { mode: 'credential', official_site: 'https://x.example', max_laps: 7, dry_laps: 3, max_iterations: 1000 } });
+  assert.equal(stored.sources.leiting.max_laps, 7);
+  assert.equal(stored.sources.leiting.dry_laps, 3);
+  assert.equal(stored.sources.leiting.max_iterations, 1000);
+  // Saving the seeded draft opts the row in and keeps the legacy keys on disk.
+  const saved = applySourceIterationDraft(legacy, seeded);
+  assert.equal(saved.leiting.max_laps, 258);
+  assert.equal(saved.leiting.dry_laps, 13);
+  assert.equal(saved.leiting.max_iterations, 1000);
+  assert.equal(saved.leiting.plateau_limit, 50);
+  assert.equal(saved.leiting.areas_per_round, 8);
+  // Opening and cancelling writes nothing: the input profile is untouched.
+  assert.equal(legacy.leiting.max_laps, undefined);
+  assert.equal(legacy.leiting.dry_laps, undefined);
+});
+
+test('the source drawer refuses dry laps above the total laps', () => {
+  const draft = buildSourceIterationDraft({});
+  assert.equal(validateSourceDraft(draft), '');
+  draft.sources.leiting.dry_laps = 51;
+  assert.match(validateSourceDraft(draft), /空转早停（遍）不能大于抓取遍数/);
+  draft.sources.leiting.dry_laps = 50;
+  assert.equal(validateSourceDraft(draft), '');
+  draft.sources.leiting.max_laps = 0;
+  assert.match(validateSourceDraft(draft), /抓取遍数至少为 1/);
+  draft.sources.leiting.max_laps = 50;
+  draft.sources.leiting.dry_laps = 1.5;
+  assert.match(validateSourceDraft(draft), /空转早停（遍）至少为 1/);
 });
 
 test('renderer network defaults round-trip through the drawer and save path', () => {

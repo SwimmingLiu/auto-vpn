@@ -11,6 +11,9 @@ contextBridge.exposeInMainWorld('vpnAutomation', {
   // is YYYY-MM-DD, or '' to clear the stored date.
   setAccountExpiry: (id, date) => ipcRenderer.invoke('accounts:expiry', { id, expires_at: date }),
   accountsTemplate: () => ipcRenderer.invoke('accounts:template'),
+  // Logs in to pooled accounts to learn their membership date and retires the
+  // lapsed / non-member rows. Returns the worker's outcome counts.
+  refreshAccountExpiry: (payload) => ipcRenderer.invoke('accounts:refresh-expiry', payload),
   runPipeline: (options) => ipcRenderer.invoke('pipeline:run', options),
   stopPipeline: () => ipcRenderer.invoke('pipeline:stop'),
   openUrl: (url) => ipcRenderer.invoke('external:open-url', url),

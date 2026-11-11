@@ -35,6 +35,7 @@ export interface ServerRuntime {
   importAccounts?(input: { content?: string; format?: string }): Promise<Record<string, unknown>>;
   setAccountStatus?(input: { id?: number; brand?: string; account?: string; status?: string; reason?: string }): Promise<Record<string, unknown>>;
   setAccountExpiry?(input: { id?: number; brand?: string; account?: string; expires_at?: string }): Promise<Record<string, unknown>>;
+  refreshAccountExpiry?(input: { brand?: string; limit?: number; concurrency?: number }): Promise<Record<string, unknown>>;
   startRun?(options: { skipDeploy?: boolean; skipVerify?: boolean; resumeLatest?: boolean }): Promise<Record<string, unknown>>;
   startRetry?(options: { artifactDir?: string; stage?: string }): Promise<Record<string, unknown>>;
   stopRun?(): Promise<Record<string, unknown>>;
@@ -216,26 +217,81 @@ function latestJob(projectRoot: string, env: NodeJS.ProcessEnv): Record<string, 
   }
 }
 
+/**
+ * Fold stage and substep transitions down to their latest state.
+ *
+ * The terminal guard is what keeps a finished run from reading as 运行中: the
+ * tail of a long log is mostly `extract_iteration`, so a fold that only looked
+ * at older lines dropped the final `success` of extract/dedupe/speedtest/
+ * availability. Folding the whole stream means the last transition always
+ * wins unless it would demote a terminal state back to `running`.
+ */
+function foldStageEvents(events: Array<Record<string, any>>): unknown[] {
+  const folded = new Map<string, Record<string, any>>();
+  for (const event of events) {
+    if (event.type === 'extract_substage' && typeof event.source_name === 'string'
+      && typeof event.platform === 'string' && typeof event.substage === 'string') {
+      folded.set(['substage', event.source_name, event.platform, event.substage].join(':'), event);
+    }
+    if (event.type === 'stage' && typeof event.stage === 'string') {
+      folded.set(`stage:${event.stage}`, event);
+    }
+  }
+  return [...folded.values()];
+}
+
+/**
+ * Replay history for a page load: folded states first, then the recent tail.
+ *
+ * Stage and substep transitions are dropped from the tail because their folded
+ * copy already carries the final state; keeping both would replay `running`
+ * after `success` and undo the fold.
+ */
+function foldEventHistory(events: Array<Record<string, any>>, maxEvents = 1000): unknown[] {
+  const folded = foldStageEvents(events);
+  const tail = events
+    .slice(-maxEvents)
+    .filter((event) => event.type !== 'stage' && event.type !== 'extract_substage');
+  return [...folded, ...tail];
+}
+
 function latestJobEvents(job: Record<string, any> | undefined, maxEvents = 1000): unknown[] {
   const eventLog = String(job?.event_log ?? '');
   if (!eventLog || !fs.existsSync(eventLog)) return [];
   try {
     const lines = fs.readFileSync(eventLog, 'utf8').split(/\r?\n/).filter(Boolean);
-    const events = lines.map((line) => parseJsonLine(line)).filter(Boolean);
-    const priorSteps = new Map<string, unknown>();
-    // APK/domain steps occur early. Preserve their latest states even when
-    // subsequent node logs exceed the bounded text-history window.
-    for (const event of events.slice(0, -maxEvents)) {
-      if (!event || typeof event !== 'object' || !('type' in event)) continue;
-      if (event.type === 'extract_substage' && 'source_name' in event && typeof event.source_name === 'string'
-        && 'platform' in event && typeof event.platform === 'string' && 'substage' in event && typeof event.substage === 'string') {
-        priorSteps.set([event.source_name, event.platform, event.substage].join(':'), event);
-      }
-      if (event.type === 'stage' && 'stage' in event && typeof event.stage === 'string') priorSteps.set(`stage:${event.stage}`, event);
-    }
-    return [...priorSteps.values(), ...events.slice(-maxEvents)];
+    const events = lines.map((line) => parseJsonLine(line)).filter(Boolean) as Array<Record<string, any>>;
+    return foldEventHistory(events, maxEvents);
   } catch {
     return [];
+  }
+}
+
+/**
+ * Stage/substep states and log lines for the latest artifact.
+ *
+ * A cron run has no job directory, so its only record is the mirror the CLI
+ * writes beside the artifact. Its log is the authoritative one when present:
+ * it covers every run path (foreground, detached, nightly) with one file.
+ */
+function artifactEventLog(artifactDir: string): { events: unknown[]; active: boolean } {
+  const filePath = path.join(artifactDir, 'events.jsonl');
+  if (!artifactDir || !fs.existsSync(filePath)) {
+    return { events: [], active: false };
+  }
+  try {
+    const lines = fs.readFileSync(filePath, 'utf8').split(/\r?\n/).filter(Boolean);
+    const events = lines.map((line) => parseJsonLine(line)).filter(Boolean) as Array<Record<string, any>>;
+    const finished = events.some((event) => event.type === 'summary' || event.type === 'run_failed' || event.type === 'finished');
+    let fresh = false;
+    try {
+      fresh = Date.now() - fs.statSync(filePath).mtimeMs < 2 * 60 * 1000;
+    } catch {
+      fresh = false;
+    }
+    return { events: foldEventHistory(events), active: !finished && fresh };
+  } catch {
+    return { events: [], active: false };
   }
 }
 
@@ -282,6 +338,30 @@ function safeRmDir(dirPath: string): void {
   }
 }
 
+/**
+ * Delete run records whose day is older than the retention window.
+ *
+ * T+1 is the default: the vendor's nightly run books its results after
+ * midnight, so a same-day prune would delete the run the operator is about to
+ * open. The window is calendar-day based rather than mtime based, so a file
+ * touched by a copy or a backup does not survive forever.
+ *
+ * `AUTOVPN_SERVER_HISTORY_RETENTION_DAYS` keeps its meaning (0 disables), and
+ * `AUTOVPN_SERVER_LOG_RETENTION_DAYS` overrides it for the log files alone.
+ */
+function retentionCutoffMs(env: NodeJS.ProcessEnv, days: number, now: Date): number {
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  return start.getTime() - days * 24 * 60 * 60 * 1000;
+}
+
+function logRetentionMs(env: NodeJS.ProcessEnv): number {
+  const raw = String(env.AUTOVPN_SERVER_LOG_RETENTION_DAYS ?? '').trim();
+  if (!raw) return historyRetentionMs(env);
+  const parsed = Number.parseFloat(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+  return parsed * 24 * 60 * 60 * 1000;
+}
+
 function pruneArtifacts(projectRoot: string, env: NodeJS.ProcessEnv, cutoffMs: number, activeArtifactDirs: Set<string>): void {
   const root = resolveArtifactsRoot(projectRoot, env);
   if (!fs.existsSync(root)) return;
@@ -296,6 +376,43 @@ function pruneArtifacts(projectRoot: string, env: NodeJS.ProcessEnv, cutoffMs: n
     if (!stat.isDirectory() || activeArtifactDirs.has(path.resolve(artifactDir))) continue;
     if (stat.mtimeMs < cutoffMs) {
       safeRmDir(artifactDir);
+    }
+  }
+}
+
+/**
+ * Age out daily-run logs and results on the same schedule.
+ *
+ * `scripts/server/daily-run.sh` appends one log and one result file per tick
+ * and never deletes either, so a host that runs nightly accumulates a year of
+ * them. The serve process owns both directories and prunes them here rather
+ * than adding a second cron entry that can drift.
+ */
+function pruneDailyRunRecords(env: NodeJS.ProcessEnv, cutoffMs: number): void {
+  const runtimeRoot = path.dirname(resolveProfilePath('', env));
+  for (const dirName of ['logs', 'daily-run-results']) {
+    const dir = path.join(runtimeRoot, dirName);
+    if (!fs.existsSync(dir)) continue;
+    let names: string[];
+    try {
+      names = fs.readdirSync(dir);
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      const file = path.join(dir, name);
+      let stat: fs.Stats;
+      try {
+        stat = fs.statSync(file);
+      } catch {
+        continue;
+      }
+      if (!stat.isFile() || stat.mtimeMs >= cutoffMs) continue;
+      try {
+        fs.rmSync(file, { force: true });
+      } catch {
+        // Best effort: an open log handle on another platform is not fatal.
+      }
     }
   }
 }
@@ -354,14 +471,25 @@ function createHistoryPruner(options: CreateServerRuntimeOptions): () => void {
   let lastPrunedAt = 0;
   return () => {
     const env = options.env ?? process.env;
-    const retention = historyRetentionMs(env);
-    if (retention <= 0) return;
-    const nowMs = (options.now ?? (() => new Date()))().getTime();
+    const now = (options.now ?? (() => new Date()))();
+    const nowMs = now.getTime();
+    // At most once a day, at the first state load after a day has passed. The
+    // cutoff is the start of the day N days back, so everything older than
+    // today (T+1) goes and a run that finished late yesterday stays.
     if (lastPrunedAt && nowMs - lastPrunedAt < 24 * 60 * 60 * 1000) return;
     lastPrunedAt = nowMs;
-    const cutoffMs = nowMs - retention;
-    const activeArtifactDirs = pruneJobs(options.projectRoot, env, cutoffMs);
-    pruneArtifacts(options.projectRoot, env, cutoffMs, activeArtifactDirs);
+    const retentionDays = historyRetentionMs(env) / (24 * 60 * 60 * 1000);
+    if (retentionDays > 0) {
+      const cutoffMs = retentionCutoffMs(env, retentionDays, now);
+      const activeArtifactDirs = pruneJobs(options.projectRoot, env, cutoffMs);
+      pruneArtifacts(options.projectRoot, env, cutoffMs, activeArtifactDirs);
+    }
+    // Logs carry their own window, so a host can keep a month of run records
+    // and only a day of stdout without a second cleanup entry to drift.
+    const logDays = logRetentionMs(env) / (24 * 60 * 60 * 1000);
+    if (logDays > 0) {
+      pruneDailyRunRecords(env, retentionCutoffMs(env, logDays, now));
+    }
   };
 }
 
@@ -369,6 +497,8 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
   let runState: ServerState['runState'] = 'idle';
   let activeJobId = '';
   let unsubscribeLogs: (() => void) | undefined;
+  let unsubscribeArtifactLogs: (() => void) | undefined;
+  let followedArtifactDir = '';
   const pruneHistory = createHistoryPruner(options);
   const subscribers = new Set<(event: unknown) => void>();
   const startDetachedRun = options.startDetachedRun ?? defaultStartDetachedRun;
@@ -376,10 +506,69 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
   const stopManagedJob = options.stopManagedJob ?? defaultStopManagedJob;
   const followLog = options.followLog ?? defaultFollowLog;
 
-  function publish(event: unknown): void {
+  const publish = (event: unknown): void => {
     for (const subscriber of subscribers) {
       subscriber(event);
     }
+  };
+
+  /**
+   * Follow a plain event log that no job directory owns.
+   *
+   * A nightly cron run writes `<artifact>/events.jsonl` (the CLI mirrors its
+   * stream there), but nothing tells the server to tail it: without this the
+   * page stays on whatever the last detached job left and the logs never move.
+   * Polling a file is enough here — the writer appends a line at a time and the
+   * page needs sub-second freshness, not inotify precision.
+   */
+  function followArtifactEvents(artifactDir: string): void {
+    if (followedArtifactDir === artifactDir && unsubscribeArtifactLogs) {
+      return;
+    }
+    unsubscribeArtifactLogs?.();
+    followedArtifactDir = artifactDir;
+    const filePath = path.join(artifactDir, 'events.jsonl');
+    let cancelled = false;
+    let offset = 0;
+    let pending = '';
+    const timer = setInterval(() => {
+      if (cancelled) return;
+      let chunk = '';
+      try {
+        const stat = fs.statSync(filePath);
+        if (stat.size <= offset) {
+          if (stat.size < offset) offset = 0;
+          return;
+        }
+        const length = stat.size - offset;
+        const buffer = Buffer.alloc(length);
+        const fd = fs.openSync(filePath, 'r');
+        try {
+          fs.readSync(fd, buffer, 0, length, offset);
+        } finally {
+          fs.closeSync(fd);
+        }
+        offset = stat.size;
+        chunk = pending + buffer.toString('utf8');
+      } catch {
+        return;
+      }
+      const lines = chunk.split(/\r?\n/);
+      pending = lines.pop() ?? '';
+      for (const line of lines) {
+        const event = parseJsonLine(line);
+        if (!event) continue;
+        const nextRunState = eventRunState(event as Record<string, any>);
+        if (nextRunState) runState = nextRunState;
+        publish(event);
+        if (nextRunState) publish({ type: 'server_state', run_state: runState });
+      }
+    }, 800);
+    timer.unref?.();
+    unsubscribeArtifactLogs = () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
   }
 
   function followJob(jobId: string): void {
@@ -451,6 +640,14 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
       ?? 'idle';
     if (runState !== 'running' && runState !== 'stopping') {
       activeJobId = '';
+      // A scheduled run has no job to follow, but its artifact log may still
+      // be growing. Restoring that follow is what makes the page live again
+      // after the server restarts mid-run.
+      const artifactDir = String(artifact?.artifact_dir ?? '');
+      if (artifactDir && artifactEventLog(artifactDir).active) {
+        runState = 'running';
+        followArtifactEvents(artifactDir);
+      }
     }
   }
 
@@ -461,6 +658,12 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
       restoreRunState(artifact);
       const retries = artifactList(options.projectRoot, options.env ?? process.env);
       const job = latestJob(options.projectRoot, options.env ?? process.env);
+      // The artifact's own mirror wins when it exists: a scheduled run has no
+      // job, and replaying an older job's log put four finished stages back to
+      // 运行中 on the results page. A stale artifact log is still the right
+      // history — it is this artifact's, not another run's — so only its
+      // `active` flag (which drives live following) is time-bounded.
+      const artifactLog = artifactEventLog(String(artifact?.artifact_dir ?? ''));
       return {
         profile: sanitizeProfileForServer(profilePayload(options.projectRoot, options.env)),
         runState,
@@ -469,7 +672,7 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
         activity: Array.isArray(retries.activity) ? retries.activity : [],
         activityUnavailable: Number(retries.activityUnavailable ?? 0),
         deployment: (artifact?.deployment ?? {}) as Record<string, unknown>,
-        logEvents: latestJobEvents(job)
+        logEvents: artifactLog.events.length ? artifactLog.events : latestJobEvents(job)
       };
     },
     async saveProfile(profile) {
@@ -544,6 +747,41 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
         store.close();
       }
     },
+    /**
+     * Learn every pooled account's membership date, then retire the lapsed and
+     * non-member rows.
+     *
+     * The worker is imported lazily: it pulls in the whole credential pipeline,
+     * and `serve` must start on an install whose dist predates it.
+     */
+    async refreshAccountExpiry(input = {}) {
+      let worker: ((options: Record<string, unknown>) => Promise<Record<string, unknown>>) | undefined;
+      try {
+        const module = await import('../pipeline/credential-source.js') as unknown as Record<string, unknown>;
+        worker = typeof module.refreshAccountExpiry === 'function'
+          ? module.refreshAccountExpiry as (options: Record<string, unknown>) => Promise<Record<string, unknown>>
+          : undefined;
+      } catch {
+        worker = undefined;
+      }
+      if (!worker) return { ok: false, error: 'refresh_expiry_unavailable' };
+      const store = new AccountStore({ env: options.env, now: options.now });
+      try {
+        const outcome = await worker({
+          brand: String(input.brand ?? '').trim() || undefined,
+          limit: Math.max(0, Math.trunc(Number(input.limit ?? 0)) || 0),
+          concurrency: Math.max(1, Math.trunc(Number(input.concurrency ?? 3)) || 3),
+          env: options.env,
+          store,
+          now: options.now
+        });
+        return { ok: true, ...outcome, stats: store.stats() };
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : String(error) };
+      } finally {
+        store.close();
+      }
+    },
     async startRun(runOptions = {}) {
       if (runState === 'running' || runState === 'stopping') {
         return { ok: false, error: 'run_already_active' };
@@ -568,6 +806,7 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
         throw error;
       }
       activeJobId = String(job.job_id ?? '');
+      unsubscribeArtifactLogs?.();
       followJob(activeJobId);
       return { ok: true, runId: activeJobId, job_id: activeJobId, status: job.status ?? 'running' };
     },
@@ -591,6 +830,7 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
         cwd: options.projectRoot
       });
       activeJobId = String(job.job_id ?? '');
+      unsubscribeArtifactLogs?.();
       followJob(activeJobId);
       return { ok: true, runId: activeJobId, job_id: activeJobId, status: job.status ?? 'running' };
     },
@@ -621,6 +861,7 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
     },
     async close() {
       unsubscribeLogs?.();
+      unsubscribeArtifactLogs?.();
       if (!activeJobId) {
         const artifact = normalizeLatestArtifact(options.projectRoot, options.env ?? process.env);
         restoreRunState(artifact);

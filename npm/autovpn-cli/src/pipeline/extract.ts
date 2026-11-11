@@ -79,6 +79,8 @@ export interface ExtractedSourceResult {
   /** Sum of the per-platform rounds, so progress is not just the request cap. */
   rounds_total?: number;
   platforms?: string[];
+  /** Frozen area-list length from a credential run; the drawer's lap estimate needs it. */
+  area_count?: number;
 }
 
 export interface ExtractBackendOptions {
@@ -551,7 +553,8 @@ export async function fetchSourceLinksWithBackend(input: ExtractInput, options: 
       // so an early-stopped 1000-round run still read as 1000/1000.
       rounds: result.diagnostics.rounds,
       rounds_total: result.diagnostics.rounds_total,
-      platforms: result.diagnostics.platforms
+      platforms: result.diagnostics.platforms,
+      area_count: result.diagnostics.route_count
     };
   }
   return fetchSourceLinksInNode(input, options);

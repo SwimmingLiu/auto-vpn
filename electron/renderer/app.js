@@ -22,6 +22,7 @@ import {
   buildRunsStageProgressMarkup,
   buildSpeedTestDraft,
   buildSourceIterationDraft,
+  buildSourceLapEstimate,
   buildSidebarNav,
   buildViewModel,
   buildAccountPoolRecords,
@@ -119,6 +120,8 @@ const state = {
     sortBy: 'brand',
     busy: false,
     canSetExpiry: typeof window.vpnAutomation?.setAccountExpiry === 'function',
+    canRefreshExpiry: typeof window.vpnAutomation?.refreshAccountExpiry === 'function',
+    refreshingExpiry: false,
     expiryEditorId: null
   },
   isDemo: false,
@@ -655,6 +658,12 @@ function handleDocumentInput(event) {
         sourceDraft[sourceName][key] = Math.min(SOURCE_MAXIMUM_KEYS.get(key), sourceDraft[sourceName][key]);
       }
     }
+    // The row's estimate is derived from these inputs; refresh just that line
+    // so the caret in the number input is never replaced mid-edit.
+    if (key === 'max_laps' || key === 'dry_laps' || key === 'area_concurrency') {
+      const estimate = document.querySelector(`[data-source-estimate="${CSS.escape(sourceName)}"]`);
+      if (estimate) estimate.textContent = buildSourceLapEstimate(sourceDraft[sourceName], state.sourceCounts?.[sourceName]?.area_count);
+    }
     return;
   }
 
@@ -807,6 +816,9 @@ const SOURCE_NUMERIC_KEYS = new Set([
   'plateau_limit',
   'areas_per_round',
   'area_concurrency',
+  'max_laps',
+  'dry_laps',
+  'min_laps',
   'max_runtime_seconds',
   'max_areas',
   'area_min',
@@ -818,7 +830,9 @@ const SOURCE_MINIMUM_ONE_KEYS = new Set([
   'max_iterations',
   'plateau_limit',
   'areas_per_round',
-  'area_concurrency'
+  'area_concurrency',
+  'max_laps',
+  'dry_laps'
 ]);
 
 /** Numeric source fields with a hard upper bound, matching the backend clamp. */
@@ -1055,7 +1069,7 @@ function buildSettingsDraft(section) {
     return null;
   }
 
-  if (section === 'sources') return buildSourceIterationDraft(state.profile.sources);
+  if (section === 'sources') return buildSourceIterationDraft(state.profile.sources, state.sourceCounts);
   if (section === 'speed_test') return buildSpeedTestDraft(state.profile.speed_test);
   if (section === 'availability_targets') return buildAvailabilityTargetDraft(state.profile.availability_targets);
   if (section === 'deploy') return buildDeployDraft(state.profile.deploy);
@@ -1117,6 +1131,7 @@ async function hydrateAccountPool() {
   // Re-detect each hydration: the preload bridge is fixed for the page, but a
   // test harness or a future H5 adapter may attach it after bootstrap.
   state.accountPool.canSetExpiry = typeof window.vpnAutomation?.setAccountExpiry === 'function';
+  state.accountPool.canRefreshExpiry = typeof window.vpnAutomation?.refreshAccountExpiry === 'function';
   touchUpdate();
   renderAccountPoolPanelOnly();
   if (!window.vpnAutomation?.loadAccounts) {
@@ -1170,6 +1185,10 @@ async function handleAccountPoolAction(button) {
     );
     return;
   }
+  if (action === 'refresh-expiry') {
+    await refreshAccountExpiry();
+    return;
+  }
   if (action === 'upload') {
     document.querySelector('#accountPoolFile')?.click();
     return;
@@ -1198,6 +1217,44 @@ async function handleAccountPoolAction(button) {
     const input = document.querySelector(`[data-account-expiry-input="${CSS.escape(String(id))}"]`);
     await setAccountExpiry(id, input?.value ?? '');
   }
+}
+
+/**
+ * Log in to the pool to learn each account's real membership date.
+ *
+ * A run leases one account per brand, so a freshly imported pool keeps blank
+ * dates almost forever. This walks the active rows deliberately; the worker
+ * retires the lapsed and non-member ones, and the panel then shows the counts
+ * it actually changed rather than a generic success.
+ */
+async function refreshAccountExpiry() {
+  if (state.accountPool.refreshingExpiry || typeof window.vpnAutomation?.refreshAccountExpiry !== 'function') {
+    return;
+  }
+  state.accountPool.refreshingExpiry = true;
+  state.accountPool.busy = true;
+  renderAccountPoolPanelOnly();
+  try {
+    const result = await window.vpnAutomation.refreshAccountExpiry({});
+    if (result?.ok === false) {
+      throw new Error(result.error || '核对失败');
+    }
+    const checked = Number(result?.checked ?? 0);
+    const updated = Number(result?.updated ?? 0);
+    const expired = Number(result?.expired ?? 0);
+    const failed = Number(result?.failed ?? 0);
+    showToast({
+      tone: failed > 0 ? 'warning' : 'success',
+      message: `核对 ${checked} 个账号：更新到期日 ${updated} 个，剔除 ${expired} 个${failed > 0 ? `，${failed} 个未能登录` : ''}`,
+      durationMs: 5200
+    });
+  } catch (error) {
+    showToast({ tone: 'danger', message: resolveErrorMessage(error), durationMs: 5200 });
+  } finally {
+    state.accountPool.refreshingExpiry = false;
+    state.accountPool.busy = false;
+  }
+  await hydrateAccountPool();
 }
 
 async function setAccountExpiry(id, expiresAt) {
@@ -1817,6 +1874,17 @@ function handlePipelineEventDetails(event, options = {}) {
   }
 
   if (event.type === 'extract_source_completed') {
+    // The frozen area list's length feeds the drawer's lap estimate; older
+    // artifacts have no area_count, so it stays optional everywhere.
+    if (event.source_name && Number(event.area_count) >= 1) {
+      state.sourceCounts = {
+        ...state.sourceCounts,
+        [event.source_name]: {
+          ...(state.sourceCounts[event.source_name] ?? {}),
+          area_count: Math.trunc(Number(event.area_count))
+        }
+      };
+    }
     if (!event.progress_snapshot && !(historical && state.progressSnapshot)) updateExtractMetrics({ source_name: event.source_name, total_links: event.raw_links });
     appendLog(`[extract] ${event.source_name} 完成，成功 ${event.successful_iterations ?? 0} 次，失败 ${event.failed_iterations ?? 0} 次，原始节点 ${event.raw_links ?? 0} 个`, {
       kind: 'stage',

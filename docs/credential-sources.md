@@ -8,7 +8,7 @@ the account pool, and the control-plane key is discovered from the APK.
 ## Configuration
 
 The settings drawer edits the four vendor rows. Each one carries an official
-site and a round budget, nothing else:
+site and a lap budget, nothing else:
 
 ```toml
 [sources]
@@ -16,31 +16,50 @@ site and a round budget, nothing else:
 mode = "credential"
 official_site = "https://<OFFICIAL_SITE>"
 enabled = true
-max_iterations = 200
-plateau_limit = 50
-areas_per_round = 8
+max_laps = 50
+dry_laps = 13
 area_concurrency = 4
 ```
+
+A **lap** asks every area on the vendor's frozen list exactly once, so
+requests per platform = laps × area count, with no hidden conversion factor.
+Setting any of `max_laps` / `dry_laps` / `min_laps` opts the row into lap mode:
+one round IS one lap, and `areas_per_round` is ignored (the batch is the whole
+list). A row with none of the three keys keeps the legacy round policy
+byte-for-byte — nothing is migrated or rewritten on upgrade.
 
 | Field | Required | Meaning |
 |---|---|---|
 | `mode` | yes | `credential` (the four vendor rows are always credential) |
 | `official_site` | yes | Official site; the current APK is located from here |
-| `max_iterations` | no | Rounds per platform — Android and iOS each run this many; `200` when omitted |
-| `plateau_limit` | no | Consecutive rounds with no genuinely new node; `50` when omitted |
-| `areas_per_round` | no | Areas taken from the fixed list each round; `8` when omitted |
-| `area_concurrency` | no | Concurrent area requests inside one round; `4` when omitted (max 16) |
-| `min_iterations` | no | Rounds that always run before early stopping; `0` when omitted |
-| `max_runtime_seconds` | no | Wall-clock budget past `min_iterations`; `0` means unlimited |
+| `max_laps` | no | Laps per platform — Android and iOS each run this many; `50` when omitted in lap mode |
+| `dry_laps` | no | Consecutive laps with no genuinely new node that stop the channel; `13` when omitted in lap mode |
+| `min_laps` | no | Laps that always run before early stop or the time budget; `0` when omitted. Profile-only; lap mode reads this instead of `min_iterations` |
+| `area_concurrency` | no | Concurrent area requests inside one lap/round; `4` when omitted (max 16) |
+| `max_iterations` | no | Legacy: rounds per platform when no lap key is set; `200` when omitted |
+| `plateau_limit` | no | Legacy: consecutive dry rounds when no lap key is set; `50` when omitted |
+| `areas_per_round` | no | Legacy: areas taken from the fixed list each round; `8` when omitted. Ignored in lap mode, but still persisted |
+| `min_iterations` | no | Legacy: rounds that always run before early stopping; `0` when omitted. Not read in lap mode — use `min_laps` there |
+| `max_runtime_seconds` | no | Wall-clock budget past the floor, in either mode; `0` means unlimited. In lap mode it is checked between laps |
 | `device_id` | no | Fixed device id; a built-in default when omitted |
 | `apk_url` / `apk_path` | no | Pin a specific build instead of site discovery |
 | `backend_brand` | no | Data plane to use when it is not the row's own vendor. The account is still leased as the row's brand. Only 黑洞 currently needs it — see [below](#reading-the-雷霆-data-plane-from-a-黑洞-account). |
 | `platforms` | no | Internal/test override only; omitted means both channels. The drawer does not edit it, and a save keeps whatever the profile already had. |
 
-`min_iterations`, `max_runtime_seconds`, `device_id`, `apk_url` / `apk_path` and
-`platforms` are profile-only: the drawer does not render them, and saving the
-drawer leaves them as they were. Edit `profile.toml` when a pinned run needs
-them.
+`min_laps`, `min_iterations`, `max_runtime_seconds`, `device_id`, `apk_url` /
+`apk_path` and `platforms` are profile-only: the drawer does not render them,
+and saving the drawer leaves them as they were. Edit `profile.toml` when a
+pinned run needs them. The legacy `max_iterations` / `plateau_limit` /
+`areas_per_round` values also survive every save untouched; they simply stop
+being consulted once a lap key is present.
+
+The drawer seeds a legacy row's laps as
+`round(max_iterations × areas_per_round / N)` (and the same conversion for
+`dry_laps` from `plateau_limit`), where N is the area count the last run
+measured, else 31 (labelled 估算). Seeding happens in the draft only: opening
+the drawer and pressing 取消 writes nothing; pressing 保存 opts the row into
+lap mode, and the row's estimate line shows the resulting request counts
+before that happens.
 
 `account` / `password` / `key` / `platform` are no longer part of the
 contract. An old profile that still carries them is normalized on read and on
@@ -111,33 +130,37 @@ route list bounds the regions you can reach, not the number of nodes.
 
 Every run builds one area list before the first request: all regions the node
 list advertises, minus China and the free tier, deduped by area id, in vendor
-order. That list is frozen for the whole run. Each round takes the next
-`areas_per_round` entries from it and the cursor wraps at the end, so a run cut
-short by the round cap or by an early stop still reaches the tail of the list —
-the old loop re-asked the same head every round and starved later regions.
+order. That list is frozen for the whole run. Measured lengths: 雷霆 30,
+黑洞 31, 蜜蜂 31, 旋风 26.
 
-The areas inside one round are requested concurrently, `area_concurrency` at a
-time (default 4). The shipped `areas_per_round = 8` therefore keeps up to 8
-requests in flight, which covers a 31-area list in four rounds. Measured on
-雷霆: 30 areas sequentially cost ~30s per sweep; five rounds of
-`areas_per_round = 6` / `area_concurrency = 6` (30 nodes) finish in 14s. Setting
-`areas_per_round = 1` makes a round one request, and the concurrency setting
-then has nothing to fan out.
+In **lap mode** each round takes the whole list — one round is one lap, every
+area asked exactly once, no wrap mid-lap. The areas inside a lap are requested
+concurrently, `area_concurrency` at a time (default 4), so a lap runs in
+`ceil(N / C)` waves (~1s per request measured): a 30-area lap at concurrency 4
+is 8 waves. Because the batch is the whole list (N ≥ 26 on all four vendors),
+the width can no longer silently fall below the concurrency and disable it.
 
-### Rounds are per platform
+In **legacy mode** (no lap key) each round takes the next `areas_per_round`
+entries and the cursor wraps at the end, so a run cut short by the round cap or
+by an early stop still reaches the tail of the list — the old loop re-asked the
+same head every round and starved later regions. Setting `areas_per_round = 1`
+makes a round one request, and the concurrency setting then has nothing to fan
+out; lap mode removes that trap.
 
-`max_iterations` is the budget for **each** channel. `1000` means 1000 rounds on
-Android **and** 1000 rounds on iOS, running at the same time — never 500 + 500,
-never a shared counter.
+### The budget is per platform
+
+`max_laps` (or legacy `max_iterations`) is the budget for **each** channel.
+`50` laps means 50 laps on Android **and** 50 laps on iOS, running at the same
+time — never 25 + 25, never a shared counter.
 
 | Setting | Effect |
 |---|---|
-| `max_iterations` | Rounds each platform runs |
-| `areas_per_round` | Areas taken from the fixed list per round |
-| `area_concurrency` | Concurrent area requests within a round |
-| `min_iterations` | Rounds that always run, even after the pool stops growing |
-| `plateau_limit` | Consecutive rounds with no genuinely new node that end the run |
-| `max_runtime_seconds` | Wall-clock budget, likewise only after `min_iterations` |
+| `max_laps` | Laps each platform runs (lap mode) |
+| `dry_laps` | Consecutive laps with no genuinely new node that stop the channel |
+| `min_laps` | Laps that always run, even after the pool stops growing |
+| `area_concurrency` | Concurrent area requests within a lap/round |
+| `max_iterations` / `plateau_limit` / `areas_per_round` / `min_iterations` | The legacy round equivalents, read only when no lap key is set |
+| `max_runtime_seconds` | Wall-clock budget, likewise only after the floor; checked between laps in lap mode |
 
 ### Early stop counts node identity, not link strings
 
@@ -149,21 +172,26 @@ name (`ps`) is not part of it. So:
   longer counts as new;
 - a node iOS already produced does not reset Android's counter.
 
-`plateau_limit = 50` therefore means exactly what it says: 50 consecutive rounds
-in which this channel produced no node neither platform had seen before. Raw
-link delivery is tracked separately, so a relabelled duplicate still reaches the
-downstream pool.
+`dry_laps = 13` (legacy `plateau_limit = 50` rounds) therefore means exactly
+what it says: that many consecutive laps (rounds) in which this channel
+produced no node neither platform had seen before. Raw link delivery is tracked
+separately, so a relabelled duplicate still reaches the downstream pool.
 
 A round where every candidate host failed is not a dry round — it is an outage.
-Those rounds do not advance the plateau; after five in a row the channel stops
-with an explicit error, and a direct run escalates to the upstream proxy first.
+Those rounds do not advance the plateau; the channel stops with an explicit
+error after a short run of them, and a direct run escalates to the upstream
+proxy first. The guard keeps its request volume when the unit changes: legacy
+mode stops after 5 empty rounds (40 requests at width 8); lap mode after
+`max(2, ceil(5 × 8 / N))` empty laps — 2 laps (60 requests) on a 30-area list.
+The placeholder guard scales the same way from 8 rounds.
 
 ### A placeholder-only channel stops itself
 
 黑洞's Android channel answers `1.1.1.1:443` for every area, on every account,
 with or without the client's `kbox` parameter. A channel that has produced only
-placeholder nodes for 8 consecutive rounds is stopped and reported; the other
-channel keeps running. See the next section.
+placeholder nodes for 8 consecutive rounds (lap mode: `max(2, ceil(8 × 8 / N))`
+laps, 3 on a 30-area list) is stopped and reported; the other channel keeps
+running. See the next section.
 
 ## 黑洞: the iOS channel is the whole node pool
 

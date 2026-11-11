@@ -396,3 +396,48 @@ test('run route rejects oversized json bodies', async () => {
     await service.close();
   }
 });
+
+test('account expiry refresh route delegates to the runtime and reports its counts', async () => {
+  const calls = [];
+  const service = await createAutoVpnServer({
+    host: '127.0.0.1',
+    port: 0,
+    projectRoot: '/repo',
+    auth: { enabled: false, token: '' },
+    runtime: {
+      loadState: async () => ({ profile: {}, runState: 'idle' }),
+      refreshAccountExpiry: async (input) => {
+        calls.push(input);
+        return { ok: true, checked: 12, updated: 9, expired: 3, failed: 0 };
+      }
+    }
+  });
+  try {
+    const response = await fetch(`${service.origin}/api/accounts/refresh-expiry`, {
+      method: 'POST',
+      body: JSON.stringify({ brand: 'leiting', limit: 20, concurrency: 4 })
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { ok: true, checked: 12, updated: 9, expired: 3, failed: 0 });
+    assert.deepEqual(calls, [{ brand: 'leiting', limit: 20, concurrency: 4 }]);
+  } finally {
+    await service.close();
+  }
+});
+
+test('account expiry refresh answers 400 when the installed build has no worker', async () => {
+  const service = await createAutoVpnServer({
+    host: '127.0.0.1',
+    port: 0,
+    projectRoot: '/repo',
+    auth: { enabled: false, token: '' },
+    runtime: { loadState: async () => ({ profile: {}, runState: 'idle' }) }
+  });
+  try {
+    const response = await fetch(`${service.origin}/api/accounts/refresh-expiry`, { method: 'POST', body: '{}' });
+    assert.equal(response.status, 400);
+    assert.deepEqual(await response.json(), { ok: false, error: 'refresh_expiry_unavailable' });
+  } finally {
+    await service.close();
+  }
+});
