@@ -126,18 +126,18 @@ input, select, textarea { min-height: 36px; padding-inline: 10px; border-radius:
 :root[data-theme="dark"] .distribution-plot svg { filter: drop-shadow(0 10px 26px rgb(0 0 0 / 45%)); }
 .ring-readout { display: grid; justify-items: center; gap: 3px; }
 .ring-value { font-size: 30px; font-weight: 750; letter-spacing: -.02em; line-height: 1.05; font-variant-numeric: tabular-nums; }
-.ring-caption { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--text-soft); white-space: nowrap; }
+.ring-caption { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-soft); white-space: nowrap; }
 .distribution-chips { display: flex; flex-wrap: wrap; align-content: flex-start; gap: 7px 8px; margin: 0; padding: 0; list-style: none; }
 /* Chips drive the ring's focus, so they carry the same 44px target as every
    other control; the flow layout keeps that height from stretching the card. */
 .distribution-chip { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 6px 12px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); color: var(--text); font-size: 12.5px; font-weight: 550; line-height: 1.1; cursor: pointer; box-shadow: 0 1px 2px rgb(25 30 55 / 4%); }
 .distribution-chip:hover, .distribution-chip:focus-visible { border-color: var(--chip-color, var(--accent)); background: color-mix(in srgb, var(--chip-color, var(--accent)) 10%, var(--surface)); outline: none; }
 .distribution-chip.is-active { border-color: var(--chip-color, var(--accent)); background: color-mix(in srgb, var(--chip-color, var(--accent)) 14%, var(--surface)); box-shadow: 0 4px 14px color-mix(in srgb, var(--chip-color, var(--accent)) 26%, transparent); }
-.distribution-dot { width: 8px; height: 8px; flex: none; border-radius: 50%; box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 0%, transparent); }
+.distribution-dot { width: 8px; height: 8px; flex: none; border-radius: 50%; }
 .distribution-flag { font-size: 13px; line-height: 1; }
 .distribution-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .distribution-value { font-variant-numeric: tabular-nums; font-weight: 750; }
-.distribution-share { color: var(--text-soft); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.distribution-share { color: var(--text-soft); font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .chart-empty { min-height: 104px; display: flex; align-items: center; justify-content: center; gap: 16px; color: var(--text-soft); font-size: 13px; }
 .empty-donut { width: 76px; height: 76px; border: 13px solid var(--surface-muted); border-radius: 50%; }
 .analytics-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
