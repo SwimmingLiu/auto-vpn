@@ -17,7 +17,7 @@ autovpn --version
 For a pinned GitHub Release tarball:
 
 ```bash
-export AUTOVPN_VERSION=2.1.1
+export AUTOVPN_VERSION=2.1.2
 npm install -g "https://github.com/SwimmingLiu/auto-vpn/releases/download/v${AUTOVPN_VERSION}/swimmingliu-autovpn-${AUTOVPN_VERSION}.tgz"
 ```
 
