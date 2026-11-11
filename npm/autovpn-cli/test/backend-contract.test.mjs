@@ -896,6 +896,118 @@ test('NodeBackend run resume-latest uses the latest incomplete run database', as
   assert.equal(events.at(-1).run_status, 'success');
   assert.equal(events.at(-1).stage_status.deploy, 'skipped');
   assert.equal(events.at(-1).stage_status.verify, 'skipped');
+
+  // A resumed run emits no `run_started`, so the mirror is seeded from the
+  // artifact instead. Without it the artifact log keeps the interrupted run's
+  // `running` stages forever and the served page never shows the resume.
+  const mirrored = (await readFile(path.join(artifactDir, 'events.jsonl'), 'utf8'))
+    .split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  assert.equal(mirrored.length, events.length);
+  assert.equal(mirrored[0].type, 'resume_latest_state');
+  assert.equal(mirrored.at(-1).type, 'summary');
+  assert.equal(mirrored.at(-1).run_status, 'success');
+});
+
+test('a plain resume mirrors into the session artifact without a run_started', async (t) => {
+  const projectRoot = await mkdtemp(path.join(os.tmpdir(), 'autovpn-event-mirror-resume-'));
+  t.after(() => rm(projectRoot, { recursive: true, force: true }));
+  const runtimeRoot = path.join(projectRoot, '.runtime');
+  const artifactDir = path.join(runtimeRoot, 'artifacts', '20261112-060000');
+  const session = path.join(projectRoot, 'session');
+  const link = vmessLink('resume-mirror', 'resume-mirror.example');
+  await mkdir(artifactDir, { recursive: true });
+  await mkdir(session, { recursive: true });
+  await mkdir(path.join(projectRoot, 'state'), { recursive: true });
+  await writeFile(path.join(projectRoot, 'state', 'profile.toml'), [
+    'availability_targets = [{ host = "127.0.0.1", port = 1, path = "/" }]',
+    '',
+    '[speed_test]',
+    'min_download_mb_s = 1',
+    'timeout_seconds = 1',
+    'concurrency = 1',
+    ''
+  ].join('\n'), 'utf8');
+  await writeFile(path.join(artifactDir, 'pipeline_report.json'), JSON.stringify({
+    artifact_dir: artifactDir,
+    stage_status: { doctor: 'success', extract: 'success', dedupe: 'success', speedtest: 'success' },
+    counts: { speedtest_links: 1 },
+    source_counts: {},
+    deployment: {},
+    retry_context: {},
+    run_status: 'running',
+    error: ''
+  }), 'utf8');
+  await writeFile(path.join(session, 'session.json'), JSON.stringify({ artifact_dir: artifactDir }), 'utf8');
+  const { RunStore } = await import('../dist/pipeline/run-store.js');
+  const store = RunStore.open(path.join(artifactDir, 'run.db'));
+  store.initializeRun('running');
+  store.recordExtractedNode('leiting', link);
+  store.recordSpeedResult({ link, reachable: true, average_download_mb_s: 5, latency_ms: 20, error: '' }, true);
+  store.close();
+
+  const backend = new NodeBackend({
+    env: {
+      AUTOVPN_NO_PYTHON: '1',
+      VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot,
+      VPN_AUTOMATION_PROFILE_PATH: path.join(projectRoot, 'state', 'profile.toml')
+    },
+    cwd: projectRoot
+  });
+  const events = [];
+  // Nothing listens on the availability target, so the resume fails — but it
+  // emits its resume state first, which is what the mirror has to capture.
+  await assert.rejects(() => (async () => {
+    for await (const event of backend.resume({ projectRoot, mode: 'pipeline', session, output: 'jsonl' })) events.push(event);
+  })());
+  assert.ok(events.some((event) => event.type === 'resume_pipeline_state'), 'the resume must report its state');
+  assert.equal(events.some((event) => event.type === 'run_started'), false);
+  const mirror = path.join(artifactDir, 'events.jsonl');
+  assert.equal(existsSync(mirror), true, 'the artifact log must exist for the server to follow');
+  const lines = (await readFile(mirror, 'utf8')).split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  assert.equal(lines.length, events.length);
+  assert.equal(lines[0].type, events[0].type);
+});
+
+test('a run mirrors its events beside the artifact, once, with owner-only mode', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'autovpn-event-mirror-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const artifactsRoot = path.join(root, 'artifacts');
+  const backend = new NodeBackend({ env: { VPN_AUTOMATION_RUNTIME_ROOT: root }, cwd: root });
+  const events = [];
+  await assert.rejects(() => (async () => {
+    for await (const event of backend.run({ projectRoot: root, output: 'jsonl' })) events.push(event);
+  })());
+  const started = events.find((event) => event.type === 'run_started');
+  assert.ok(started?.artifact_dir, 'the run must name its artifact before failing');
+  const mirror = path.join(started.artifact_dir, 'events.jsonl');
+  assert.equal(existsSync(mirror), true);
+  const lines = (await readFile(mirror, 'utf8')).split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  // One line per emitted event: the mirror must not duplicate the stream.
+  assert.equal(lines.length, events.length);
+  assert.equal(lines.filter((line) => line.type === 'run_started').length, 1);
+  assert.equal((await stat(mirror)).mode & 0o777, 0o600);
+  assert.equal(existsSync(artifactsRoot), true);
+});
+
+test('an explicit --event-log at the mirror path is not written twice', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'autovpn-event-mirror-explicit-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const backend = new NodeBackend({ env: { VPN_AUTOMATION_RUNTIME_ROOT: root }, cwd: root });
+  const first = [];
+  await assert.rejects(() => (async () => {
+    for await (const event of backend.run({ projectRoot: root, output: 'jsonl' })) first.push(event);
+  })());
+  const artifactDir = first.find((event) => event.type === 'run_started').artifact_dir;
+  const explicit = path.join(artifactDir, 'events.jsonl');
+  const before = (await readFile(explicit, 'utf8')).split('\n').filter(Boolean).length;
+  // A second run writing the same path through --event-log must leave the
+  // mirror alone: the orchestrator already appends there.
+  const again = [];
+  await assert.rejects(() => (async () => {
+    for await (const event of backend.run({ projectRoot: root, output: 'jsonl', eventLog: explicit })) again.push(event);
+  })());
+  const after = (await readFile(explicit, 'utf8')).split('\n').filter(Boolean).length;
+  assert.equal(after - before, again.length);
 });
 
 test('a run mirrors its events beside the artifact, once, with owner-only mode', async (t) => {

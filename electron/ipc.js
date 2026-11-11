@@ -264,13 +264,23 @@ export function registerIpcHandlers({
       return JSON.parse(output.stdout);
     } catch (error) {
       // The worker exits 1 when some accounts failed, but still prints the
-      // full outcome; that body is more useful than "Command failed".
+      // full outcome; that body is more useful than "Command failed". Node's
+      // own ExperimentalWarning lands on stderr, so the outcome is read from
+      // stdout line by line rather than from the error message.
       const message = error instanceof Error ? error.message : String(error);
-      try {
-        return JSON.parse(message);
-      } catch {
-        return { ok: false, error: message };
+      for (const body of [error?.stdout, error?.stderr, message]) {
+        for (const line of String(body ?? '').split('\n').reverse()) {
+          const text = line.trim();
+          if (!text.startsWith('{')) continue;
+          try {
+            const parsed = JSON.parse(text);
+            if (parsed && typeof parsed === 'object') return parsed;
+          } catch {
+            // Not the outcome line; keep looking.
+          }
+        }
       }
+      return { ok: false, error: message };
     }
   });
 
@@ -525,7 +535,15 @@ function runCommand(
     child.on('error', reject);
     child.on('close', (code) => {
       if (code !== 0) {
-        reject(new Error(stderr || stdout || `Command failed: ${command}`));
+        const failure = new Error(stderr || stdout || `Command failed: ${command}`);
+        // A command can exit non-zero and still have printed its real result
+        // (`accounts refresh-expiry` exits 1 when any account failed). The
+        // message above prefers stderr, which node also uses for warnings, so
+        // the streams are carried alongside it instead of being lost.
+        failure.stdout = stdout;
+        failure.stderr = stderr;
+        failure.code = code;
+        reject(failure);
         return;
       }
       resolve({ stdout, stderr, code });

@@ -1285,7 +1285,10 @@ export function buildSourceIterationDraft(sources = {}, sourceCounts = {}) {
     const seedIterations = coercePositiveInteger(stored.max_iterations, legacyIterations);
     const seedPlateau = coercePositiveInteger(stored.plateau_limit, legacyPlateau);
     source.max_laps = Math.max(1, Math.round((seedIterations * legacyWidth) / areas));
-    source.dry_laps = Math.max(1, Math.round((seedPlateau * legacyWidth) / areas));
+    // A round-mode row may legitimately carry a plateau above its cap (the cap
+    // wins there). Converted to laps that pair would be refused by the drawer's
+    // own validator, so the seed clamps it: an untouched row must stay savable.
+    source.dry_laps = Math.min(source.max_laps, Math.max(1, Math.round((seedPlateau * legacyWidth) / areas)));
   }
   const firstSource = Object.values(normalized)[0] ?? {};
   return {

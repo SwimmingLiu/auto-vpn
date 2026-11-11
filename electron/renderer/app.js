@@ -1242,10 +1242,12 @@ async function refreshAccountExpiry() {
     const checked = Number(result?.checked ?? 0);
     const updated = Number(result?.updated ?? 0);
     const expired = Number(result?.expired ?? 0);
+    const retired = Number(result?.retired ?? 0);
     const failed = Number(result?.failed ?? 0);
     showToast({
       tone: failed > 0 ? 'warning' : 'success',
-      message: `核对 ${checked} 个账号：更新到期日 ${updated} 个，剔除 ${expired} 个${failed > 0 ? `，${failed} 个未能登录` : ''}`,
+      message: `核对 ${checked} 个账号：更新到期日 ${updated} 个，剔除 ${expired + retired} 个`
+        + `${failed > 0 ? `，${failed} 个未能登录` : ''}`,
       durationMs: 5200
     });
   } catch (error) {

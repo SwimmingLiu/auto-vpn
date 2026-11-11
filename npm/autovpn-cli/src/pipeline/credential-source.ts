@@ -2446,7 +2446,7 @@ export interface ExpiryRefreshEntry {
   brand: string;
   account_masked: string;
   expires_at: string;
-  status: 'updated' | 'expired' | 'failed';
+  status: 'updated' | 'expired' | 'retired' | 'failed';
   error?: string;
 }
 
@@ -2454,8 +2454,53 @@ export interface ExpiryRefreshOutcome {
   checked: number;
   updated: number;
   expired: number;
+  /** Free-tier or rejected rows removed from rotation. */
+  retired: number;
   failed: number;
   results: ExpiryRefreshEntry[];
+}
+
+/** The login facts the sweep decides on, as the merged diagnostics report them. */
+export interface MembershipRefreshFacts {
+  login_ok?: boolean;
+  login_rejected?: boolean;
+  credential_rejected?: boolean;
+  membership_expired?: boolean;
+  membership_expires_at?: string;
+  membership_level?: number;
+  route_count?: number;
+  /** Links the probe actually produced. */
+  produced_links?: number;
+}
+
+/**
+ * Decide what a membership sweep does with one pooled row.
+ *
+ * The sweep logs in with explicit credentials, so the run path's own retirement
+ * (which only fires for a *leased* row) never runs for it — the same decision has
+ * to be reachable from here, or a free-tier account with a date years in the
+ * future stays in rotation forever. Kept pure so the policy can be asserted
+ * without a vendor login.
+ */
+export function classifyMembershipRefresh(
+  facts: MembershipRefreshFacts,
+  today: string
+): { status: ExpiryRefreshEntry['status']; reason: string } {
+  const expires = String(facts.membership_expires_at ?? '');
+  if (facts.login_ok) {
+    if (expires && expires < today) return { status: 'expired', reason: 'membership expired' };
+    const level = facts.membership_level;
+    const produced = Number(facts.produced_links ?? 0) > 0 || Number(facts.route_count ?? 0) > 0;
+    // A free-tier row (level 0/1) only ever yields placeholders. Retire it only
+    // when it produced nothing, exactly as the run path does, so a paid row the
+    // vendor misreports as level 1 keeps its place.
+    if (level !== undefined && level < 2 && !produced) return { status: 'retired', reason: 'no paid membership' };
+    return { status: 'updated', reason: '' };
+  }
+  if (facts.membership_expired) return { status: 'expired', reason: 'membership expired' };
+  // The vendor rejected the credential itself: the row cannot log in at all.
+  if (facts.credential_rejected) return { status: 'retired', reason: 'login rejected' };
+  return { status: 'failed', reason: '' };
 }
 
 /**
@@ -2486,7 +2531,7 @@ export async function refreshAccountExpiry(input: {
     cacheDir: resolveFingerprintCacheDir(resolveUserRuntimeRoot(env)),
     now
   });
-  const outcome: ExpiryRefreshOutcome = { checked: 0, updated: 0, expired: 0, failed: 0, results: [] };
+  const outcome: ExpiryRefreshOutcome = { checked: 0, updated: 0, expired: 0, retired: 0, failed: 0, results: [] };
   const todayText = localDay(now());
   const requested = input.brand ? normalizeBrand(input.brand) : null;
   // Every brand the pool knows, from the registry rather than a second list.
@@ -2526,22 +2571,26 @@ export async function refreshAccountExpiry(input: {
           }, { env, now, memo, fingerprintStore });
           const expires = result.diagnostics.membership_expires_at ?? '';
           entry.expires_at = expires;
-          if (result.diagnostics.login_ok && expires) {
-            store.setExpiry(brand, leased.account, expires);
-            if (expires < todayText) {
-              store.markExpired(leased.id, 'membership expired');
-              entry.status = 'expired';
-              outcome.expired += 1;
-            } else {
-              entry.status = 'updated';
-              outcome.updated += 1;
-            }
-          } else if (result.diagnostics.membership_expired) {
-            store.markExpired(leased.id, 'membership expired');
-            entry.status = 'expired';
+          const verdict = classifyMembershipRefresh({
+            ...result.diagnostics,
+            produced_links: result.links.length
+          }, todayText);
+          entry.status = verdict.status;
+          if (verdict.status === 'updated' || verdict.status === 'expired') {
+            // A lapsed date is still the account's real date: keep it on the row
+            // so the pool shows when it ran out, not an em dash.
+            if (expires) store.setExpiry(brand, leased.account, expires);
+          }
+          if (verdict.status === 'expired') {
+            store.markExpired(leased.id, verdict.reason);
             outcome.expired += 1;
+          } else if (verdict.status === 'retired') {
+            store.markInvalid(leased.id, verdict.reason);
+            entry.error = verdict.reason;
+            outcome.retired += 1;
+          } else if (verdict.status === 'updated') {
+            outcome.updated += 1;
           } else {
-            entry.status = 'failed';
             // The CLI prints this line, so nothing that can carry a credential
             // or a request URL may reach it.
             entry.error = redactText(result.diagnostics.errors.join('; ')) || 'login did not report an expiry';

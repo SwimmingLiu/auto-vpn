@@ -44,6 +44,7 @@ byte-for-byte — nothing is migrated or rewritten on upgrade.
 | `device_id` | no | Fixed device id; a built-in default when omitted |
 | `apk_url` / `apk_path` | no | Pin a specific build instead of site discovery |
 | `backend_brand` | no | Data plane to use when it is not the row's own vendor. The account is still leased as the row's brand. Only 黑洞 currently needs it — see [below](#reading-the-雷霆-data-plane-from-a-黑洞-account). |
+| `account_retry_limit` | no | How many pooled accounts one platform may try before the source gives up; `3` for a native row, `24` for a redirected one. Raise it when the backend knows only a thin slice of the pool — see [below](#when-the-backend-knows-only-part-of-the-pool). |
 | `platforms` | no | Internal/test override only; omitted means both channels. The drawer does not edit it, and a save keeps whatever the profile already had. |
 
 `min_laps`, `min_iterations`, `max_runtime_seconds`, `device_id`, `apk_url` /
@@ -257,6 +258,35 @@ Measured with this configuration, one run, three laps:
 |---|---|---|---|---|
 | 黑洞 (own) | 40 × 3 | 8 | 8 | 120 |
 | 雷霆 (`backend_brand`) | 42 × 3 | 13 | 7 | 0 |
+
+### When the backend knows only part of the pool
+
+A redirected row leases from its own brand's pool, but only some of those
+accounts exist on the backend, and fewer still hold a paid membership there.
+Two refusals look the same from the outside and are handled differently:
+
+| Vendor answer | What happens to the account | What happens to the run |
+|---|---|---|
+| Password/account wrong, or membership lapsed | Retired (`invalid` / `expired`) | Rotates to the next pooled account |
+| A bare refusal code with no message | Kept — nothing proved it is dead | Rotates to the next pooled account |
+| Login fine, but no paid routes | Kept | Rotates to the next pooled account |
+
+Rotation stops at `account_retry_limit`. With the default 24 a thin pool can
+run out of tries before it reaches a usable account: measured on the deployment
+host, 黑洞 got 6 leases and `area_count: 0` on every one, then a refusal ended
+the source at zero rounds while 140 active rows went unread. Raising the limit
+reached a paid account and the row ran 324 rounds:
+
+```toml
+[sources.heidong]
+backend_brand = "leiting"
+account_retry_limit = 120
+```
+
+The cost is wall clock, not vendor load per account — each try is one login.
+Under a scheduled run the per-source budget (`source_runtime_seconds` in
+`daily-run.json`) still bounds the hunt, so a large limit spends more of that
+budget rather than overrunning it.
 
 ## Crawl egress
 

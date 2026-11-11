@@ -63,6 +63,36 @@ function restoreArtifactCounts(artifactDir: string, counts: Record<string, unkno
   return restored;
 }
 
+/**
+ * When this artifact last did work, newest first.
+ *
+ * The directory's own mtime is not that: `run.db` is WAL-mode, and even a
+ * read-only open creates and removes `-wal`/`-shm` beside it, which touches the
+ * directory. The server reads every artifact's progress on each state load, so
+ * an abandoned run's directory looked newer than the run that actually finished
+ * after it — the page then showed the abandoned run's `running` stages forever.
+ *
+ * The run's own files carry the real timestamp. `run.db` is written throughout,
+ * the report at every stage transition; the directory mtime is only a fallback
+ * for an artifact that has neither.
+ */
+export function artifactWorkedAt(artifactDir: string): number {
+  let newest = 0;
+  for (const name of ['run.db', 'pipeline_report.json', 'events.jsonl']) {
+    try {
+      newest = Math.max(newest, fs.statSync(path.join(artifactDir, name)).mtimeMs);
+    } catch {
+      // Missing file: the others still date the run.
+    }
+  }
+  if (newest) return newest;
+  try {
+    return fs.statSync(artifactDir).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
 function latestArtifactDir(artifactsRoot: string): string {
   if (!fs.existsSync(artifactsRoot)) {
     return '';
@@ -70,11 +100,10 @@ function latestArtifactDir(artifactsRoot: string): string {
   const candidates = fs.readdirSync(artifactsRoot)
     .map((name) => path.join(artifactsRoot, name))
     .filter((item) => fs.statSync(item).isDirectory())
-    .sort((left, right) => {
-      const leftStat = fs.statSync(left);
-      const rightStat = fs.statSync(right);
-      return rightStat.mtimeMs - leftStat.mtimeMs || path.basename(right).localeCompare(path.basename(left));
-    });
+    .sort((left, right) => (
+      artifactWorkedAt(right) - artifactWorkedAt(left)
+      || path.basename(right).localeCompare(path.basename(left))
+    ));
   return candidates[0] ?? '';
 }
 
@@ -131,8 +160,10 @@ export function artifactList(projectRoot: string, env: NodeJS.ProcessEnv = proce
   const directories = fs.readdirSync(artifactsRoot)
     .map((name) => path.join(artifactsRoot, name))
     .filter((item) => fs.statSync(item).isDirectory() && isArtifactDir(item))
-    .sort((left, right) => fs.statSync(right).mtimeMs - fs.statSync(left).mtimeMs)
-;
+    .sort((left, right) => (
+      artifactWorkedAt(right) - artifactWorkedAt(left)
+      || path.basename(right).localeCompare(path.basename(left))
+    ));
   const items = directories.slice(0, 20)
     .map((artifactDir) => {
       const report = loadJson(path.join(artifactDir, 'pipeline_report.json'));
@@ -146,7 +177,7 @@ export function artifactList(projectRoot: string, env: NodeJS.ProcessEnv = proce
         source_counts: report.source_counts ?? {},
         retry_context: report.retry_context ?? {},
         retryable_stages: retryableStages(artifactDir, stageStatus),
-        updated_at: new Date(fs.statSync(artifactDir).mtimeMs).toISOString().replace('Z', '')
+        updated_at: new Date(artifactWorkedAt(artifactDir)).toISOString().replace('Z', '')
       };
     });
   // Retry choices stay bounded; the calendar aggregates every retained run,
