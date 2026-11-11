@@ -743,13 +743,16 @@ test('log retention prunes yesterday\'s daily-run logs and keeps today\'s', asyn
   const todayLog = path.join(logs, 'daily-run-20261112-032000.log');
   const oldResult = path.join(results, '20261110-032000.json');
   const todayResult = path.join(results, '20261112-032000.json');
-  for (const file of [oldLog, todayLog, oldResult, todayResult]) fs.writeFileSync(file, 'record\n', 'utf8');
+  // systemd keeps the serve unit's own stdout file open in the same directory.
+  const serverLog = path.join(logs, 'server-v201.log');
+  for (const file of [oldLog, todayLog, oldResult, todayResult, serverLog]) fs.writeFileSync(file, 'record\n', 'utf8');
   const yesterday = new Date('2026-11-10T03:20:00Z');
   const today = new Date('2026-11-12T03:20:00Z');
   fs.utimesSync(oldLog, yesterday, yesterday);
   fs.utimesSync(oldResult, yesterday, yesterday);
   fs.utimesSync(todayLog, today, today);
   fs.utimesSync(todayResult, today, today);
+  fs.utimesSync(serverLog, yesterday, yesterday);
   const runtime = createServerRuntime({
     projectRoot,
     env: { VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot, AUTOVPN_SERVER_LOG_RETENTION_DAYS: '1' },
@@ -761,4 +764,6 @@ test('log retention prunes yesterday\'s daily-run logs and keeps today\'s', asyn
   assert.equal(fs.existsSync(oldResult), false);
   assert.equal(fs.existsSync(todayLog), true);
   assert.equal(fs.existsSync(todayResult), true);
+  // The daemon's own log is not this job's record, however old it looks.
+  assert.equal(fs.existsSync(serverLog), true);
 });

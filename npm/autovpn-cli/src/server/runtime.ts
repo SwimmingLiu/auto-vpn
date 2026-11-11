@@ -390,6 +390,10 @@ function pruneArtifacts(projectRoot: string, env: NodeJS.ProcessEnv, cutoffMs: n
  */
 function pruneDailyRunRecords(env: NodeJS.ProcessEnv, cutoffMs: number): void {
   const runtimeRoot = path.dirname(resolveProfilePath('', env));
+  // Only the records this job writes. `logs/` also holds the serve unit's own
+  // stdout file, which systemd keeps open: unlinking it would leave the daemon
+  // writing to a deleted inode and silently lose every later log line.
+  const owned = [/^daily-run-.*\.log$/, /^\d{8}-\d{6}\.json$/];
   for (const dirName of ['logs', 'daily-run-results']) {
     const dir = path.join(runtimeRoot, dirName);
     if (!fs.existsSync(dir)) continue;
@@ -400,6 +404,7 @@ function pruneDailyRunRecords(env: NodeJS.ProcessEnv, cutoffMs: number): void {
       continue;
     }
     for (const name of names) {
+      if (!owned.some((pattern) => pattern.test(name))) continue;
       const file = path.join(dir, name);
       let stat: fs.Stats;
       try {
