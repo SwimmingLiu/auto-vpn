@@ -9,14 +9,38 @@
 // Written after a sweep retired 49 heidong rows; the answer turned out to be
 // `{"code":128,"msg":"登录失败,账号或者密码错误"}`, a genuine credential
 // rejection, so the retirements were correct. Run this before restoring.
+//
+// Usage, from an installed CLI (the package must be resolvable):
+//   node scripts/server/diagnose-sweep-rejection.mjs [brand] [limit] [backend_brand]
+// Set AUTOVPN_CLI_DIST to point at another install's dist/ (default: the
+// @swimmingliu/autovpn resolved from this script's location), and
+// VPN_AUTOMATION_ACCOUNTS_DB when the pool is not under the runtime root.
+import { createRequire } from 'node:module';
+import path from 'node:path';
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 
-const mod = await import('/www/server/nodejs/v22.20.0/lib/node_modules/@swimmingliu/autovpn/dist/pipeline/credential-source.js');
+const require = createRequire(import.meta.url);
+function resolveCliDist() {
+  const override = String(process.env.AUTOVPN_CLI_DIST ?? '').trim();
+  if (override) return override;
+  // A checkout: use the package built in this tree.
+  const local = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'npm', 'autovpn-cli', 'dist');
+  if (fs.existsSync(local)) return local;
+  // An install: resolve the published package rather than guessing a host path.
+  const entry = require.resolve('@swimmingliu/autovpn/package.json');
+  return entry.replace(/package\.json$/, 'dist');
+}
+
+const DIST = resolveCliDist().replace(/\/$/, '');
+const mod = await import(`${DIST}/pipeline/credential-source.js`);
 const { fetchCredentialSourceLinks, fingerprintKeyFor, createFingerprintMemo, credentialKeyCandidates } = mod;
-const { brandSite } = await import('/www/server/nodejs/v22.20.0/lib/node_modules/@swimmingliu/autovpn/dist/pool/brands.js');
-const { decryptPayload } = await import('/www/server/nodejs/v22.20.0/lib/node_modules/@swimmingliu/autovpn/dist/pipeline/extract.js');
-const { FingerprintStore, resolveFingerprintCacheDir } = await import('/www/server/nodejs/v22.20.0/lib/node_modules/@swimmingliu/autovpn/dist/pipeline/brand-cache.js');
-const { resolveUserRuntimeRoot } = await import('/www/server/nodejs/v22.20.0/lib/node_modules/@swimmingliu/autovpn/dist/runtime/paths.js');
+const { brandSite } = await import(`${DIST}/pool/brands.js`);
+const { decryptPayload } = await import(`${DIST}/pipeline/extract.js`);
+const { FingerprintStore, resolveFingerprintCacheDir } = await import(`${DIST}/pipeline/brand-cache.js`);
+const { resolveUserRuntimeRoot } = await import(`${DIST}/runtime/paths.js`);
+const { resolveAccountsDbPath } = await import(`${DIST}/pool/account-store.js`);
 
 const env = process.env;
 // Args: [brand] [limit] [backend_brand]. Defaults mirror the deployment host's
@@ -28,7 +52,7 @@ const store = new FingerprintStore({ cacheDir: resolveFingerprintCacheDir(resolv
 const memo = createFingerprintMemo(store, fingerprintKeyFor(BRAND, { official_site: 'x', ...(BACKEND ? { brand_override: BACKEND } : {}) }));
 const keys = credentialKeyCandidates({ official_site: 'x' }, memo.get() ?? undefined);
 
-const db = new DatabaseSync(process.env.VPN_AUTOMATION_ACCOUNTS_DB ?? '/home/lighthouse/.auto-vpn/accounts.db');
+const db = new DatabaseSync(resolveAccountsDbPath(env));
 const accounts = db.prepare(
   "SELECT id,account,password FROM accounts WHERE brand=? AND status='active' ORDER BY id LIMIT ?"
 ).all(BRAND, LIMIT);
