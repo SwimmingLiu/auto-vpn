@@ -282,7 +282,17 @@ function artifactEventLog(artifactDir: string): { events: unknown[]; active: boo
   try {
     const lines = fs.readFileSync(filePath, 'utf8').split(/\r?\n/).filter(Boolean);
     const events = lines.map((line) => parseJsonLine(line)).filter(Boolean) as Array<Record<string, any>>;
-    const finished = events.some((event) => event.type === 'summary' || event.type === 'run_failed' || event.type === 'finished');
+    // Only the LAST run in the file decides whether it is still going. A resume
+    // appends to the same artifact log, so an earlier run's terminal line would
+    // otherwise mark the live resume finished and the page would never follow it.
+    let finished = false;
+    for (const event of events) {
+      if (event.type === 'run_started' || event.type === 'resume_latest_state' || event.type === 'resume_pipeline_state') {
+        finished = false;
+      } else if (event.type === 'summary' || event.type === 'run_failed' || event.type === 'finished') {
+        finished = true;
+      }
+    }
     let fresh = false;
     try {
       fresh = Date.now() - fs.statSync(filePath).mtimeMs < 2 * 60 * 1000;

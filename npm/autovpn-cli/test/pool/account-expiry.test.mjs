@@ -327,9 +327,22 @@ test('the membership sweep retires free-tier and rejected rows, not just lapsed 
     classifyMembershipRefresh({ login_ok: true, membership_expires_at: '2027-06-07', membership_level: 1, produced_links: 3 }, today),
     { status: 'updated', reason: '' }
   );
+  // Routes are not proof: the table is filtered by flags, not by the account's
+  // grade, so a free row can list 12 paid-looking areas and still get nothing.
   assert.deepEqual(
     classifyMembershipRefresh({ login_ok: true, membership_expires_at: '2027-06-07', membership_level: 0, route_count: 12 }, today),
+    { status: 'retired', reason: 'no paid membership' }
+  );
+  // A redirected row is graded by its own storefront, not the backend it reads.
+  // Retiring on that grade would discard the accounts the rotation hunts for.
+  assert.deepEqual(
+    classifyMembershipRefresh({ login_ok: true, membership_expires_at: '2027-06-07', membership_level: 0, redirected: true }, today),
     { status: 'updated', reason: '' }
+  );
+  // The exemption is about the grade only: a lapsed date still retires.
+  assert.deepEqual(
+    classifyMembershipRefresh({ login_ok: true, membership_expires_at: '2026-01-01', membership_level: 0, redirected: true }, today),
+    { status: 'expired', reason: 'membership expired' }
   );
   // An unreported level is not evidence of a free account.
   assert.deepEqual(
