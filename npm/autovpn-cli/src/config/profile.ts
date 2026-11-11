@@ -102,6 +102,17 @@ export function normalizeOfficialSources(sources: Record<string, any>): Record<s
       areas_per_round: Math.min(64, positiveInteger(config.areas_per_round, 8)),
       area_concurrency: Math.min(16, positiveInteger(config.area_concurrency, 4))
     };
+    // Only a known vendor can serve as a data plane; an unknown name would
+    // silently fall back to the row's own brand and produce the very node
+    // shortage the field exists to fix.
+    if (config.backend_brand !== undefined) {
+      const backend = normalizeBrand(String(config.backend_brand).trim());
+      if (backend && backend !== brand) {
+        normalized.backend_brand = backend;
+      } else {
+        delete normalized.backend_brand;
+      }
+    }
     if (!wasCredential) {
       // A legacy URL row's caps describe a different operation; start the
       // cursor flow at the documented scheduled-run default instead. A floor

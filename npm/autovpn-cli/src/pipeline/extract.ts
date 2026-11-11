@@ -46,6 +46,12 @@ export interface SourceConfigInput {
   device_id?: string;
   install_date?: string;
   brand_flags?: string;
+  /**
+   * Data plane brand, when it is not the row's own vendor. The account is still
+   * leased as the row's brand; the APK, official site and request layout come
+   * from this one. See `BrandCredentialSource.backend_brand`.
+   */
+  backend_brand?: string;
   code?: string;
   max_areas?: number;
   /** Areas taken from the fixed area list each round (credential mode). */

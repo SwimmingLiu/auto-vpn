@@ -148,8 +148,32 @@ test('黑洞 layout only adds the newhd flag', () => {
   assert.ok(!params.includes('width='));
 });
 
-test('蜜蜂 layout adds no flag block and no viewport', () => {
+test('a redirected 黑洞 row speaks the 雷霆 parameter layout', () => {
+  // 黑洞's own Android channel answers the vendor's placeholder for every area,
+  // and its iOS channel maps 31 areas onto 8 hosts. Sent to the 雷霆 backend the
+  // same pooled account receives one machine per area, but only if the request
+  // carries 雷霆's flag block: the backend decides by parameter shape, so the
+  // storefront's `newhd=1` would be a different, unrecognised client.
   const params = commonParams(
+    { identity, device, platform: 'android', timestampMs: 1 },
+    resolveBrandLayout({ brand: '黑洞', brand_override: '雷霆', official_site: 'x' })
+  );
+  assert.ok(params.includes('&newlt=1'));
+  assert.ok(params.includes('&update_action=web'));
+  assert.ok(params.includes('width=392.7'));
+  assert.ok(!params.includes('newhd=1'));
+});
+
+test('the 黑洞 layout is unchanged when no backend redirects it', () => {
+  const params = commonParams(
+    { identity, device, platform: 'android', timestampMs: 1 },
+    resolveBrandLayout({ brand: '黑洞', official_site: 'x' })
+  );
+  assert.ok(params.includes('&newhd=1'));
+  assert.ok(!params.includes('newlt=1'));
+});
+
+test('蜜蜂 layout adds no flag block and no viewport', () => {  const params = commonParams(
     { identity, device, platform: 'android', timestampMs: 1 },
     resolveBrandLayout({ brand: '蜜蜂', official_site: 'x', account: 'a', password: 'b' })
   );
@@ -416,4 +440,27 @@ test('a throttling message is not a credential rejection', () => {
   for (const message of ['密码错误', '账号或密码错误', '账号不存在', 'user does not exist', 'invalid password']) {
     assert.equal(isCredentialLoginRejection(message), true, message);
   }
+});
+
+test('a redirected row retries past more rejected accounts than a native one', async () => {
+  // A redirected row leases from a foreign vendor's list, and only a minority
+  // of those accounts exist on the backend (measured: 2 of 40). The retry width
+  // is what decides whether the run ever reaches such an account, so it is
+  // asserted directly rather than inferred from a run that cannot start.
+  const { credentialAccountAttempts } = await import('../../dist/pipeline/credential-source.js');
+  assert.equal(credentialAccountAttempts({ official_site: 'x' }, 'heidong'), 3);
+  assert.equal(
+    credentialAccountAttempts({ official_site: 'x', backend_brand: 'leiting' }, 'heidong'),
+    24
+  );
+  // An explicit value always wins, and a row that redirects to its own brand
+  // is not a redirect at all.
+  assert.equal(
+    credentialAccountAttempts({ official_site: 'x', backend_brand: 'leiting', account_retry_limit: 5 }, 'heidong'),
+    5
+  );
+  assert.equal(
+    credentialAccountAttempts({ official_site: 'x', backend_brand: 'heidong' }, 'heidong'),
+    3
+  );
 });

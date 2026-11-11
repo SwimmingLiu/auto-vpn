@@ -60,6 +60,31 @@ import type { ExtractedSourceResult, SourceConfigInput, ExtractInput } from './e
 export interface BrandCredentialSource {
   /** Official site used to locate the current APK. */
   official_site?: string;
+  /**
+   * Data plane to talk to, when it is not the row's own brand.
+   *
+   * Some vendors keep one account system behind several storefronts, and the
+   * storefront that sells an account is not always the one whose node API
+   * serves it. 黑洞 is the case: its own `/api/evmess` answers the vendor's
+   * `1.1.1.1:443` template for `platform=android` on every account, and its iOS
+   * channel maps 31 advertised areas onto only 8 landing hosts, so a full run
+   * saturates at 8 nodes no matter how many laps it spends. The same pooled
+   * 黑洞 account logs in on the 雷霆 backend and receives one machine per area
+   * there — 105 unique nodes over three laps in the 2026-11-12 measurement.
+   *
+   * Setting this keeps the row's own brand for the account pool (accounts are
+   * still leased as 黑洞) and takes the APK, official site, request layout and
+   * backend protocol from the named brand instead. Omitted means the row's own
+   * brand, i.e. no change for every other vendor.
+   */
+  backend_brand?: string;
+  /**
+   * Set by the extractor itself when `backend_brand` redirects the data plane.
+   *
+   * Profile authors write `backend_brand`; this field only carries the resolved
+   * value to `resolveBrandLayout`, which otherwise keys off the row name.
+   */
+  brand_override?: string;
   /** Optional explicit APK URL, bypassing site discovery. */
   apk_url?: string;
   /** Local APK path, bypassing both site discovery and download. */
@@ -135,6 +160,27 @@ export type CredentialTextFetch = (url: string, init?: Record<string, unknown>) 
   body?: { cancel?(): Promise<void> | void } | null;
 }>;
 
+/**
+ * How many pooled accounts one source may try before it reports failure.
+ *
+ * A redirected row leases from a foreign vendor's list, and only a minority of
+ * those accounts exist on the backend: measured against the deployed pool, 2 of
+ * 40 黑洞 accounts log in on the 雷霆 backend. Each rejected attempt retires that
+ * account and leases the next by least-recent use, so the width decides whether
+ * the run ever reaches a usable credential. A row without a redirect keeps the
+ * tighter default.
+ */
+export function credentialAccountAttempts(
+  source: { account_retry_limit?: number; backend_brand?: string },
+  brand: string | null | undefined
+): number {
+  const backend = normalizeBrand(String(source.backend_brand ?? '').trim());
+  const redirected = Boolean(backend && brand && backend !== brand);
+  const fallback = redirected ? 24 : 3;
+  const parsed = Math.trunc(Number(source.account_retry_limit ?? fallback));
+  return Number.isFinite(parsed) && parsed >= 1 ? parsed : fallback;
+}
+
 export interface CredentialExtractOptions {
   /** Injectable for tests; production passes `globalThis.fetch`. */
   fetchImpl?: CredentialTextFetch | CredentialFetchLike;
@@ -170,6 +216,8 @@ export interface CredentialExtractOptions {
 
 export interface CredentialDiagnostics {
   brand: string;
+  /** Data plane actually used, when `backend_brand` redirected it. */
+  backend_brand?: string;
   platform: Platform | 'android+ios';
   platforms?: Platform[];
   platform_results?: Array<{
@@ -239,7 +287,9 @@ export function resolveBrandLayout(source: BrandCredentialSource & { brand?: str
       return { afterPackage: explicit.startsWith('&') ? explicit : `&${explicit}` };
     }
   }
-  const brand = String(source.brand ?? '').trim();
+  // A redirected data plane speaks the backend's parameter order, not the
+  // storefront's: the backend decides which flag block it recognises.
+  const brand = String(source.brand_override ?? source.brand ?? '').trim();
   if (brand.includes('旋风') || /xuanfeng/i.test(brand)) {
     return { vipFirst: true, viewport: true };
   }
@@ -1148,7 +1198,9 @@ async function fetchCredentialSourceLinksWithTransport(
   input: ExtractInput,
   options: CredentialExtractOptions
 ): Promise<CredentialExtractResult> {
-  const source = input.source as SourceConfigInput & BrandCredentialSource;
+  // A copy: a redirected data plane rewrites the site and the layout marker,
+  // and the caller's config object must not carry that into later stages.
+  const source = { ...(input.source as SourceConfigInput & BrandCredentialSource) };
   const platforms = resolveCredentialPlatforms(source);
   const policy = resolveRoundPolicy(source);
   const errors: string[] = [];
@@ -1189,6 +1241,29 @@ async function fetchCredentialSourceLinksWithTransport(
   const brand = normalizeBrand(input.source_name)
     ?? brandFromSite(source.official_site)
     ?? normalizeBrand(credentialBrandKey(input.source_name, source));
+  // The account is always leased as the row's own brand; only the data plane
+  // can be redirected. See `backend_brand` for why 黑洞 needs this.
+  const backendBrand = normalizeBrand(String(source.backend_brand ?? '').trim()) ?? brand;
+  if (backendBrand && brand && backendBrand !== brand) {
+    const redirected = brandSite(backendBrand);
+    if (redirected) {
+      // A pinned `apk_path` / `apk_url` is the operator's explicit choice of
+      // build and stays as given: it may already be the backend's own APK, and
+      // discarding it turned a working pinned profile into "APK could not be
+      // located". Only the site moves.
+      if (!source.apk_path && !source.apk_url) {
+        source.official_site = redirected;
+      }
+      // The layout is picked from `brand` at every call site; carrying the row
+      // name through would keep sending the storefront's own flag block.
+      source.brand_override = backendBrand;
+    }
+    // Informational, not an error: the row is expected to work this way.
+    diagnostics.backend_brand = backendBrand;
+    event(options, 'log', {
+      message: `[extract][${input.source_name}] data plane ${brand} -> ${backendBrand}`
+    });
+  }
   let store = options.accountStore ?? null;
   let ownsStore = false;
   let leased: StoredAccount | null = null;
@@ -1221,13 +1296,15 @@ async function fetchCredentialSourceLinksWithTransport(
     return { ...empty, failed_iterations: 1 };
   }
 
-  const memo = options.memo ?? createFingerprintMemo(options.fingerprintStore ?? null, credentialBrandKey(input.source_name, source));
+  // Keyed by the data plane, not the storefront: a redirected row downloads and
+  // inspects the backend's APK, so it must share that brand's cached entry.
+  const memoBrandKey = source.brand_override ?? credentialBrandKey(input.source_name, source);
+  const memo = options.memo ?? createFingerprintMemo(options.fingerprintStore ?? null, memoBrandKey);
   let linkQueue = Promise.resolve();
   // A non-numeric retry limit (a hand-edited `account_retry_limit = "three"`)
   // must not turn the attempt loop into zero passes, which reported the source
   // as successful with no links and no error.
-  const retryLimit = Math.trunc(Number(source.account_retry_limit ?? 3));
-  const attempts = explicitAccount && explicitPassword ? 1 : (Number.isFinite(retryLimit) && retryLimit >= 1 ? retryLimit : 3);
+  const attempts = explicitAccount && explicitPassword ? 1 : credentialAccountAttempts(source, brand);
   let results: CredentialExtractResult[] = [];
   let callbackFailure: Error | null = null;
   // The dashboard reads per-source totals from one `extract_iteration` stream.
@@ -1356,6 +1433,14 @@ async function fetchCredentialSourceLinksWithTransport(
         && results.every((result) => result.diagnostics.login_rejected)
         && results.some((result) => result.diagnostics.membership_expired);
       const credentialRejected = results.length > 0 && results.every((result) => result.diagnostics.credential_rejected);
+      // Logging in is not enough on a backend that gates routes by membership:
+      // a free-tier account sees the paid rows disabled, so the vendor filter
+      // leaves nothing to ask and the run reports an empty source. That account
+      // is valid, so it is not retired — the loop simply leases the next one.
+      const unusableRouteTable = results.length > 0
+        && results.every((result) => result.diagnostics.route_count === 0 && result.diagnostics.login_ok)
+        && !credentialRejected
+        && !membershipExpired;
       if (store && leased && (membershipExpired || credentialRejected)) {
         if (membershipExpired) store.markExpired(leased.id, 'membership expired');
         else store.markInvalid(leased.id, 'login rejected');
@@ -1366,6 +1451,13 @@ async function fetchCredentialSourceLinksWithTransport(
             password = leased.password;
             continue;
           }
+        }
+      } else if (unusableRouteTable && store && leased && attempt < attempts && brand) {
+        leased = store.lease(brand);
+        if (leased) {
+          account = leased.account;
+          password = leased.password;
+          continue;
         }
       }
       break;
@@ -1548,7 +1640,9 @@ async function runCredentialPlatform(
   // These only change when the vendor publishes a new build, so a cached entry
   // is used first and the APK is inspected only when the cached seeds all stop
   // answering. That keeps a normal run to a handful of HTTP calls.
-  const brandKey = credentialBrandKey(input.source_name, source);
+  // Keyed by the data plane, not the storefront: a redirected row downloads and
+  // inspects the backend's APK, so it must share that brand's cached entry.
+  const brandKey = source.brand_override ?? credentialBrandKey(input.source_name, source);
   const store = options.fingerprintStore ?? null;
   const memo = options.memo ?? createFingerprintMemo(store, brandKey);
   // A fingerprint past its trust window is still used when its seeds answer,
@@ -1705,7 +1799,7 @@ async function runCredentialPlatform(
         platform,
         timestampMs: ts,
         code: ''
-      }, resolveBrandLayout({ ...source, brand: input.source_name })),
+      }, resolveBrandLayout({ ...source, brand: source.brand_override ?? input.source_name })),
       keys,
       timeoutMs,
       egress
@@ -1721,7 +1815,7 @@ async function runCredentialPlatform(
     identity,
     device,
     platform,
-    layout: resolveBrandLayout({ ...source, brand: input.source_name }),
+    layout: resolveBrandLayout({ ...source, brand: source.brand_override ?? input.source_name }),
     token: '',
     // Before login the app's local KV has no `code`, so the request carries an
     // empty one; `&code=` only holds a value once the account has one.

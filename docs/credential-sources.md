@@ -34,6 +34,7 @@ area_concurrency = 4
 | `max_runtime_seconds` | no | Wall-clock budget past `min_iterations`; `0` means unlimited |
 | `device_id` | no | Fixed device id; a built-in default when omitted |
 | `apk_url` / `apk_path` | no | Pin a specific build instead of site discovery |
+| `backend_brand` | no | Data plane to use when it is not the row's own vendor. The account is still leased as the row's brand. Only 黑洞 currently needs it — see [below](#reading-the-雷霆-data-plane-from-a-黑洞-account). |
 | `platforms` | no | Internal/test override only; omitted means both channels. The drawer does not edit it, and a save keeps whatever the profile already had. |
 
 `min_iterations`, `max_runtime_seconds`, `device_id`, `apk_url` / `apk_path` and
@@ -190,6 +191,44 @@ one area to one host and keeps yielding new machines per round.
 Consequence for the run: 黑洞 produces ~8 nodes per run, all from iOS, and its
 Android channel is stopped after 8 placeholder rounds instead of spending 200
 rounds × concurrency on nothing.
+
+### Reading the 雷霆 data plane from a 黑洞 account
+
+The same account also exists on the 雷霆 backend — a different uid and a
+different membership level, but a valid login — and that backend serves both
+channels normally, one machine per area. Measured on 2026-11-12: 42 areas,
+three laps, 48 unique nodes on the Android channel and 57 on iOS.
+
+Point a source at it with `backend_brand`:
+
+```toml
+[sources.heidong]
+mode = "credential"
+official_site = "https://www.67986457.com"   # storefront: the APK and site
+enabled = true
+backend_brand = "leiting"                     # data plane: login, routes, nodes
+```
+
+The two roles stay separate:
+
+| Field | Comes from |
+|---|---|
+| Account leased | the row's own brand (`heidong`) — the pool is never crossed |
+| APK, official site, seed domains | the backend (`leiting`) |
+| Request parameter layout | the backend's flag block, not the storefront's |
+| Fingerprint cache key | the backend, so both rows share one APK inspection |
+
+A pinned `apk_path` / `apk_url` is left untouched: it is the operator's explicit
+choice of build, and dropping it turned a working pinned profile into
+"APK could not be located". Unknown or self-referential names are removed during
+config normalization rather than silently falling back.
+
+Measured with this configuration, one run, three laps:
+
+| Data plane | Requests | Real nodes | Distinct hosts | Placeholders |
+|---|---|---|---|---|
+| 黑洞 (own) | 40 × 3 | 8 | 8 | 120 |
+| 雷霆 (`backend_brand`) | 42 × 3 | 13 | 7 | 0 |
 
 ## Crawl egress
 
