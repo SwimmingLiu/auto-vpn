@@ -334,6 +334,23 @@ function siteHost(site: string): string {
 }
 
 /**
+ * Archive prefix for any spelling of a brand: its English key, its Chinese
+ * label, a known storefront host, or a name that normalizes to one of them.
+ */
+function credentialPrefixFor(value: string): string | null {
+  const raw = String(value ?? '').trim();
+  if (!raw) {
+    return null;
+  }
+  const direct = BRAND_APK_PREFIXES[raw] ?? BRAND_APK_PREFIXES[raw.toLowerCase()];
+  if (direct) {
+    return direct;
+  }
+  const brand = normalizeBrand(raw);
+  return brand ? (BRAND_APK_PREFIXES[brand] ?? null) : null;
+}
+
+/**
  * Stable key for a brand's fingerprint.
  *
  * A profile may name two sources of the same brand (`leiting`, `leiting_ios`),
@@ -344,14 +361,58 @@ function siteHost(site: string): string {
  * be established, which keeps custom entries working.
  */
 export function credentialBrandKey(sourceName: string, source: BrandCredentialSource): string {
-  const site = String(source.official_site ?? '').trim();
-  const host = siteHost(site);
-  if (host) {
-    return BRAND_APK_PREFIXES[host] ?? host;
+  // Brand first, host second. A row's own name identifies the APK even when the
+  // operator points it at an alternate storefront (`www.leitingku.com`,
+  // `www.heidongm.com`, …), and hosting the file under that host split one
+  // brand across several cache entries — so a redirected row keyed by prefix
+  // never saw the entry the native row had just written.
+  const name = String(sourceName ?? '').trim();
+  const byName = credentialPrefixFor(name);
+  if (byName) {
+    return byName;
   }
-  const name = String(sourceName ?? '').trim().toLowerCase();
-  const prefix = BRAND_APK_PREFIXES[sourceName] ?? BRAND_APK_PREFIXES[name];
-  return prefix ?? (name || 'unknown');
+  const host = siteHost(String(source.official_site ?? '').trim());
+  const byHost = credentialPrefixFor(host);
+  if (byHost) {
+    return byHost;
+  }
+  const lowered = name.toLowerCase();
+  return host || lowered || 'unknown';
+}
+
+/**
+ * Fingerprint key for the data plane a row actually reads.
+ *
+ * A redirected row carries the backend's canonical brand key (`leiting`), not
+ * the short archive prefix its cache file is named with (`lt`). Using the
+ * canonical key straight away produced `brand-leiting.json`, which never
+ * exists: every run missed the cache, fell back to downloading the APK from the
+ * storefront, and on a host that cannot reach that storefront failed with
+ * "APK could not be located" — while `brand-lt.json` sat on disk, unused.
+ */
+export function fingerprintKeyFor(sourceName: string, source: BrandCredentialSource): string {
+  if (!String(source.brand_override ?? '').trim()) {
+    return credentialBrandKey(sourceName, source);
+  }
+  return credentialPrefixFor(String(source.brand_override))
+    ?? String(source.brand_override).trim().toLowerCase();
+}
+
+/**
+ * Cache files an earlier build may have written for this row.
+ *
+ * Before brand-first keying, the key was the official-site host, so a row
+ * pointed at an alternate storefront wrote `brand-www.leitingku.com.json`
+ * instead of `brand-lt.json`. Those files hold a valid fingerprint — often the
+ * only verified one on a host that cannot reach the vendor's site — so a read
+ * falls back to them and migrates the entry to the canonical key.
+ */
+function legacyFingerprintKey(sourceName: string, source: BrandCredentialSource): string {
+  const host = siteHost(String(source.official_site ?? '').trim());
+  if (host) {
+    return host;
+  }
+  return String(sourceName ?? '').trim().toLowerCase() || 'unknown';
 }
 
 /** A fingerprint shared across the sources of one pipeline run. */
@@ -1325,7 +1386,7 @@ async function fetchCredentialSourceLinksWithTransport(
   // backend on a cached run, and it hides the 雷霆 entry the next run should
   // reuse. A redirect therefore always gets a memo of its own key; the shared
   // one is used only when the two brands agree.
-  const memoBrandKey = source.brand_override ?? credentialBrandKey(input.source_name, source);
+  const memoBrandKey = fingerprintKeyFor(input.source_name, source);
   const memo = source.brand_override
     ? createFingerprintMemo(options.fingerprintStore ?? null, memoBrandKey)
     : (options.memo ?? createFingerprintMemo(options.fingerprintStore ?? null, memoBrandKey));
@@ -1678,7 +1739,7 @@ async function runCredentialPlatform(
   // answering. That keeps a normal run to a handful of HTTP calls.
   // Keyed by the data plane, not the storefront: a redirected row downloads and
   // inspects the backend's APK, so it must share that brand's cached entry.
-  const brandKey = source.brand_override ?? credentialBrandKey(input.source_name, source);
+  const brandKey = fingerprintKeyFor(input.source_name, source);
   const store = options.fingerprintStore ?? null;
   // Same rule as the outer memo: a caller-supplied memo is keyed by the row
   // name, so a redirected row must not read or write through it.
@@ -1690,7 +1751,24 @@ async function runCredentialPlatform(
   // vendor can rotate the signing certificate while the old seeds still serve
   // `/api/eversion`, and then every login fails on a stale certificate.
   const fresh = store?.readFresh(brandKey) ?? null;
-  const storedEntry = store?.read(brandKey) ?? null;
+  let storedEntry = store?.read(brandKey) ?? null;
+  if (!storedEntry && store && !source.brand_override) {
+    // An older build keyed this row by its official-site host. Reuse that entry
+    // instead of forcing an APK download the host may not be able to make, and
+    // move it to the canonical key so the next run reads it directly.
+    const legacyKey = legacyFingerprintKey(input.source_name, source);
+    if (legacyKey !== brandKey) {
+      const legacy = store.readFresh(legacyKey) ?? store.read(legacyKey);
+      if (legacy) {
+        log(`[extract] adopting fingerprint cached under ${legacyKey}`);
+        // Copies the entry under the canonical key while keeping the original
+        // `verified_at`: stamping a new one would promote an entry that is
+        // genuinely past its window into a trusted one.
+        store.adopt(brandKey, legacy);
+        storedEntry = store.read(brandKey);
+      }
+    }
+  }
   const staleButUsable = Boolean(storedEntry) && !fresh;
   const cached = staleButUsable ? storedEntry : memo.get();
   const session = options.egressSession as EgressSession;
@@ -1706,7 +1784,7 @@ async function runCredentialPlatform(
     status: 'running' | 'success' | 'failed' | 'cached'
   ): void => event(options, 'extract_substage', { source_name: input.source_name, platform, substage: name, status });
 
-  const inspectApk = async (): Promise<ApkDiscovery | null> => {
+  const inspectApk = async (recordFailure = true): Promise<ApkDiscovery | null> => {
     substage('apk_download', 'running');
     let apkBytes: Buffer | null = null;
     try {
@@ -1727,11 +1805,15 @@ async function runCredentialPlatform(
           egress
         );
     } catch (error) {
-      errors.push(`apk: ${error instanceof Error ? error.message : String(error)}`);
+      if (recordFailure) {
+        errors.push(`apk: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
     if (!apkBytes) {
       substage('apk_download', 'failed');
-      errors.push('APK could not be located');
+      if (recordFailure) {
+        errors.push('APK could not be located');
+      }
       return null;
     }
     substage('apk_download', 'success');
@@ -1747,8 +1829,8 @@ async function runCredentialPlatform(
     log(`[extract] ${discovered.package_name} ${discovered.version_name} seeds=${discovered.seed_domains.length}`);
     return discovered.seed_domains.length > 0 ? discovered : null;
   };
-  const inspectSharedApk = (): Promise<ApkDiscovery | null> => (
-    memo.resolve ? memo.resolve(inspectApk) : inspectApk()
+  const inspectSharedApk = (recordFailure = true): Promise<ApkDiscovery | null> => (
+    memo.resolve ? memo.resolve(() => inspectApk(recordFailure)) : inspectApk(recordFailure)
   );
 
   // `apk_url` / `apk_path` are an explicit override: when either is set the
@@ -1772,7 +1854,11 @@ async function runCredentialPlatform(
       // stale certificate fails every login with no other signal.
       if (staleButUsable) {
         log('[extract] cached fingerprint is past its trust window; re-inspecting the APK');
-        const refreshed = await inspectSharedApk();
+        // The refresh is opportunistic: the cached entry already answered
+        // `/api/eversion`, so an unreachable storefront must not also append
+        // "APK could not be located" to a run that is about to work. That line
+        // was the whole error text of a run whose nodes came through fine.
+        const refreshed = await inspectSharedApk(false);
         if (refreshed) {
           const refreshedEversion = await tryEversion(refreshed, credentialKeyCandidates(source, refreshed));
           if (refreshedEversion) {
@@ -1903,10 +1989,15 @@ async function runCredentialPlatform(
       diagnostics.membership_expired = isMembershipExpiredMessage(message);
       diagnostics.credential_rejected = !diagnostics.membership_expired && isCredentialLoginRejection(message);
       errors.push(`login rejected: code=${String(payload.code)}`);
-      // A cached fingerprint whose seeds answer eversion but whose signing
-      // cert the vendor rotated keeps failing here on every run. Drop the
-      // cache so the next run re-inspects the APK instead of repeating this.
-      if (cachedInUse) {
+      // A cached fingerprint whose signing cert the vendor rotated fails here,
+      // so the cache must not outlive the failure. Only a real credential
+      // rejection is evidence of that: a throttled or free-tier account is
+      // rejected too, and dropping the brand's fingerprint for it made the next
+      // run re-download the APK from a storefront this host cannot reach —
+      // turning one bad account into a source that never runs again. On a
+      // redirected row that rejection is the norm (most accounts are unknown to
+      // the backend), so there the cache is never dropped on a login result.
+      if (cachedInUse && diagnostics.credential_rejected && !source.brand_override) {
         store?.clear(brandKey);
       }
       return { ...empty, failed_iterations: 1 };
