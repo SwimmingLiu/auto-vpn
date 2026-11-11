@@ -605,6 +605,23 @@ test('the source drawer refuses dry laps above the total laps', () => {
   assert.match(validateSourceDraft(draft), /空转早停（遍）至少为 1/);
 });
 
+test('a stored dry-lap count above the total is clamped so the row stays savable', () => {
+  // A profile written by an older build (or hand-edited) can already hold
+  // dry > max. The validator refuses that pair, so opening the drawer and
+  // pressing 保存 on an untouched row would fail for a value nobody typed.
+  const stored = buildSourceIterationDraft({
+    leiting: { mode: 'credential', official_site: 'https://x.example', max_laps: 10, dry_laps: 20 }
+  });
+  assert.equal(stored.sources.leiting.max_laps, 10);
+  assert.equal(stored.sources.leiting.dry_laps, 10);
+  assert.equal(validateSourceDraft(stored), '');
+  // A valid stored pair is still kept verbatim.
+  const valid = buildSourceIterationDraft({
+    leiting: { mode: 'credential', official_site: 'https://x.example', max_laps: 10, dry_laps: 4 }
+  });
+  assert.equal(valid.sources.leiting.dry_laps, 4);
+});
+
 test('renderer network defaults round-trip through the drawer and save path', () => {
   const messages = getMessages('zh-CN');
   const state = {

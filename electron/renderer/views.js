@@ -1252,7 +1252,10 @@ export function buildSourceIterationDraft(sources = {}, sourceCounts = {}) {
     const storedDry = hasStoredLapValue(source.dry_laps) ? coercePositiveInteger(source.dry_laps, SOURCE_LAP_DEFAULTS.dry_laps) : null;
     if (storedLaps !== null || storedDry !== null) {
       source.max_laps = storedLaps ?? SOURCE_LAP_DEFAULTS.max_laps;
-      source.dry_laps = storedDry ?? SOURCE_LAP_DEFAULTS.dry_laps;
+      // Same clamp as the conversion below: a profile written by an older
+      // build (or hand-edited) can already hold dry > max, and the drawer's
+      // validator refuses that pair — an untouched row must stay savable.
+      source.dry_laps = Math.min(source.max_laps, storedDry ?? SOURCE_LAP_DEFAULTS.dry_laps);
       continue;
     }
     // Only a row that actually stored a legacy budget is converted; a fresh

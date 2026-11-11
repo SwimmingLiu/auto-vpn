@@ -861,6 +861,39 @@ test('a followed artifact result line carries absolute database totals', async (
   assert.equal(fs.realpathSync(String(metric.progress_snapshot?.artifact_dir)), fs.realpathSync(artifactDir));
 });
 
+test('a resume appended after an earlier terminal line is still followed', async (t) => {
+  // A resume reuses the artifact and appends to the same events.jsonl. Scanning
+  // the whole file for any terminal line marked the live resume finished, so
+  // the page kept the old failure and never followed the new events.
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-resume-log-'));
+  t.after(() => fs.rmSync(projectRoot, { recursive: true, force: true }));
+  const runtimeRoot = path.join(projectRoot, 'state');
+  const artifactDir = path.join(runtimeRoot, 'artifacts', '20261112-070000');
+  fs.mkdirSync(artifactDir, { recursive: true });
+  writeJson(path.join(artifactDir, 'pipeline_report.json'), { run_status: 'running', stage_status: { availability: 'running' }, counts: {} });
+  const log = path.join(artifactDir, 'events.jsonl');
+  fs.writeFileSync(log, [
+    { type: 'run_started', artifact_dir: artifactDir },
+    { type: 'summary', run_status: 'failed', artifact_dir: artifactDir },
+    // The operator resumed it; the mirror is seeded from the session.
+    { type: 'resume_pipeline_state', artifact_dir: artifactDir, speedtest_links: 4 }
+  ].map((event) => JSON.stringify(event)).join('\n') + '\n', 'utf8');
+
+  const runtime = createServerRuntime({ projectRoot, env: { VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot }, followLog: async function* () {} });
+  t.after(async () => { await runtime.close?.(); });
+  const seen = [];
+  runtime.subscribe((event) => seen.push(event));
+  const state = await runtime.loadState();
+  assert.equal(state.runState, 'running', 'the last run in the log is the resumed one');
+
+  fs.appendFileSync(log, JSON.stringify({ type: 'stage', stage: 'availability', status: 'success' }) + '\n', 'utf8');
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  assert.ok(
+    seen.some((event) => event.type === 'stage' && event.stage === 'availability' && event.status === 'success'),
+    'the resumed run must be followed past the earlier terminal line'
+  );
+});
+
 test('the membership sweep guard resets after the sweep settles', async (t) => {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-expiry-guard-'));
   t.after(() => fs.rmSync(projectRoot, { recursive: true, force: true }));

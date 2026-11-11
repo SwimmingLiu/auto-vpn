@@ -39,6 +39,7 @@ import { AccountStore, maskAccount, type StoredAccount } from '../pool/account-s
 import { BRANDS, brandFromSite, brandSite, normalizeBrand, type BrandKey } from '../pool/brands.js';
 import { FingerprintStore, resolveFingerprintCacheDir } from './brand-cache.js';
 import { resolveUserRuntimeRoot } from '../runtime/paths.js';
+import { profilePayload } from '../config/profile.js';
 import { redactText } from '../runtime/redaction.js';
 import type { ExtractedSourceResult, SourceConfigInput, ExtractInput } from './extract.js';
 
@@ -2468,9 +2469,13 @@ export interface MembershipRefreshFacts {
   membership_expired?: boolean;
   membership_expires_at?: string;
   membership_level?: number;
-  route_count?: number;
-  /** Links the probe actually produced. */
+  /** Links the probe actually produced — the only proof of a paid membership. */
   produced_links?: number;
+  /**
+   * The row reads another vendor's data plane, so the level it reports is the
+   * storefront's grading, not the backend's. Same exemption the run path makes.
+   */
+  redirected?: boolean;
 }
 
 /**
@@ -2490,11 +2495,17 @@ export function classifyMembershipRefresh(
   if (facts.login_ok) {
     if (expires && expires < today) return { status: 'expired', reason: 'membership expired' };
     const level = facts.membership_level;
-    const produced = Number(facts.produced_links ?? 0) > 0 || Number(facts.route_count ?? 0) > 0;
+    // Links, not routes: the route table is filtered by flags, not by the
+    // account's grade, so a free row can list paid-looking areas and still get
+    // nothing but placeholders. The run path uses links for the same reason.
+    const produced = Number(facts.produced_links ?? 0) > 0;
     // A free-tier row (level 0/1) only ever yields placeholders. Retire it only
     // when it produced nothing, exactly as the run path does, so a paid row the
-    // vendor misreports as level 1 keeps its place.
-    if (level !== undefined && level < 2 && !produced) return { status: 'retired', reason: 'no paid membership' };
+    // vendor misreports as level 1 keeps its place. A redirected row is exempt
+    // for the run path's reason: the level is the storefront's grading.
+    if (level !== undefined && level < 2 && !produced && !facts.redirected) {
+      return { status: 'retired', reason: 'no paid membership' };
+    }
     return { status: 'updated', reason: '' };
   }
   if (facts.membership_expired) return { status: 'expired', reason: 'membership expired' };
@@ -2536,6 +2547,22 @@ export async function refreshAccountExpiry(input: {
   const requested = input.brand ? normalizeBrand(input.brand) : null;
   // Every brand the pool knows, from the registry rather than a second list.
   const brands: BrandKey[] = requested ? [requested] : BRANDS.map((brand) => brand.key);
+  // A row that reads another vendor's data plane is graded by its own
+  // storefront, so a low level there is not evidence of a free account. The
+  // run path exempts it; the sweep has to read the same profile to know.
+  const redirectedBrands = new Set<string>();
+  try {
+    // The profile path comes from the environment, so the project root argument
+    // is not consulted; `profilePayload` reads the same file a run does.
+    const sources = (profilePayload(process.cwd(), env).sources ?? {}) as Record<string, any>;
+    for (const [name, config] of Object.entries(sources)) {
+      const brand = normalizeBrand(name);
+      const backend = normalizeBrand(String(config?.backend_brand ?? '').trim());
+      if (brand && backend && backend !== brand) redirectedBrands.add(brand);
+    }
+  } catch {
+    // No readable profile: fall back to the storefront's own grading.
+  }
   try {
     for (const brand of brands) {
       let accounts = store.leaseAll(brand);
@@ -2573,7 +2600,8 @@ export async function refreshAccountExpiry(input: {
           entry.expires_at = expires;
           const verdict = classifyMembershipRefresh({
             ...result.diagnostics,
-            produced_links: result.links.length
+            produced_links: result.links.length,
+            redirected: redirectedBrands.has(brand)
           }, todayText);
           entry.status = verdict.status;
           if (verdict.status === 'updated' || verdict.status === 'expired') {
