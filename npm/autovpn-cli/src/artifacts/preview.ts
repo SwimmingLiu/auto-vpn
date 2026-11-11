@@ -1,9 +1,23 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { isIsoAlpha2CountryCode } from '../pipeline/country-codes.js';
 import { redactText, safeDeployment } from '../runtime/redaction.js';
 
 const FINAL_NODE_FILES = ['vpn_node_emoji.txt', 'vpn_node_availability.txt', 'vpn_node_speedtest.txt'];
+// Postprocess decorates every node as `<flag> <CC> <vendor name>`. The country
+// code is only trusted in that exact position; a bare two-letter token inside a
+// vendor name is not a region.
+const LEADING_FLAG_COUNTRY_PATTERN = /^[\u{1F1E6}-\u{1F1FF}]{2}\s+([A-Z]{2})(?:\s|$)/u;
+
+export interface FinalNodeRow {
+  name: string;
+  address: string;
+  protocol: string;
+  path: string;
+  link: string;
+  regionCode: string;
+}
 
 function formatBytes(size: number): string {
   if (size >= 1024 * 1024) {
@@ -34,38 +48,78 @@ function fileInventory(artifactDir: string): Array<Record<string, unknown>> {
     .sort((left, right) => String(left.name).localeCompare(String(right.name)));
 }
 
-function decodeVmessRegion(link: string): string {
+/**
+ * Decode one final-output line into the row the UI renders.
+ *
+ * Country comes from the decorated name, never from the address: the pipeline
+ * writes `<flag> <CC> <vendor name>`, so the prefix is authoritative and a name
+ * without one is unknown rather than a guess.
+ */
+export function parseFinalNode(link: string): FinalNodeRow {
   const value = link.trim();
+  const fallback: FinalNodeRow = { name: '', address: '', protocol: 'vmess', path: '', link: value, regionCode: 'OTHER' };
   if (!value.startsWith('vmess://')) {
-    return 'OTHER';
+    return { ...fallback, protocol: value.split('://')[0] || 'unknown' };
   }
   let encoded = value.slice('vmess://'.length);
   encoded += '='.repeat((4 - (encoded.length % 4)) % 4);
   try {
     const payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as Record<string, unknown>;
-    const match = String(payload.ps ?? '').toUpperCase().match(/\b([A-Z]{2})\b/);
-    return match ? match[1] : 'OTHER';
+    const name = String(payload.ps ?? '');
+    const match = name.trim().toUpperCase().match(LEADING_FLAG_COUNTRY_PATTERN);
+    const regionCode = match && isIsoAlpha2CountryCode(match[1]) ? match[1] : 'OTHER';
+    return {
+      name,
+      address: String(payload.add ?? ''),
+      protocol: 'vmess',
+      path: String(payload.path ?? ''),
+      link: value,
+      regionCode
+    };
   } catch {
-    return 'OTHER';
+    return fallback;
   }
 }
 
-function safeNodeCounts(artifactDir: string): Record<string, unknown> {
+function readFinalNodes(artifactDir: string): { nodeSource: string; rows: FinalNodeRow[] } {
   const nodeSource = FINAL_NODE_FILES.find((name) => fs.existsSync(path.join(artifactDir, name))) ?? '';
   if (!nodeSource) {
-    return { node_source: '', final_node_count: 0, regions: [] };
+    return { nodeSource, rows: [] };
   }
   const lines = fs.readFileSync(path.join(artifactDir, nodeSource), 'utf8').split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  return { nodeSource, rows: lines.map((line) => parseFinalNode(line)) };
+}
+
+function regionCounts(rows: FinalNodeRow[]): Array<{ region_code: string; count: number }> {
   const counts = new Map<string, number>();
-  for (const line of lines) {
-    const region = decodeVmessRegion(line);
-    counts.set(region, (counts.get(region) ?? 0) + 1);
+  for (const row of rows) {
+    counts.set(row.regionCode, (counts.get(row.regionCode) ?? 0) + 1);
   }
+  return [...counts.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([region_code, count]) => ({ region_code, count }));
+}
+
+function safeNodeCounts(artifactDir: string): Record<string, unknown> {
+  const { nodeSource, rows } = readFinalNodes(artifactDir);
   return {
     node_source: nodeSource,
-    final_node_count: lines.length,
-    regions: [...counts.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([region_code, count]) => ({ region_code, count }))
+    final_node_count: rows.length,
+    regions: regionCounts(rows)
   };
+}
+
+/**
+ * The rows the results page and its country donut read.
+ *
+ * The serve runtime used to answer `nodeRows: []` here, so a browser session
+ * showed 0 nodes, no region statistics and an empty 国家分布 donut while the
+ * artifact itself was complete. Rows are already safe to ship: a vmess link
+ * carries no credential, and the deployment's own secrets are redacted
+ * separately in `safeDeployment`.
+ */
+export function safeNodeRows(artifactDir: string): FinalNodeRow[] {
+  return readFinalNodes(artifactDir).rows;
 }
 
 export function previewArtifact(artifactDir: string): Record<string, unknown> {

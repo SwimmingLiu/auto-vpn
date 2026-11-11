@@ -613,6 +613,40 @@ test('server runtime state includes latest artifact preview and retry artifacts'
   assert.equal(state.deployment?.subscription_url, 'set');
 });
 
+test('server state ships the final node rows so the browser charts countries', async (t) => {
+  // `/api/state` used to answer `nodeRows: []`. The results page and the
+  // 国家分布 donut read that array, so the served UI showed 0 nodes and an
+  // empty region chart even on a complete artifact.
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-rows-'));
+  t.after(() => fs.rmSync(projectRoot, { recursive: true, force: true }));
+  const runtimeRoot = path.join(projectRoot, 'state');
+  const artifactDir = path.join(runtimeRoot, 'artifacts', '20261111-042453');
+  fs.mkdirSync(artifactDir, { recursive: true });
+  fs.writeFileSync(path.join(artifactDir, 'pipeline_report.json'), JSON.stringify({ run_status: 'success', counts: { final_links: 3 } }), 'utf8');
+  const link = (ps) => 'vmess://' + Buffer.from(JSON.stringify({ ps, add: '203.0.113.7', port: '443', id: 'fixture-uuid', net: 'ws', path: '/' })).toString('base64');
+  fs.writeFileSync(path.join(artifactDir, 'vpn_node_emoji.txt'), [link('🇺🇸 US 76'), link('🇹🇼 TW 972'), link('🇸🇬 SG 1050')].join('\n') + '\n', 'utf8');
+
+  const runtime = createServerRuntime({
+    projectRoot,
+    env: { VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot },
+    startDetachedRun: async () => ({ job_id: 'unused' }),
+    stopManagedJob: async () => ({ job_id: 'unused' }),
+    followLog: async function* () {}
+  });
+
+  const state = await runtime.loadState();
+  const rows = state.artifact?.nodeRows;
+  assert.equal(Array.isArray(rows), true);
+  assert.deepEqual(rows.map((row) => row.regionCode), ['US', 'TW', 'SG']);
+  assert.deepEqual(rows.map((row) => row.name), ['🇺🇸 US 76', '🇹🇼 TW 972', '🇸🇬 SG 1050']);
+  assert.equal(rows[0].link.startsWith('vmess://'), true);
+  assert.deepEqual(state.artifact?.safe_node_counts.regions, [
+    { region_code: 'SG', count: 1 },
+    { region_code: 'TW', count: 1 },
+    { region_code: 'US', count: 1 }
+  ]);
+});
+
 test('a credential source password is redacted before it reaches the client', () => {
   // The state endpoint must not echo a real account password back to the UI.
   const profile = sanitizeProfileForServer({

@@ -5,6 +5,12 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { artifactLatest, artifactList } from '../dist/artifacts/list.js';
+import { parseFinalNode, previewArtifact, safeNodeRows } from '../dist/artifacts/preview.js';
+
+function vmess(ps, extra = {}) {
+  const payload = { v: '2', ps, add: '203.0.113.7', port: '443', id: 'fixture-uuid', net: 'ws', path: '/edge', ...extra };
+  return 'vmess://' + Buffer.from(JSON.stringify(payload)).toString('base64url');
+}
 
 function writeJson(filePath, payload) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -95,4 +101,49 @@ test('activity counts final output and isolates damaged or intermediate-only his
   assert.equal(result.activity.find((day) => day.date === '2026-11-22').nodes, 3);
   assert.equal(result.activity.some((day) => day.date === '2026-11-23'), false);
   assert.equal(result.activityUnavailable, 2);
+});
+
+test('final node rows carry the decorated country so the browser UI can chart it', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-preview-rows-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const artifactDir = path.join(root, 'artifacts', '20261111-042453');
+  fs.mkdirSync(artifactDir, { recursive: true });
+  writeJson(path.join(artifactDir, 'pipeline_report.json'), { run_status: 'success', counts: { final_links: 4 } });
+  fs.writeFileSync(path.join(artifactDir, 'vpn_node_emoji.txt'), [
+    vmess('🇺🇸 US 76'),
+    vmess('🇺🇸 US 77'),
+    vmess('🇹🇼 TW 972'),
+    vmess('🇩🇪 DE Frankfurt', { path: '/path/350214042616' })
+  ].join('\n') + '\n', 'utf8');
+
+  const rows = safeNodeRows(artifactDir);
+  assert.equal(rows.length, 4);
+  assert.deepEqual(rows.map((row) => row.regionCode), ['US', 'US', 'TW', 'DE']);
+  assert.deepEqual(rows[3], {
+    name: '🇩🇪 DE Frankfurt',
+    address: '203.0.113.7',
+    protocol: 'vmess',
+    path: '/path/350214042616',
+    link: vmess('🇩🇪 DE Frankfurt', { path: '/path/350214042616' }),
+    regionCode: 'DE'
+  });
+
+  const preview = previewArtifact(artifactDir);
+  assert.deepEqual(preview.safe_node_counts, {
+    node_source: 'vpn_node_emoji.txt',
+    final_node_count: 4,
+    regions: [{ region_code: 'DE', count: 1 }, { region_code: 'TW', count: 1 }, { region_code: 'US', count: 2 }]
+  });
+});
+
+test('a node name without a decorated prefix is unknown, not silently a country', () => {
+  // The old region reader matched the first two-letter token anywhere in the
+  // name, so a vendor name like "US" or a bare token became a false country.
+  // Postprocess always writes `<flag> <CC> name`; anything else is OTHER.
+  assert.equal(parseFinalNode(vmess('US 76')).regionCode, 'OTHER');
+  assert.equal(parseFinalNode(vmess('plain node')).regionCode, 'OTHER');
+  assert.equal(parseFinalNode(vmess('🇶🇶 QQ fake')).regionCode, 'OTHER');
+  assert.equal(parseFinalNode('ps|{"ps":"🇯🇵 JP 1"}').regionCode, 'OTHER');
+  assert.equal(parseFinalNode('vmess://not-base64!!').regionCode, 'OTHER');
+  assert.equal(parseFinalNode('trojan://example').protocol, 'trojan');
 });

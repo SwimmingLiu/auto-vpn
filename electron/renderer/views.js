@@ -1,9 +1,10 @@
 import { buildStageModel, PAGE_INDEX, PAGE_ORDER, resolveRunControlState } from './state.js';
 import { icon } from './icons.js';
 
-// Defaults for a source row that has never stored a value. A round is one
-// cursor step over that brand's fixed area list (one region by default), so the
-// count is per platform and per region: 4/2 would fetch only a handful of nodes.
+// Defaults for a source row that has never stored a value. A round advances a
+// cursor over that brand's fixed area list and pulls `areas_per_round` ids, so
+// the count is per platform and per round: 4/2 would fetch only a handful of
+// nodes.
 export const SOURCE_ROUND_DEFAULTS = {
   max_iterations: 200,
   plateau_limit: 50,
@@ -929,7 +930,7 @@ function buildSettingsDrawerBody(section, draft, vm = null) {
                   <div class="source-credential-rounds">
                     <label class="source-field">
                       <span>轮数</span>
-                      <input type="number" min="1" step="1" inputmode="numeric" aria-label="${label}：抓取轮数" title="Android 与 iOS 各自独立跑满该轮数（1000 = 两端各 1000 轮）；每轮是固定区域列表上的一个游标步，默认只取 1 个区域" data-drawer-source="${escapeHtml(name)}" data-drawer-key="max_iterations" value="${escapeHtml(source.max_iterations ?? SOURCE_ROUND_DEFAULTS.max_iterations)}" />
+                      <input type="number" min="1" step="1" inputmode="numeric" aria-label="${label}：抓取轮数" title="Android 与 iOS 各自独立跑满该轮数（1000 = 两端各 1000 轮）；每轮是固定区域列表上的一个游标步，按「每轮区域数」取区域" data-drawer-source="${escapeHtml(name)}" data-drawer-key="max_iterations" value="${escapeHtml(source.max_iterations ?? SOURCE_ROUND_DEFAULTS.max_iterations)}" />
                     </label>
                     <label class="source-field">
                       <span>早停</span>
