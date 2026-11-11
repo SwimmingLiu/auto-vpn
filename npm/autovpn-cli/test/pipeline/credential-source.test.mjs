@@ -479,6 +479,35 @@ test('a throttling message is not a credential rejection', () => {
   }
 });
 
+test('an unclassified login rejection rotates accounts but retires nothing', async () => {
+  // 雷霆 answers `code=128` with no message, which matches neither the
+  // credential classifier nor the membership one. The account cannot be used
+  // right now, but nothing proves it is dead — and ending the source there left
+  // 159 active accounts unread while the row reported zero rounds.
+  const { isCredentialLoginRejection, isMembershipExpiredMessage, accountFollowUp } = await import('../../dist/pipeline/credential-source.js');
+  assert.equal(isCredentialLoginRejection(''), false);
+  assert.equal(isMembershipExpiredMessage(''), false);
+
+  assert.deepEqual(
+    accountFollowUp({ loginRejected: true }),
+    { act: true, retire: null, rotate: true }
+  );
+  // A classified rejection retires as well as rotates.
+  assert.deepEqual(
+    accountFollowUp({ loginRejected: true, credentialRejected: true }),
+    { act: true, retire: 'invalid', rotate: true }
+  );
+  assert.deepEqual(
+    accountFollowUp({ loginRejected: true, membershipExpired: true }),
+    { act: true, retire: 'expired', rotate: true }
+  );
+  // A successful login retires nothing and rotates nothing.
+  assert.deepEqual(
+    accountFollowUp({ loginRejected: false }),
+    { act: false, retire: null, rotate: false }
+  );
+});
+
 test('a redirected row retries past more rejected accounts than a native one', async () => {
   // A redirected row leases from a foreign vendor's list, and only a minority
   // of those accounts exist on the backend (measured: 2 of 40). The retry width
