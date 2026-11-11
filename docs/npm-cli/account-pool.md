@@ -124,6 +124,23 @@ autovpn accounts export --file backup.csv
 这样一次运行会把负载摊到整个池，而不是把 1 号账号打到被限流。
 `leaseAll(brand)` 返回该品牌全部可用账号，供并发扇出使用。
 
+## 核对会员到期
+
+一次运行只按品牌租用一个账号，所以刚导入的池里绝大多数行的到期日会一直空着。
+`accounts refresh-expiry` 逐个登录可用账号，读取厂商返回的真实会员日期并写回；
+已经过期、或登录后确认不是会员的行会被标记并退出轮换。
+
+```bash
+autovpn accounts refresh-expiry --output human
+autovpn accounts refresh-expiry --brand heidong --limit 20 --concurrency 4
+```
+
+输出里的 `checked / updated / expired / failed` 是真正发生的数量。`failed` 是
+没能登录、因而无法判断的行，它们保持原状，不会被当成过期剔除。
+
+设置抽屉的账号池面板有同一个动作（核对会员到期），走
+`POST /api/accounts/refresh-expiry`；桌面端走同一条 CLI 命令。
+
 ## 前端
 
 设置抽屉里的账号池面板展示总数、各状态计数、按品牌分布和 7 天内到期数，
