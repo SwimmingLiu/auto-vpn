@@ -411,6 +411,37 @@ export function fingerprintKeyFor(sourceName: string, source: BrandCredentialSou
 }
 
 /**
+ * What to do with a pooled account after its login was refused.
+ *
+ * Retirement and rotation are separate decisions. Only a *classified* rejection
+ * — the vendor said the password or the account is wrong, or that the
+ * membership lapsed — is evidence the row is dead, so only that retires it.
+ * Any rejection at all, though, means this account cannot be used right now and
+ * the pool holds more.
+ *
+ * Conflating the two ended the source at zero rounds: 雷霆 refuses most of this
+ * pool with a bare `code=128` and no message, which matches neither classifier,
+ * so the loop gave up on the first account while 159 active rows went unread.
+ */
+export function accountFollowUp(state: {
+  membershipExpired?: boolean;
+  credentialRejected?: boolean;
+  loginRejected?: boolean;
+}): { act: boolean; retire: 'expired' | 'invalid' | null; rotate: boolean } {
+  if (state.membershipExpired) {
+    return { act: true, retire: 'expired', rotate: true };
+  }
+  if (state.credentialRejected) {
+    return { act: true, retire: 'invalid', rotate: true };
+  }
+  if (state.loginRejected) {
+    // Usable by nobody right now, but nothing proves it is dead: keep the row.
+    return { act: true, retire: null, rotate: true };
+  }
+  return { act: false, retire: null, rotate: false };
+}
+
+/**
  * Cache files an earlier build may have written for this row.
  *
  * Before brand-first keying, the key was the official-site host, so a row
@@ -1633,14 +1664,17 @@ async function fetchCredentialSourceLinksWithTransport(
         && results.every((result) => result.diagnostics.login_rejected)
         && results.some((result) => result.diagnostics.membership_expired);
       const credentialRejected = results.length > 0 && results.every((result) => result.diagnostics.credential_rejected);
-      if (store && leased && (membershipExpired || credentialRejected)) {
-        if (membershipExpired) store.markExpired(leased.id, 'membership expired');
-        else store.markInvalid(leased.id, 'login rejected');
-        if (attempt < attempts && brand) {
-          leased = store.lease(brand);
-          if (leased) {
-            account = leased.account;
-            password = leased.password;
+      const loginRejected = results.length > 0 && results.every((result) => result.diagnostics.login_rejected);
+      const followUp = accountFollowUp({ membershipExpired, credentialRejected, loginRejected });
+      if (store && leased && followUp.act) {
+        if (followUp.retire === 'expired') store.markExpired(leased.id, 'membership expired');
+        else if (followUp.retire === 'invalid') store.markInvalid(leased.id, 'login rejected');
+        if (followUp.rotate && attempt < attempts && brand) {
+          const next = store.lease(brand);
+          if (next) {
+            leased = next;
+            account = next.account;
+            password = next.password;
             continue;
           }
         }
