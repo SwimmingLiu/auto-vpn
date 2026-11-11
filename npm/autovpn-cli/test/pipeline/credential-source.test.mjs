@@ -441,3 +441,26 @@ test('a throttling message is not a credential rejection', () => {
     assert.equal(isCredentialLoginRejection(message), true, message);
   }
 });
+
+test('a redirected row retries past more rejected accounts than a native one', async () => {
+  // A redirected row leases from a foreign vendor's list, and only a minority
+  // of those accounts exist on the backend (measured: 2 of 40). The retry width
+  // is what decides whether the run ever reaches such an account, so it is
+  // asserted directly rather than inferred from a run that cannot start.
+  const { credentialAccountAttempts } = await import('../../dist/pipeline/credential-source.js');
+  assert.equal(credentialAccountAttempts({ official_site: 'x' }, 'heidong'), 3);
+  assert.equal(
+    credentialAccountAttempts({ official_site: 'x', backend_brand: 'leiting' }, 'heidong'),
+    24
+  );
+  // An explicit value always wins, and a row that redirects to its own brand
+  // is not a redirect at all.
+  assert.equal(
+    credentialAccountAttempts({ official_site: 'x', backend_brand: 'leiting', account_retry_limit: 5 }, 'heidong'),
+    5
+  );
+  assert.equal(
+    credentialAccountAttempts({ official_site: 'x', backend_brand: 'heidong' }, 'heidong'),
+    3
+  );
+});

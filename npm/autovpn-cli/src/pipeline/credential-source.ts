@@ -160,6 +160,27 @@ export type CredentialTextFetch = (url: string, init?: Record<string, unknown>) 
   body?: { cancel?(): Promise<void> | void } | null;
 }>;
 
+/**
+ * How many pooled accounts one source may try before it reports failure.
+ *
+ * A redirected row leases from a foreign vendor's list, and only a minority of
+ * those accounts exist on the backend: measured against the deployed pool, 2 of
+ * 40 黑洞 accounts log in on the 雷霆 backend. Each rejected attempt retires that
+ * account and leases the next by least-recent use, so the width decides whether
+ * the run ever reaches a usable credential. A row without a redirect keeps the
+ * tighter default.
+ */
+export function credentialAccountAttempts(
+  source: { account_retry_limit?: number; backend_brand?: string },
+  brand: string | null | undefined
+): number {
+  const backend = normalizeBrand(String(source.backend_brand ?? '').trim());
+  const redirected = Boolean(backend && brand && backend !== brand);
+  const fallback = redirected ? 24 : 3;
+  const parsed = Math.trunc(Number(source.account_retry_limit ?? fallback));
+  return Number.isFinite(parsed) && parsed >= 1 ? parsed : fallback;
+}
+
 export interface CredentialExtractOptions {
   /** Injectable for tests; production passes `globalThis.fetch`. */
   fetchImpl?: CredentialTextFetch | CredentialFetchLike;
@@ -1283,8 +1304,7 @@ async function fetchCredentialSourceLinksWithTransport(
   // A non-numeric retry limit (a hand-edited `account_retry_limit = "three"`)
   // must not turn the attempt loop into zero passes, which reported the source
   // as successful with no links and no error.
-  const retryLimit = Math.trunc(Number(source.account_retry_limit ?? 3));
-  const attempts = explicitAccount && explicitPassword ? 1 : (Number.isFinite(retryLimit) && retryLimit >= 1 ? retryLimit : 3);
+  const attempts = explicitAccount && explicitPassword ? 1 : credentialAccountAttempts(source, brand);
   let results: CredentialExtractResult[] = [];
   let callbackFailure: Error | null = null;
   // The dashboard reads per-source totals from one `extract_iteration` stream.
@@ -1413,6 +1433,14 @@ async function fetchCredentialSourceLinksWithTransport(
         && results.every((result) => result.diagnostics.login_rejected)
         && results.some((result) => result.diagnostics.membership_expired);
       const credentialRejected = results.length > 0 && results.every((result) => result.diagnostics.credential_rejected);
+      // Logging in is not enough on a backend that gates routes by membership:
+      // a free-tier account sees the paid rows disabled, so the vendor filter
+      // leaves nothing to ask and the run reports an empty source. That account
+      // is valid, so it is not retired — the loop simply leases the next one.
+      const unusableRouteTable = results.length > 0
+        && results.every((result) => result.diagnostics.route_count === 0 && result.diagnostics.login_ok)
+        && !credentialRejected
+        && !membershipExpired;
       if (store && leased && (membershipExpired || credentialRejected)) {
         if (membershipExpired) store.markExpired(leased.id, 'membership expired');
         else store.markInvalid(leased.id, 'login rejected');
@@ -1423,6 +1451,13 @@ async function fetchCredentialSourceLinksWithTransport(
             password = leased.password;
             continue;
           }
+        }
+      } else if (unusableRouteTable && store && leased && attempt < attempts && brand) {
+        leased = store.lease(brand);
+        if (leased) {
+          account = leased.account;
+          password = leased.password;
+          continue;
         }
       }
       break;
