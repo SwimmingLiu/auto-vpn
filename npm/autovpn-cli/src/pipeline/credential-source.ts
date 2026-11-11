@@ -2523,6 +2523,40 @@ export function classifyMembershipRefresh(
  * active rows deliberately, reusing the normal credential flow (cached
  * fingerprint, one node request) so the login path is the same one a run uses.
  */
+/**
+ * Where a membership sweep should log in for each brand.
+ *
+ * The sweep must reach the same host a run reaches, or its verdicts describe a
+ * different account than the one the pool rotates: on a redirected row the run
+ * rewrites `official_site` to the backend before any request, and the sweep
+ * used to probe the storefront the run never touches. Read from the profile so
+ * a redirected row is known here exactly as the run knows it.
+ */
+export function resolveExpiryProbeTargets(
+  env: NodeJS.ProcessEnv,
+  readSources?: () => Record<string, any>
+): Map<string, { officialSite: string; backendBrand?: BrandKey }> {
+  const targets = new Map<string, { officialSite: string; backendBrand?: BrandKey }>();
+  let sources: Record<string, any> = {};
+  try {
+    // The profile path comes from the environment, so the project root argument
+    // is not consulted; `profilePayload` reads the same file a run does.
+    sources = readSources ? readSources() : (profilePayload(process.cwd(), env).sources ?? {}) as Record<string, any>;
+  } catch {
+    // No readable profile: every brand falls back to its own storefront.
+  }
+  for (const [name, config] of Object.entries(sources)) {
+    const brand = normalizeBrand(name);
+    if (!brand) continue;
+    const backend = normalizeBrand(String(config?.backend_brand ?? '').trim());
+    targets.set(brand, {
+      officialSite: String(config?.official_site ?? '').trim() || brandSite(brand),
+      ...(backend && backend !== brand ? { backendBrand: backend } : {})
+    });
+  }
+  return targets;
+}
+
 export async function refreshAccountExpiry(input: {
   brand?: string;
   limit?: number;
@@ -2547,32 +2581,28 @@ export async function refreshAccountExpiry(input: {
   const requested = input.brand ? normalizeBrand(input.brand) : null;
   // Every brand the pool knows, from the registry rather than a second list.
   const brands: BrandKey[] = requested ? [requested] : BRANDS.map((brand) => brand.key);
-  // A row that reads another vendor's data plane is graded by its own
-  // storefront, so a low level there is not evidence of a free account. The
-  // run path exempts it; the sweep has to read the same profile to know.
-  const redirectedBrands = new Set<string>();
-  try {
-    // The profile path comes from the environment, so the project root argument
-    // is not consulted; `profilePayload` reads the same file a run does.
-    const sources = (profilePayload(process.cwd(), env).sources ?? {}) as Record<string, any>;
-    for (const [name, config] of Object.entries(sources)) {
-      const brand = normalizeBrand(name);
-      const backend = normalizeBrand(String(config?.backend_brand ?? '').trim());
-      if (brand && backend && backend !== brand) redirectedBrands.add(brand);
-    }
-  } catch {
-    // No readable profile: fall back to the storefront's own grading.
-  }
+  // How a run would reach each brand. A redirected row is graded by its own
+  // storefront but logs in — and is graded again — against the backend it
+  // reads, with the backend's APK. Probing the storefront instead put the sweep
+  // on a host the run never touches (the deployment host cannot even resolve
+  // 黑洞's storefront) and graded the account by a backend it never uses, so its
+  // verdicts described a different account than the one the pool rotates.
+  const probeFor = resolveExpiryProbeTargets(env);
+  const probeSite = (brand: BrandKey): string => probeFor.get(brand)?.officialSite ?? brandSite(brand);
+  const probeBackend = (brand: BrandKey): BrandKey | undefined => probeFor.get(brand)?.backendBrand;
   try {
     for (const brand of brands) {
       let accounts = store.leaseAll(brand);
       if (limit > 0) accounts = accounts.slice(0, limit);
       if (accounts.length === 0) continue;
       // One memo per brand: the APK is inspected at most once for the whole
-      // sweep, not once per account. The cache key is the short brand key the
-      // normal run writes (`mf`, not `mifeng`); using the long name missed the
-      // cache on every sweep and re-downloaded the APK per account.
-      const brandKey = credentialBrandKey(brand, { official_site: brandSite(brand) });
+      // sweep, not once per account. The key comes from the same function a run
+      // uses, against the same probe source, so a redirected row is inspected
+      // under the backend's prefix and shares the entry the run just cached.
+      const brandKey = fingerprintKeyFor(brand, {
+        official_site: probeSite(brand),
+        ...(probeBackend(brand) ? { brand_override: probeBackend(brand) } : {})
+      } as BrandCredentialSource);
       const memo = createFingerprintMemo(fingerprintStore, brandKey);
       await mapWithConcurrency(accounts, concurrency, async (leased) => {
         const entry: ExpiryRefreshEntry = {
@@ -2587,7 +2617,8 @@ export async function refreshAccountExpiry(input: {
             source_name: brand,
             source: {
               mode: 'credential',
-              official_site: brandSite(brand),
+              official_site: probeSite(brand),
+              ...(probeBackend(brand) ? { backend_brand: probeBackend(brand) } : {}),
               account: leased.account,
               password: leased.password,
               platforms: ['android'],
@@ -2601,7 +2632,7 @@ export async function refreshAccountExpiry(input: {
           const verdict = classifyMembershipRefresh({
             ...result.diagnostics,
             produced_links: result.links.length,
-            redirected: redirectedBrands.has(brand)
+            redirected: Boolean(probeBackend(brand))
           }, todayText);
           entry.status = verdict.status;
           if (verdict.status === 'updated' || verdict.status === 'expired') {

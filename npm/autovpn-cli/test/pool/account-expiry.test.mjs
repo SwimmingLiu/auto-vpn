@@ -299,6 +299,40 @@ test('accounts refresh-expiry passes defaults and renders the worker result', as
   store.close();
 });
 
+test('the sweep probes the same host a run reaches, including the redirect', async () => {
+  // The run rewrites a redirected row's official_site to the backend before any
+  // request. The sweep used to probe the storefront instead — a host the run
+  // never contacts, and one the deployment host cannot even resolve — so its
+  // verdicts described a different account than the one the pool rotates.
+  const { resolveExpiryProbeTargets, fingerprintKeyFor } = await import('../../dist/pipeline/credential-source.js');
+  const targets = resolveExpiryProbeTargets({}, () => ({
+    heidong: { mode: 'credential', official_site: 'https://www.heidongm.com', backend_brand: 'leiting' },
+    mifeng: { mode: 'credential', official_site: 'https://www.mifengbuzz.com' }
+  }));
+  assert.equal(targets.get('heidong').backendBrand, 'leiting');
+  assert.equal(targets.get('heidong').officialSite, 'https://www.heidongm.com');
+  assert.equal(targets.get('mifeng').backendBrand, undefined);
+  // A self-referential or unknown backend is not a redirect.
+  const selfRef = resolveExpiryProbeTargets({}, () => ({
+    leiting: { mode: 'credential', official_site: 'https://www.leitingku.com', backend_brand: 'leiting' },
+    xuanfeng: { mode: 'credential', official_site: 'https://www.xfjsq9.com', backend_brand: 'not-a-vendor' }
+  }));
+  assert.equal(selfRef.get('leiting').backendBrand, undefined);
+  assert.equal(selfRef.get('xuanfeng').backendBrand, undefined);
+  // The APK cache key follows the data plane, so the sweep shares the entry the
+  // run just wrote instead of re-downloading under the storefront's prefix.
+  const runKey = fingerprintKeyFor('heidong', { brand_override: 'leiting' });
+  const sweepKey = fingerprintKeyFor('heidong', {
+    official_site: targets.get('heidong').officialSite,
+    brand_override: targets.get('heidong').backendBrand
+  });
+  assert.equal(sweepKey, runKey);
+  assert.equal(runKey, 'lt');
+  // An unreadable profile leaves every brand on its own storefront.
+  const empty = resolveExpiryProbeTargets({}, () => { throw new Error('no profile'); });
+  assert.equal(empty.size, 0);
+});
+
 test('the membership sweep retires free-tier and rejected rows, not just lapsed ones', async () => {
   // The sweep passes explicit credentials, so the run path's leased-row
   // retirement never fires for it. A free-tier account reports a date years
