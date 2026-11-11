@@ -62,7 +62,11 @@ const OFFICIAL_SOURCE_KEYS = new Set<BrandKey>(['leiting', 'heidong', 'mifeng', 
 const OBSOLETE_SOURCE_FIELDS = [
   'url', 'key', 'account', 'password', 'platform',
   'use_random_area', 'area_min', 'area_max',
-  'resume_from_iteration', 'failure_limit'
+  'resume_from_iteration', 'failure_limit',
+  // Internal: the extractor sets this when `backend_brand` redirects the data
+  // plane. It is derived state, so a hand-edited profile must not persist it —
+  // it would outlive the redirect that produced it.
+  'brand_override'
 ] as const;
 
 function positiveInteger(value: unknown, fallback: number): number {

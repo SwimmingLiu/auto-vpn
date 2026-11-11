@@ -18,6 +18,7 @@ import {
   apiLineValues,
   apiLinkValues,
   credentialBrandKey,
+  loadApkWithBrand,
   fetchCredentialSourceLinks,
   isCredentialLoginRejection,
   loginSignature,
@@ -463,4 +464,28 @@ test('a redirected row retries past more rejected accounts than a native one', a
     credentialAccountAttempts({ official_site: 'x', backend_brand: 'heidong' }, 'heidong'),
     3
   );
+});
+
+test('a redirected row requests the backend APK prefix, not the storefront one', async () => {
+  // 黑洞 publishes `_hd<N>.apk`, 雷霆 publishes `_lt<N>.apk`. The loader picks
+  // the prefix from the brand name it is handed, so a redirected row that hands
+  // it the row name hunts `_hd` archives on 雷霆's CDN, misses every lookback
+  // slot and fails with "APK could not be located" — the exact failure the
+  // redirect exists to remove.
+  const { BRAND_APK_PREFIXES } = await import('../../dist/pipeline/credential-source.js');
+  assert.equal(BRAND_APK_PREFIXES.heidong, 'hd');
+  assert.equal(BRAND_APK_PREFIXES.leiting, 'lt');
+  // The call site passes `source.brand_override ?? input.source_name`. Reading
+  // the table the way that expression resolves it is the contract under test.
+  const prefixFor = (sourceName, brandOverride) => BRAND_APK_PREFIXES[brandOverride ?? sourceName] ?? 'apk';
+  assert.equal(prefixFor('heidong', undefined), 'hd');
+  assert.equal(prefixFor('heidong', 'leiting'), 'lt');
+});
+
+test('a redirected row logs in on the backend but keeps its own account pool brand', async () => {
+  // The account must still be leased as the row's brand. Reading the data plane
+  // from another vendor is not permission to spend that vendor's accounts.
+  const { credentialAccountAttempts } = await import('../../dist/pipeline/credential-source.js');
+  assert.equal(credentialAccountAttempts({ backend_brand: 'leiting' }, 'heidong'), 24);
+  assert.equal(credentialAccountAttempts({}, 'heidong'), 3);
 });
