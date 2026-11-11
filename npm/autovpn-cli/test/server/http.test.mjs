@@ -368,6 +368,7 @@ test('web adapter installs browser vpnAutomation api', async () => {
     assert.match(script, /\/api\/profile/);
     assert.match(script, /\/api\/runs\/retry-stage/);
     assert.match(script, /\/api\/qr/);
+    assert.match(script, /\/api\/accounts\/refresh-expiry/);
   } finally {
     await service.close();
   }

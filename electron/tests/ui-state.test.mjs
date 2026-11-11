@@ -902,6 +902,19 @@ test('the account expiry affordance appears only when the bridge exists', () => 
 });
 
 
+test('the membership check appears only when the bridge exists and reports its busy state', () => {
+  const profile = { sources: {}, speed_test: {}, availability_targets: {}, deploy: {} };
+  const messages = getMessages('zh-CN');
+  const pool = { status: 'ready', stats: { total: 3, active: 3, by_brand: [] }, accounts: [], statusFilter: 'all', brandFilter: 'all', query: '', sortBy: 'brand' };
+  const render = (extra) => buildPageMarkup('settings', buildViewModel({ profile, accountPool: { ...pool, ...extra } }, messages, 'zh-CN'), messages, 'zh-CN');
+  assert.doesNotMatch(render({}), /data-account-action="refresh-expiry"/);
+  assert.match(render({ canRefreshExpiry: true }), /data-account-action="refresh-expiry"/);
+  assert.match(render({ canRefreshExpiry: true }), /核对会员到期/);
+  const busy = render({ canRefreshExpiry: true, refreshingExpiry: true, busy: true });
+  assert.match(busy, /核对中…/);
+  assert.match(busy, /data-account-action="refresh-expiry" type="button" disabled/);
+});
+
 test('dashboard live and full rendering agree after failure and stop with retained artifacts', () => {
   const messages = getMessages('zh-CN');
   const failed = buildViewModel({ runState: 'failed', artifactDir: '/tmp/retained' }, messages, 'zh-CN');
