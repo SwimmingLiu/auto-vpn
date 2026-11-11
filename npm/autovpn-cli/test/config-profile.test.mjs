@@ -78,3 +78,23 @@ test('max_areas survives normalization because the credential flow still reads i
   const out = normalizeOfficialSources({ leiting: { mode: 'credential', official_site: 'https://s.example', max_areas: 3 } });
   assert.equal(out.leiting.max_areas, 3);
 });
+
+test('backend_brand survives normalization so 黑洞 can read the 雷霆 data plane', async () => {
+  const { normalizeOfficialSources } = await import('../dist/config/profile.js');
+  const out = normalizeOfficialSources({
+    heidong: { mode: 'credential', official_site: 'https://www.67986457.com', backend_brand: '雷霆' }
+  });
+  assert.equal(out.heidong.backend_brand, 'leiting');
+  // The storefront's own row is untouched: the account pool still leases 黑洞.
+  assert.equal(out.heidong.official_site, 'https://www.67986457.com');
+});
+
+test('an unknown or self-referential backend_brand is dropped', async () => {
+  const { normalizeOfficialSources } = await import('../dist/config/profile.js');
+  const out = normalizeOfficialSources({
+    heidong: { mode: 'credential', official_site: 'https://www.67986457.com', backend_brand: 'not-a-vendor' },
+    leiting: { mode: 'credential', official_site: 'https://www.68123836.com', backend_brand: 'leiting' }
+  });
+  assert.equal(out.heidong.backend_brand, undefined);
+  assert.equal(out.leiting.backend_brand, undefined);
+});

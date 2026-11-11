@@ -148,8 +148,32 @@ test('黑洞 layout only adds the newhd flag', () => {
   assert.ok(!params.includes('width='));
 });
 
-test('蜜蜂 layout adds no flag block and no viewport', () => {
+test('a redirected 黑洞 row speaks the 雷霆 parameter layout', () => {
+  // 黑洞's own Android channel answers the vendor's placeholder for every area,
+  // and its iOS channel maps 31 areas onto 8 hosts. Sent to the 雷霆 backend the
+  // same pooled account receives one machine per area, but only if the request
+  // carries 雷霆's flag block: the backend decides by parameter shape, so the
+  // storefront's `newhd=1` would be a different, unrecognised client.
   const params = commonParams(
+    { identity, device, platform: 'android', timestampMs: 1 },
+    resolveBrandLayout({ brand: '黑洞', brand_override: '雷霆', official_site: 'x' })
+  );
+  assert.ok(params.includes('&newlt=1'));
+  assert.ok(params.includes('&update_action=web'));
+  assert.ok(params.includes('width=392.7'));
+  assert.ok(!params.includes('newhd=1'));
+});
+
+test('the 黑洞 layout is unchanged when no backend redirects it', () => {
+  const params = commonParams(
+    { identity, device, platform: 'android', timestampMs: 1 },
+    resolveBrandLayout({ brand: '黑洞', official_site: 'x' })
+  );
+  assert.ok(params.includes('&newhd=1'));
+  assert.ok(!params.includes('newlt=1'));
+});
+
+test('蜜蜂 layout adds no flag block and no viewport', () => {  const params = commonParams(
     { identity, device, platform: 'android', timestampMs: 1 },
     resolveBrandLayout({ brand: '蜜蜂', official_site: 'x', account: 'a', password: 'b' })
   );
