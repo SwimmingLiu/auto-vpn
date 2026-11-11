@@ -135,6 +135,28 @@ export class FingerprintStore {
     return payload;
   }
 
+  /**
+   * Stores an existing fingerprint under a different key.
+   *
+   * Used when a build changed how keys are derived: the entry was written under
+   * the old key and is still the only valid fingerprint on the machine. The
+   * original `verified_at` is preserved — stamping a new one would promote an
+   * entry that is genuinely past its trust window into a trusted one.
+   */
+  adopt(brand: string, payload: BrandFingerprint): BrandFingerprint {
+    const adopted: BrandFingerprint = { ...payload, brand };
+    try {
+      fs.mkdirSync(this.cacheDir, { recursive: true });
+      const target = cachePath(this.cacheDir, brand);
+      const temporary = `${target}.${process.pid}.${Date.now()}.tmp`;
+      fs.writeFileSync(temporary, `${JSON.stringify(adopted, null, 2)}\n`, 'utf8');
+      fs.renameSync(temporary, target);
+    } catch {
+      // The cache is an optimisation; a copy failure must not fail the run.
+    }
+    return adopted;
+  }
+
   /** Records that a cached fingerprint still works, without re-reading the APK. */
   touch(brand: string): void {
     const payload = this.read(brand);

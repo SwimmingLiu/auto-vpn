@@ -18,6 +18,7 @@ import {
   apiLineValues,
   apiLinkValues,
   credentialBrandKey,
+  fingerprintKeyFor,
   loadApkWithBrand,
   fetchCredentialSourceLinks,
   isCredentialLoginRejection,
@@ -352,6 +353,41 @@ test('the brand key falls back to the source name without a site', () => {
   assert.equal(credentialBrandKey('leiting', {}), 'lt');
   assert.equal(credentialBrandKey('custom_brand', {}), 'custom_brand');
   assert.equal(credentialBrandKey('', {}), 'unknown');
+});
+
+test('one brand reached through alternate storefronts shares one cache key', () => {
+  // The operator may point a row at any of a brand's published storefronts.
+  // Keying by host split one brand's fingerprint across several files, and a
+  // redirected row (keyed by prefix) then never saw what the native row wrote.
+  const keys = [
+    credentialBrandKey('leiting', { official_site: 'https://www.68123836.com' }),
+    credentialBrandKey('leiting', { official_site: 'https://www.leitingku.com' }),
+    credentialBrandKey('leiting', {}),
+    fingerprintKeyFor('heidong', { brand_override: 'leiting' }),
+    fingerprintKeyFor('heidong', { brand_override: '雷霆' })
+  ];
+  assert.deepEqual([...new Set(keys)], ['lt']);
+  // A row named after a vendor it is not must not inherit that vendor's file.
+  assert.equal(credentialBrandKey('heidong', { official_site: 'https://www.leitingku.com' }), 'hd');
+  assert.equal(credentialBrandKey('heidong', { official_site: 'https://www.heidongm.com' }), 'hd');
+});
+
+test('a redirected row reads the backend fingerprint file, not one named after it', () => {
+  // `brand_override` carries the canonical key (`leiting`); the cache file is
+  // named with the short archive prefix (`brand-lt.json`). Passing the canonical
+  // key straight to the store asked for `brand-leiting.json`, which never
+  // exists, so every redirected run missed the cache and re-downloaded the APK
+  // from a storefront it could not reach.
+  assert.equal(fingerprintKeyFor('heidong', { brand_override: 'leiting' }), 'lt');
+  assert.equal(fingerprintKeyFor('heidong', { brand_override: '雷霆' }), 'lt');
+  // Without a redirect the storefront's own key is unchanged.
+  assert.equal(
+    fingerprintKeyFor('heidong', { official_site: 'https://www.67986457.com' }),
+    credentialBrandKey('heidong', { official_site: 'https://www.67986457.com' })
+  );
+  // An unknown backend keeps its own name rather than silently reusing another
+  // brand's fingerprint.
+  assert.equal(fingerprintKeyFor('heidong', { brand_override: 'other' }), 'other');
 });
 
 test('both client channels run by default and only the request can narrow them', () => {
