@@ -85,19 +85,29 @@ function pushEvent(queue: EventQueueState, event: AutoVpnEvent): void {
  * and log retention can prune it with the rest of the run's records.
  *
  * The file is opened lazily on `run_started`, the first event that names the
- * artifact directory.
+ * artifact directory. When the caller already asked for that exact path via
+ * `--event-log`, the orchestrator is writing it and the mirror stays out of the
+ * way rather than appending every line twice.
  */
-function createArtifactEventMirror(): { write(event: AutoVpnEvent): void } {
+function createArtifactEventMirror(explicitEventLog?: string): { write(event: AutoVpnEvent): void } {
   let file: string | undefined;
+  let disabled = false;
   return {
     write(event: AutoVpnEvent): void {
+      if (disabled) return;
       if (!file) {
         const artifactDir = String((event as Record<string, unknown>).artifact_dir ?? '');
         if (event.type !== 'run_started' || !artifactDir) return;
         file = path.join(artifactDir, 'events.jsonl');
+        if (explicitEventLog && path.resolve(explicitEventLog) === path.resolve(file)) {
+          disabled = true;
+          return;
+        }
       }
       try {
-        fs.appendFileSync(file, `${JSON.stringify(event)}\n`, 'utf8');
+        // The stream carries request URLs and vendor messages, so the mirror
+        // gets the same owner-only mode the job logs use.
+        fs.appendFileSync(file, `${JSON.stringify(event)}\n`, { encoding: 'utf8', mode: 0o600 });
       } catch {
         // The mirror is an observability aid; a full disk must not fail a run.
       }
@@ -131,7 +141,7 @@ export class NodeBackend implements AutoVpnBackend {
 
   async *run(options: RunOptions): AsyncIterable<AutoVpnEvent> {
     const queue: EventQueueState = { events: [], wake: [], done: false };
-    const mirror = createArtifactEventMirror();
+    const mirror = createArtifactEventMirror(options.eventLog);
     const runner = options.resumeLatest
       ? async () => {
         const artifactDir = latestIncompleteRunArtifact(options.projectRoot, this.env);
@@ -179,7 +189,7 @@ export class NodeBackend implements AutoVpnBackend {
 
   async *retryStage(options: RetryOptions): AsyncIterable<AutoVpnEvent> {
     const queue: EventQueueState = { events: [], wake: [], done: false };
-    const mirror = createArtifactEventMirror();
+    const mirror = createArtifactEventMirror(options.eventLog);
     void retryNodePipelineStage({
         projectRoot: options.projectRoot,
         artifactDir: options.artifactDir,
