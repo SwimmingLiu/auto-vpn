@@ -1602,7 +1602,11 @@ function inferLogStage(line) {
 // debug profile that sets them must survive a save from the drawer.
 const OBSOLETE_SOURCE_FIELDS = [
   'url', 'key', 'account', 'password', 'platform',
-  'use_random_area', 'area_min', 'area_max', 'max_areas',
+  'use_random_area', 'area_min', 'area_max',
+  // `max_areas` is deliberately absent: the credential flow still reads it as
+  // an operator's cap on the frozen route list, and the drawer never rendered
+  // it. Deleting it here made one untouched save drop a cap the run honours,
+  // silently widening the crawl.
   'resume_from_iteration', 'failure_limit'
 ];
 

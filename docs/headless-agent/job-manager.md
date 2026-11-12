@@ -54,6 +54,14 @@ it was started detached, in the foreground, or by cron. A scheduled run has no
 job directory, so this file is the only record the served UI can replay: the
 logs page reads it, and `serve` tails it while the run is still writing.
 
+A resume appends to the same file, so one artifact log can hold more than one
+run. The run boundary is `run_started`, `resume_latest_state`,
+`resume_pipeline_state`, or `speedtest_resume_state`: everything before the last
+one belongs to an earlier attempt, and `serve` neither replays it to the page
+nor lets it mark the current run finished. `serve` also checks for a new run it
+is not following every 15 seconds, so the next scheduled run reaches a page that
+was left open instead of waiting for a reload.
+
 ## Retention
 
 `serve` prunes old records once a day, at the first state load after a day has
