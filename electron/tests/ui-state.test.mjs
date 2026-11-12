@@ -116,7 +116,7 @@ test('resolveLanguage ignores saved and system language and always returns zh-CN
 test('getMessages exposes Chinese-only copy', () => {
   assert.equal(getMessages().appTitle, 'AutoVPN');
   assert.equal(getMessages().sidebarTitle, 'AutoVPN');
-  assert.equal(getMessages().sidebarVersion, 'v.2.2.3');
+  assert.equal(getMessages().sidebarVersion, 'v.2.2.4');
   assert.equal(getMessages().runButton, '立即运行');
   assert.equal(getMessages('en-US').pageTitles.results, '结果');
   assert.equal(
@@ -352,6 +352,20 @@ test('a cleared official site is not refilled from the vendor default mid-edit',
   assert.equal(cleared.leiting.official_site, '');
   const fresh = normalizeOfficialSourceDraft({});
   assert.equal(fresh.leiting.official_site, 'https://www.68123836.com');
+});
+
+test('an untouched save keeps max_areas, which the credential flow still honours', () => {
+  // The drawer never rendered this field, but extract.ts slices the frozen
+  // route list by it. Deleting it in the obsolete-field sweep quietly widened
+  // a capped crawl the moment the operator opened and saved the drawer.
+  const stored = { leiting: { mode: 'credential', official_site: 'https://s.example', max_areas: 3, account_retry_limit: 120 } };
+  const saved = applySourceIterationDraft(stored, buildSourceIterationDraft(stored));
+  assert.equal(saved.leiting.max_areas, 3);
+  assert.equal(saved.leiting.account_retry_limit, 120);
+  // The old URL-mode shape is still dropped: those fields no longer run.
+  const legacy = normalizeOfficialSourceDraft({ leiting: { url: 'https://x/api', key: 'k', use_random_area: true, area_min: 1 } });
+  assert.equal(legacy.leiting.use_random_area, undefined);
+  assert.equal(legacy.leiting.url, undefined);
 });
 
 test('saving the source drawer keeps each row\'s own rounds and area controls', () => {

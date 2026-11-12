@@ -60,6 +60,14 @@ export interface CreateServerRuntimeOptions {
   stopManagedJob?: StopManagedJob;
   followLog?: FollowLog;
   now?: () => Date;
+  /**
+   * How often an idle server looks for a run it is not following yet.
+   *
+   * A scheduled run starts with no job directory and no state load to notice
+   * it, so without a heartbeat an open page keeps last night's finished run on
+   * screen until someone reloads. Tests shorten this.
+   */
+  runWatchIntervalMs?: number;
 }
 
 const DEPLOY_SECRET_KEYS = new Set([
@@ -117,6 +125,26 @@ function preserveRedactedSecrets(incoming: Record<string, any>, current: Record<
   return merged;
 }
 
+/**
+ * Merge the live database totals over the report's per-source counts.
+ *
+ * The database is authoritative for link counts, but it knows nothing about
+ * what only the pipeline reports — `area_count`, the length of the frozen route
+ * list that the drawer's lap estimate reads. Spreading its map whole dropped
+ * those keys, so a finished run's estimate fell back to the reference area count
+ * (26 real areas shown as the 31-area default).
+ */
+function mergeSourceCounts(
+  reported: unknown,
+  progress: Record<string, { raw_links: number; deduped_links?: number }>
+): Record<string, Record<string, unknown>> {
+  const merged: Record<string, Record<string, unknown>> = { ...((reported ?? {}) as Record<string, Record<string, unknown>>) };
+  for (const [source, counts] of Object.entries(progress)) {
+    merged[source] = { ...(merged[source] ?? {}), ...counts };
+  }
+  return merged;
+}
+
 function normalizeLatestArtifact(projectRoot: string, env: NodeJS.ProcessEnv): Record<string, unknown> | undefined {
   const latest = artifactLatest(projectRoot, env);
   if (!latest.ok || !latest.artifact_dir) {
@@ -124,12 +152,20 @@ function normalizeLatestArtifact(projectRoot: string, env: NodeJS.ProcessEnv): R
   }
   const preview = previewArtifact(String(latest.artifact_dir), { includeNodeRows: true });
   const progress = readRunProgress(path.join(String(latest.artifact_dir), 'run.db'));
+  // A live run's own mirror is newer than the report it replaced at the last
+  // stage boundary, and it is what the page was just following. Replaying the
+  // report's `failed` summary over it is how a resumed run read as failed on
+  // every reload. History stays the report's when the log is finished.
+  const artifactLog = artifactEventLog(String(latest.artifact_dir));
+  const logEvents = artifactLog.events as Array<Record<string, any>>;
+  const liveLog = artifactLog.active && logEvents.length > 0;
   return {
     ...latest,
     ...preview,
+    ...(liveLog ? { run_status: 'running' } : {}),
     // The report can still be empty mid-stage. Its display preview must not
     // replace the authoritative totals that already exist in the run database.
-    ...(progress ? { counts: { ...(preview.counts ?? {}), ...progress.counts }, source_counts: progress.source_counts, progress_snapshot: progress } : {}),
+    ...(progress ? { counts: { ...(preview.counts ?? {}), ...progress.counts }, source_counts: mergeSourceCounts(preview.source_counts, progress.source_counts), progress_snapshot: progress } : {}),
     outputFiles: (preview.files ?? []),
     // The results page and the country donut read these rows. Answering with an
     // empty array left a browser session at 0 nodes and an empty 国家分布 while
@@ -268,6 +304,82 @@ function latestJobEvents(job: Record<string, any> | undefined, maxEvents = 1000)
 }
 
 /**
+ * Events that announce a run has started.
+ *
+ * They carry no run status, so the follower reads them as `running`. A resume
+ * writes one of these (a pipeline resume writes it late, after re-running the
+ * extract it found incomplete), which is why the "is this log live" question
+ * cannot be answered from them alone — `artifactEventLog` asks it from the last
+ * line instead.
+ */
+const RUN_START_EVENTS = new Set([
+  'run_started',
+  'resume_latest_state',
+  'resume_pipeline_state',
+  'speedtest_resume_state'
+]);
+
+/** Same directory, even across a symlinked root (`/var` vs `/private/var`). */
+function sameDir(left: string, right: string): boolean {
+  if (!left || !right) return false;
+  if (left === right) return true;
+  try {
+    return fs.realpathSync(left) === fs.realpathSync(right);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Lines that end a run's event stream.
+ *
+ * A run is live while the last line in its log is something else. That rule
+ * lets one artifact log hold several runs: a resume appends to the log the
+ * interrupted run wrote, so the old `summary failed` sits in the middle of the
+ * file. Scanning for run boundaries instead was wrong in both directions — a
+ * pipeline resume re-runs extract before it writes its own boundary, so the
+ * file read as finished while it was working.
+ */
+function isTerminalEvent(event: Record<string, any>): boolean {
+  return event.type === 'summary' || event.type === 'run_failed' || event.type === 'finished';
+}
+
+/**
+ * Byte offset just past the last terminal line in an artifact event log.
+ *
+ * Everything before it belongs to a run that already ended and must not be
+ * replayed to the page. Zero when the file holds no terminal line at all.
+ */
+function artifactFollowOffset(filePath: string): number {
+  let text = '';
+  try {
+    text = fs.readFileSync(filePath, 'utf8');
+  } catch {
+    return 0;
+  }
+  // Byte offsets, not character offsets: the log carries Chinese vendor
+  // messages, and seeking by character count would land mid-line.
+  let offset = 0;
+  let resumeAt = 0;
+  for (const rawLine of text.split('\n')) {
+    // Both writers terminate every line, so a line without its newline is the
+    // trailing fragment of a write that has not landed yet. Advancing past it
+    // would put the next read one byte into the following event.
+    const width = Buffer.byteLength(rawLine, 'utf8');
+    const terminated = offset + width < text.length;
+    const line = rawLine.trim();
+    if (line) {
+      const event = parseJsonLine(line);
+      if (event && typeof event === 'object' && isTerminalEvent(event as Record<string, any>)) {
+        resumeAt = offset + width + (terminated ? 1 : 0);
+      }
+    }
+    offset += width + (terminated ? 1 : 0);
+  }
+  return resumeAt;
+}
+
+/**
  * Stage/substep states and log lines for the latest artifact.
  *
  * A cron run has no job directory, so its only record is the mirror the CLI
@@ -282,17 +394,10 @@ function artifactEventLog(artifactDir: string): { events: unknown[]; active: boo
   try {
     const lines = fs.readFileSync(filePath, 'utf8').split(/\r?\n/).filter(Boolean);
     const events = lines.map((line) => parseJsonLine(line)).filter(Boolean) as Array<Record<string, any>>;
-    // Only the LAST run in the file decides whether it is still going. A resume
-    // appends to the same artifact log, so an earlier run's terminal line would
-    // otherwise mark the live resume finished and the page would never follow it.
-    let finished = false;
-    for (const event of events) {
-      if (event.type === 'run_started' || event.type === 'resume_latest_state' || event.type === 'resume_pipeline_state') {
-        finished = false;
-      } else if (event.type === 'summary' || event.type === 'run_failed' || event.type === 'finished') {
-        finished = true;
-      }
-    }
+    // The last line decides: a run is live while it has not written a terminal
+    // event yet. Only the last one counts, or the interrupted run's summary
+    // would mark the resume that followed it finished.
+    const finished = events.length > 0 && isTerminalEvent(events[events.length - 1]);
     let fresh = false;
     try {
       fresh = Date.now() - fs.statSync(filePath).mtimeMs < 2 * 60 * 1000;
@@ -513,6 +618,14 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
   let unsubscribeArtifactLogs: (() => void) | undefined;
   let followedArtifactDir = '';
   let expiryRefreshInFlight = false;
+  // Set by close(): the timer and the followers are torn down, and nothing may
+  // re-arm one afterwards. Without this a shutdown that follows a cron run can
+  // attach a fresh 15s poller and keep the process alive on its own work.
+  let closed = false;
+  // The artifact whose run the operator ended. Its log is still being written
+  // by a process the server does not own, so it stays "active" — the watcher
+  // must not read that as a run to pick back up.
+  let stoppedArtifactDir = '';
   const pruneHistory = createHistoryPruner(options);
   const subscribers = new Set<(event: unknown) => void>();
   const startDetachedRun = options.startDetachedRun ?? defaultStartDetachedRun;
@@ -526,6 +639,13 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
     }
   };
 
+  // The watcher only reads two files, so a cadence well under the follower's
+  // is cheap; it is the difference between a page that waits for a reload and
+  // one that shows tonight's run.
+  const runWatchMs = Math.max(1000, Math.trunc(Number(options.runWatchIntervalMs ?? 15_000)) || 15_000);
+  const watchTimer = setInterval(watchForNewRun, runWatchMs);
+  watchTimer.unref?.();
+
   /**
    * Follow a plain event log that no job directory owns.
    *
@@ -536,6 +656,7 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
    * page needs sub-second freshness, not inotify precision.
    */
   function followArtifactEvents(artifactDir: string): void {
+    if (closed) return;
     if (followedArtifactDir === artifactDir && unsubscribeArtifactLogs) {
       return;
     }
@@ -543,7 +664,11 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
     followedArtifactDir = artifactDir;
     const filePath = path.join(artifactDir, 'events.jsonl');
     let cancelled = false;
-    let offset = 0;
+    // Start at the current run, not at the top of the file: a resumed run
+    // shares the artifact with the run it resumes, and replaying the earlier
+    // run's `summary failed` republished a stale terminal state and then stopped
+    // this follower — the live run's later events never reached the page.
+    let offset = artifactFollowOffset(filePath);
     let pending = '';
     const timer = setInterval(() => {
       if (cancelled) return;
@@ -569,27 +694,38 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
       }
       const lines = chunk.split(/\r?\n/);
       pending = lines.pop() ?? '';
-      let terminal = false;
+      let finalState: ServerState['runState'] | undefined;
+      let lastEvent: Record<string, any> | undefined;
       for (const line of lines) {
         const event = parseJsonLine(line);
         if (!event) continue;
-        const nextRunState = eventRunState(event as Record<string, any>);
-        if (nextRunState) {
-          runState = nextRunState;
-          terminal = true;
-        }
+        const record = event as Record<string, any>;
+        lastEvent = record;
         // Same contract as the job follower: a result line replayed after a
         // page load must carry absolute database totals, or the renderer adds
         // it on top of the snapshot it already hydrated and doubles the count.
-        const record = event as Record<string, any>;
         const metricEvent = ['extract_iteration', 'extract_source_completed', 'speedtest_result', 'availability_link_result'].includes(String(record.type));
         const progress = metricEvent ? readRunProgress(path.join(artifactDir, 'run.db')) : undefined;
         publish(progress ? { ...record, progress_snapshot: { ...progress, artifact_dir: artifactDir } } : event);
-        if (nextRunState) publish({ type: 'server_state', run_state: runState });
+        // The state is resolved over the whole chunk and published once, at the
+        // end: a chunk can hold a summary and the events of the resume that
+        // followed it, and publishing the summary's `failed` on the way past
+        // flashed it on the page before the resume took it back.
+        const nextRunState = eventRunState(record);
+        if (nextRunState) {
+          finalState = nextRunState;
+        } else if (RUN_START_EVENTS.has(String(record.type))) {
+          finalState = 'running';
+        }
       }
-      // The run is over: stop polling instead of stat-ing a finished file every
-      // 800ms for the life of the server. A later run follows its own artifact.
-      if (terminal) {
+      if (finalState) {
+        runState = finalState;
+        publish({ type: 'server_state', run_state: runState });
+      }
+      // The run is over only when its LAST line says so. A summary followed by
+      // a resume in the same chunk is a live run, and stopping here is what
+      // left the resumed run unfollowed.
+      if (lastEvent && isTerminalEvent(lastEvent)) {
         unsubscribeArtifactLogs?.();
         unsubscribeArtifactLogs = undefined;
         followedArtifactDir = '';
@@ -650,6 +786,48 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
     });
   }
 
+  /**
+   * Notice a run this server is not following yet.
+   *
+   * Consecutive nightly runs are the case: the follower clears itself at one
+   * run's summary, and the next night's artifact appears with no state load to
+   * trigger `restoreRunState`. Without this heartbeat an open page keeps last
+   * night's finished run until someone reloads — the exact "logs stopped
+   * refreshing" complaint, one run later.
+   */
+  function watchForNewRun(): void {
+    if (closed) return;
+    if (runState === 'running' || runState === 'stopping') return;
+    if (unsubscribeLogs || activeJobId) {
+      // A managed job's follower leaves both guards set when its stream ends,
+      // and it can never see a later scheduled run. Release them once the job
+      // itself is no longer live, or the watcher stays dead after one click of
+      // 开始运行.
+      const job = latestJob(options.projectRoot, options.env ?? process.env);
+      if (job && ['running', 'stopping'].includes(String(job.status ?? ''))) return;
+      unsubscribeLogs?.();
+      unsubscribeLogs = undefined;
+      activeJobId = '';
+    }
+    if (unsubscribeArtifactLogs && followedArtifactDir) return;
+    // This reads and folds the whole artifact log, which is the price of
+    // knowing whether the run is still going. It deliberately stops short of a
+    // state load, which would also open `run.db` (creating WAL sidecars), parse
+    // the final node list and run the retention sweep — every 15 seconds.
+    const latest = artifactLatest(options.projectRoot, options.env ?? process.env);
+    const artifactDir = String(latest?.artifact_dir ?? '');
+    if (!artifactDir || sameDir(artifactDir, stoppedArtifactDir)) return;
+    if (!artifactEventLog(artifactDir).active) return;
+    beginFollowingArtifact(artifactDir);
+  }
+
+  /** Adopt an artifact log that is still being written as the live run. */
+  function beginFollowingArtifact(artifactDir: string): void {
+    runState = 'running';
+    publish({ type: 'server_state', run_state: runState });
+    followArtifactEvents(artifactDir);
+  }
+
   function restoreRunState(artifact: Record<string, unknown> | undefined): void {
     const env = options.env ?? process.env;
     // A terminal state is a report about the *previous* run, not a latch. A new
@@ -664,8 +842,7 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
     if (liveArtifact && runState !== 'running' && runState !== 'stopping') {
       unsubscribeLogs?.();
       activeJobId = '';
-      runState = 'running';
-      followArtifactEvents(liveArtifact);
+      beginFollowingArtifact(liveArtifact);
       return;
     }
     const job = latestJob(options.projectRoot, env);
@@ -689,8 +866,7 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
       // after the server restarts mid-run.
       const artifactDir = String(artifact?.artifact_dir ?? '');
       if (artifactDir && artifactEventLog(artifactDir).active) {
-        runState = 'running';
-        followArtifactEvents(artifactDir);
+        beginFollowingArtifact(artifactDir);
       }
     }
   }
@@ -886,10 +1062,17 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
     async stopRun() {
       if (runState !== 'running' || !activeJobId) {
         // A scheduled run has no managed job to signal; stop following its log
-        // so the page does not keep reporting a run the operator ended.
+        // so the page does not keep reporting a run the operator ended. The
+        // process itself keeps writing, so the log still looks live — remember
+        // which artifact was ended, or the watcher picks it straight back up.
+        if (followedArtifactDir) stoppedArtifactDir = followedArtifactDir;
         unsubscribeArtifactLogs?.();
         unsubscribeArtifactLogs = undefined;
         followedArtifactDir = '';
+        if (runState === 'running') {
+          runState = 'idle';
+          publish({ type: 'server_state', run_state: runState });
+        }
         return { ok: true, requested: false, run_state: runState };
       }
       runState = 'stopping';
@@ -914,6 +1097,8 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
       return () => subscribers.delete(handler);
     },
     async close() {
+      closed = true;
+      clearInterval(watchTimer);
       unsubscribeLogs?.();
       unsubscribeArtifactLogs?.();
       if (!activeJobId) {
