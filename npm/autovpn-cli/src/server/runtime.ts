@@ -340,6 +340,13 @@ function artifactFollowOffset(filePath: string): number {
   return boundary;
 }
 
+/**
+ * Stage/substep states and log lines for the latest artifact.
+ *
+ * A cron run has no job directory, so its only record is the mirror the CLI
+ * writes beside the artifact. Its log is the authoritative one when present:
+ * it covers every run path (foreground, detached, nightly) with one file.
+ */
 function artifactEventLog(artifactDir: string): { events: unknown[]; active: boolean } {
   const filePath = path.join(artifactDir, 'events.jsonl');
   if (!artifactDir || !fs.existsSync(filePath)) {
