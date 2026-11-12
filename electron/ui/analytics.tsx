@@ -18,10 +18,12 @@ interface AnalyticsInput {
  * A run lists twenty countries, but a twenty-hue ring is unreadable: past a
  * handful of slices the eye stops resolving arcs and every added hue makes its
  * neighbours muddier. The ring therefore seats the five largest countries and
- * folds the rest into one neutral "其他" slice - a key, not confetti. The hues
- * are fixed and validated for colour-vision separation against both card
- * surfaces; the neutral can never be mistaken for a real country. The folded
- * countries stay visible in the footnote under the chips.
+ * folds the rest into one neutral "其他" slice - a key, not confetti.
+ *
+ * The slot order is fixed and its numbers live in the CSS token comments: every
+ * slot clears 3:1 on its card surface, and each neighbouring pair on the ring
+ * clears the colour-vision gates. The folded countries stay visible in the
+ * footnote under the chips, so the cap costs no information.
  */
 const SERIES = ['var(--chart-1)', 'var(--chart-2)', 'var(--chart-3)', 'var(--chart-4)', 'var(--chart-5)'];
 const REST = 'var(--chart-other)';
