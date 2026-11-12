@@ -8,7 +8,12 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROJECT_ROOT="$(cd "$ROOT/.." && pwd)"
-WRANGLER="${WRANGLER:-npx wrangler}"
+# Prefer the pinned local install; fall back to npx only when it is absent.
+if [ -x "$ROOT/worker/node_modules/.bin/wrangler" ]; then
+  WRANGLER="$ROOT/worker/node_modules/.bin/wrangler"
+else
+  WRANGLER="${WRANGLER:-npx wrangler}"
+fi
 
 : "${CLOUDFLARE_API_TOKEN:?CLOUDFLARE_API_TOKEN must be set}"
 : "${CLOUDFLARE_ACCOUNT_ID:?CLOUDFLARE_ACCOUNT_ID must be set}"
@@ -17,7 +22,17 @@ step() { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 
 step "toolchain"
 node --version
-${WRANGLER} --version
+# `wrangler.jsonc` uses `scheduling_policy: "durable_object"` and declarative
+# `exports`. The CLI's own managed-tool path pins 4.106.0 for Pages deploys,
+# which understands neither, so this subtree deploys with its own pinned
+# version and refuses to run against anything older.
+WRANGLER_VERSION="$(${WRANGLER} --version 2>/dev/null | tail -n1 | tr -d '[:space:]')"
+echo "wrangler $WRANGLER_VERSION"
+if [ "$(printf '%s\n%s\n' "4.160.1" "$WRANGLER_VERSION" | sort -V | head -n1)" != "4.160.1" ]; then
+  echo "wrangler >= 4.160.1 is required (got $WRANGLER_VERSION)" >&2
+  echo "run: npm --prefix $ROOT/worker install" >&2
+  exit 1
+fi
 
 step "container image dependencies"
 "$ROOT/scripts/fetch-mihomo.sh"
@@ -33,6 +48,11 @@ if ! grep -q 'secret_query' "$PROJECT_ROOT/state/profile.toml"; then
   echo "profile has no [deploy].secret_query; the container cannot build a subscription URL" >&2
   exit 1
 fi
+
+# The deploy stage reads CLOUDFLARE_API_TOKEN through the CLI's env fallback, so
+# the profile itself can stay credential-free. This is the token whose scopes
+# must cover Pages:Edit, Zone:DNS:Edit and Workers Scripts:Edit.
+printf '%s' "$CLOUDFLARE_API_TOKEN" | ${WRANGLER} secret put CLOUDFLARE_API_TOKEN --cwd "$ROOT"
 
 # `wrangler secret put` reads stdin, which keeps the value out of the process
 # table and out of shell history.

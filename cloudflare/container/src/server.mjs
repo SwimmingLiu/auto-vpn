@@ -93,12 +93,16 @@ async function profilePath() {
  *
  * The profile carries the Cloudflare deploy token and the vendor account
  * passwords, so it is delivered as a Worker secret on every boot rather than
- * baked into the image or left on a volume a rollback could resurrect. Writing
- * it is idempotent: an unchanged profile is not rewritten.
+ * baked into the image or left on a volume a rollback could resurrect.
+ *
+ * `AUTOVPN_PROFILE_TOML` is authoritative: when it is set, it is written even
+ * if the bytes match, because "the file on disk already looks the same" is how
+ * a hand-edited volume silently keeps an operator's fix from landing. The
+ * no-op path exists only when the secret is absent.
  */
 async function installProfile(toml) {
   const text = String(toml ?? '');
-  if (!text.trim()) return { written: false, reason: 'no profile supplied' };
+  if (!text.trim()) return { written: false, reason: 'nosupply' };
   const target = path.join(RUNTIME_ROOT, 'profile.toml');
   await mkdir(RUNTIME_ROOT, { recursive: true });
   let previous = '';
@@ -107,9 +111,8 @@ async function installProfile(toml) {
   } catch {
     previous = '';
   }
-  if (previous === text) return { written: false, reason: 'unchanged' };
   await writeFile(target, text, { encoding: 'utf8', mode: 0o600 });
-  return { written: true };
+  return { written: previous !== text, reason: previous === text ? 'unchanged' : 'updated' };
 }
 
 /**
@@ -191,7 +194,7 @@ async function startRun(options) {
   // otherwise fail at the very end of an hour-long measurement.
   if (mode === 'deploy' || mode === 'run') {
     const installed = await installProfile(options.profileToml ?? process.env.AUTOVPN_PROFILE_TOML);
-    if (installed.reason === 'no profile supplied') {
+    if (installed.reason === 'nosupply') {
       const existing = await readFile(path.join(RUNTIME_ROOT, 'profile.toml'), 'utf8').catch(() => '');
       if (!existing.trim()) return { started: false, reason: 'no profile installed on the volume' };
     }

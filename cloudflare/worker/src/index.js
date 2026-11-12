@@ -28,7 +28,6 @@ const DEFAULT_SETTINGS = {
   source_runtime_seconds: 900,
   probe_url: 'https://www.16863988.com/'
 };
-
 /** A run moves through these phases; `step()` is driven entirely by this. */
 const PHASES = ['measuring', 'gating', 'deploying', 'verifying', 'done'];
 

@@ -69,6 +69,26 @@ RUN set -eux; \
 RUN npm install -g --no-audit --no-fund --ignore-scripts "@swimmingliu/autovpn@${AUTOVPN_VERSION}" \
  && node "$AUTOVPN_CLI_ENTRY" --version
 
+# Managed tools, baked at the exact paths `resolveManagedNpmTool` checks
+# (`<runtime>/tools/npm/<package>/<version>/node_modules/.bin/<bin>`).
+#
+# On the VPS these install on first use — 185 MB pulled mid-run, which on a
+# metered container is both slow and the one failure mode that only shows up in
+# production. Building them in means the deploy stage never touches npm.
+ARG WRANGLER_VERSION=4.106.0
+ARG OBFUSCATOR_VERSION=5.4.3
+RUN set -eux; \
+    tools=/data/auto-vpn/tools/npm; \
+    for spec in "wrangler:${WRANGLER_VERSION}" "javascript-obfuscator:${OBFUSCATOR_VERSION}"; \
+    do \
+      pkg="${spec%%:*}"; ver="${spec##*:}"; \
+      mkdir -p "$tools/$pkg/$ver"; \
+      npm --prefix "$tools/$pkg/$ver" install --no-save --no-audit --no-fund --ignore-scripts "$pkg@$ver"; \
+      bin="$tools/$pkg/$ver/node_modules/.bin/$pkg"; \
+      test -x "$bin" || { echo "managed tool $pkg@$ver produced no $bin" >&2; exit 1; }; \
+      "$bin" --version; \
+    done
+
 # The project tree the pipeline reads. Only the worker template is actually
 # consulted (`resolveWorkerTemplatePath` checks `<projectRoot>/templates` before
 # falling back to the packaged copy), but the directory has to exist and carry

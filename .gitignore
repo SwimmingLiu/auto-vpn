@@ -29,3 +29,8 @@ electron/runtime/playwright-browsers/
 # Test-run screenshots (written by the visual suites).
 electron/tests/visual-artifacts/
 electron/runtime/autovpn-cli/
+cloudflare/container/vendor/mihomo-linux-amd64
+cloudflare/container/vendor/*.gz
+cloudflare/worker/node_modules/
+cloudflare/node_modules/
+cloudflare/.wrangler/

@@ -76,16 +76,37 @@ cloudflare/
 ```bash
 # 0. one-time: seed the secrets the Worker and the container read
 npx wrangler secret put AUTOVPN_API_TOKEN       # any long random string
-npx wrangler secret put AUTOVPN_PROFILE_TOML    # contents of state/profile.toml
-npx wrangler secret put SUBSCRIPTION_URL        # must include ?serect_key=...
+npx wrangler secret put AUTOVPN_PROFILE_TOML    # contents of the cloudflare profile
+npx wrangler secret put CLOUDFLARE_API_TOKEN    # Pages:Edit + Zone:DNS:Edit + Workers Scripts:Edit
+npx wrangler secret put SUBSCRIPTION_URL        # the live subscription, with ?serect_key=...
 
 # 1. vendor mihomo (once per version), then build and deploy
 cloudflare/scripts/fetch-mihomo.sh
-cd cloudflare && npx wrangler deploy
+cloudflare/scripts/deploy.sh
 ```
 
-The first deploy builds the image on Cloudflare's builder. Local iteration uses
-`npx wrangler dev`, which runs the container in Docker.
+### wrangler version
+
+`wrangler.jsonc` uses `scheduling_policy: "durable_object"` and the declarative
+`exports` map. Both are newer than the version the CLI's managed-tool path
+pins for *Pages* deploys (4.106.0, which has neither), so this subtree pins
+**wrangler 4.160.1** in `worker/package.json` and must be deployed with it.
+Mixing them produces `scheduling_policy must be one of ["regional","moon","default"]`.
+
+### Docker builder
+
+`wrangler deploy` builds the container image locally and pushes it to
+Cloudflare's registry, which needs Docker with the **buildx** component. The
+stock Docker install on macOS/Linux may ship the legacy builder only; if the
+deploy fails with `unknown flag: --load`, install buildx:
+
+```bash
+docker buildx version || brew install docker-buildx   # or your distro's package
+```
+
+To skip a local build entirely, push a digest-pinned image yourself and point
+`containers[].images.autovpn.image` at
+`registry.cloudflare.com/<account-id>/<repo>@sha256:<64 hex>`.
 
 ## Operating it
 
@@ -106,6 +127,39 @@ curl -X POST .../api/settings -H "authorization: Bearer $AUTOVPN_API_TOKEN" \
 A run moves through `measuring → gating → deploying → verifying → done`. The
 gate mirrors `daily-run.sh`: publish only when `final_links > min_final_nodes`,
 so a thin sweep never replaces a working subscription.
+
+### Before the first real run: point at a scratch project
+
+`profile.cloudflare.toml` names a Pages project, and **the deploy stage writes
+to whatever project that is**. Until the Cloudflare deployment has been proven
+against your account, use a throwaway project so a bad artifact cannot replace
+the subscription people are already using:
+
+```toml
+[deploy]
+project_name = "autovpn-cf-deploytest"
+```
+
+Then watch `https://autovpn-cf-deploytest.pages.dev/?serect_key=...` for one
+run. Only after that is green, change `project_name` to the project that should
+serve the subscription.
+
+`wrangler pages deploy` replaces the whole production deployment of the named
+project. There is no per-branch isolation for a Direct Upload project and no
+dry run, so the project name in the profile **is** the blast radius.
+
+If a run does publish something wrong, roll back to the previous deployment —
+this restores the exact bundle that was serving before:
+
+```bash
+# list recent deployments, newest first
+curl -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+  "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/pages/projects/$PROJECT/deployments?per_page=6"
+
+# roll production back to a specific one
+curl -X POST -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+  "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/pages/projects/$PROJECT/deployments/$SHORT_ID/rollback"
+```
 
 ## What is deliberately not migrated
 

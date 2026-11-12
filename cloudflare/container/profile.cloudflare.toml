@@ -1,14 +1,18 @@
 # Cloudflare deployment profile for AutoVPN.
 #
 # This is the profile the *container* reads. It differs from the VPS profile in
-# exactly two ways, both deliberate:
+# three ways, all deliberate:
 #
-#   1. `project_name` is a project that actually exists. The VPS profile points
-#      at `sub-links-auto`, which returns 8000007 (project not found); the live
-#      subscription is served by `sub-nodes-04`.
+#   1. `project_name` is a scratch project. The deploy stage replaces the whole
+#      production deployment of whatever project it names, so the first runs
+#      must not touch the subscription that is already in service. Change this
+#      to the real project only after a run against the scratch one is verified.
 #   2. `min_final_links` agrees with the gate the Durable Object enforces. The
 #      VPS had 50 in `daily-run.sh` and 10 here, and `assertDeployMinimumFinalLinks`
 #      throws at 10 — three thresholds, two of them dead.
+#   3. Every crawl budget is finite. `max_runtime_seconds = 0` in the
+#      interactive profile means unbounded; on Cloudflare that is a metered run
+#      against a six-hour cap, so the scheduled deployment pins one.
 #
 # Credentials are NOT here. `cloudflare_api_token`, the vendor `device_token`s
 # and the account passwords arrive as Worker secrets and are written to the
@@ -115,10 +119,14 @@ proxy_mode = "proxy"
 proxy_url = "http://127.0.0.1:7897"
 
 [deploy]
-project_name = "sub-nodes-04"
-subscription_url = "https://sub-nodes-04.pages.dev/?serect_key=swimmingliu"
-verify_subscription_url = "https://sub-nodes-04.pages.dev/?serect_key=swimmingliu"
-pages_project_url = "https://sub-nodes-04.pages.dev"
+# A scratch project on purpose. `wrangler pages deploy` replaces the whole
+# production deployment of whatever project is named here, so a first run
+# against the live project would overwrite the subscription people are using.
+# Point this at the real project only after a run here has been verified.
+project_name = "autovpn-cf-deploytest"
+subscription_url = "https://autovpn-cf-deploytest.pages.dev/?serect_key=swimmingliu"
+verify_subscription_url = "https://autovpn-cf-deploytest.pages.dev/?serect_key=swimmingliu"
+pages_project_url = "https://autovpn-cf-deploytest.pages.dev"
 custom_domain = ""
 secret_query = "serect_key=swimmingliu"
 cloudflare_auth_mode = "api_token"
@@ -128,7 +136,7 @@ cloudflare_email = ""
 account_id = "e743286b4304e96ee8795d62917052aa"
 use_wrangler = true
 auto_create_project_on_blocked = true
-fallback_project_prefix = "sub-nodes"
+fallback_project_prefix = "autovpn-cf"
 min_final_links = 50
 
 [worker_build]
