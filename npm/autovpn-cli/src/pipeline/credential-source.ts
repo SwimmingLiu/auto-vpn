@@ -2515,15 +2515,6 @@ export function classifyMembershipRefresh(
 }
 
 /**
- * Learn every pooled account's real membership expiry by logging in.
- *
- * The date is only written by a successful pooled login, and LRU leasing means
- * one account per brand per run — so a freshly imported pool stays blank
- * indefinitely and the UI shows an em dash for almost every row. This walks the
- * active rows deliberately, reusing the normal credential flow (cached
- * fingerprint, one node request) so the login path is the same one a run uses.
- */
-/**
  * Where a membership sweep should log in for each brand.
  *
  * The sweep must reach the same host a run reaches, or its verdicts describe a
@@ -2557,6 +2548,15 @@ export function resolveExpiryProbeTargets(
   return targets;
 }
 
+/**
+ * Learn every pooled account's real membership expiry by logging in.
+ *
+ * The date is only written by a successful pooled login, and LRU leasing means
+ * one account per brand per run — so a freshly imported pool stays blank
+ * indefinitely and the UI shows an em dash for almost every row. This walks the
+ * active rows deliberately, reusing the normal credential flow (cached
+ * fingerprint, one node request) so the login path is the same one a run uses.
+ */
 export async function refreshAccountExpiry(input: {
   brand?: string;
   limit?: number;

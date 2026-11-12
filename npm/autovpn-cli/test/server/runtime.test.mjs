@@ -1032,6 +1032,206 @@ test('a live progress snapshot keeps the report\'s area_count', async (t) => {
   assert.equal(state.artifact.source_counts.xuanfeng.raw_links, 1);
 });
 
+test('a pipeline resume is live from its first event, before it writes a boundary', async (t) => {
+  // `resume pipeline` re-runs the extract it found incomplete and only writes
+  // `resume_pipeline_state` once speedtest results exist. Keying "is this log
+  // live" off boundary events therefore read a working resume as finished for
+  // its whole extract phase. The last line decides instead.
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-resume-early-'));
+  t.after(() => fs.rmSync(projectRoot, { recursive: true, force: true }));
+  const runtimeRoot = path.join(projectRoot, 'state');
+  const artifactDir = path.join(runtimeRoot, 'artifacts', '20261112-072000');
+  fs.mkdirSync(artifactDir, { recursive: true });
+  writeJson(path.join(artifactDir, 'pipeline_report.json'), { run_status: 'failed', stage_status: { extract: 'failed' }, counts: {} });
+  const log = path.join(artifactDir, 'events.jsonl');
+  fs.writeFileSync(log, [
+    { type: 'run_started', artifact_dir: artifactDir },
+    { type: 'summary', run_status: 'failed', artifact_dir: artifactDir },
+    // The resume's first events: extract is running, and there is no boundary
+    // marker until much later in the run.
+    { type: 'stage', stage: 'extract', status: 'running' }
+  ].map((event) => JSON.stringify(event)).join('\n') + '\n', 'utf8');
+
+  const runtime = createServerRuntime({ projectRoot, env: { VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot }, followLog: async function* () {} });
+  t.after(async () => { await runtime.close?.(); });
+  const seen = [];
+  runtime.subscribe((event) => seen.push(event));
+  const state = await runtime.loadState();
+  assert.equal(state.runState, 'running', 'a log whose last line is not terminal is a live run');
+  assert.equal(state.artifact.run_status, 'running', 'the replay must not hand the page the interrupted run\'s failure');
+
+  fs.appendFileSync(log, JSON.stringify({ type: 'extract_iteration', source_name: 'leiting', iteration: 1 }) + '\n', 'utf8');
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  assert.ok(seen.some((event) => event.type === 'extract_iteration'), 'the extract phase must be followed');
+});
+
+test('a summary and the resume that follows it never flash a terminal state', async (t) => {
+  // Both lines can land in one 800ms poll. Publishing the summary's state on the
+  // way through showed 失败 on a page that was already displaying the resume.
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-summary-then-resume-'));
+  t.after(() => fs.rmSync(projectRoot, { recursive: true, force: true }));
+  const runtimeRoot = path.join(projectRoot, 'state');
+  const artifactDir = path.join(runtimeRoot, 'artifacts', '20261112-073000');
+  fs.mkdirSync(artifactDir, { recursive: true });
+  writeJson(path.join(artifactDir, 'pipeline_report.json'), { run_status: 'running', stage_status: { extract: 'running' }, counts: {} });
+  const log = path.join(artifactDir, 'events.jsonl');
+  fs.writeFileSync(log, JSON.stringify({ type: 'run_started', artifact_dir: artifactDir }) + '\n', 'utf8');
+
+  const runtime = createServerRuntime({ projectRoot, env: { VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot }, followLog: async function* () {} });
+  t.after(async () => { await runtime.close?.(); });
+  const seen = [];
+  runtime.subscribe((event) => seen.push(event));
+  await runtime.loadState();
+
+  fs.appendFileSync(log, [
+    { type: 'summary', run_status: 'failed', artifact_dir: artifactDir },
+    { type: 'resume_pipeline_state', artifact_dir: artifactDir, speedtest_links: 2 },
+    { type: 'stage', stage: 'availability', status: 'running' }
+  ].map((event) => JSON.stringify(event)).join('\n') + '\n', 'utf8');
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  assert.equal(
+    seen.some((event) => event.type === 'server_state' && event.run_state === 'failed'),
+    false,
+    'the summary is history by the time the chunk is flushed'
+  );
+  assert.equal(
+    seen.filter((event) => event.type === 'server_state').at(-1)?.run_state,
+    'running'
+  );
+});
+
+test('a managed job does not leave the scheduled-run watcher dead', async (t) => {
+  // followJob leaves `unsubscribeLogs` and `activeJobId` set when its stream
+  // ends. The watcher returned on those guards, so after one manual run the
+  // next scheduled run was never noticed until the server restarted.
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-watch-after-job-'));
+  t.after(() => fs.rmSync(projectRoot, { recursive: true, force: true }));
+  const runtimeRoot = path.join(projectRoot, 'state');
+  writeJobFixture(runtimeRoot, 'finished-job', {
+    project_root: projectRoot,
+    status: 'success',
+    pid: 0,
+    finished_at: '2026-11-12T00:00:00+00:00'
+  });
+  const artifactDir = path.join(runtimeRoot, 'artifacts', '20261112-074500');
+  fs.mkdirSync(artifactDir, { recursive: true });
+  writeJson(path.join(artifactDir, 'pipeline_report.json'), { run_status: 'running', stage_status: { extract: 'running' }, counts: {} });
+  const log = path.join(artifactDir, 'events.jsonl');
+
+  let started;
+  const startedSignal = new Promise((resolve) => { started = resolve; });
+  const runtime = createServerRuntime({
+    projectRoot,
+    env: { VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot },
+    runWatchIntervalMs: 1000,
+    followLog: async function* (_root, jobId) {
+      started();
+      yield JSON.stringify({ type: 'summary', run_status: 'success' }) + '\n';
+    }
+  });
+  t.after(async () => { await runtime.close?.(); });
+  const seen = [];
+  runtime.subscribe((event) => seen.push(event));
+  await runtime.startRun?.({});
+  await startedSignal;
+  // The job follower runs to its summary and leaves its guards set; the next
+  // scheduled run appears afterwards.
+  await new Promise((resolve) => setTimeout(resolve, 600));
+  fs.writeFileSync(log, JSON.stringify({ type: 'run_started', artifact_dir: artifactDir }) + '\n', 'utf8');
+  await new Promise((resolve) => setTimeout(resolve, 2400));
+  fs.appendFileSync(log, JSON.stringify({ type: 'stage', stage: 'extract', status: 'success' }) + '\n', 'utf8');
+  await new Promise((resolve) => setTimeout(resolve, 1600));
+  assert.ok(
+    seen.some((event) => event.type === 'stage' && event.stage === 'extract' && event.status === 'success'),
+    'the scheduled run that started after the job ended must be followed'
+  );
+});
+
+test('stopping a scheduled run leaves the page idle and does not re-adopt it', async (t) => {
+  // The cron process keeps writing after the operator ends the run, so its log
+  // still looks active. Without a record of what was stopped, the new watcher
+  // picked the same run straight back up.
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-stop-cron-'));
+  t.after(() => fs.rmSync(projectRoot, { recursive: true, force: true }));
+  const runtimeRoot = path.join(projectRoot, 'state');
+  const artifactDir = path.join(runtimeRoot, 'artifacts', '20261112-075500');
+  fs.mkdirSync(artifactDir, { recursive: true });
+  writeJson(path.join(artifactDir, 'pipeline_report.json'), { run_status: 'running', stage_status: { extract: 'running' }, counts: {} });
+  const log = path.join(artifactDir, 'events.jsonl');
+  fs.writeFileSync(log, JSON.stringify({ type: 'run_started', artifact_dir: artifactDir }) + '\n', 'utf8');
+
+  const runtime = createServerRuntime({ projectRoot, env: { VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot }, followLog: async function* () {}, runWatchIntervalMs: 1000 });
+  t.after(async () => { await runtime.close?.(); });
+  const seen = [];
+  runtime.subscribe((event) => seen.push(event));
+  await runtime.loadState();
+
+  const stopped = await runtime.stopRun?.();
+  assert.equal(stopped.run_state, 'idle');
+  // The attach itself published `running` during loadState; only what happens
+  // after the stop counts here.
+  const runningBefore = seen.filter((event) => event.type === 'server_state' && event.run_state === 'running').length;
+  const stageBefore = seen.filter((event) => event.type === 'stage').length;
+  fs.appendFileSync(log, JSON.stringify({ type: 'stage', stage: 'extract', status: 'success' }) + '\n', 'utf8');
+  await new Promise((resolve) => setTimeout(resolve, 2400));
+  assert.equal(
+    seen.filter((event) => event.type === 'server_state' && event.run_state === 'running').length,
+    runningBefore,
+    'the stopped run is not picked back up'
+  );
+  assert.equal(seen.filter((event) => event.type === 'stage').length, stageBefore, 'its later events are not followed');
+});
+
+test('the follower does not re-arm after close', async (t) => {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-close-watch-'));
+  t.after(() => fs.rmSync(projectRoot, { recursive: true, force: true }));
+  const runtimeRoot = path.join(projectRoot, 'state');
+  const artifactDir = path.join(runtimeRoot, 'artifacts', '20261112-080500');
+  fs.mkdirSync(artifactDir, { recursive: true });
+  writeJson(path.join(artifactDir, 'pipeline_report.json'), { run_status: 'running', stage_status: {}, counts: {} });
+  const log = path.join(artifactDir, 'events.jsonl');
+  fs.writeFileSync(log, JSON.stringify({ type: 'run_started', artifact_dir: artifactDir }) + '\n', 'utf8');
+  const runtime = createServerRuntime({ projectRoot, env: { VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot }, followLog: async function* () {}, runWatchIntervalMs: 1000 });
+  await runtime.loadState();
+  await runtime.close?.();
+  const seen = [];
+  runtime.subscribe((event) => seen.push(event));
+  fs.appendFileSync(log, JSON.stringify({ type: 'stage', stage: 'deploy', status: 'success' }) + '\n', 'utf8');
+  await new Promise((resolve) => setTimeout(resolve, 1600));
+  assert.equal(seen.length, 0, 'nothing polls after close');
+});
+
+test('the follow offset counts bytes, not characters', async (t) => {
+  // The log carries Chinese vendor messages. Character offsets would land
+  // mid-line and the next event would be lost or garbled.
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-byte-offset-'));
+  t.after(() => fs.rmSync(projectRoot, { recursive: true, force: true }));
+  const runtimeRoot = path.join(projectRoot, 'state');
+  const artifactDir = path.join(runtimeRoot, 'artifacts', '20261112-081500');
+  fs.mkdirSync(artifactDir, { recursive: true });
+  writeJson(path.join(artifactDir, 'pipeline_report.json'), { run_status: 'running', stage_status: {}, counts: {} });
+  const log = path.join(artifactDir, 'events.jsonl');
+  fs.writeFileSync(log, [
+    { type: 'run_started', artifact_dir: artifactDir },
+    { type: 'log', message: '登录失败，账号或者密码错误' },
+    { type: 'summary', run_status: 'failed', artifact_dir: artifactDir },
+    // The pipeline resume's extract phase, before it writes its own boundary.
+    { type: 'stage', stage: 'extract', status: 'running' }
+  ].map((event) => JSON.stringify(event)).join('\r\n') + '\r\n', 'utf8');
+
+  const runtime = createServerRuntime({ projectRoot, env: { VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot }, followLog: async function* () {} });
+  t.after(async () => { await runtime.close?.(); });
+  const seen = [];
+  runtime.subscribe((event) => seen.push(event));
+  const state = await runtime.loadState();
+  assert.equal(state.runState, 'running');
+
+  fs.appendFileSync(log, JSON.stringify({ type: 'stage', stage: 'render', status: 'success' }) + '\r\n', 'utf8');
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  assert.ok(seen.some((event) => event.type === 'stage' && event.stage === 'render'));
+  assert.equal(seen.filter((event) => event.type === 'log').length, 0, 'no line may be garbled into a log entry');
+});
+
 test('the membership sweep guard resets after the sweep settles', async (t) => {
   const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-expiry-guard-'));
   t.after(() => fs.rmSync(projectRoot, { recursive: true, force: true }));
