@@ -1,0 +1,138 @@
+# Cloudflare deployment profile for AutoVPN.
+#
+# This is the profile the *container* reads. It differs from the VPS profile in
+# exactly two ways, both deliberate:
+#
+#   1. `project_name` is a project that actually exists. The VPS profile points
+#      at `sub-links-auto`, which returns 8000007 (project not found); the live
+#      subscription is served by `sub-nodes-04`.
+#   2. `min_final_links` agrees with the gate the Durable Object enforces. The
+#      VPS had 50 in `daily-run.sh` and 10 here, and `assertDeployMinimumFinalLinks`
+#      throws at 10 — three thresholds, two of them dead.
+#
+# Credentials are NOT here. `cloudflare_api_token`, the vendor `device_token`s
+# and the account passwords arrive as Worker secrets and are written to the
+# mounted volume at boot by `installProfile()`.
+#
+# Sources in `credential` mode: each needs only a location, and leases its
+# account from the pool at extract time. This is why the profile carries no
+# `url`/`key` — a hardcoded evmess URL would bypass the pool and go stale the
+# moment the vendor rotates a domain, which they do weekly.
+#
+# `max_runtime_seconds` is the per-brand crawl budget. The VPS default is 900 s
+# and `max_runtime_seconds = 0` in the interactive profile means unbounded — on
+# Cloudflare an unbounded sweep is a metered, six-hour-capped run, so the
+# scheduled deployment pins a finite budget here.
+
+[sources.leiting]
+mode = "credential"
+official_site = "https://www.68123836.com"
+enabled = true
+platforms = ["android", "ios"]
+max_iterations = 10000
+min_iterations = 10000
+plateau_limit = 20
+use_random_area = true
+area_min = 0
+area_max = 100
+failure_limit = 3
+max_runtime_seconds = 900
+
+[sources.heidong]
+mode = "credential"
+official_site = "https://www.67986457.com"
+enabled = true
+platforms = ["android", "ios"]
+max_iterations = 10000
+min_iterations = 10000
+plateau_limit = 20
+use_random_area = true
+area_min = 0
+area_max = 100
+failure_limit = 3
+max_runtime_seconds = 900
+
+[sources.mifeng]
+mode = "credential"
+official_site = "https://www.86933221.com"
+enabled = true
+platforms = ["android", "ios"]
+max_iterations = 10000
+min_iterations = 10000
+plateau_limit = 20
+use_random_area = true
+area_min = 0
+area_max = 100
+failure_limit = 3
+max_runtime_seconds = 900
+
+[sources.xuanfeng]
+mode = "credential"
+official_site = "https://www.16863988.com"
+enabled = true
+platforms = ["android", "ios"]
+max_iterations = 10000
+min_iterations = 10000
+plateau_limit = 20
+use_random_area = true
+area_min = 0
+area_max = 100
+failure_limit = 3
+max_runtime_seconds = 900
+
+[speed_test]
+min_download_mb_s = 1
+timeout_seconds = 20
+concurrency = 20
+urls = ["https://raw.githubusercontent.com/bulianglin/demo/main/10MB.bin"]
+probe_url = "http://www.gstatic.com/generate_204"
+max_download_bytes = 10000000
+startup_wait_seconds = 1
+max_download_candidates = 0
+
+[availability_targets.gemini]
+url = "https://gemini.google.com/"
+enabled = true
+allowed_hosts = ["gemini.google.com", "accounts.google.com"]
+negative_phrases = ["not available in your country", "not available in your country or territory", "isn't available in your country", "not available in your region"]
+
+[availability_targets.chatgpt]
+url = "https://chatgpt.com/"
+enabled = true
+allowed_hosts = ["chatgpt.com", "chat.openai.com", "auth.openai.com", "login.openai.com"]
+negative_phrases = ["unsupported country", "unsupported region", "country, region, or territory", "not available in your country"]
+
+[availability_targets.claude]
+url = "https://claude.ai/"
+enabled = true
+allowed_hosts = ["claude.ai", "support.anthropic.com"]
+negative_phrases = ["unavailable in your region", "supported regions", "physically located in one of our supported regions", "outside of our supported locations"]
+
+[network]
+# The crawl's upstream proxy is the container's own mihomo instance, which the
+# EgressSupervisor builds from the published subscription on every run.
+proxy_mode = "proxy"
+proxy_url = "http://127.0.0.1:7897"
+
+[deploy]
+project_name = "sub-nodes-04"
+subscription_url = "https://sub-nodes-04.pages.dev/?serect_key=swimmingliu"
+verify_subscription_url = "https://sub-nodes-04.pages.dev/?serect_key=swimmingliu"
+pages_project_url = "https://sub-nodes-04.pages.dev"
+custom_domain = ""
+secret_query = "serect_key=swimmingliu"
+cloudflare_auth_mode = "api_token"
+cloudflare_api_token = ""
+cloudflare_global_key = ""
+cloudflare_email = ""
+account_id = "e743286b4304e96ee8795d62917052aa"
+use_wrangler = true
+auto_create_project_on_blocked = true
+fallback_project_prefix = "sub-nodes"
+min_final_links = 50
+
+[worker_build]
+environment_name = "production"
+entry_filename = "_worker.js"
+bundle_subdir = "pages_bundle"
+modules_subdir = "modules"
