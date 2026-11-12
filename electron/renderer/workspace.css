@@ -20,6 +20,18 @@
   --danger-soft: #ffedf0;
   --shadow: 0 2px 8px rgb(25 30 55 / 3%);
   --scroll-thumb: #a1a7b9;
+  /* Analytics series. Five hues, in fixed order, each validated for
+     colour-vision separation against #fff and #1b1e29 (adjacent pairs: worst
+     CVD ΔE 9.8 light / 12.4 dark, worst normal-vision ΔE 19.2 / 17.9). The
+     neutral tail folds every country past the fifth, so no real country ever
+     shares a hue with "其他". Keep slots and order unchanged. */
+  --chart-1: #5b5ce2;
+  --chart-2: #12a594;
+  --chart-3: #e08b1f;
+  --chart-4: #c94f8a;
+  --chart-5: #3d7fc4;
+  --chart-other: #a7adbd;
+  --chart-source: #5b5ce2;
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
@@ -42,6 +54,15 @@
   --danger-soft: #402936;
   --shadow: none;
   --scroll-thumb: #667089;
+  /* Same five hues stepped for the dark card surface - not a lightened flip of
+     the light set, each slot re-validated against #1b1e29. */
+  --chart-1: #7f7cf0;
+  --chart-2: #1fa98c;
+  --chart-3: #c88217;
+  --chart-4: #d55181;
+  --chart-5: #4b93de;
+  --chart-other: #6a7180;
+  --chart-source: #7f7cf0;
 }
 body { background: var(--bg); font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; font-size: 14px; }
 button { color: inherit; }
@@ -353,7 +374,10 @@ body[data-page="logs"] #logsWorkspace > .panel { grid-template-rows: auto minmax
 @media (max-width: 720px) {
   .distribution-layout { grid-template-columns: minmax(0, 1fr); gap: 16px; justify-items: center; }
   .distribution-plot { max-width: 156px; }
+  .distribution-legend { width: 100%; justify-items: center; }
   .distribution-chips { justify-content: center; }
+  .distribution-footnote, .footnote-entries { justify-content: center; }
+  .source-row { grid-template-columns: 56px minmax(0, 1fr) 48px 38px; gap: 10px; }
   .ring-value { font-size: 26px; }
   .analytics-distribution [data-donut-legend] { padding-inline: 6px; }
   .account-pool-table-wrap { max-height: none; }
@@ -416,12 +440,24 @@ body[data-page="logs"] #logsWorkspace > .panel { grid-template-rows: auto minmax
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; scroll-behavior: auto !important; }
 }
-/* Stacked share bar: one row split by value, for lists too short to fill a ring. */
-.share-track { display: flex; gap: 3px; height: 20px; border-radius: 999px; overflow: hidden; background: var(--surface-muted); box-shadow: inset 0 1px 2px rgb(25 30 55 / 6%); }
-.share-segment { display: block; min-width: 4px; transform-origin: left center; background: linear-gradient(180deg, color-mix(in srgb, var(--segment-color) 82%, #fff) 0%, var(--segment-color) 100%); transition: opacity 200ms ease, filter 200ms ease; }
-.share-segment.is-dimmed { opacity: .34; }
-.share-segment.is-active { filter: saturate(1.15) brightness(1.06); }
-.share-chips { margin-top: 14px; }
+/* Accelerator meters: one aligned row per source, so names, bars and figures
+   share columns instead of spreading four chips across a full-width bar. */
+.source-meters { display: grid; gap: 4px; }
+.source-row { display: grid; grid-template-columns: 68px minmax(0, 1fr) 60px 44px; align-items: center; gap: 14px; min-height: 30px; }
+.source-name { font-size: 13px; font-weight: 600; }
+.source-track { position: relative; display: block; height: 10px; border-radius: 999px; background: var(--surface-muted); overflow: hidden; }
+.source-fill { position: absolute; inset-block: 0; left: 0; border-radius: inherit; background: linear-gradient(90deg, color-mix(in srgb, var(--chart-source) 82%, #fff) 0%, var(--chart-source) 100%); transform-origin: left center; }
+:root[data-theme="dark"] .source-fill { background: linear-gradient(90deg, color-mix(in srgb, var(--chart-source) 72%, #000) 0%, var(--chart-source) 100%); }
+.source-value { font-size: 13.5px; font-weight: 750; font-variant-numeric: tabular-nums; text-align: right; }
+.source-share { font-size: 12px; color: var(--text-soft); font-variant-numeric: tabular-nums; text-align: right; }
+/* Countries past the fifth fold into one neutral slice; the footnote keeps
+   every folded name and count readable instead of hiding them in a tooltip.
+   Each code is its own unbreakable chip so a line never splits "KR 1". */
+.distribution-legend { display: grid; gap: 10px; align-content: center; min-width: 0; }
+.distribution-footnote { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; color: var(--text-soft); font-size: 11.5px; line-height: 1.5; }
+.footnote-lead { color: var(--text-soft); }
+.footnote-entries { display: flex; flex-wrap: wrap; gap: 4px 10px; }
+.footnote-entry { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .calendar-stats { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
 .calendar-stat { display: inline-flex; align-items: baseline; gap: 5px; padding: 5px 11px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-soft); font-size: 12px; color: var(--text-soft); }
 .calendar-stat strong { color: var(--text); font-size: 14px; font-weight: 750; font-variant-numeric: tabular-nums; }

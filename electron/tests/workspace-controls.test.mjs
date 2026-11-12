@@ -279,7 +279,9 @@ test('beUI charts expose the real node distributions and keyboard heatmap detail
   const page = await launch(t, { reducedMotion: 'reduce' });
   await page.waitForSelector('[data-component-source="beui"]');
   assert.equal(await page.getByRole('img', { name: '国家分布' }).count(), 1);
-  assert.equal(await page.getByRole('img', { name: '加速器贡献' }).count(), 1);
+  // The accelerator card is a meter list, not a plot: its rows are real text,
+  // so the card is named by its heading instead of exposing a single image.
+  assert.equal(await page.getByRole('article', { name: '加速器贡献' }).count(), 1);
   // The legend is a horizontal chip flow, not a stacked column: the card must
   // stay near the ring's height instead of stretching to the country count.
   const chartGeometry = await page.locator('.analytics-distribution').first().evaluate((node) => {
@@ -304,6 +306,21 @@ test('beUI charts expose the real node distributions and keyboard heatmap detail
   assert.equal(await page.locator('.calendar-scroll').evaluate((node) => getComputedStyle(node, '::-webkit-scrollbar').height), '4px');
 
   assert.match(await page.locator('.analytics-distribution').nth(1).innerText(), /雷霆[\s\S]*42/);
+  // Names, tracks, counts and shares share one column grid per row, so the
+  // four accelerators read as one measurement rather than four loose chips.
+  const meterGeometry = await page.locator('.analytics-distribution').nth(1).evaluate((node) => {
+    const rows = [...node.querySelectorAll('.source-row')].map((row) => {
+      const cells = [...row.children].map((cell) => Math.round(cell.getBoundingClientRect().left));
+      return { cells, trackWidth: row.querySelector('.source-track').getBoundingClientRect().width, fillWidth: row.querySelector('.source-fill').getBoundingClientRect().width };
+    });
+    return { rows, cardWidth: node.getBoundingClientRect().width };
+  });
+  assert.deepEqual(new Set(meterGeometry.rows.map((row) => JSON.stringify(row.cells.slice(0, 3)))).size, 1,
+    `meter columns must align across rows: ${JSON.stringify(meterGeometry)}`);
+  assert.equal(meterGeometry.rows.length, 1, `fixture has a single accelerator: ${JSON.stringify(meterGeometry)}`);
+  assert.ok(meterGeometry.rows[0].fillWidth > 0, `the source must draw a meter: ${JSON.stringify(meterGeometry)}`);
+  assert.ok(meterGeometry.rows[0].trackWidth > meterGeometry.cardWidth * 0.4,
+    `the meter must use the card's width: ${JSON.stringify(meterGeometry)}`);
   assert.match(await page.locator('.analytics-calendar .analytics-heading').innerText(), /30 个节点/);
   const cell = page.locator('[data-heat-cell]').last();
   await cell.focus();
