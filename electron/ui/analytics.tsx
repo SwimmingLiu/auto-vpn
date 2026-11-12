@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { createContext, useContext, useMemo, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { AnimatePresence, motion, MotionConfig, useReducedMotion } from 'motion/react';
 import { DonutChart, DonutChartCenter, DonutChartPlot, useDonutChart, type DonutSegment } from './vendor/beui/components/charts/donut-chart';
@@ -64,9 +64,14 @@ function CardAura({ color, active }: { color: string; active: boolean }) {
  * The vendored legend stacks one full-width row per segment, which stretches
  * the panel to the length of the list. Chips wrap across the row instead, so
  * the card keeps the ring's height and the countries read left to right.
+ *
+ * The shares come from the card through context rather than being rounded
+ * here, so the chips and the ring's readout always quote the same figure and
+ * the column sums to 100 instead of drifting to 99 or 101.
  */
 function RingLegend() {
-  const { placed, active: focused, setActive, canHover, formatValue, total } = useDonutChart();
+  const { placed, active: focused, setActive, canHover, formatValue } = useDonutChart();
+  const shares = useContext(ShareContext);
   const reduce = useReducedMotion() ?? false;
   return <ul className="distribution-chips">
     {placed.map((segment, index) => (
@@ -89,18 +94,21 @@ function RingLegend() {
           onPointerLeave={canHover ? () => setActive(null) : undefined}
           onFocus={() => setActive(segment.id)}
           onBlur={() => setActive(null)}
-          aria-label={`${segment.name} ${segment.value} 个节点，占 ${Math.round((segment.value / total) * 100)}%`}
+          aria-label={`${segment.name} ${segment.value} 个节点，占 ${shares[index] ?? 0}%`}
         >
           <span aria-hidden="true" className="distribution-dot" style={{ backgroundColor: segment.color }} />
           {flagOf(segment.id) ? <span aria-hidden="true" className="distribution-flag">{flagOf(segment.id)}</span> : null}
           <span className="min-w-0 distribution-name">{segment.name}</span>
           <strong className="distribution-value">{formatValue(segment.value)}</strong>
-          <span className="distribution-share">{Math.round((segment.value / total) * 100)}%</span>
+          <span className="distribution-share">{shares[index] ?? 0}%</span>
         </motion.button>
       </motion.li>
     ))}
   </ul>;
 }
+
+/** Rounded shares for the ring, in the same order as its placed segments. */
+const ShareContext = createContext<number[]>([]);
 
 /**
  * The ring's readout.
@@ -110,9 +118,12 @@ function RingLegend() {
  */
 function RingReadout() {
   const { placed, active: focused, total, formatValue } = useDonutChart();
+  const shares = useContext(ShareContext);
   const reduce = useReducedMotion() ?? false;
   const segment = placed.find((item) => item.id === focused) ?? null;
+  const index = placed.findIndex((item) => item.id === focused);
   const value = segment?.value ?? total;
+  const share = index >= 0 ? shares[index] ?? Math.round((segment!.value / total) * 100) : 0;
   return <div className="ring-readout">
     <AnimatePresence initial={false} mode="popLayout">
       <motion.strong
@@ -135,7 +146,7 @@ function RingReadout() {
       >
         {segment ? <>
           <span aria-hidden="true" className="distribution-dot" style={{ backgroundColor: segment.color }} />
-          {flagOf(segment.id)} {segment.name} · {Math.round(segment.share * 100)}%
+          {flagOf(segment.id)} {segment.name} · {share}%
         </> : '节点总数'}
       </motion.span>
     </AnimatePresence>
@@ -152,6 +163,7 @@ function Distribution({ title, segments, tail, label }: { title: string; segment
   }, [segments]);
   const total = sorted.reduce((sum, item) => sum + item.value, 0);
   const countryCount = sorted.filter((segment) => segment.id !== OTHER_ID).length + tail.length;
+  const shares = sharesOf(sorted.map((segment) => segment.value));
   const [focused, setFocused] = useState<string | null>(null);
   const focusColor = sorted.find((segment) => segment.id === focused)?.color ?? sorted[0]?.color ?? SERIES[0];
   return <article className="panel analytics-distribution" aria-label={title}>
@@ -169,18 +181,20 @@ function Distribution({ title, segments, tail, label }: { title: string; segment
       activeId={focused}
       onActiveChange={setFocused}
     >
-      <div className="distribution-layout">
-        <DonutChartPlot className="distribution-plot"><DonutChartCenter>{() => <RingReadout />}</DonutChartCenter></DonutChartPlot>
-        <div className="distribution-legend">
-          <RingLegend />
-          {tail.length ? <div className="distribution-footnote">
-            <span className="footnote-lead">其他包括</span>
-            <span className="footnote-entries">
-              {tail.map((item) => <span className="footnote-entry" key={item.region}>{item.region} {item.count}</span>)}
-            </span>
-          </div> : null}
+      <ShareContext.Provider value={shares}>
+        <div className="distribution-layout">
+          <DonutChartPlot className="distribution-plot"><DonutChartCenter>{() => <RingReadout />}</DonutChartCenter></DonutChartPlot>
+          <div className="distribution-legend">
+            <RingLegend />
+            {tail.length ? <div className="distribution-footnote">
+              <span className="footnote-lead">其他包括</span>
+              <span className="footnote-entries">
+                {tail.map((item) => <span className="footnote-entry" key={item.region}>{item.region} {item.count}</span>)}
+              </span>
+            </div> : null}
+          </div>
         </div>
-      </div>
+      </ShareContext.Provider>
     </DonutChart> : <div className="chart-empty" role="status"><span className="empty-donut" aria-hidden="true" /><span>运行完成后显示</span></div>}
   </article>;
 }
@@ -204,6 +218,8 @@ function SourceMeters({ title, segments, label }: { title: string; segments: Don
     [segments]
   );
   const total = sorted.reduce((sum, item) => sum + item.value, 0);
+  // Row order is the display order, so the shares line up with the bars.
+  const shares = sharesOf(sorted.map((item) => item.value));
   return <article className="panel analytics-distribution" aria-label={title}>
     {total > 0 ? <CardAura color="var(--chart-source)" active={false} /> : null}
     <div className="analytics-heading">
@@ -224,11 +240,34 @@ function SourceMeters({ title, segments, label }: { title: string; segments: Don
             />
           </span>
           <strong className="source-value">{segment.value.toLocaleString('zh-CN')}</strong>
-          <span className="source-share">{Math.round((segment.value / total) * 100)}%</span>
+          <span className="source-share">{shares[index]}%</span>
         </div>
       ))}
     </div> : <div className="chart-empty" role="status"><span className="empty-donut" aria-hidden="true" /><span>运行完成后显示</span></div>}
   </article>;
+}
+
+/**
+ * Integer percentages that add up to 100.
+ *
+ * Rounding each share on its own drifts - 396/233/82/82 of 793 renders as
+ * 50+29+10+10 = 99, and a reader who adds the column finds a missing point.
+ * Largest remainder hands the leftover points to the rows that lost the most
+ * in rounding, so the column closes without any single figure moving more
+ * than a point.
+ */
+function sharesOf(values: number[]): number[] {
+  const total = values.reduce((sum, value) => sum + value, 0);
+  if (total <= 0) return values.map(() => 0);
+  const exact = values.map((value) => (value / total) * 100);
+  const floors = exact.map(Math.floor);
+  let left = 100 - floors.reduce((sum, value) => sum + value, 0);
+  const order = exact
+    .map((value, index) => ({ index, remainder: value - Math.floor(value) }))
+    .sort((left, right) => right.remainder - left.remainder);
+  const result = [...floors];
+  for (let i = 0; left > 0 && i < order.length; i += 1, left -= 1) result[order[i].index] += 1;
+  return result;
 }
 
 function ContributionLegend() {

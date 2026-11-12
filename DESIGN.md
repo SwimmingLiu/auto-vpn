@@ -22,10 +22,10 @@ colors:
   terminal_text: "#d6e2ff"
   chart_1: "#5b5ce2"
   chart_2: "#12a594"
-  chart_3: "#e08b1f"
+  chart_3: "#3d7fc4"
   chart_4: "#c94f8a"
-  chart_5: "#3d7fc4"
-  chart_other: "#a7adbd"
+  chart_5: "#c47a12"
+  chart_other: "#72788a"
 
 typography:
   font_family: 'Inter, "SF Pro Display", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif'
@@ -68,7 +68,7 @@ radii:
 ## 布局与组件模式 (Layout & Component Patterns)
 - **响应式导航 (Responsive Navigation)**: `<=720px` 使用底部导航，`721px-960px` 使用顶部导航，`>=961px` 使用左侧导航。导航、内容和固定操作区必须遵循安全区变量；完整约束与验证矩阵以 [docs/mobile-ux.md](docs/mobile-ux.md) 为准。
 - **动态控制面板 (Dashboards & Grids)**: 页面中运用了大量的 `Grid` 布局，并配合不同宽度和比例的卡片 (Metric Cards, Panel) 用于展示数据概览。
-- **图表配色 (Chart Series)**: 概览页的图表只用固定的 5 个系列色槽加 1 个中性色 (见 `--chart-1`…`--chart-5`、`--chart-other`)，每个色槽都针对浅色 `#fff` 与深色 `#1b1e29` 卡片底色校验过色觉分辨度。国家分布环形图最多命名 5 个国家，其余折入中性色「其他」切片，并在图例下方逐条列出国家代码与数量；加速器贡献用同色系的等宽条形列表，长度即占比。新增分类维度时沿用色槽顺序，不要额外生成色相。
+- **图表配色 (Chart Series)**: 概览页的图表只用固定的 5 个系列色槽加 1 个中性色 (见 `--chart-1`…`--chart-5`、`--chart-other`)，每个色槽都针对浅色 `#fff` 与深色 `#1b1e29` 卡片底色校验过色觉分辨度与 3:1 对比度。国家分布环形图最多命名 5 个国家，其余折入中性色「其他」切片，并在图例下方逐条列出国家代码与数量；加速器贡献用同色系的等宽条形列表，长度即占比。百分比按整列四舍五入到 100。新增分类维度时沿用色槽顺序，不要额外生成色相。
 - **自适应设置面板 (Adaptive Settings Sheet)**: 桌面端使用居中 Drawer，移动端使用底部 Sheet。两种模式共享焦点管理、取消/保存语义和背景滚动锁定。
 - **移动运行操作区 (Mobile Run Bar)**: 手机端仅将开始/停止固定在底部导航上方；历史重试和运行选项留在正常文档流中，避免遮挡最终内容。
 
