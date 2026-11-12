@@ -33,25 +33,46 @@ const MAX_CANDIDATE_NODES = Number(process.env.EGRESS_MAX_CANDIDATES || 40);
 /** Vendor host the crawl actually needs to reach. */
 export const DEFAULT_PROBE_HOST = 'https://www.16863988.com/';
 
+/**
+ * Decode a subscription body into vmess links.
+ *
+ * The published worker returns `btoa(SUBSCRIPTION_PAYLOAD)` where the payload
+ * itself is newline-joined `vmess://` URIs. That is one layer of base64 around
+ * text that already contains base64. A double-encoded body (a `SUB` env var
+ * pointing at a second worker) arrives with two layers, so peel until the
+ * result looks like a link list rather than assuming a fixed depth.
+ */
 export function decodeSubscriptionPayload(text) {
-  const trimmed = String(text ?? '').trim();
-  if (!trimmed) return [];
-  // The published worker returns random bytes for a wrong key; a real payload
-  // always decodes to lines beginning with a scheme.
-  const candidates = [trimmed, trimmed.replace(/-/g, '+').replace(/_/g, '/')];
-  for (const candidate of candidates) {
-    const padded = candidate + '='.repeat((4 - (candidate.length % 4)) % 4);
-    let decoded = '';
-    try {
-      decoded = Buffer.from(padded, 'base64').toString('utf8');
-    } catch {
-      continue;
-    }
-    const links = decoded
+  let current = String(text ?? '').trim();
+  if (!current) return [];
+
+  for (let depth = 0; depth < 3; depth += 1) {
+    const links = current
       .split('\n')
       .map((line) => line.trim())
       .filter((line) => line.startsWith('vmess://'));
     if (links.length) return links;
+
+    // Try standard then url-safe; a wrong key yields random bytes that decode
+    // to garbage and simply fall through to the next depth.
+    const variants = [current, current.replace(/-/g, '+').replace(/_/g, '/')];
+    let decoded = '';
+    for (const variant of variants) {
+      const padded = variant + '='.repeat((4 - (variant.length % 4)) % 4);
+      try {
+        const candidate = Buffer.from(padded, 'base64').toString('utf8');
+        // Base64 of random bytes produces replacement characters; a real layer
+        // is printable text.
+        if (candidate && !candidate.includes('�')) {
+          decoded = candidate;
+          break;
+        }
+      } catch {
+        // not base64 at this depth
+      }
+    }
+    if (!decoded || decoded === current) return [];
+    current = decoded.trim();
   }
   return [];
 }

@@ -100,3 +100,20 @@ test('url-safe base64 payloads decode too', () => {
     .replace(/\//g, '_');
   assert.equal(decodeSubscriptionPayload(body).length, 1);
 });
+
+test('a double-wrapped payload decodes', () => {
+  // A share project whose `SUB` env var points at another worker returns the
+  // inner body's text wrapped in base64 again. Callers cannot know the depth,
+  // so the decoder peels until it sees links.
+  const inner = Buffer.from(`${SAMPLE_LINK}\n`, 'utf8').toString('base64');
+  const outer = Buffer.from(inner, 'utf8').toString('base64');
+  const links = decodeSubscriptionPayload(outer);
+  assert.equal(links.length, 1);
+  assert.ok(links[0].startsWith('vmess://'));
+});
+
+test('random bytes from a wrong key never decode into links', () => {
+  // 54 bytes of random data is what a wrong `serect_key` produces.
+  const noise = Buffer.from(Array.from({ length: 54 }, (_, i) => (i * 37 + 11) % 256)).toString('base64');
+  assert.deepEqual(decodeSubscriptionPayload(noise), []);
+});
