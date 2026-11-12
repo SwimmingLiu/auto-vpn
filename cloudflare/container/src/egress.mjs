@@ -315,6 +315,9 @@ export class EgressSupervisor {
       const fetched = await fetchSubscription(subscriptionUrl);
       text = fetched.text;
       if (fetched.error) this.state.last_error = fetched.error;
+    } else if (!text) {
+      // A missing URL is an operator error, not a vendor outage; say which.
+      this.state.last_error = 'no subscription URL configured (SUBSCRIPTION_URL secret)';
     }
 
     const entries = decodeSubscriptionPayload(text)
