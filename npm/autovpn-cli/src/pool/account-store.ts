@@ -327,9 +327,9 @@ export class AccountStore {
    * - Rows with no `deleted_at` are never touched, whatever their status: that
    *   is the only column this sweep trusts to mean "already retired".
    *
-   * `0` disables the sweep. The window is measured in calendar days from the
-   * retirement stamp, so a row retired this morning survives a sweep run this
-   * afternoon no matter what time it is.
+   * `0` disables the sweep. The window is measured from the retirement stamp,
+   * so a row retired this morning survives a sweep run this afternoon however
+   * far in the past its membership date is.
    */
   purgeRetired(days: number): number {
     if (this.readOnly) return 0;
