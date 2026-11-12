@@ -102,6 +102,9 @@ cli() {
 # the terminal. `cli` must exist by now: a shell function is not hoisted, and a
 # call before its definition is "command not found" - which this guard would
 # turn into a permanent, silent "purge failed" every night.
+#
+# Node's ExperimentalWarning for `node:sqlite` lands on stderr and would win the
+# `tail -n 1`, so the summary is the last line that is not a warning.
 set +e
 pool_output="$(cli accounts purge --output human 2>&1)"
 pool_status=$?
@@ -112,7 +115,7 @@ fi
 if [ "$pool_status" -ne 0 ]; then
   log "account pool purge failed (exit=$pool_status); continuing with the run"
 else
-  log "account pool: $(printf '%s\n' "$pool_output" | tail -n 1)"
+  log "account pool: $(printf '%s\n' "$pool_output" | grep -v 'ExperimentalWarning\|trace-warnings' | tail -n 1)"
 fi
 
 # The live profile is never edited by this job. A copy carrying the runtime
