@@ -142,3 +142,37 @@ test('the scheduled run bounds each source without editing the live profile', as
     'project_name = "keep-me"'
   ].join('\n'));
 });
+
+test('the nightly tick purges retired accounts before the sweep and never fails the run', async () => {
+  const script = await readScript();
+  // The purge must run before the extraction, so a lapsed credential is not
+  // leased (and re-probed) on the way in.
+  const purgeIndex = script.indexOf('cli accounts purge');
+  const runIndex = script.indexOf('cli run --skip-deploy');
+  assert.ok(purgeIndex > 0, 'the nightly pool purge is missing');
+  assert.ok(runIndex > purgeIndex, 'the purge must run before the run');
+
+  // `cli` is a shell function, so it does not exist before its definition. A
+  // call above it is `command not found`; this guard would log a failed purge
+  // every night and never notice.
+  const cliDefinition = script.search(/^cli\(\) \{/m);
+  assert.ok(cliDefinition > 0, 'the cli helper is missing');
+  assert.ok(cliDefinition < purgeIndex, 'the cli helper must be defined before the purge calls it');
+  // Nothing else may redefine it later, or the run would use a different
+  // environment than the purge did.
+  assert.equal(script.split(/^cli\(\) \{/m).length - 1, 1, 'the cli helper is defined more than once');
+
+  // The status must be the CLI's own. `${PIPESTATUS[0]}` after a command
+  // substitution is unset, and `$?` after a pipeline is `tail`'s, so the
+  // command is captured on its own and its output appended afterwards.
+  assert.match(script, /pool_status=\$\?/);
+  assert.doesNotMatch(script, /pool_status=\$\{PIPESTATUS\[0\]\}/);
+  const purgeAssignment = script.slice(purgeIndex, script.indexOf('pool_status=$?'));
+  assert.doesNotMatch(purgeAssignment, /\| tee\b/, 'the purge must not be piped if $? is its status');
+  assert.match(script, /account pool purge failed \(exit=\$pool_status\); continuing with the run/);
+  // The failure branch only logs: an `exit` in the purge's own if/else would
+  // end the night's run before the extraction.
+  const purgeBlock = script.slice(script.indexOf('if [ "$pool_status" -ne 0 ]'));
+  const purgeBranch = purgeBlock.slice(0, purgeBlock.indexOf('\nfi') + 3);
+  assert.doesNotMatch(purgeBranch, /\bexit /, `the purge must not exit the script: ${purgeBranch}`);
+});

@@ -83,10 +83,41 @@ if [ "$enabled" = "disabled" ]; then
   exit 0
 fi
 
+run_env=(VPN_AUTOMATION_PROFILE_PATH="$PROFILE_PATH")
+
+cli() {
+  env "${run_env[@]}" "$NODE_BIN" "$CLI_ENTRY" "$@" --project-root "$PROJECT_ROOT"
+}
+
+# Retire accounts whose membership date has passed and erase the ones retired
+# more than `AUTOVPN_ACCOUNT_RETIRED_RETENTION_DAYS` ago (default 30). This is
+# the one guaranteed nightly tick: the store also sweeps on every read, but a
+# host whose UI nobody opens would otherwise only clean the pool when the run
+# itself leases an account. It runs before the extraction so the run does not
+# spend a login on a lapsed row, and it never fails the job — a pool that cannot
+# be tidied is not a reason to skip the night's sweep.
+#
+# The output is captured without a pipeline, so `$?` is the CLI's own status.
+# The log line is then appended with the real counts rather than read back from
+# the terminal. `cli` must exist by now: a shell function is not hoisted, and a
+# call before its definition is "command not found" - which this guard would
+# turn into a permanent, silent "purge failed" every night.
+set +e
+pool_output="$(cli accounts purge --output human 2>&1)"
+pool_status=$?
+set -e
+if [ -n "$pool_output" ]; then
+  printf '%s\n' "$pool_output" >> "$log_file"
+fi
+if [ "$pool_status" -ne 0 ]; then
+  log "account pool purge failed (exit=$pool_status); continuing with the run"
+else
+  log "account pool: $(printf '%s\n' "$pool_output" | tail -n 1)"
+fi
+
 # The live profile is never edited by this job. A copy carrying the runtime
 # budget is written beside the logs and selected for the run and its deploy, so
 # an operator's profile edit is not overwritten and the budget is visible.
-run_env=(VPN_AUTOMATION_PROFILE_PATH="$PROFILE_PATH")
 if [ "$source_runtime_seconds" -gt 0 ]; then
   if [ ! -f "$PROFILE_PATH" ]; then
     log "profile not found: $PROFILE_PATH"
@@ -123,10 +154,6 @@ process.stdout.write(`staged runtime budget ${budget}s across ${seen} sources`);
   log "$staging_note"
   run_env=(VPN_AUTOMATION_PROFILE_PATH="$staged_profile")
 fi
-
-cli() {
-  env "${run_env[@]}" "$NODE_BIN" "$CLI_ENTRY" "$@" --project-root "$PROJECT_ROOT"
-}
 
 total_started=$SECONDS
 log "run start: min_final_nodes=$min_final_nodes source_runtime_seconds=$source_runtime_seconds runtime_root=$RUNTIME_ROOT"

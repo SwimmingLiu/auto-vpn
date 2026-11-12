@@ -464,3 +464,177 @@ test('the server runtime sets an expiry by id and by brand/account', async () =>
     await runtime.close?.();
   }
 });
+
+// --- Retired-row retention -------------------------------------------------
+
+test('the retention sweep erases expired and invalid rows past the window', () => {
+  const clock = mutableClock(new Date('2026-06-01T00:00:00Z'));
+  const store = new AccountStore({ dbPath: ':memory:', now: clock.now });
+  store.importRecords([
+    record({ account: 'live', expires_at: '2030-01-01' }),
+    record({ account: 'lapsed', expires_at: '2026-05-01' }),
+    record({ account: 'bad-pass', expires_at: '2030-01-01', status: 'invalid' }),
+    record({ account: 'paused', expires_at: '2030-01-01' })
+  ]);
+  store.disable('leiting', 'paused', 'operator pause');
+  store.expireDue();
+
+  // Nothing is old enough yet: the window is measured from the retirement
+  // stamp, not from the membership date.
+  assert.equal(store.purgeRetired(30), 0);
+  clock.current = new Date('2026-07-15T00:00:00Z');
+  assert.equal(store.countRetired(30).purgeable, 2, 'the lapsed and rejected rows are both past the window');
+
+  assert.equal(store.purgeRetired(30), 2);
+  const remaining = store.list({ status: 'all', includeDeleted: true }).map((row) => row.status);
+  // `disabled` survives: it is an operator decision, not a verdict the pool
+  // can withdraw, and re-enabling it is documented behaviour.
+  assert.deepEqual(remaining.sort(), ['active', 'disabled']);
+  store.close();
+});
+
+test('a purged row leaves no dangling history behind', () => {
+  const clock = mutableClock(new Date('2026-06-01T00:00:00Z'));
+  const dbPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-purge-')), 'accounts.db');
+  const store = new AccountStore({ dbPath, now: clock.now });
+  store.importRecords([record({ account: 'gone', expires_at: '2026-05-01' })]);
+  store.expireDue();
+  assert.ok(store.history(1).length > 0, 'the expiry wrote an event');
+  clock.current = new Date('2026-08-01T00:00:00Z');
+  assert.equal(store.purgeRetired(30), 1);
+
+  const raw = new AccountStore({ dbPath, readOnly: true });
+  // The event table is the only place a password was never written, but a
+  // surviving event would still name a row that no longer exists.
+  assert.equal(raw.history(1).length, 0);
+  raw.close();
+  store.close();
+});
+
+test('a purge is all-or-nothing', () => {
+  const clock = mutableClock(new Date('2026-06-01T00:00:00Z'));
+  const store = new AccountStore({ dbPath: ':memory:', now: clock.now });
+  store.importRecords([record({ account: 'a', expires_at: '2026-05-01' }), record({ account: 'b', expires_at: '2026-05-02' })]);
+  store.expireDue();
+  clock.current = new Date('2026-08-01T00:00:00Z');
+  // Sabotage the row delete so the second step throws after the first row's
+  // events were already removed: the transaction must roll both back.
+  const db = store['db'];
+  db.exec('DROP TABLE accounts');
+  assert.throws(() => store.purgeRetired(30));
+  const count = db.prepare('SELECT COUNT(*) AS total FROM pool_events').get().total;
+  assert.ok(count > 0, 'the events of the first row survived the failed transaction');
+  store.close();
+});
+
+test('the once-per-window sweep runs at most once and is skipped by read-only stores', () => {
+  const clock = mutableClock(new Date('2026-06-01T00:00:00Z'));
+  const dbPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-sweep-')), 'accounts.db');
+  const store = new AccountStore({ dbPath, now: clock.now });
+  store.importRecords([record({ account: 'x', expires_at: '2026-05-01' })]);
+  store.expireDue();
+  clock.current = new Date('2026-07-10T00:00:00Z');
+
+  assert.equal(store.sweepRetired(30), 1, 'the first read past the window erases');
+  assert.equal(store.sweepRetired(30), 0, 'a second read inside the window is a no-op');
+
+  const readOnly = new AccountStore({ dbPath, readOnly: true, now: clock.now });
+  clock.current = new Date('2026-09-01T00:00:00Z');
+  assert.equal(readOnly.sweepRetired(30), 0, 'a preview never erases');
+  readOnly.close();
+  store.close();
+});
+
+test('a --days 0 purge keeps the rows and does not sweep on its own report', async () => {
+  const { runAccountsCommand } = await import('../../dist/cli/accounts-commands.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-purge-zero-'));
+  const dbPath = path.join(dir, 'accounts.db');
+  const clock = mutableClock(new Date('2026-06-01T00:00:00Z'));
+  const seed = new AccountStore({ dbPath, now: clock.now });
+  seed.importRecords([record({ account: 'lapsed', expires_at: '2026-05-01' })]);
+  seed.expireDue();
+  seed.close();
+
+  // Long past the default window: an ordinary read here would erase the row.
+  const out = [];
+  const code = await runAccountsCommand(['accounts', 'purge', '--days', '0'], {
+    cwd: dir,
+    env: { VPN_AUTOMATION_ACCOUNTS_DB: dbPath },
+    now: () => new Date('2026-12-01T00:00:00Z'),
+    io: { writeStdout: (text) => out.push(text), writeStderr: () => {} }
+  });
+  assert.equal(code, 0);
+  const payload = JSON.parse(out.join(''));
+  assert.equal(payload.erased, 0);
+  assert.equal(payload.stats.total, 1, 'the report must not sweep with the default window');
+
+  const after = new AccountStore({ dbPath, readOnly: true, now: () => new Date('2026-12-01T00:00:00Z') });
+  assert.equal(after.list({ status: 'all', includeDeleted: true }).length, 1, 'the row is still there');
+  after.close();
+});
+
+test('retention 0 keeps retired rows, and a negative window is refused', () => {
+  const clock = mutableClock(new Date('2026-06-01T00:00:00Z'));
+  // The environment is the switch, because a read is what runs the sweep: a
+  // caller passing 0 to one method would still lose the rows to the next read.
+  const store = new AccountStore({
+    dbPath: ':memory:',
+    now: clock.now,
+    env: { AUTOVPN_ACCOUNT_RETIRED_RETENTION_DAYS: '0' }
+  });
+  store.importRecords([record({ account: 'x', expires_at: '2026-05-01' })]);
+  store.expireDue();
+  clock.current = new Date('2030-01-01T00:00:00Z');
+  assert.equal(store.purgeRetired(0), 0);
+  assert.equal(store.purgeRetired(-5), 0);
+  const rows = store.list({ status: 'all', includeDeleted: true });
+  assert.equal(rows.length, 1, 'a read with retention 0 keeps the retired row');
+  assert.equal(rows[0].status, 'expired');
+  store.close();
+});
+
+test('the retention window comes from the environment and defaults to 30 days', async () => {
+  const { retiredRetentionDays } = await import('../../dist/pool/account-store.js');
+  assert.equal(retiredRetentionDays({}), 30);
+  assert.equal(retiredRetentionDays({ AUTOVPN_ACCOUNT_RETIRED_RETENTION_DAYS: '7' }), 7);
+  assert.equal(retiredRetentionDays({ AUTOVPN_ACCOUNT_RETIRED_RETENTION_DAYS: '0' }), 0);
+  assert.equal(retiredRetentionDays({ AUTOVPN_ACCOUNT_RETIRED_RETENTION_DAYS: 'nonsense' }), 30);
+  assert.equal(retiredRetentionDays({ AUTOVPN_ACCOUNT_RETIRED_RETENTION_DAYS: '-1' }), 30);
+});
+
+test('reading the pool is what triggers the sweep, so no daemon is required', () => {
+  const clock = mutableClock(new Date('2026-06-01T00:00:00Z'));
+  const dbPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-maintain-')), 'accounts.db');
+  const env = { VPN_AUTOMATION_ACCOUNTS_DB: dbPath, AUTOVPN_ACCOUNT_RETIRED_RETENTION_DAYS: '30' };
+  const store = new AccountStore({ dbPath, env, now: clock.now });
+  store.importRecords([record({ account: 'x', expires_at: '2026-05-01' })]);
+  store.expireDue();
+  assert.equal(store.stats().total, 1, 'the row is still there before the window passes');
+
+  clock.current = new Date('2026-07-10T00:00:00Z');
+  // A plain reader — the UI snapshot, `accounts list`, a run checking the pool —
+  // is what does the erasing. No timer anywhere.
+  const reader = new AccountStore({ dbPath, env, now: clock.now });
+  const stats = reader.stats();
+  assert.equal(stats.total, 0, 'the retired row is gone after a plain read');
+  reader.close();
+  store.close();
+});
+
+test('a live row is never purged, no matter how old its credential is', () => {
+  const clock = mutableClock(new Date('2026-06-01T00:00:00Z'));
+  const store = new AccountStore({ dbPath: ':memory:', now: clock.now });
+  store.importRecords([record({ account: 'x', expires_at: '2030-01-01' })]);
+  store.lease('leiting');
+  clock.current = new Date('2030-06-01T00:00:00Z');
+  // Only rows already retired carry a `deleted_at`, and only those are ever
+  // erased. An account nobody has retired stays until its date lapses.
+  assert.equal(store.purgeRetired(3650), 0);
+  assert.equal(store.list({ status: 'all', includeDeleted: true }).length, 1);
+  // Once the lapse sweep retires it, the window starts from that moment.
+  store.expireDue();
+  assert.equal(store.purgeRetired(30), 0, 'the window runs from the retirement, not the lease');
+  clock.current = new Date('2030-08-01T00:00:00Z');
+  assert.equal(store.purgeRetired(30), 1);
+  store.close();
+});
