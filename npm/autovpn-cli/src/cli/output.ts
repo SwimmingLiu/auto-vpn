@@ -24,7 +24,7 @@ Usage:
 
 Commands:
   profile show|save|summary
-  accounts import|list|stats|snapshot|disable|enable|expire|refresh-expiry|export|template
+  accounts import|list|stats|snapshot|disable|enable|expire|refresh-expiry|export|template|purge
   doctor
   artifacts latest|list|preview
   run

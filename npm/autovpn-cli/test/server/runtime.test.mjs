@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
+import { AccountStore } from '../../dist/pool/account-store.js';
 import { createServerRuntime, sanitizeProfileForServer } from '../../dist/server/runtime.js';
 import { RunStore } from '../../dist/pipeline/run-store.js';
 
@@ -1247,4 +1248,48 @@ test('the membership sweep guard resets after the sweep settles', async (t) => {
   assert.equal(first.checked, 0);
   const second = await runtime.refreshAccountExpiry({ brand: 'leiting', limit: 1 });
   assert.equal(second.ok, true);
+});
+
+test('loading the pool from serve erases retired rows past the retention window', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-serve-pool-retention-'));
+  const dbPath = path.join(root, 'accounts.db');
+  const seed = new AccountStore({ dbPath, now: () => new Date('2026-06-01T00:00:00Z') });
+  seed.importRecords([
+    { brand: 'leiting', account: 'lapsed', password: 'p', official_site: 'https://www.68123836.com', expires_at: '2026-05-01', status: 'active', note: '' },
+    { brand: 'leiting', account: 'live', password: 'p', official_site: 'https://www.68123836.com', expires_at: '2030-01-01', status: 'active', note: '' }
+  ]);
+  seed.close();
+
+  // The first read (the one that opens the page) retires the lapse; the row it
+  // just retired starts its own window then, so nothing is erased yet.
+  const early = createServerRuntime({
+    projectRoot: root,
+    env: { VPN_AUTOMATION_ACCOUNTS_DB: dbPath, VPN_AUTOMATION_RUNTIME_ROOT: root },
+    now: () => new Date('2026-06-02T00:00:00Z'),
+    followLog: async function* () {}
+  });
+  try {
+    const snapshot = await early.loadAccounts();
+    assert.equal(snapshot.stats.total, 2, 'a lapse retired today is not purged today');
+    assert.equal(snapshot.stats.expired, 1);
+  } finally {
+    await early.close?.();
+  }
+
+  // A month later the next page load clears it, with no cron and no timer.
+  const later = createServerRuntime({
+    projectRoot: root,
+    env: { VPN_AUTOMATION_ACCOUNTS_DB: dbPath, VPN_AUTOMATION_RUNTIME_ROOT: root },
+    now: () => new Date('2026-08-02T00:00:00Z'),
+    followLog: async function* () {}
+  });
+  try {
+    const snapshot = await later.loadAccounts();
+    assert.equal(snapshot.stats.total, 1, 'the retired row is gone');
+    assert.equal(snapshot.stats.expired, 0);
+    assert.equal(snapshot.accounts.length, 1);
+    assert.equal(snapshot.accounts[0].status, 'active');
+  } finally {
+    await later.close?.();
+  }
 });

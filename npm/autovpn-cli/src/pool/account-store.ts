@@ -30,6 +30,34 @@ export function resolveAccountsDbPath(env: NodeJS.ProcessEnv = process.env): str
   return path.join(resolveUserRuntimeRoot(env), 'accounts.db');
 }
 
+/**
+ * How long a retired account's row, and its password, stay in the file.
+ *
+ * The default is a month: long enough that "where did that account go?" has an
+ * answer after a renewal cycle, short enough that a lapsed credential is not
+ * still sitting on disk a year later. `0` keeps retired rows forever, which is
+ * the behaviour before this existed.
+ */
+export function retiredRetentionDays(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = String(env.AUTOVPN_ACCOUNT_RETIRED_RETENTION_DAYS ?? '').trim();
+  if (!raw) return 30;
+  const parsed = Number.parseFloat(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) return 30;
+  return Math.trunc(parsed);
+}
+
+/**
+ * The cutoff row for a retention window, in the same UTC ISO spelling the
+ * ledger writes for `deleted_at`.
+ *
+ * Rows are compared as strings, so both sides must be truncated to whole
+ * seconds: a stamp of `2026-07-01T00:00:00Z` is shorter than a cutoff of
+ * `2026-07-01T00:00:00.000Z` and would read as "older than itself".
+ */
+function retentionCutoff(now: Date, days: number): string {
+  return isoNow(new Date(now.getTime() - Math.trunc(days) * 86_400_000));
+}
+
 /** Full row, secrets included. Never returned by a list or stats call. */
 export interface StoredAccount extends AccountRecord {
   id: number;
@@ -157,6 +185,7 @@ CREATE TABLE IF NOT EXISTS accounts (
   UNIQUE (brand, account)
 );
 CREATE INDEX IF NOT EXISTS accounts_rotation ON accounts (brand, status, deleted_at, last_used_at);
+CREATE INDEX IF NOT EXISTS accounts_retired ON accounts (deleted_at, status);
 CREATE TABLE IF NOT EXISTS pool_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   account_id INTEGER NOT NULL,
@@ -165,6 +194,10 @@ CREATE TABLE IF NOT EXISTS pool_events (
   detail TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS pool_events_account ON pool_events (account_id, id);
+CREATE TABLE IF NOT EXISTS pool_meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 `;
 
 export interface AccountStoreOptions {
@@ -185,12 +218,14 @@ export class AccountStore {
   private readonly db: Database;
   private readonly now: () => Date;
   private readonly readOnly: boolean;
+  private readonly env: NodeJS.ProcessEnv;
   readonly dbPath: string;
 
   constructor(options: AccountStoreOptions = {}) {
     this.dbPath = options.dbPath ?? resolveAccountsDbPath(options.env ?? process.env);
     this.now = options.now ?? (() => new Date());
     this.readOnly = options.readOnly === true;
+    this.env = options.env ?? process.env;
     const inMemory = this.dbPath === ':memory:';
     if (!inMemory) {
       // The pool holds plaintext credentials in the main file *and* in the WAL
@@ -234,6 +269,19 @@ export class AccountStore {
   }
 
   /**
+   * The housekeeping every read path owes the pool: lapse what is due, then
+   * erase what has been retired long enough.
+   *
+   * Both are cheap and both are idempotent, so a read is the natural trigger:
+   * there is no daemon to depend on, and whichever surface reads first does
+   * the work. `readOnly` connections skip both (see the constructor).
+   */
+  private maintain(): void {
+    this.expireDue();
+    this.sweepRetired(retiredRetentionDays(this.env));
+  }
+
+  /**
    * Retire accounts whose membership date has passed.
    *
    * Runs before every read that decides rotation, so an account expires
@@ -259,6 +307,119 @@ export class AccountStore {
       this.event(row.id, 'expired', 'membership expired');
     }
     return due.length;
+  }
+
+  /**
+   * Erase retired rows whose retirement is older than `days`.
+   *
+   * `expireDue` only flips a lapsed row to `expired` and soft-deletes it; the
+   * row and its password stay in the file forever, so a pool that has been
+   * rotated for a year carries every credential it ever held. This is the one
+   * place that removes them, and it removes the password with them.
+   *
+   * Only rows already retired by the sweep or by an operator qualify:
+   *
+   * - `expired` is erased, because its date is known and the pool already
+   *   refuses to lease it. `invalid` is too: a rejected password is not coming
+   *   back, and keeping the credential is the liability with no upside.
+   * - `disabled` is kept. It is an operator's deliberate pause, not a verdict,
+   *   and re-enabling it is documented behaviour.
+   * - Rows with no `deleted_at` are never touched, whatever their status: that
+   *   is the only column this sweep trusts to mean "already retired".
+   *
+   * `0` disables the sweep. The window is measured in calendar days from the
+   * retirement stamp, so a row retired this morning survives a sweep run this
+   * afternoon no matter what time it is.
+   */
+  purgeRetired(days: number): number {
+    if (this.readOnly) return 0;
+    if (!Number.isFinite(days) || days <= 0) return 0;
+    const cutoff = retentionCutoff(this.now(), days);
+    const doomed = this.db
+      .prepare(
+        `SELECT id FROM accounts
+         WHERE deleted_at IS NOT NULL AND deleted_at < ? AND status IN ('expired', 'invalid')`
+      )
+      .all(cutoff) as Array<{ id: number }>;
+    if (doomed.length === 0) return 0;
+    // One transaction: a half-purged pool would leave events pointing at rows
+    // that no longer exist, and the next sweep would have to reconcile both.
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const eraseEvents = this.db.prepare('DELETE FROM pool_events WHERE account_id = ?');
+      const eraseRow = this.db.prepare('DELETE FROM accounts WHERE id = ?');
+      for (const row of doomed) {
+        eraseEvents.run(row.id);
+        eraseRow.run(row.id);
+      }
+      this.db.exec('COMMIT');
+    } catch (error) {
+      this.db.exec('ROLLBACK');
+      throw error;
+    }
+    return doomed.length;
+  }
+
+  /**
+   * Count what `purgeRetired` would erase, without erasing anything.
+   *
+   * `accounts purge --dry-run` must leave the file byte-identical, and every
+   * reader runs the retention sweep, so a preview cannot go through `stats()`.
+   *
+   * A lapse that no read has recorded yet is reported separately, not counted
+   * as purgeable: the sweep that retires it stamps `deleted_at` with the moment
+   * it runs, so that row's retention window starts then, not in the past.
+   */
+  countRetired(days: number): { purgeable: number; pendingLapse: number } {
+    const pendingRow = this.db
+      .prepare(
+        `SELECT COUNT(*) AS total FROM accounts
+         WHERE deleted_at IS NULL AND status = 'active' AND expires_at != '' AND expires_at < ?`
+      )
+      .get(isoDay(this.now())) as { total: number } | undefined;
+    const pendingLapse = Number(pendingRow?.total ?? 0);
+    if (!Number.isFinite(days) || days <= 0) return { purgeable: 0, pendingLapse };
+    const cutoff = retentionCutoff(this.now(), days);
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS total FROM accounts
+         WHERE deleted_at IS NOT NULL AND deleted_at < ? AND status IN ('expired', 'invalid')`
+      )
+      .get(cutoff) as { total: number } | undefined;
+    return { purgeable: Number(row?.total ?? 0), pendingLapse };
+  }
+
+  /**
+   * Run `purgeRetired` at most once per retention window.
+   *
+   * Nothing here owns a long-lived process: `autovpn serve` starts and stops,
+   * the desktop app opens and closes, and a cron run is one CLI invocation. A
+   * timer in any one of them would clean the pool only while that surface
+   * happened to be open. Instead every store open runs the sweep, and a stamp
+   * in the database (`pool_meta`) makes the work a no-op until the window has
+   * passed. Whichever surface touches the pool first each day does the sweep;
+   * the rest see the stamp and skip it.
+   *
+   * Returns the number of erased rows, or 0 when the window had not elapsed.
+   */
+  sweepRetired(days: number, force = false): number {
+    if (this.readOnly) return 0;
+    if (!Number.isFinite(days) || days <= 0) return 0;
+    const now = this.now();
+    if (!force) {
+      const last = this.db.prepare("SELECT value FROM pool_meta WHERE key = 'retired_purged_at'").get() as
+        { value: string } | undefined;
+      if (last?.value) {
+        const elapsed = now.getTime() - Date.parse(last.value);
+        if (Number.isFinite(elapsed) && elapsed >= 0 && elapsed < days * 86_400_000) return 0;
+      }
+    }
+    // Stamp first: a sweep that throws midway must not retry on every open and
+    // hold the write lock each time. The next window will finish the job.
+    this.db
+      .prepare("INSERT INTO pool_meta (key, value) VALUES ('retired_purged_at', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+      .run(isoNow(now));
+    return this.purgeRetired(days);
   }
 
   /**
@@ -388,7 +549,7 @@ export class AccountStore {
 
   /** Masked rows for the UI and `accounts list`. Never carries a password. */
   list(filter: ListFilter = {}): PublicAccount[] {
-    this.expireDue();
+    this.maintain();
     const clauses: string[] = [];
     const params: Array<string | number> = [];
     if (!filter.includeDeleted) clauses.push('deleted_at IS NULL');
@@ -414,8 +575,15 @@ export class AccountStore {
     return rows.map((row) => this.toPublic(row));
   }
 
-  stats(): PoolStats {
-    this.expireDue();
+  /**
+   * Totals for the UI and `accounts stats`.
+   *
+   * `maintain: false` is for `accounts purge --days 0`, which just promised to
+   * keep every retired row: the read that reports the result must not turn
+   * around and sweep with the default window.
+   */
+  stats({ maintain = true }: { maintain?: boolean } = {}): PoolStats {
+    if (maintain) this.maintain();
     const rows = this.db
       .prepare('SELECT brand, status, deleted_at, expires_at FROM accounts')
       .all() as unknown as Array<{ brand: BrandKey; status: AccountStatus; deleted_at: string | null; expires_at: string }>;
@@ -471,6 +639,10 @@ export class AccountStore {
    * never by a display path.
    */
   lease(brand: BrandKey | string): StoredAccount | null {
+    // Lapse-only, not `maintain()`: a lease is the hottest write path in the
+    // pool (once per login per account), and erasing retired rows there would
+    // take the write lock in the middle of a run for work that a plain read
+    // will do later. Expiring is cheap and decides whether this lease is legal.
     this.expireDue();
     const key = normalizeBrand(brand);
     if (!key) return null;
@@ -492,6 +664,7 @@ export class AccountStore {
 
   /** Every usable credential for a brand, for a run that wants to fan out. */
   leaseAll(brand: BrandKey | string): StoredAccount[] {
+    // Same reasoning as `lease`: expiry decides legality, the purge waits.
     this.expireDue();
     const key = normalizeBrand(brand);
     if (!key) return [];
