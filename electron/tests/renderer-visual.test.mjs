@@ -20,11 +20,11 @@ const EXPECTED_DIGESTS_BY_PLATFORM = {
     settings: '04d64f2d076bd8fef9f181b652f308a3c4e18057eaaec88c1578613ad9a0ffd0'
   },
   linux: {
-    dashboard: 'cbc25476eb9aa5121bb4900a1cbcb845ccac280d0f6c1cdc7161e770fbbbbb98',
-    runs: 'dbcbd9e6c7d88b41c4d3e967ce11e25e716a1d9fcb9f0a276ca591868501e522',
-    results: '7c803f7df00eda81c882a3a0e376de2072cec19c1dd6e38ea19379be49c42101',
-    logs: '554305a62bdd24afc6522376d3cba397e85e48a7be7a55df18c2f97fbffcf4cd',
-    settings: 'b62d1794dd8082957dbf13b6ea0ba1663cc2d5e199eb014cde81c7f2da42e30b'
+    dashboard: '879f743828a7c17f2044492ac96bf22155002a6eeefadaed1b7cbaa59e3cf06c',
+    runs: 'b46887f5a7d91cf2af91b7ddaad3ceff5314aaae399eddd475a82d37183f45aa',
+    results: '17c36dd2053361244fa4227673a5822e03210bf8175be4c32b42fbc2541e0054',
+    logs: 'e1cbbbaa435dcdca43098fc9fb499609e85e4787243267b6aa4d29d04778d649',
+    settings: 'f39c8977860f668d8dbcc30cffd3eae3eb5df2f3151f24406430305e1dad8fd0'
   }
 };
 
