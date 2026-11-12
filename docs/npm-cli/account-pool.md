@@ -102,7 +102,8 @@ autovpn accounts import /path/to/account-info.txt
 
 清理不需要常驻进程，也没有单独的定时器：**任何一次读取池都会顺带执行**，
 并用库里的 `pool_meta.retired_purged_at` 记录上次执行时间，同一个窗口内重复读取直接跳过。
-`autovpn serve`、桌面端、CLI 命令、以及流水线自己的读取，谁先碰到池谁做这件事。
+`autovpn serve`、桌面端、以及 `accounts list/stats/snapshot` 这类读取，谁先碰到池谁做这件事。
+流水线取账号走的是 `lease()`，它只做到期判定、不做清理——一次运行不该为了整理库去抢写锁。
 
 ```bash
 autovpn accounts purge --dry-run     # 只报数量，一个字节都不写
@@ -112,7 +113,11 @@ autovpn accounts purge --days 7      # 改保留期，只影响这一次
 
 `--dry-run` 会给出两个数：`would_erase`（已退役且过了窗口，这次就会被删）和
 `pending_lapse`（日期已过但还没被任何一次读取记下，这次会先被标记退役，
-它的保留期从这一刻开始，所以下一次窗口才轮到它）。`--days 0` 表示不清理。
+它的保留期从这一刻开始，所以下一次窗口才轮到它）。`--days` 只收整数天，
+`--days 0` 表示不清理。
+
+`--dry-run` 在池还不存在的主机上会创建一个空库（打开 store 就要建表）。它不改任何已存在的
+行：已有库前后字节一致。
 
 | 变量 | 默认 | 作用 |
 |---|---|---|
