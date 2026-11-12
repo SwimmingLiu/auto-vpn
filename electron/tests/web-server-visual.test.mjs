@@ -138,9 +138,14 @@ test('served web ui desktop PNGs match browser baselines', async () => {
         artifact: {
           artifact_dir: '/repo/artifacts/20260703-120000',
           counts: { raw_links: 5, deduped_links: 4, speedtest_links: 3, availability_links: 2 },
-          source_counts: { leiting: { raw_links: 5 } },
+          source_counts: { leiting: { raw_links: 5, deduped_links: 3 } },
           outputFiles: [],
-          nodeRows: []
+          // Two regions and a deduped source count, so the desktop capture
+          // actually renders both analytics cards instead of their empty state.
+          nodeRows: [
+            { name: 'US · Node 1', address: '203.0.113.1', protocol: 'vmess', link: 'vmess://a' },
+            { name: 'JP · Node 2', address: '203.0.113.2', protocol: 'vmess', link: 'vmess://b' }
+          ]
         },
         retryArtifacts: []
       }),
