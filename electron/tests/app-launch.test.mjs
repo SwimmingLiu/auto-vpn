@@ -71,7 +71,7 @@ test('electron preload renders a fresh runtime and opens settings at native size
     assert.equal(actionText.trim(), '');
     assert.equal(pageTitle, '设置');
     assert.notEqual(sourceSummary.trim(), '');
-    assert.equal(await page.locator('#sidebarVersion').textContent(), 'v.2.3.0');
+    assert.equal(await page.locator('#sidebarVersion').textContent(), 'v.2.3.1');
     assert.match(await page.locator('.brand-mark').getAttribute('src'), /vpn-auto-logo-v3.png/);
     assert.equal(await page.locator('.brand-mark').evaluate((image) => image.complete && image.naturalWidth > 0), true);
 

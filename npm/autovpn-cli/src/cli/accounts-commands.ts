@@ -140,6 +140,12 @@ export function validateAccountsCommand(argv: string[]): void {
     }
   }
   if (subcommand === 'purge') {
+    // A trailing `--days` with nothing after it must not silently fall back to
+    // the environment default: the operator typed a window and would get a
+    // different one than the one on screen.
+    if (argv.includes('--days') && readOptionValue(argv, '--days') === undefined) {
+      throw new CliUsageError('accounts purge --days requires a value');
+    }
     const days = readOptionValue(argv, '--days');
     // Whole days only. The cutoff is built from `days * 86_400_000` and rows
     // are compared as strings, so a fraction would have to be rounded one way
@@ -331,7 +337,11 @@ export async function runAccountsCommand(argv: string[], context: AccountsContex
       const daysRaw = readOptionValue(argv, '--days');
       // Checked here as well as in `validateAccountsCommand`, because this
       // function is also the entry point for callers that skip validation; a
-      // fractional value would otherwise be silently truncated to whole days.
+      // fractional value would otherwise be silently truncated to whole days,
+      // and a bare `--days` would fall back to the environment default.
+      if (argv.includes('--days') && daysRaw === undefined) {
+        throw new CliUsageError('accounts purge --days requires a value');
+      }
       if (daysRaw !== undefined && !/^\d+$/.test(daysRaw)) {
         throw new CliUsageError('accounts purge --days must be a non-negative whole number of days');
       }

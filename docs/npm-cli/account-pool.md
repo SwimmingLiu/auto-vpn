@@ -99,11 +99,17 @@ autovpn accounts import /path/to/account-info.txt
   而且文档承诺 `enable` 能把它带回来。
 - 没有 `deleted_at` 的行一律不动，无论状态是什么——这一列是清理唯一的依据。
 - 保留期从**退役那一刻**算起，不是从会员到期日算起。刚退役的行不会因为会员日期久远而被当天的清理带走。
+- 保留期上限 100 年（36500 天）。超过的值按上限处理：足够长的窗口本来就等于"全部保留"，
+  而更大的数字会让日期计算溢出、把所有读取一起弄挂。
 
-清理不需要常驻进程，也没有单独的定时器：**任何一次读取池都会顺带执行**，
-并用库里的 `pool_meta.retired_purged_at` 记录上次执行时间，同一个窗口内重复读取直接跳过。
-`autovpn serve`、桌面端、以及 `accounts list/stats/snapshot` 这类读取，谁先碰到池谁做这件事。
+清理不需要常驻进程，也没有单独的定时器：**列表与统计这类读取顺带执行**，
+并用库里的 `pool_meta.retired_purged_at` 记录上次成功清空的时间，同一个窗口内重复读取直接跳过。
+`autovpn serve`、桌面端、以及 `accounts list/stats/snapshot` 都走这条路。
 流水线取账号走的是 `lease()`，它只做到期判定、不做清理——一次运行不该为了整理库去抢写锁。
+
+清理失败不会让读取失败：池在只读挂载、写锁被占或磁盘满时照常列出，删除留到下一次读取或
+人工执行的 `accounts purge`。删除会真正抹掉页里的内容（`secure_delete`），
+而不是只让 `SELECT` 查不到。
 
 ```bash
 autovpn accounts purge --dry-run     # 只报数量，一个字节都不写

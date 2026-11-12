@@ -43,8 +43,21 @@ export function retiredRetentionDays(env: NodeJS.ProcessEnv = process.env): numb
   if (!raw) return 30;
   const parsed = Number.parseFloat(raw);
   if (!Number.isFinite(parsed) || parsed < 0) return 30;
-  return Math.trunc(parsed);
+  return Math.min(Math.trunc(parsed), MAX_RETENTION_DAYS);
 }
+
+/**
+ * The largest window a `Date` can express as a cutoff.
+ *
+ * A hundred years is far past any real retention policy, and it keeps
+ * `now - days * 86_400_000` inside `Date`'s ±8.64e15 ms range. Without the cap
+ * `AUTOVPN_ACCOUNT_RETIRED_RETENTION_DAYS=1e9` (or `--days 1000000000000`)
+ * makes `toISOString()` throw `RangeError`, and because the sweep hangs off
+ * `list()`/`stats()` that takes the whole pool UI down rather than just the
+ * purge. Clamping is the honest failure: an absurd window means "keep
+ * everything", which a hundred-year window already does.
+ */
+const MAX_RETENTION_DAYS = 36_500;
 
 /**
  * The cutoff row for a retention window, in the same UTC ISO spelling the
@@ -55,7 +68,7 @@ export function retiredRetentionDays(env: NodeJS.ProcessEnv = process.env): numb
  * `2026-07-01T00:00:00.000Z` and would read as "older than itself".
  */
 function retentionCutoff(now: Date, days: number): string {
-  return isoNow(new Date(now.getTime() - Math.trunc(days) * 86_400_000));
+  return isoNow(new Date(now.getTime() - Math.min(Math.trunc(days), MAX_RETENTION_DAYS) * 86_400_000));
 }
 
 /** Full row, secrets included. Never returned by a list or stats call. */
@@ -240,6 +253,10 @@ export class AccountStore {
       this.db = new DatabaseSync(this.dbPath);
       this.db.exec('PRAGMA journal_mode = WAL;');
       this.db.exec('PRAGMA busy_timeout = 5000;');
+      // Deleting a row only unlinks its b-tree cell; the bytes stay in the page.
+      // For a table of plaintext credentials that is the whole point of the
+      // erasure, so every delete overwrites the freed content with zeros.
+      this.db.exec('PRAGMA secure_delete = ON;');
       this.db.exec(SCHEMA);
     } finally {
       if (previousUmask !== null) process.umask(previousUmask);
@@ -277,8 +294,16 @@ export class AccountStore {
    * the work. `readOnly` connections skip both (see the constructor).
    */
   private maintain(): void {
-    this.expireDue();
-    this.sweepRetired(retiredRetentionDays(this.env));
+    // Housekeeping must never be the reason a read fails. A pool on a
+    // read-only mount, a busy writer, or a full disk has to keep serving the
+    // panel and the pipeline; the erasure simply waits for the next read, or
+    // for an operator's `accounts purge`, which does surface the error.
+    try {
+      this.expireDue();
+      this.sweepRetired(retiredRetentionDays(this.env));
+    } catch {
+      // Retried on the next read; nothing here is worth failing a listing for.
+    }
   }
 
   /**
@@ -335,36 +360,65 @@ export class AccountStore {
     if (this.readOnly) return 0;
     if (!Number.isFinite(days) || days <= 0) return 0;
     const cutoff = retentionCutoff(this.now(), days);
-    const doomed = this.db
-      .prepare(
-        `SELECT id FROM accounts
-         WHERE deleted_at IS NOT NULL AND deleted_at < ? AND status IN ('expired', 'invalid')`
-      )
-      .all(cutoff) as Array<{ id: number }>;
-    if (doomed.length === 0) return 0;
     // One transaction: a half-purged pool would leave events pointing at rows
     // that no longer exist, and the next sweep would have to reconcile both.
+    //
+    // The doomed rows are picked *inside* the write lock, not before it. A
+    // re-import renews a lapsed row by clearing `deleted_at` and setting
+    // `active`; a list read before the lock would still name that row, and the
+    // delete would then destroy the operator's renewal. The repeated predicate
+    // in the row delete is the second half of that guard: even a row changed
+    // underneath the scan is re-checked under the lock.
+    //
+    // `BEGIN` sits inside the `try` because SQLite rolls a transaction back by
+    // itself on some errors (SQLITE_FULL, SQLITE_IOERR); a blind `ROLLBACK`
+    // there would replace the real cause with "no transaction is active".
     this.db.exec('BEGIN IMMEDIATE');
     try {
+      const doomed = this.db
+        .prepare(
+          `SELECT id FROM accounts
+           WHERE deleted_at IS NOT NULL AND deleted_at < ? AND status IN ('expired', 'invalid')`
+        )
+        .all(cutoff) as Array<{ id: number }>;
+      if (doomed.length === 0) {
+        this.db.exec('COMMIT');
+        return 0;
+      }
       const eraseEvents = this.db.prepare('DELETE FROM pool_events WHERE account_id = ?');
-      const eraseRow = this.db.prepare('DELETE FROM accounts WHERE id = ?');
+      const eraseRow = this.db.prepare(
+        `DELETE FROM accounts
+         WHERE id = ? AND deleted_at IS NOT NULL AND deleted_at < ? AND status IN ('expired', 'invalid')`
+      );
+      let erased = 0;
       for (const row of doomed) {
+        const removed = Number(eraseRow.run(row.id, cutoff).changes ?? 0);
+        if (removed === 0) continue;
+        erased += removed;
+        // Events go only for a row this transaction actually removed. A row the
+        // predicate spared (renewed while the sweep was scanning) keeps the
+        // history that explains why it is still here.
         eraseEvents.run(row.id);
-        eraseRow.run(row.id);
       }
       this.db.exec('COMMIT');
+      return erased;
     } catch (error) {
-      this.db.exec('ROLLBACK');
+      try {
+        this.db.exec('ROLLBACK');
+      } catch {
+        // Already rolled back by SQLite; the original error is the one worth
+        // reporting.
+      }
       throw error;
     }
-    return doomed.length;
   }
 
   /**
    * Count what `purgeRetired` would erase, without erasing anything.
    *
-   * `accounts purge --dry-run` must leave the file byte-identical, and every
-   * reader runs the retention sweep, so a preview cannot go through `stats()`.
+   * `accounts purge --dry-run` must leave the file byte-identical, and the
+   * listing getters run the retention sweep, so a preview cannot go through
+   * `stats()`.
    *
    * A lapse that no read has recorded yet is reported separately, not counted
    * as purgeable: the sweep that retires it stamps `deleted_at` with the moment
@@ -414,12 +468,27 @@ export class AccountStore {
         if (Number.isFinite(elapsed) && elapsed >= 0 && elapsed < days * 86_400_000) return 0;
       }
     }
-    // Stamp first: a sweep that throws midway must not retry on every open and
-    // hold the write lock each time. The next window will finish the job.
-    this.db
-      .prepare("INSERT INTO pool_meta (key, value) VALUES ('retired_purged_at', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
-      .run(isoNow(now));
-    return this.purgeRetired(days);
+    // Count before opening a write transaction. The stamp exists to keep a
+    // read from taking the write lock once a window, and on a pool with nothing
+    // to erase it would be a write for nothing - which is exactly what made a
+    // read fail on a read-only file, and what made the first read of a fresh
+    // install write to disk at all.
+    const pending = this.db
+      .prepare(
+        `SELECT COUNT(*) AS total FROM accounts
+         WHERE deleted_at IS NOT NULL AND deleted_at < ? AND status IN ('expired', 'invalid')`
+      )
+      .get(retentionCutoff(now, days)) as { total: number } | undefined;
+    if (Number(pending?.total ?? 0) === 0) return 0;
+    const erased = this.purgeRetired(days);
+    // Stamp only after the erasure committed. A failed attempt must cost the
+    // next read a retry, not thirty days of credentials left on disk.
+    if (erased > 0) {
+      this.db
+        .prepare("INSERT INTO pool_meta (key, value) VALUES ('retired_purged_at', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+        .run(isoNow(now));
+    }
+    return erased;
   }
 
   /**
