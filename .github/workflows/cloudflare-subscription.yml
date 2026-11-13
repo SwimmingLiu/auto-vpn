@@ -1,0 +1,184 @@
+name: Cloudflare Subscription
+
+# Measure, build and publish the subscription from a GitHub runner.
+#
+# This is the Cloudflare deployment without Cloudflare Containers. The crawl
+# runs here instead of in a container, and the artifact is uploaded to the same
+# Pages project the container path deploys to — so the subscription is served
+# by Cloudflare either way, and the source server is untouched.
+#
+# Why it exists: Cloudflare Containers need the Workers Paid plan. Everything
+# else in this pipeline works on the free plan, and a GitHub runner is a Linux
+# box with Docker, Node and a public IP — exactly what the crawl needs.
+#
+# The egress requirement is unchanged: the crawl goes out through the nodes in
+# the already-published subscription, never through the runner's own address.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Measure only; do not publish'
+        type: boolean
+        default: false
+      project:
+        description: 'Pages project to publish to'
+        type: string
+        default: 'autovpn-cf-deploytest'
+  schedule:
+    # 20:15 UTC, the same slot the Worker cron uses.
+    - cron: '15 20 * * *'
+
+permissions:
+  contents: read
+
+# A publish replaces the whole Pages production deployment, so two runs must
+# never overlap.
+concurrency:
+  group: cloudflare-subscription
+  cancel-in-progress: false
+
+env:
+  NPM_CONFIG_REGISTRY: "https://registry.npmjs.org/"
+  NPM_CONFIG_AUDIT: "false"
+  NPM_CONFIG_FUND: "false"
+  MIHOMO_VERSION: "v1.19.34"
+
+jobs:
+  publish:
+    name: Measure and publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    environment: cloudflare
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Check required configuration
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          missing=0
+          check() { if [ -z "$2" ]; then echo "missing $1" >&2; missing=1; fi; }
+          check "secret CLOUDFLARE_API_TOKEN" "$CF_TOKEN"
+          check "variable CLOUDFLARE_ACCOUNT_ID" "$CF_ACCOUNT"
+          check "secret SUBSCRIPTION_URL" "${{ secrets.AUTOVPN_SUBSCRIPTION_URL }}"
+          exit "$missing"
+
+      # The pool is credentials, so it lives in repository secrets. Split across
+      # parts because a single 57 KB secret cannot be rotated or inspected; the
+      # assembler refuses a truncated set by byte count and sha256.
+      - name: Assemble the account pool
+        env:
+          ACCOUNTS_PARTS: ${{ vars.ACCOUNTS_PARTS }}
+          ACCOUNTS_POOL_SHA256: ${{ vars.ACCOUNTS_POOL_SHA256 }}
+          ACCOUNTS_POOL_BYTES: ${{ vars.ACCOUNTS_POOL_BYTES }}
+          ACCOUNTS_PART_1: ${{ secrets.ACCOUNTS_PART_1 }}
+          ACCOUNTS_PART_2: ${{ secrets.ACCOUNTS_PART_2 }}
+        run: node cloudflare/scripts/assemble-account-pool.mjs "$RUNNER_TEMP/account-info.txt"
+
+      - name: Install the CLI and mihomo
+        run: |
+          npm install -g --no-audit --no-fund --ignore-scripts "@swimmingliu/autovpn@${{ vars.AUTOVPN_CLI_VERSION || '2.2.4' }}"
+          cloudflare/scripts/fetch-mihomo.sh "$MIHOMO_VERSION"
+          install -m 0755 cloudflare/container/vendor/mihomo-linux-amd64 "$RUNNER_TEMP/mihomo"
+          "$RUNNER_TEMP/mihomo" -v
+
+      - name: Import the account pool
+        run: |
+          autovpn accounts import "$RUNNER_TEMP/account-info.txt" \
+            --project-root "$RUNNER_TEMP/autovpn" --format auto --output jsonl > "$RUNNER_TEMP/import.jsonl"
+          node -e '
+            const fs = require("node:fs");
+            const line = fs.readFileSync(process.argv[1], "utf8").trim().split("\n").pop();
+            const result = JSON.parse(line);
+            console.log(`imported ${result.parsed}, pool ${result.stats?.total} total / ${result.stats?.active} active`);
+            if (!(result.parsed > 0)) { console.error("the pool imported zero rows"); process.exit(1); }
+          ' "$RUNNER_TEMP/import.jsonl"
+
+      # Build the crawl egress before the measurement: the crawl must leave
+      # through a subscription node, not through the runner's own address. The
+      # supervisor process is what keeps mihomo alive, so it runs in the
+      # background for the rest of the job.
+      - name: Build the crawl egress from the published subscription
+        env:
+          SUBSCRIPTION_URL: ${{ secrets.AUTOVPN_SUBSCRIPTION_URL }}
+          MIHOMO_BIN: ${{ runner.temp }}/mihomo
+          EGRESS_DIR: ${{ runner.temp }}/egress
+        run: |
+          node cloudflare/scripts/egress-on-runner.mjs --serve > "$RUNNER_TEMP/egress.log" 2>&1 &
+          echo "EGRESS_PID=$!" >> "$GITHUB_ENV"
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            grep -q "listening on" "$RUNNER_TEMP/egress.log" 2>/dev/null && break
+            sleep 2
+          done
+          cat "$RUNNER_TEMP/egress.log"
+          grep -q "mihomo is listening" "$RUNNER_TEMP/egress.log"
+
+      - name: Measure
+        env:
+          VPN_AUTOMATION_RUNTIME_ROOT: ${{ runner.temp }}/autovpn
+          VPN_AUTOMATION_PROFILE_PATH: ${{ github.workspace }}/cloudflare/container/profile.cloudflare.toml
+          VPN_AUTOMATION_PROXY_MODE: proxy
+          VPN_AUTOMATION_UPSTREAM_PROXY: http://127.0.0.1:7897
+          MIHOMO_BIN: ${{ runner.temp }}/mihomo
+        run: |
+          set -o pipefail
+          autovpn run --project-root "$RUNNER_TEMP/autovpn" \
+            --skip-deploy --skip-verify --output jsonl \
+            | tee "$RUNNER_TEMP/run.jsonl" \
+            | grep --line-buffered -E '"(stage|summary|run_failed)"' || true
+          node -e '
+            const fs = require("node:fs");
+            const lines = fs.readFileSync(process.argv[1], "utf8").trim().split("\n");
+            let summary = null;
+            for (const line of lines) { try { const e = JSON.parse(line); if (e.type === "summary") summary = e; } catch {} }
+            if (!summary) { console.error("no summary event"); process.exit(1); }
+            const count = Number(summary.counts?.final_links ?? 0);
+            console.log(`final_links=${count}`);
+            fs.writeFileSync(process.env.GITHUB_OUTPUT ?? "/dev/null", "");
+            if (summary.run_status !== "success") { console.error(summary.error ?? "run failed"); process.exit(1); }
+            if (count <= 0) { console.error("no links survived; nothing to publish"); process.exit(1); }
+          ' "$RUNNER_TEMP/run.jsonl"
+
+      - name: Publish
+        if: ${{ inputs.dry_run != true }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          PROJECT="${{ inputs.project || 'autovpn-cf-deploytest' }}"
+          ARTIFACT="$(ls -dt "$RUNNER_TEMP"/autovpn/artifacts/* | head -1)"
+          # The deploy stage is the CLI's own: it obfuscates, bundles and
+          # uploads the exact artifact this run measured.
+          autovpn retry-stage --project-root "$RUNNER_TEMP/autovpn" \
+            --artifact-dir "$ARTIFACT" --stage deploy --output jsonl \
+            | tee "$RUNNER_TEMP/deploy.jsonl" \
+            | grep --line-buffered -E '"(stage|summary|run_failed)"' || true
+          echo "ARTIFACT=$ARTIFACT" >> "$GITHUB_ENV"
+
+      # A 200 is not success: a wrong key and a stale deployment answer 200 too.
+      # Decode the body and require this run's own links to be in it.
+      - name: Verify what is actually served
+        if: ${{ inputs.dry_run != true }}
+        run: |
+          PROJECT="${{ inputs.project || 'autovpn-cf-deploytest' }}"
+          node cloudflare/scripts/verify-published.mjs \
+            "https://${PROJECT}.pages.dev/?${{ vars.AUTOVPN_SECRET_QUERY }}" \
+            "$ARTIFACT"
+
+      - name: Upload the run log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloudflare-subscription-run
+          path: |
+            ${{ runner.temp }}/run.jsonl
+            ${{ runner.temp }}/deploy.jsonl
+          retention-days: 14
