@@ -34,6 +34,13 @@ if [ "$(printf '%s\n%s\n' "4.160.1" "$WRANGLER_VERSION" | sort -V | head -n1)" !
   exit 1
 fi
 
+step "token permissions"
+# `wrangler deploy` reports a bare "Authentication error" for a missing scope and
+# does not say which one, so the check runs before the ten-minute image build.
+if ! node "$ROOT/scripts/check-token.mjs"; then
+  exit 1
+fi
+
 step "container image dependencies"
 "$ROOT/scripts/fetch-mihomo.sh"
 
