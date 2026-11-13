@@ -2,11 +2,10 @@ name: Deploy Cloudflare
 
 # Builds the container image, pushes it, and rolls the Worker.
 #
-# The deploy needs a Cloudflare API token with **Workers Containers -> Edit**.
-# That scope is not part of the stock Workers templates, and `wrangler deploy`
-# only says "Authentication error" when it is absent — so `deploy.sh` probes
-# every permission first and fails in seconds instead of after a ten-minute
-# image build.
+# The deploy needs a Cloudflare API token with **Containers → Edit**. That scope
+# is not in the stock Workers template, and `wrangler deploy` only says
+# "Authentication error" when it is absent — so `deploy.sh` probes every
+# permission first and fails in seconds instead of after a ten-minute build.
 #
 # Runs on a native linux/amd64 runner: the image is linux/amd64, so CI builds
 # it without the emulation a local Apple silicon Docker would need.
