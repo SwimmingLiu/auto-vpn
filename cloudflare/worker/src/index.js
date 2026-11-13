@@ -488,17 +488,28 @@ export class PipelineController extends DurableObject {
         return { done: true, status: 'held', final_links: row.final_links };
       }
       const deployRunId = `${runId}-deploy`;
-      const started = await this.containerJson('/run', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          runId: deployRunId,
-          mode: 'deploy',
-          artifactDir: row.artifact_dir,
-          profileToml: this.env.AUTOVPN_PROFILE_TOML,
-          cloudflareApiToken: this.env.CLOUDFLARE_API_TOKEN
-        })
-      });
+      // The container answers 409 — not a body — when a run is already in
+      // flight, so `started.started` is never false for that case: the throw
+      // used to escape this whole branch and the bounded "wait it out" below
+      // was unreachable. Catch the busy status here and treat it as the stall
+      // it is; anything else still propagates.
+      let started;
+      try {
+        started = await this.containerJson('/run', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            runId: deployRunId,
+            mode: 'deploy',
+            artifactDir: row.artifact_dir,
+            profileToml: this.env.AUTOVPN_PROFILE_TOML,
+            cloudflareApiToken: this.env.CLOUDFLARE_API_TOKEN
+          })
+        });
+      } catch (error) {
+        if (error.status !== 409) throw error;
+        started = { started: false, reason: 'container reported a run in progress' };
+      }
       if (!started.started) {
         // The previous step's deploy is still winding down. Wait it out — but
         // not forever: a container that keeps refusing would otherwise re-arm

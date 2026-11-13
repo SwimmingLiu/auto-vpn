@@ -208,6 +208,36 @@ test('a container that never accepts the deploy eventually fails the run', async
   assert.match(controller.runRow('r6').error, /deploy never started/);
 });
 
+test('a 409 on deploy is waited out, not thrown out of the state machine', async () => {
+  const { PipelineController } = await loadWorker();
+  const { ctx } = await makeHarness();
+  const controller = stubContainer(new PipelineController(ctx, {}));
+  // The container reports a busy run with a status code, not a JSON body.
+  controller.containerJson = async (pathname) => {
+    if (pathname === '/run') {
+      const error = new Error('/run -> 409');
+      error.status = 409;
+      throw error;
+    }
+    return {};
+  };
+  controller.sql.exec(
+    "INSERT INTO runs (run_id, status, phase, started_at, final_links) VALUES ('r7','running','gating','2026-11-12', 900)"
+  );
+  const first = await controller.step('r7');
+  assert.equal(first.done, false, 'a busy container is a wait, not a verdict');
+  assert.equal(controller.runRow('r7').deploy_stalls, 1);
+  assert.equal(controller.runRow('r7').status, 'running');
+
+  // Still bounded: ten busy answers end the run rather than re-arming forever.
+  let result = first;
+  for (let attempt = 0; attempt < 12 && !result.done; attempt += 1) {
+    result = await controller.step('r7');
+  }
+  assert.equal(result.done, true);
+  assert.equal(result.status, 'failed');
+});
+
 test('the account pool is replayed into an empty container', async () => {
   const { PipelineController } = await loadWorker();
   const { ctx } = await makeHarness();
