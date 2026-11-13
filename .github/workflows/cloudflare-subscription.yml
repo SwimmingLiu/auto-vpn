@@ -63,12 +63,13 @@ jobs:
         env:
           CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CF_ACCOUNT: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          SUB_URL: ${{ secrets.AUTOVPN_SUBSCRIPTION_URL }}
         run: |
           missing=0
           check() { if [ -z "$2" ]; then echo "missing $1" >&2; missing=1; fi; }
           check "secret CLOUDFLARE_API_TOKEN" "$CF_TOKEN"
           check "variable CLOUDFLARE_ACCOUNT_ID" "$CF_ACCOUNT"
-          check "secret SUBSCRIPTION_URL" "${{ secrets.AUTOVPN_SUBSCRIPTION_URL }}"
+          check "secret AUTOVPN_SUBSCRIPTION_URL" "$SUB_URL"
           exit "$missing"
 
       # The pool is credentials, so it lives in repository secrets. Split across
