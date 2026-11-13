@@ -64,12 +64,41 @@ cloudflare/
 │   ├── Dockerfile              linux/amd64, Node 22, mihomo, published CLI
 │   └── src/
 │       ├── server.mjs          HTTP skin: /run /status /events /egress /import-accounts
+│       ├── profile-guard.mjs   refuses a profile whose secret disagrees with the template
 │       └── egress.mjs          subscription → mihomo fallback group on 127.0.0.1:7897
 ├── worker/src/index.js         Worker routing + PipelineController Durable Object
 └── scripts/
     ├── fetch-mihomo.sh         vendor the linux binary for the image build
+    ├── egress-on-runner.mjs    the same supervisor, for the runner-based path
+    ├── assemble-account-pool.mjs  join split pool secrets, pinned by sha256
+    ├── verify-published.mjs    decode what is served; a 200 alone is not success
     └── deploy.sh               build, push, deploy, seed secrets
 ```
+
+## Two ways to run the measure half
+
+The publishing half is always the same: `wrangler pages deploy` from the
+artifact the run measured. The measuring half has two hosts, and the choice is
+a plan question, not a design one.
+
+| | Container path | Runner path |
+|---|---|---|
+| Where the crawl runs | Cloudflare Container (full Linux VM) | GitHub Actions `ubuntu-24.04` |
+| What it needs | Workers Paid (~$6.5/mo measured) | nothing beyond the repo |
+| Schedule | Worker Cron + Durable Object alarm | the workflow's own `cron` |
+| Where the pool lives | Durable Object SQLite | repository secrets, split + sha256-pinned |
+| Orchestration | DO phases: measuring → gating → deploying → verifying | the workflow's steps |
+| Failure visibility | `/api/status`, `/api/events` | the Actions run page |
+
+Both use `container/profile.cloudflare.toml`, both crawl through
+`127.0.0.1:7897`, and both publish the artifact that run measured. The runner
+path is `.github/workflows/cloudflare-subscription.yml`; the container path is
+`.github/workflows/deploy-cloudflare.yml` plus the Worker.
+
+The runner path exists because **Cloudflare Containers require the Workers Paid
+plan**, and nothing else here does. If the plan is enabled, the container path
+is the better one: it keeps the schedule, the pool and the status API on
+Cloudflare, with no third party in the loop.
 
 ## Deploy
 
