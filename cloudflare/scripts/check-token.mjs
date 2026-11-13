@@ -45,42 +45,75 @@ const probes = [
 ];
 
 let missing = 0;
+let noPlan = false;
 console.log(`\n  ${'status'.padEnd(7)} ${'permission'.padEnd(26)} purpose`);
 console.log(`  ${'-'.repeat(7)} ${'-'.repeat(26)} ${'-'.repeat(40)}`);
 
 for (const probe of probes) {
   let status = 'FAIL';
+  let detail = '';
   try {
     const response = await fetch(`${base}${probe.path}`, {
       headers: { authorization: `Bearer ${token}` },
       signal: AbortSignal.timeout(20000)
     });
-    if (response.ok) status = 'ok';
-    else if (response.status === 403) status = 'MISSING';
-    else status = `HTTP ${response.status}`;
+    if (response.ok) {
+      status = 'ok';
+    } else if (response.status === 403) {
+      status = 'MISSING';
+    } else if (response.status === 401) {
+      // Cloudflare answers 401, not 403, once authorization passes but the
+      // account is not entitled — and it says so in the body. That is the
+      // difference between "edit the token" and "upgrade the account", which
+      // are two different people's problems.
+      const body = await response.text().catch(() => '');
+      if (/Workers Paid plan/i.test(body)) {
+        status = 'NO PLAN';
+        detail = 'Workers Paid required';
+        noPlan = true;
+      } else {
+        status = 'HTTP 401';
+        detail = body.slice(0, 120);
+      }
+    } else if (response.status >= 500) {
+      // A platform incident, not a permission problem. Saying MISSING would
+      // send the operator to edit a token that is already correct.
+      status = 'DOWN';
+      detail = (await response.text().catch(() => '')).slice(0, 100) || 'platform error';
+    } else {
+      status = `HTTP ${response.status}`;
+    }
   } catch (error) {
     status = 'ERROR';
+    detail = error.message;
   }
   if (status !== 'ok' && !probe.optional) {
     missing += 1;
   }
-  console.log(`  ${status.padEnd(7)} ${probe.need.padEnd(26)} ${probe.why}${probe.optional ? ' (informational)' : ''}`);
+  console.log(`  ${status.padEnd(7)} ${probe.need.padEnd(26)} ${detail || probe.why}${probe.optional ? ' (informational)' : ''}`);
 }
 
 console.log('');
 if (missing === 0) {
   console.log('All required permissions are present.');
-  // The one thing this table cannot settle: a Free-plan account answers 403 to
-  // every containers route no matter what the token carries.
-  console.log('If `wrangler deploy` still reports "Authentication error" with every row ok,');
-  console.log('check the plan: Containers requires Workers Paid.');
 } else {
   console.log(`${missing} required permission(s) missing.`);
-  console.log('Edit the token at https://dash.cloudflare.com/profile/api-tokens and add them:');
-  console.log('  Account -> Workers Scripts -> Edit');
-  console.log('  Account -> Containers -> Edit');
-  console.log('  Account -> Pages -> Edit        (the pipeline publishes a subscription)');
-  console.log('  Zone    -> DNS   -> Edit        (only if a custom domain is used)');
-  console.log('\nThen re-export CLOUDFLARE_API_TOKEN and deploy again.');
+  // The two failures look alike from `wrangler deploy` and are fixed by
+  // different people: one is a token edit, the other an account upgrade.
+  const noPlanAccount = noPlan;
+  console.log('');
+  if (noPlanAccount) {
+    console.log('The token is scoped correctly, but the account cannot use Containers.');
+    console.log('Deploying containers requires the Workers Paid plan ($5/month):');
+    console.log('  https://dash.cloudflare.com/?to=/:account/workers/plans');
+    console.log('Workers Scripts and Pages already work on the current plan.');
+  } else {
+    console.log('Edit the token at https://dash.cloudflare.com/profile/api-tokens and add them:');
+    console.log('  Account -> Workers Scripts -> Edit');
+    console.log('  Account -> Pages -> Edit        (the pipeline publishes a subscription)');
+    console.log('  Zone    -> DNS   -> Edit        (only if a custom domain is used)');
+    console.log('\nThen re-export CLOUDFLARE_API_TOKEN and deploy again.');
+  }
+  console.log('');
   process.exit(1);
 }

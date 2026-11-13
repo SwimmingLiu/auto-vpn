@@ -145,10 +145,25 @@ cloudflare/scripts/deploy.sh
 
 `node cloudflare/scripts/check-token.mjs` probes each endpoint the deploy
 touches and prints a table; run it before anything else when a deploy fails.
+It distinguishes three failures that all look like `Authentication error` from
+`wrangler deploy`:
+
+| status | meaning | fix |
+|---|---|---|
+| `MISSING` | the token lacks the scope | add it to the token |
+| `NO PLAN` | the token is fine; the account is not entitled | upgrade to Workers Paid |
+| `DOWN` | Cloudflare answered 5xx | retry later, nothing to edit |
+
 The one that catches people is **Containers → Edit** — the permission is listed
 under Account permissions as "Containers Edit", while some API references call
-it "Workers Containers Write". Without it, `wrangler deploy` fails with a bare
-`Authentication error` after the image has already been built.
+it "Workers Containers Write".
+
+**Containers require the Workers Paid plan** ($5/month, which includes 375
+vCPU-minutes, 25 GiB-hours of memory and 200 GB-hours of disk — one nightly run
+of `standard-1` for ~20 minutes uses roughly 10 vCPU-minutes and 1.3 GiB-hours,
+so the schedule fits inside the allowance). Workers Scripts and Pages work on
+the free plan; Containers do not, and the API says so in the 401 body once the
+scope is correct.
 
 ### wrangler version
 
