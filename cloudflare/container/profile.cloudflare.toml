@@ -1,32 +1,24 @@
-# Cloudflare deployment profile for AutoVPN.
+# Cloudflare deployment profile for AutoVPN. Rationale: cloudflare/README.md.
 #
-# This is the profile the *container* reads. It differs from the VPS profile in
-# three ways, all deliberate:
+# This is the profile the *container* reads. Four deliberate differences from
+# the VPS profile:
 #
 #   1. `project_name` is a scratch project. The deploy stage replaces the whole
 #      production deployment of whatever project it names, so the first runs
-#      must not touch the subscription that is already in service. Change this
-#      to the real project only after a run against the scratch one is verified.
-#   2. `min_final_links` agrees with the gate the Durable Object enforces. The
-#      VPS had 50 in `daily-run.sh` and 10 here, and `assertDeployMinimumFinalLinks`
-#      throws at 10 — three thresholds, two of them dead.
-#   3. Every crawl budget is finite. `max_runtime_seconds = 0` in the
-#      interactive profile means unbounded; on Cloudflare that is a metered run
-#      against a six-hour cap, so the scheduled deployment pins one.
+#      must not touch the subscription already in service.
+#   2. `min_final_links` agrees with the Durable Object gate (the VPS carried
+#      three thresholds, two of them dead).
+#   3. `min_iterations` is 24, not 10000. `max_runtime_seconds` and
+#      `plateau_limit` are only consulted at or past `min_iterations`, so a
+#      floor of 10,000 makes both decorative — the loop is floor-gated to
+#      10,000 rounds. 24 = one sweep of the default area list at 8/round.
+#   4. Writes only to the scratch project; credentials arrive as Worker secrets
+#      and are written to the volume at boot by `installProfile()`.
 #
-# Credentials are NOT here. `cloudflare_api_token`, the vendor `device_token`s
-# and the account passwords arrive as Worker secrets and are written to the
-# mounted volume at boot by `installProfile()`.
-#
-# Sources in `credential` mode: each needs only a location, and leases its
-# account from the pool at extract time. This is why the profile carries no
-# `url`/`key` — a hardcoded evmess URL would bypass the pool and go stale the
-# moment the vendor rotates a domain, which they do weekly.
-#
-# `max_runtime_seconds` is the per-brand crawl budget. The VPS default is 900 s
-# and `max_runtime_seconds = 0` in the interactive profile means unbounded — on
-# Cloudflare an unbounded sweep is a metered, six-hour-capped run, so the
-# scheduled deployment pins a finite budget here.
+# Sources in `credential` mode need only a location and lease their account
+# from the pool at extract time, so no `url`/`key` appears here: a hardcoded
+# evmess URL would bypass the pool and go stale when the vendor rotates a
+# domain, which they do weekly.
 
 [sources.leiting]
 mode = "credential"
@@ -34,7 +26,7 @@ official_site = "https://www.68123836.com"
 enabled = true
 platforms = ["android", "ios"]
 max_iterations = 10000
-min_iterations = 10000
+min_iterations = 24
 plateau_limit = 20
 use_random_area = true
 area_min = 0
@@ -48,7 +40,7 @@ official_site = "https://www.67986457.com"
 enabled = true
 platforms = ["android", "ios"]
 max_iterations = 10000
-min_iterations = 10000
+min_iterations = 24
 plateau_limit = 20
 use_random_area = true
 area_min = 0
@@ -62,7 +54,7 @@ official_site = "https://www.86933221.com"
 enabled = true
 platforms = ["android", "ios"]
 max_iterations = 10000
-min_iterations = 10000
+min_iterations = 24
 plateau_limit = 20
 use_random_area = true
 area_min = 0
@@ -76,7 +68,7 @@ official_site = "https://www.16863988.com"
 enabled = true
 platforms = ["android", "ios"]
 max_iterations = 10000
-min_iterations = 10000
+min_iterations = 24
 plateau_limit = 20
 use_random_area = true
 area_min = 0
