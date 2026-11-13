@@ -624,6 +624,14 @@ export class PipelineController extends DurableObject {
   }
 
   finish(runId, status, error) {
+    // A run reaches a terminal state exactly once. Two entries into `step()`
+    // (an alarm overlapping an API call) could otherwise append two
+    // `run_finished` events for one run, and the second — usually a generic
+    // timeout — would overwrite the real reason in the row.
+    const current = this.runRow(runId);
+    if (current && current.status !== 'running') {
+      return false;
+    }
     this.sql.exec(
       'UPDATE runs SET status = ?, phase = ?, error = ?, finished_at = ? WHERE run_id = ?',
       status,
@@ -633,6 +641,7 @@ export class PipelineController extends DurableObject {
       runId
     );
     this.recordEvent(runId, 'run_finished', { status, error: String(error ?? '') });
+    return true;
   }
 
   async alarm() {
@@ -774,13 +783,28 @@ export default {
    */
   async scheduled(event, env, ctx) {
     const stub = env.PIPELINE.get(env.PIPELINE.idFromName('daily'));
-    ctx.waitUntil(stub.fetch('http://do/do/run', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        trigger: 'cron',
-        runId: `cron-${new Date(event.scheduledTime).toISOString().replace(/[:.]/g, '-')}`
-      })
-    }));
+    const runId = `cron-${new Date(event.scheduledTime).toISOString().replace(/[:.]/g, '-')}`;
+    ctx.waitUntil((async () => {
+      try {
+        const response = await stub.fetch('http://do/do/run', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ trigger: 'cron', runId })
+        });
+        const result = await response.json().catch(() => ({}));
+        // A skipped cron used to leave no trace at all: no row, no event, and
+        // `waitUntil` swallowed the outcome. A run that is genuinely still
+        // going at 20:15 is fine; a schedule that has been skipping for a week
+        // is not, and nothing distinguished the two.
+        if (result.skipped) {
+          console.warn(`cron ${runId} skipped: ${result.reason}`);
+        }
+      } catch (error) {
+        // A failed emit is the one case where a night silently has no run at
+        // all, so it must be loud.
+        console.error(`cron ${runId} could not reach the Durable Object: ${error.message}`);
+        throw error;
+      }
+    })());
   }
 };

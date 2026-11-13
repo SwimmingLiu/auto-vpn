@@ -361,6 +361,57 @@ test('consecutive alarm failures reset after a successful step', async () => {
   assert.equal(controller.runRow('r8').alarm_failures, 0);
 });
 
+test('a run finishes exactly once', async () => {
+  const { PipelineController } = await loadWorker();
+  const { ctx } = await makeHarness();
+  const controller = new PipelineController(ctx, {});
+  controller.sql.exec(
+    `INSERT INTO runs (run_id, status, phase, started_at) VALUES ('once','running','measuring','${isoNow()}')`
+  );
+  assert.equal(controller.finish('once', 'failed', 'the real reason'), true);
+  // A late second entry (an alarm overlapping an API call) must not overwrite
+  // the reason the run actually failed with a generic one.
+  assert.equal(controller.finish('once', 'failed', 'run exceeded 3h wall clock'), false);
+  assert.equal(controller.runRow('once').error, 'the real reason');
+  const finished = controller.sql.exec(
+    "SELECT COUNT(*) AS n FROM events WHERE run_id = 'once' AND type = 'run_finished'"
+  ).toArray()[0];
+  assert.equal(finished.n, 1, 'duplicate run_finished events confuse the log');
+});
+
+test('a skipped cron leaves a trace instead of failing silently', async () => {
+  const worker = await loadWorker();
+  const calls = [];
+  const env = {
+    PIPELINE: {
+      idFromName: () => 'daily',
+      get: () => ({
+        fetch: async (url, init) => {
+          calls.push(JSON.parse(init.body));
+          return new Response(JSON.stringify({ skipped: true, reason: 'run cron-x still running' }));
+        }
+      })
+    }
+  };
+  const warnings = [];
+  const original = console.warn;
+  console.warn = (message) => warnings.push(String(message));
+  try {
+    const pending = [];
+    await worker.default.scheduled({ scheduledTime: Date.parse('2026-11-14T20:15:00Z') }, env, {
+      waitUntil: (promise) => pending.push(promise)
+    });
+    await Promise.all(pending);
+  } finally {
+    console.warn = original;
+  }
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].trigger, 'cron');
+  assert.match(calls[0].runId, /^cron-2026-11-14T20-15-00-000Z$/);
+  assert.equal(warnings.length, 1, 'a skipped night must be visible in the log');
+  assert.match(warnings[0], /still running/);
+});
+
 test('the bearer check is constant-time and rejects empty configuration', async () => {
   const worker = await loadWorker();
   const request = (token) => new Request('https://x/health', {
