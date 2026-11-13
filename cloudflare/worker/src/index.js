@@ -21,13 +21,15 @@ const CONTAINER_PORT = 8080;
 /**
  * The instance type a run needs.
  *
- * Memory and disk are billed on provisioned capacity for the whole time the
- * instance is up, so the cheapest type that still runs the pipeline is the
- * right default. `lite` (0.25 GiB) cannot hold an APK parse that peaks in the
- * hundreds of MB; `basic` (1 GiB) can. `standard-1` costs 4x the idle rate of
- * `basic` for memory this job never touches.
+ * `standard-1` (0.5 vCPU / 4 GiB / 8 GB). The 4 GiB is the part that matters:
+ * the APK parse peaks at 244-423 MB and runs beside node and several mihomo
+ * children. `basic` (1 GiB) would very likely fit, but nothing in this repo
+ * has measured the pipeline under a 0.25 vCPU cap — every test so far ran on a
+ * workstation with no CPU limit — and a run that is twice as slow risks the
+ * wall-clock ceiling, which costs a night's publication to save about a dollar
+ * a month. Measure one real run's CPU time before trading it down.
  */
-const CONTAINER_INSTANCE = 'basic';
+const CONTAINER_INSTANCE = 'standard-1';
 /** Platform maximum for an idle instance. */
 const INACTIVITY_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 /** One alarm observation window; `monitor()` resolves or rejects inside this. */
