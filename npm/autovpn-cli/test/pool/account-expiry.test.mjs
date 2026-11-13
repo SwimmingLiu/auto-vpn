@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { AccountStore } from '../../dist/pool/account-store.js';
+import { AccountStore, retiredRetentionDays } from '../../dist/pool/account-store.js';
 import { createAutoVpnServer } from '../../dist/server/http.js';
 
 /** The store compares membership dates against the operator's LOCAL day. */
@@ -517,13 +517,29 @@ test('a purge is all-or-nothing', () => {
   store.importRecords([record({ account: 'a', expires_at: '2026-05-01' }), record({ account: 'b', expires_at: '2026-05-02' })]);
   store.expireDue();
   clock.current = new Date('2026-08-01T00:00:00Z');
-  // Sabotage the row delete so the second step throws after the first row's
-  // events were already removed: the transaction must roll both back.
   const db = store['db'];
-  db.exec('DROP TABLE accounts');
-  assert.throws(() => store.purgeRetired(30));
-  const count = db.prepare('SELECT COUNT(*) AS total FROM pool_events').get().total;
-  assert.ok(count > 0, 'the events of the first row survived the failed transaction');
+  const before = db.prepare('SELECT COUNT(*) AS total FROM pool_events').get().total;
+  assert.ok(before > 0, 'the expiry wrote events to roll back');
+
+  // Fail on the *second* row, after the first row's events and row are already
+  // deleted inside the transaction. Dropping the table instead would throw in
+  // the scan before `BEGIN` and prove nothing; this trigger is what makes the
+  // test fail if the transaction is removed.
+  db.exec(`CREATE TABLE purge_guard (deletes INTEGER NOT NULL);
+           INSERT INTO purge_guard (deletes) VALUES (0);`);
+  db.exec(`CREATE TRIGGER purge_fails_on_second_row
+           BEFORE DELETE ON accounts
+           BEGIN
+             UPDATE purge_guard SET deletes = deletes + 1;
+             SELECT RAISE(ABORT, 'boom') WHERE (SELECT deletes FROM purge_guard) > 1;
+           END;`);
+  // Two guard rows (the seeded one plus the first delete) is fine; the second
+  // delete pushes the count past it and aborts mid-transaction.
+  assert.throws(() => store.purgeRetired(30), /boom/);
+  const rows = db.prepare('SELECT COUNT(*) AS total FROM accounts').get().total;
+  const events = db.prepare('SELECT COUNT(*) AS total FROM pool_events').get().total;
+  assert.equal(rows, 2, 'both rows survived: the first delete was rolled back');
+  assert.equal(events, before, 'both rows kept their events');
   store.close();
 });
 
@@ -636,5 +652,81 @@ test('a live row is never purged, no matter how old its credential is', () => {
   assert.equal(store.purgeRetired(30), 0, 'the window runs from the retirement, not the lease');
   clock.current = new Date('2030-08-01T00:00:00Z');
   assert.equal(store.purgeRetired(30), 1);
+  store.close();
+});
+
+test('a purge leaves no password bytes behind in the file', () => {
+  const clock = mutableClock(new Date('2026-06-01T00:00:00Z'));
+  const dbPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-purge-bytes-')), 'accounts.db');
+  const store = new AccountStore({ dbPath, now: clock.now });
+  store.importRecords([
+    record({ account: 'one', password: 'SECRETONEsecret', expires_at: '2026-05-01' }),
+    record({ account: 'two', password: 'SECRETTWOsecret', expires_at: '2026-05-02' })
+  ]);
+  store.expireDue();
+  clock.current = new Date('2026-08-01T00:00:00Z');
+  assert.equal(store.purgeRetired(30), 2);
+  store.close();
+
+  // `SELECT` returning nothing is not erasure: SQLite leaves the freed cell's
+  // bytes in the page, so the credential is still in the file after a plain
+  // DELETE. `secure_delete` is what makes the promise real.
+  const bytes = fs.readFileSync(dbPath);
+  assert.equal(bytes.includes(Buffer.from('SECRETONEsecret')), false, 'the first password is still on disk');
+  assert.equal(bytes.includes(Buffer.from('SECRETTWOsecret')), false, 'the second password is still on disk');
+});
+
+test('an absurd retention window is clamped instead of breaking every read', () => {
+  const clock = mutableClock(new Date('2026-06-01T00:00:00Z'));
+  const store = new AccountStore({
+    dbPath: ':memory:',
+    now: clock.now,
+    env: { AUTOVPN_ACCOUNT_RETIRED_RETENTION_DAYS: '1000000000' }
+  });
+  store.importRecords([record({ account: 'a', expires_at: '2030-01-01' })]);
+  // `days * 86_400_000` overflows Date's range and toISOString throws; because
+  // the sweep hangs off every read, that would take the whole pool down.
+  assert.equal(store.purgeRetired(1e12), 0);
+  assert.deepEqual(store.countRetired(1e12), { purgeable: 0, pendingLapse: 0 });
+  assert.equal(store.stats().total, 1, 'a read still works with an absurd window');
+  assert.equal(retiredRetentionDays({ AUTOVPN_ACCOUNT_RETIRED_RETENTION_DAYS: '1000000000' }), 36500);
+  store.close();
+});
+
+test('housekeeping never fails a read on a pool it cannot write', () => {
+  const clock = mutableClock(new Date('2026-06-01T00:00:00Z'));
+  const dbPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-purge-ro-')), 'accounts.db');
+  const writer = new AccountStore({ dbPath, now: clock.now });
+  writer.importRecords([record({ account: 'live', expires_at: '2030-01-01' })]);
+  writer.close();
+
+  fs.chmodSync(dbPath, 0o444);
+  try {
+    const reader = new AccountStore({ dbPath, now: clock.now });
+    // The retention sweep cannot write here; the listing must still answer,
+    // because `serve` and the desktop panel read through this path.
+    assert.equal(reader.stats().total, 1);
+    assert.equal(reader.list().length, 1);
+    reader.close();
+  } finally {
+    fs.chmodSync(dbPath, 0o644);
+  }
+});
+
+test('a row renewed before the sweep reaches it survives', () => {
+  const clock = mutableClock(new Date('2026-06-01T00:00:00Z'));
+  const store = new AccountStore({ dbPath: ':memory:', now: clock.now });
+  store.importRecords([record({ account: 'renew', password: 'old', expires_at: '2026-05-01' })]);
+  store.expireDue();
+  clock.current = new Date('2026-08-01T00:00:00Z');
+  // The operator re-imports with a fresh date and password. The sweep scans
+  // and deletes inside one write lock, and the delete re-checks the predicate,
+  // so a renewal cannot be erased by a scan that predates it.
+  const outcome = store.importRecords([record({ account: 'renew', password: 'new', expires_at: '2027-01-01' })]);
+  assert.equal(outcome.revived, 1);
+  assert.equal(store.sweepRetired(30), 0, 'nothing is erased');
+  const rows = store.list({ status: 'all', includeDeleted: true });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].status, 'active');
   store.close();
 });

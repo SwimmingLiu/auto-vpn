@@ -564,6 +564,16 @@ test('accounts purge refuses a window that is negative or not a whole day', asyn
     env: { VPN_AUTOMATION_ACCOUNTS_DB: path.join(dir, 'accounts.db') },
     io: { writeStdout: () => {}, writeStderr: () => {} }
   });
+  // A bare `--days` (no value at all) would otherwise silently use the
+  // environment default instead of the window the operator meant to type.
+  await assert.rejects(
+    () => runAccountsCommand(['accounts', 'purge', '--days'], {
+      cwd: dir,
+      env: { VPN_AUTOMATION_ACCOUNTS_DB: path.join(dir, 'accounts.db') },
+      io: { writeStdout: () => {}, writeStderr: () => {} }
+    }),
+    /--days/
+  );
   for (const value of ['-1', '1.5', 'soon', '', '2d']) {
     // A fractional window would have to be rounded somewhere anyway, and the
     // answer would not be the one the operator typed.
