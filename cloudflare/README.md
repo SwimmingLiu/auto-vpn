@@ -97,6 +97,13 @@ Repository settings it reads:
 | variable | `AUTOVPN_BASE_URL` | no | smoke-test URL, e.g. `https://autovpn-cloud.<subdomain>.workers.dev` |
 | variable | `AUTOVPN_ALLOW_LIVE_PROJECT` | no | `1` lets the deploy target a real Pages project |
 
+The Worker profile is **not** one of these secrets. It is committed as
+`container/profile.cloudflare.toml` and uploaded from the checkout, so editing
+it is a normal pull request rather than a secret rotate. `deploy.sh` strips its
+comments before upload: a Worker secret is capped at 5 KB and the commented
+file is 5,314 bytes — over the cap, rejected by the API rather than by wrangler,
+which is a failure that only shows up after the image has been built.
+
 ```bash
 gh secret set CLOUDFLARE_API_TOKEN
 gh secret set AUTOVPN_API_TOKEN --env-file -   # or paste a fixed random string

@@ -73,10 +73,34 @@ esac
 
 # `wrangler secret put` reads stdin, which keeps the value out of the process
 # table and out of shell history.
+#
+# A Worker secret is capped at 5 KB, and the commented profile is 5,314 bytes —
+# over the cap. Wrangler does not check that locally; the API rejects the upload,
+# so the first symptom is a deploy that fails after the image build. Comments
+# and blank lines carry no meaning for the CLI, so they are stripped before the
+# value is handed over. A full-line `#` inside a multi-line TOML string would be
+# content, not a comment, so the profile is checked for those first.
+SECRET_PROFILE="$CONTAINER_PROFILE"
+if grep -q '"""' "$CONTAINER_PROFILE"; then
+  echo "$CONTAINER_PROFILE uses a multi-line TOML string; comment stripping is unsafe" >&2
+  exit 1
+fi
+if [ -z "${AUTOVPN_PROFILE_TOML:-}" ]; then
+  SECRET_PROFILE="$(mktemp "${TMPDIR:-/tmp}/autovpn-profile.XXXXXX")"
+  trap 'rm -f "$SECRET_PROFILE"' EXIT
+  grep -v -E '^[[:space:]]*#' "$CONTAINER_PROFILE" | grep -v -E '^[[:space:]]*$' > "$SECRET_PROFILE"
+fi
+PROFILE_BYTES="$(wc -c < "$SECRET_PROFILE" | tr -d ' ')"
+if [ "$PROFILE_BYTES" -gt 5120 ]; then
+  echo "profile is $PROFILE_BYTES bytes; a Worker secret is capped at 5120" >&2
+  exit 1
+fi
+echo "profile secret: $PROFILE_BYTES bytes"
+
 if [ -n "${AUTOVPN_PROFILE_TOML:-}" ]; then
   printf '%s' "$AUTOVPN_PROFILE_TOML" | ${WRANGLER} secret put AUTOVPN_PROFILE_TOML --cwd "$ROOT"
 else
-  ${WRANGLER} secret put AUTOVPN_PROFILE_TOML --cwd "$ROOT" < "$CONTAINER_PROFILE"
+  ${WRANGLER} secret put AUTOVPN_PROFILE_TOML --cwd "$ROOT" < "$SECRET_PROFILE"
 fi
 
 # The deploy *stage* inside the container publishes the subscription with
