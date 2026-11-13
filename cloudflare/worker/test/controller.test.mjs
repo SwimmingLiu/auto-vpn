@@ -34,6 +34,17 @@ async function loadWorker() {
   return module;
 }
 
+/**
+ * Timestamp for a run fixture.
+ *
+ * It has to be *now*: `step()` fails any run whose `started_at` is older than
+ * the wall-clock ceiling, so a hard-coded date silently turns every one of
+ * these tests into a timeout test the day it goes stale.
+ */
+function isoNow() {
+  return new Date().toISOString();
+}
+
 /** A DurableObjectState + storage.sql stand-in backed by a real sqlite. */
 async function makeHarness() {
   const { DatabaseSync } = await import('node:sqlite');
@@ -89,7 +100,7 @@ test('gate holds when final_links does not clear the threshold', async () => {
     : null);
 
   controller.sql.exec(
-    "INSERT INTO runs (run_id, status, phase, started_at) VALUES ('r1','running','measuring','2026-11-12')"
+    `INSERT INTO runs (run_id, status, phase, started_at) VALUES ('r1','running','measuring','${isoNow()}')`
   );
   const result = await controller.step('r1');
   // daily-run.sh uses `-le`: exactly 50 holds, it does not deploy.
@@ -114,7 +125,7 @@ test('gate passes and starts a deploy run above the threshold', async () => {
     : null);
 
   controller.sql.exec(
-    "INSERT INTO runs (run_id, status, phase, started_at) VALUES ('r2','running','measuring','2026-11-12')"
+    `INSERT INTO runs (run_id, status, phase, started_at) VALUES ('r2','running','measuring','${isoNow()}')`
   );
   await controller.step('r2');
   const row = controller.runRow('r2');
@@ -135,7 +146,7 @@ test('a failed measurement finishes the run instead of waiting forever', async (
     status: { phase: 'failed', error: 'extract blew up' }
   });
   controller.sql.exec(
-    "INSERT INTO runs (run_id, status, phase, started_at) VALUES ('r3','running','measuring','2026-11-12')"
+    `INSERT INTO runs (run_id, status, phase, started_at) VALUES ('r3','running','measuring','${isoNow()}')`
   );
   const result = await controller.step('r3');
   assert.equal(result.status, 'failed');
@@ -147,7 +158,7 @@ test('an orphaned container fails the run rather than hanging', async () => {
   const { ctx } = await makeHarness();
   const controller = stubContainer(new PipelineController(ctx, {}), { status: { phase: 'orphaned' } });
   controller.sql.exec(
-    "INSERT INTO runs (run_id, status, phase, started_at) VALUES ('r4','running','measuring','2026-11-12')"
+    `INSERT INTO runs (run_id, status, phase, started_at) VALUES ('r4','running','measuring','${isoNow()}')`
   );
   const result = await controller.step('r4');
   assert.equal(result.status, 'failed');
@@ -160,7 +171,7 @@ test('a second run is refused while one is in progress', async () => {
   const controller = new PipelineController(ctx, {});
   controller.ensureContainer = async () => ({});
   controller.sql.exec(
-    "INSERT INTO runs (run_id, status, phase, started_at) VALUES ('busy','running','measuring','2026-11-12')"
+    `INSERT INTO runs (run_id, status, phase, started_at) VALUES ('busy','running','measuring','${isoNow()}')`
   );
   const result = await controller.startDailyRun({ runId: 'next' });
   assert.equal(result.skipped, true);
@@ -195,7 +206,7 @@ test('a container that never accepts the deploy eventually fails the run', async
     onRun: () => ({ started: false, reason: 'a run is already in progress' })
   });
   controller.sql.exec(
-    "INSERT INTO runs (run_id, status, phase, started_at, final_links) VALUES ('r6','running','gating','2026-11-12', 900)"
+    `INSERT INTO runs (run_id, status, phase, started_at, final_links) VALUES ('r6','running','gating','${isoNow()}', 900)`
   );
   // Ten refusals must end the run; without the bound this re-arms forever.
   let result = null;
@@ -222,7 +233,7 @@ test('a 409 on deploy is waited out, not thrown out of the state machine', async
     return {};
   };
   controller.sql.exec(
-    "INSERT INTO runs (run_id, status, phase, started_at, final_links) VALUES ('r7','running','gating','2026-11-12', 900)"
+    `INSERT INTO runs (run_id, status, phase, started_at, final_links) VALUES ('r7','running','gating','${isoNow()}', 900)`
   );
   const first = await controller.step('r7');
   assert.equal(first.done, false, 'a busy container is a wait, not a verdict');
@@ -299,6 +310,57 @@ test('importing stores the pool before pushing it to the container', async () =>
   assert.equal(stored.row_count, 3);
 });
 
+test('a run past the wall-clock ceiling is failed, not advanced forever', async () => {
+  const { PipelineController } = await loadWorker();
+  const { ctx } = await makeHarness();
+  const controller = stubContainer(new PipelineController(ctx, {}));
+  let stopCalled = false;
+  controller.containerJson = async (pathname) => {
+    if (pathname === '/stop') { stopCalled = true; return {}; }
+    return {};
+  };
+  // Four hours old: past the three-hour ceiling.
+  const old = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString();
+  controller.sql.exec(
+    `INSERT INTO runs (run_id, status, phase, started_at) VALUES ('hung','running','measuring','${old}')`
+  );
+  const result = await controller.step('hung');
+  assert.equal(result.status, 'failed');
+  assert.match(controller.runRow('hung').error, /exceeded 3h/);
+  assert.equal(stopCalled, true, 'the container should be asked to stop');
+  assert.equal(controller.latestEvent('hung', 'run_timeout') !== null, true);
+});
+
+test('a hung container cannot extend its own deadline', async () => {
+  const { PipelineController } = await loadWorker();
+  const { ctx } = await makeHarness();
+  const controller = new PipelineController(ctx, {});
+  // The container is unreachable: the ceiling must still apply, because it is
+  // checked before any container call.
+  controller.containerStatus = async () => null;
+  const old = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString();
+  controller.sql.exec(
+    `INSERT INTO runs (run_id, status, phase, started_at) VALUES ('hung2','running','measuring','${old}')`
+  );
+  const result = await controller.step('hung2');
+  assert.equal(result.status, 'failed');
+  assert.equal(controller.runRow('hung2').alarm_failures, 0, 'not a transient-failure path');
+});
+
+test('consecutive alarm failures reset after a successful step', async () => {
+  const { PipelineController } = await loadWorker();
+  const { ctx } = await makeHarness();
+  const controller = new PipelineController(ctx, {});
+  controller.sql.exec(
+    `INSERT INTO runs (run_id, status, phase, started_at, alarm_failures) VALUES ('r8','running','gating','${isoNow()}', 7)`
+  );
+  // One more failure would hit the limit; a success must clear the streak so
+  // eight unrelated blips across a long run cannot fail a healthy run.
+  controller.step = async () => ({ done: true, status: 'held' });
+  await controller.alarm();
+  assert.equal(controller.runRow('r8').alarm_failures, 0);
+});
+
 test('the bearer check is constant-time and rejects empty configuration', async () => {
   const worker = await loadWorker();
   const request = (token) => new Request('https://x/health', {
@@ -350,7 +412,7 @@ test('a running row with no alarm is repaired on the next object wake', async ()
   const { ctx, alarms } = await makeHarness();
   const controller = new PipelineController(ctx, {});
   controller.sql.exec(
-    "INSERT INTO runs (run_id, status, phase, started_at) VALUES ('orphan','running','measuring','2026-11-12')"
+    `INSERT INTO runs (run_id, status, phase, started_at) VALUES ('orphan','running','measuring','${isoNow()}')`
   );
   alarms.length = 0; // simulate the alarm lost to an eviction
   await controller.reconcileOrphanAlarm();
@@ -365,7 +427,7 @@ test('a run id that already exists is reported, not silently reused', async () =
   let containerCalls = 0;
   controller.ensureContainer = async () => { containerCalls += 1; return {}; };
   controller.sql.exec(
-    "INSERT INTO runs (run_id, status, phase, started_at) VALUES ('dup','held','done','2026-11-12')"
+    `INSERT INTO runs (run_id, status, phase, started_at) VALUES ('dup','held','done','${isoNow()}')`
   );
   const result = await controller.startDailyRun({ runId: 'dup' });
   assert.equal(result.skipped, true);

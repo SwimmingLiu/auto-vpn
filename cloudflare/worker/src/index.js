@@ -21,6 +21,18 @@ const INACTIVITY_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 /** One alarm observation window; `monitor()` resolves or rejects inside this. */
 const OBSERVE_MS = 14 * 60 * 1000;
 const READY_TIMEOUT_MS = 60 * 1000;
+/**
+ * Hard ceiling on one run's wall clock.
+ *
+ * The per-source crawl budget is 900 s and there are four sources, so a healthy
+ * run is under an hour even before measurement and deploy. Without a ceiling a
+ * hung CLI child — a mihomo that never exits, a download that never times out —
+ * leaves the container reporting `running` forever, and the DO re-arms its alarm
+ * every window indefinitely: the row never finishes, and since a new run is
+ * refused while one is running, every later night is skipped. Three hours is
+ * far above any observed run and far below "forever".
+ */
+const MAX_RUN_MS = 3 * 60 * 60 * 1000;
 
 const DEFAULT_SETTINGS = {
   enabled: true,
@@ -407,6 +419,20 @@ export class PipelineController extends DurableObject {
     if (!row) return { done: true, reason: 'unknown run' };
     if (row.status !== 'running') return { done: true, status: row.status };
 
+    // A run that has outlived the ceiling is not "still going": the container
+    // may be reporting `running` with a wedged child, and nothing else in this
+    // class would ever stop advancing it. Checked before any container call so
+    // a container that never answers cannot extend its own deadline.
+    const startedMs = Date.parse(String(row.started_at ?? ''));
+    if (Number.isFinite(startedMs) && Date.now() - startedMs > MAX_RUN_MS) {
+      this.recordEvent(runId, 'run_timeout', { started_at: row.started_at, max_ms: MAX_RUN_MS });
+      // Ask the container to stop, but do not let a dead container keep the
+      // row alive: the verdict is already decided.
+      await this.containerJson('/stop', { method: 'POST' }).catch(() => null);
+      this.finish(runId, 'failed', `run exceeded ${MAX_RUN_MS / 3600000}h wall clock`);
+      return { done: true, status: 'failed' };
+    }
+
     const settings = this.settings();
     const status = await this.containerStatus();
     // A null status is handled inside each phase rather than here: a single
@@ -617,6 +643,12 @@ export class PipelineController extends DurableObject {
     let result;
     try {
       result = await this.step(run.run_id);
+      // A step that completed is evidence the container is healthy again, so
+      // the consecutive-failure count starts over. Without this, eight
+      // unrelated blips spread across a three-hour run would fail it.
+      if (Number(this.runRow(run.run_id)?.alarm_failures ?? 0) !== 0) {
+        this.sql.exec('UPDATE runs SET alarm_failures = 0 WHERE run_id = ?', run.run_id);
+      }
     } catch (error) {
       // A transient container/network failure must not kill a run whose data is
       // still on disk; retry inside the window, and only give up after a day.
