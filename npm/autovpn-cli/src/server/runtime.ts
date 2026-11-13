@@ -837,7 +837,35 @@ export function createServerRuntime(options: CreateServerRuntimeOptions): Server
     const artifactDir = String(artifact?.artifact_dir ?? '');
     const liveArtifact = artifactDir && artifactEventLog(artifactDir).active ? artifactDir : '';
     if (runState !== 'idle' && !liveArtifact) {
-      return;
+      // A followed run can die without writing a terminal event: the service
+      // restarts mid-run, or its job is stopped from the panel. Nothing will
+      // ever publish that run's summary, so 运行中 would stick forever and
+      // `startRun` would keep answering `run_already_active` — the state has to
+      // be re-derived from the job record, which is the authority on whether
+      // the process still exists.
+      const job = latestJob(options.projectRoot, env);
+      const jobStatus = String(job?.status ?? '');
+      const jobLive = ['running', 'stopping'].includes(jobStatus);
+      const following = Boolean(followedArtifactDir || activeJobId);
+      // Two ways a followed run is known dead without a terminal event of its
+      // own: the job was stopped (the panel's 停止, or a service restart that
+      // killed it), or the artifact being followed stopped growing — a run
+      // killed by a restart has no job record to say so, but its log goes
+      // stale and stays stale. A live job is never released this way, and a
+      // `failed` job is left alone: its follower reconciles that state itself,
+      // and releasing here would erase it.
+      const followedStale = Boolean(followedArtifactDir && !artifactEventLog(followedArtifactDir).active);
+      if (following && !jobLive && (jobStatus === 'stopped' || followedStale)) {
+        unsubscribeLogs?.();
+        unsubscribeLogs = undefined;
+        unsubscribeArtifactLogs?.();
+        unsubscribeArtifactLogs = undefined;
+        followedArtifactDir = '';
+        activeJobId = '';
+        runState = 'idle';
+      } else {
+        return;
+      }
     }
     if (liveArtifact && runState !== 'running' && runState !== 'stopping') {
       unsubscribeLogs?.();
