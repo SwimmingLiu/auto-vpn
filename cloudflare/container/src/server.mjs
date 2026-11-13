@@ -334,6 +334,14 @@ async function serveEvents(response, runId, offset) {
   });
 }
 
+/**
+ * Decode the account pool from a CSV body.
+ *
+ * The pool is the one piece of state that cannot live on the container disk:
+ * Cloudflare containers have ephemeral storage, and every restart, sleep or
+ * rollout wipes `/data`. The Durable Object keeps the CSV in its SQLite and
+ * replays it on boot, so this is the restore path as well as the import path.
+ */
 async function importAccounts(body) {
   const csv = String(body.csv ?? '');
   if (!csv.trim()) throw new Error('csv is required');
@@ -360,6 +368,32 @@ async function importAccounts(body) {
     parsed = { ok: code === 0, raw: last.slice(0, 2000) };
   }
   return { exitCode: code, ...parsed, stderr: stderr.slice(-2000) };
+}
+
+/** Report the pool only as counts; the rows themselves are credentials. */
+async function accountStats() {
+  const dbPath = path.join(RUNTIME_ROOT, 'accounts.db');
+  try {
+    await stat(dbPath);
+  } catch {
+    return { present: false, total: 0, active: 0 };
+  }
+  const proc = spawn(NODE_BIN, [
+    CLI_ENTRY, 'accounts', 'stats',
+    '--project-root', PROJECT_ROOT,
+    '--output', 'jsonl'
+  ], { cwd: PROJECT_ROOT, env: childEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
+  let stdout = '';
+  proc.stdout?.on('data', (chunk) => { stdout += String(chunk); });
+  await new Promise((resolve) => proc.on('close', resolve));
+  const last = stdout.trim().split('\n').pop() ?? '';
+  try {
+    const parsed = JSON.parse(last);
+    const stats = parsed.stats ?? parsed;
+    return { present: true, total: Number(stats.total ?? 0), active: Number(stats.active ?? 0) };
+  } catch {
+    return { present: true, total: -1, active: -1 };
+  }
 }
 
 async function route(request, response) {
@@ -405,7 +439,15 @@ async function route(request, response) {
 
   if (request.method === 'POST' && url.pathname === '/import-accounts') {
     const body = await readJsonBody(request, 32 * 1024 * 1024);
-    return json(response, 200, await importAccounts(body));
+    const result = await importAccounts(body);
+    // The caller (the Durable Object) persists the CSV so the next boot can
+    // replay it; report whether the pool now exists so a bad import is caught
+    // at import time rather than at the next cold start.
+    return json(response, 200, { ...result, accounts: await accountStats() });
+  }
+
+  if (request.method === 'GET' && url.pathname === '/accounts/stats') {
+    return json(response, 200, await accountStats());
   }
 
   return json(response, 404, { error: 'not found', path: url.pathname });

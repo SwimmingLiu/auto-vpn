@@ -138,14 +138,26 @@ export function toMihomoProxy(link, index) {
   return { name, proxy };
 }
 
-export function buildConfig(proxies, { probeUrl = DEFAULT_PROBE_HOST, direct = false } = {}) {
+export function buildConfig(proxies, {
+  probeUrl = DEFAULT_PROBE_HOST,
+  direct = false,
+  // The listener port is a parameter only so tests can run beside a live
+  // instance. Production always uses 7897, which is what `egress.ts` defaults to.
+  port = EGRESS_PORT,
+  controllerPort = CONTROLLER_PORT
+} = {}) {
   const base = {
-    'mixed-port': EGRESS_PORT,
+    'mixed-port': port,
     'allow-lan': false,
-    mode: 'global',
+    // `rule` routes through the `MATCH` rule below. This matters: in `global`
+    // mode mihomo uses its built-in GLOBAL selector, which defaults to DIRECT
+    // and ignores every configured group — traffic would silently leave from
+    // the host IP instead of the node. Both modes are additionally pinned by
+    // the explicit GLOBAL group so neither can fall through to DIRECT.
+    mode: 'rule',
     'log-level': 'warning',
     ipv6: false,
-    'external-controller': `127.0.0.1:${CONTROLLER_PORT}`,
+    'external-controller': `127.0.0.1:${controllerPort}`,
     // mihomo only resolves node addresses here; the container resolver is
     // already the platform's, so a local one would only add a failure mode.
     dns: { enable: false }
@@ -161,19 +173,24 @@ export function buildConfig(proxies, { probeUrl = DEFAULT_PROBE_HOST, direct = f
   return {
     ...base,
     proxies,
-    'proxy-groups': [{
-      name: 'EGRESS',
-      // `fallback` holds one node until it fails a health check, then moves on.
-      // `url-test` would re-rank on latency every interval and flap the crawl
-      // between exit IPs, which looks exactly like account takeover to a
-      // vendor's risk engine.
-      type: 'fallback',
-      proxies: proxies.map((proxy) => proxy.name),
-      url: probeUrl,
-      interval: 120,
-      timeout: 5000,
-      lazy: false
-    }],
+    'proxy-groups': [
+      // An explicit GLOBAL that selects EGRESS. Without it mihomo synthesizes
+      // its own GLOBAL (DIRECT first) and `mode: global` would bypass the pool.
+      { name: 'GLOBAL', type: 'select', proxies: ['EGRESS'] },
+      {
+        name: 'EGRESS',
+        // `fallback` holds one node until it fails a health check, then moves on.
+        // `url-test` would re-rank on latency every interval and flap the crawl
+        // between exit IPs, which looks exactly like account takeover to a
+        // vendor's risk engine.
+        type: 'fallback',
+        proxies: proxies.map((proxy) => proxy.name),
+        url: probeUrl,
+        interval: 120,
+        timeout: 5000,
+        lazy: false
+      }
+    ],
     rules: ['MATCH,EGRESS']
   };
 }

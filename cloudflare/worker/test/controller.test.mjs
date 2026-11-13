@@ -208,6 +208,67 @@ test('a container that never accepts the deploy eventually fails the run', async
   assert.match(controller.runRow('r6').error, /deploy never started/);
 });
 
+test('the account pool is replayed into an empty container', async () => {
+  const { PipelineController } = await loadWorker();
+  const { ctx } = await makeHarness();
+  const controller = stubContainer(new PipelineController(ctx, {}));
+  let imported = null;
+  controller.containerJson = async (pathname, init) => {
+    if (pathname === '/accounts/stats') return { present: false, total: 0, active: 0 };
+    if (pathname === '/import-accounts') {
+      imported = JSON.parse(init.body);
+      return { imported: 2, accounts: { present: true, active: 2 } };
+    }
+    return {};
+  };
+
+  controller.sql.exec(
+    "INSERT INTO account_pool (id, csv, imported_at, row_count) VALUES (1, ?, '2026-11-12', 2)",
+    'brand,account,password\na,x,1\nb,y,2\n'
+  );
+  const result = await controller.restoreAccountPool();
+  assert.equal(result.restored, true);
+  assert.equal(result.rows, 2);
+  assert.match(imported.csv, /^brand,account,password/);
+});
+
+test('a container that already has a pool is not overwritten', async () => {
+  const { PipelineController } = await loadWorker();
+  const { ctx } = await makeHarness();
+  const controller = stubContainer(new PipelineController(ctx, {}));
+  let importCalled = false;
+  controller.containerJson = async (pathname) => {
+    if (pathname === '/accounts/stats') return { present: true, total: 9, active: 7 };
+    if (pathname === '/import-accounts') { importCalled = true; return {}; }
+    return {};
+  };
+  controller.sql.exec(
+    "INSERT INTO account_pool (id, csv, imported_at, row_count) VALUES (1, 'stale', '2026-01-01', 1)"
+  );
+  const result = await controller.restoreAccountPool();
+  // The live pool may have rows disabled since the CSV was stored; replaying
+  // would resurrect credentials an operator deliberately retired.
+  assert.equal(result.restored, false);
+  assert.equal(importCalled, false);
+  assert.equal(result.active, 7);
+});
+
+test('importing stores the pool before pushing it to the container', async () => {
+  const { PipelineController } = await loadWorker();
+  const { ctx } = await makeHarness();
+  const controller = stubContainer(new PipelineController(ctx, {}));
+  let received = null;
+  controller.containerJson = async (pathname, init) => {
+    if (pathname === '/import-accounts') { received = JSON.parse(init.body); return { imported: 3, accounts: { active: 3 } }; }
+    return {};
+  };
+  const result = await controller.saveAccountPool('brand,account\nleiting,a\nheidong,b\nmifeng,c\n');
+  assert.equal(result.rows, 3);
+  assert.equal(received.format, 'csv');
+  const stored = controller.sql.exec('SELECT row_count FROM account_pool WHERE id = 1').toArray()[0];
+  assert.equal(stored.row_count, 3);
+});
+
 test('the bearer check is constant-time and rejects empty configuration', async () => {
   const worker = await loadWorker();
   const request = (token) => new Request('https://x/health', {

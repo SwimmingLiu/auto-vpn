@@ -45,51 +45,68 @@ step "container image dependencies"
 "$ROOT/scripts/fetch-mihomo.sh"
 
 step "worker secrets"
-# Secrets are the only thing that differs between a working deployment and a
-# broken one, so they are checked rather than assumed.
-if [ ! -f "$PROJECT_ROOT/state/profile.toml" ]; then
-  echo "state/profile.toml not found — copy an existing profile there first" >&2
+# The profile the container reads must be the *Cloudflare* one. Taking
+# `state/profile.toml` would ship the live VPS profile, whose `project_name`
+# points at a real subscription — the first run would then publish over it.
+CONTAINER_PROFILE="$ROOT/container/profile.cloudflare.toml"
+if [ ! -f "$CONTAINER_PROFILE" ]; then
+  echo "missing $CONTAINER_PROFILE" >&2
   exit 1
 fi
-if ! grep -q 'secret_query' "$PROJECT_ROOT/state/profile.toml"; then
-  echo "profile has no [deploy].secret_query; the container cannot build a subscription URL" >&2
-  exit 1
-fi
-
-# The deploy stage reads CLOUDFLARE_API_TOKEN through the CLI's env fallback, so
-# the profile itself can stay credential-free. This is the token whose scopes
-# must cover Pages:Edit, Zone:DNS:Edit and Workers Scripts:Edit.
-printf '%s' "$CLOUDFLARE_API_TOKEN" | ${WRANGLER} secret put CLOUDFLARE_API_TOKEN --cwd "$ROOT"
+PROFILE_PROJECT="$(grep -E '^[[:space:]]*project_name[[:space:]]*=' "$CONTAINER_PROFILE" \
+  | head -n1 | sed -E 's/^[^=]*=[[:space:]]*"(.*)"/\1/')"
+case "$PROFILE_PROJECT" in
+  autovpn-cf-*)
+    echo "deploy target: $PROFILE_PROJECT (scratch project)"
+    ;;
+  *)
+    # Not a hard stop: publishing to a real project is the eventual goal. It
+    # just must be a deliberate edit, not a default.
+    echo "deploy target: $PROFILE_PROJECT"
+    echo "  NOT a scratch project — this run will replace that project's production deployment."
+    if [ "${AUTOVPN_ALLOW_LIVE_PROJECT:-}" != "1" ]; then
+      echo "  set AUTOVPN_ALLOW_LIVE_PROJECT=1 to proceed" >&2
+      exit 1
+    fi
+    ;;
+esac
 
 # `wrangler secret put` reads stdin, which keeps the value out of the process
 # table and out of shell history.
 if [ -n "${AUTOVPN_PROFILE_TOML:-}" ]; then
   printf '%s' "$AUTOVPN_PROFILE_TOML" | ${WRANGLER} secret put AUTOVPN_PROFILE_TOML --cwd "$ROOT"
 else
-  ${WRANGLER} secret put AUTOVPN_PROFILE_TOML --cwd "$ROOT" < "$PROJECT_ROOT/state/profile.toml"
+  ${WRANGLER} secret put AUTOVPN_PROFILE_TOML --cwd "$ROOT" < "$CONTAINER_PROFILE"
 fi
+
+# The deploy *stage* inside the container publishes the subscription with
+# wrangler, and `resolveCloudflareCredentials()` falls back to this env var, so
+# the container needs it. Same token, narrower blast radius than the profile
+# carrying it as plain text.
+printf '%s' "$CLOUDFLARE_API_TOKEN" | ${WRANGLER} secret put CLOUDFLARE_API_TOKEN --cwd "$ROOT"
 
 if [ -z "${AUTOVPN_API_TOKEN:-}" ]; then
   AUTOVPN_API_TOKEN="$(node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("base64url"))')"
-  echo "generated a new AUTOVPN_API_TOKEN:"
-  echo "  $AUTOVPN_API_TOKEN"
-  echo "store it now; it is not recoverable from Cloudflare."
+  # Written to a 0600 file rather than echoed: a token in stdout also lands in
+  # the terminal scrollback and, under some shells, in history.
+  TOKEN_FILE="${TMPDIR:-/tmp}/autovpn-api-token.$$"
+  (umask 077; printf '%s' "$AUTOVPN_API_TOKEN" > "$TOKEN_FILE")
+  echo "generated a new AUTOVPN_API_TOKEN, written to $TOKEN_FILE (mode 0600)"
+  echo "move it into your password manager; it is not recoverable from Cloudflare."
 fi
 printf '%s' "$AUTOVPN_API_TOKEN" | ${WRANGLER} secret put AUTOVPN_API_TOKEN --cwd "$ROOT"
 
 step "subscription URL"
-# The published worker answers `btoa(randomBytes)` unless the query carries the
-# right key, so a URL without it silently feeds the egress supervisor noise.
-SECRET_QUERY="$(grep -E '^[[:space:]]*secret_query[[:space:]]*=' "$PROJECT_ROOT/state/profile.toml" \
-  | head -n1 | sed -E 's/^[^=]*=[[:space:]]*"(.*)"/\1/')"
-PROJECT_NAME="$(grep -E '^[[:space:]]*project_name[[:space:]]*=' "$PROJECT_ROOT/state/profile.toml" \
-  | head -n1 | sed -E 's/^[^=]*=[[:space:]]*"(.*)"/\1/')"
-if [ -n "$SECRET_QUERY" ] && [ -n "$PROJECT_NAME" ]; then
-  SUBSCRIPTION_URL="https://${PROJECT_NAME}.pages.dev/?${SECRET_QUERY}"
-  printf '%s' "$SUBSCRIPTION_URL" | ${WRANGLER} secret put SUBSCRIPTION_URL --cwd "$ROOT"
+# The egress pool is built from a *published* subscription, which is not
+# necessarily the project this deployment publishes to. Ask for it explicitly
+# rather than deriving it from the deploy profile: deriving would point the pool
+# at the scratch project before that project has ever served anything.
+if [ -n "${AUTOVPN_SUBSCRIPTION_URL:-}" ]; then
+  printf '%s' "$AUTOVPN_SUBSCRIPTION_URL" | ${WRANGLER} secret put SUBSCRIPTION_URL --cwd "$ROOT"
 else
-  echo "could not derive SUBSCRIPTION_URL from the profile; set it manually:" >&2
-  echo "  wrangler secret put SUBSCRIPTION_URL --cwd $ROOT" >&2
+  echo "AUTOVPN_SUBSCRIPTION_URL is not set; the crawl will start with no egress pool" >&2
+  echo "  (it degrades to direct and says so in /api/status)" >&2
+  echo "  set it to a subscription URL that includes ?serect_key=..., then re-run." >&2
 fi
 
 step "deploy"

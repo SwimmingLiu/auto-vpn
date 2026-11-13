@@ -61,13 +61,34 @@ test('the egress listener is the port the CLI already defaults to', () => {
 
 test('the proxy group is fallback, not url-test', () => {
   const config = buildConfig([toMihomoProxy(SAMPLE_LINK, 0).proxy, toMihomoProxy(SAMPLE_LINK, 1).proxy]);
-  const group = config['proxy-groups'][0];
+  const group = config['proxy-groups'].find((g) => g.name === 'EGRESS');
   // `url-test` re-ranks on latency every interval. The crawl would then change
   // exit IP mid-run, which is the single most suspicious thing an account can
   // do in front of a vendor's risk engine.
   assert.equal(group.type, 'fallback');
   assert.deepEqual(group.proxies, ['n0', 'n1']);
   assert.equal(group.interval, 120);
+});
+
+test('neither global nor rule mode can fall through to DIRECT', () => {
+  const config = buildConfig([toMihomoProxy(SAMPLE_LINK, 0).proxy]);
+  // Verified against mihomo 1.19.24: with `mode: 'global'` and no explicit
+  // GLOBAL group, mihomo synthesizes one whose `now` is DIRECT, so every
+  // request bypasses EGRESS and leaves from the host IP — while the controller
+  // still reports EGRESS healthy. Both halves of the guard are asserted.
+  assert.equal(config.mode, 'rule', 'global mode activates mihomo\'s built-in DIRECT selector');
+  const global = config['proxy-groups'].find((g) => g.name === 'GLOBAL');
+  assert.ok(global, 'an explicit GLOBAL must exist so no mode can use a DIRECT-by-default one');
+  assert.deepEqual(global.proxies, ['EGRESS']);
+  assert.ok(!config['proxy-groups'].some((g) => g.proxies.includes('DIRECT')),
+    'no group in proxy mode may list DIRECT');
+});
+
+test('the direct-degraded config is the only place DIRECT appears', () => {
+  const config = buildConfig([]);
+  assert.deepEqual(config['proxy-groups'].find((g) => g.name === 'EGRESS').proxies, ['DIRECT']);
+  // And it is explicit: a pool that failed health checks says so in its mode.
+  assert.equal(config.mode, 'rule');
 });
 
 test('an empty pool degrades to a direct config, not a crash', () => {

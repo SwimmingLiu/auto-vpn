@@ -81,7 +81,8 @@ export class PipelineController extends DurableObject {
         egress_mode TEXT NOT NULL DEFAULT '',
         egress_nodes INTEGER NOT NULL DEFAULT 0,
         alarm_failures INTEGER NOT NULL DEFAULT 0,
-        deploy_stalls INTEGER NOT NULL DEFAULT 0
+        deploy_stalls INTEGER NOT NULL DEFAULT 0,
+        status_misses INTEGER NOT NULL DEFAULT 0
       );
       CREATE TABLE IF NOT EXISTS events (
         seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -93,7 +94,73 @@ export class PipelineController extends DurableObject {
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS account_pool (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        csv TEXT NOT NULL,
+        imported_at TEXT NOT NULL,
+        row_count INTEGER NOT NULL DEFAULT 0
+      );
     `);
+  }
+
+  /**
+   * Replay the account pool into a container that has none.
+   *
+   * Container disks are ephemeral: every restart, sleep cycle and rollout wipes
+   * `/data`, so without this the crawl would find an empty pool after any
+   * restart and quietly produce zero links — the failure this whole deployment
+   * exists to avoid, arriving silently. The CSV lives here instead, and is
+   * pushed back before a run needs it.
+   */
+  async restoreAccountPool() {
+    const stored = this.sql.exec('SELECT csv, row_count FROM account_pool WHERE id = 1').toArray()[0];
+    if (!stored) return { restored: false, reason: 'no stored pool' };
+
+    const stats = await this.containerJson('/accounts/stats').catch(() => null);
+    // A pool that is already populated is newer than the stored copy (a run may
+    // have disabled or expired rows since), so replaying would lose that.
+    if (stats && Number(stats.active ?? 0) > 0) {
+      return { restored: false, reason: 'container already has a pool', active: stats.active };
+    }
+    const result = await this.containerJson('/import-accounts', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ csv: stored.csv, format: 'csv' })
+    });
+    this.recordEvent('system', 'account_pool_restored', {
+      rows: Number(stored.row_count ?? 0),
+      imported: Number(result.imported ?? 0),
+      exit_code: Number(result.exitCode ?? -1)
+    });
+    return { restored: true, rows: Number(result.imported ?? 0) };
+  }
+
+  /** Store the pool so `restoreAccountPool()` can replay it after a restart. */
+  async saveAccountPool(csv) {
+    const text = String(csv ?? '');
+    if (!text.trim()) throw new Error('csv is required');
+    const rowCount = Math.max(0, text.split('\n').filter((line) => line.trim()).length - 1);
+    // Persist first. The durable copy is what matters: if the container is
+    // unreachable right now, the pool still survives and is replayed on the
+    // next boot, which is strictly better than failing the import.
+    this.sql.exec(
+      `INSERT INTO account_pool (id, csv, imported_at, row_count) VALUES (1, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET csv = excluded.csv,
+         imported_at = excluded.imported_at, row_count = excluded.row_count`,
+      text,
+      new Date().toISOString(),
+      rowCount
+    );
+    try {
+      const result = await this.containerJson('/import-accounts', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ csv: text, format: 'csv' })
+      });
+      return { rows: rowCount, stored: true, imported: Number(result.imported ?? 0), accounts: result.accounts };
+    } catch (error) {
+      return { rows: rowCount, stored: true, imported: 0, deferred: true, reason: error.message };
+    }
   }
 
   settings() {
@@ -229,6 +296,11 @@ export class PipelineController extends DurableObject {
 
     await this.ensureContainer();
 
+    // A fresh container has no pool; replay the stored one before the crawl
+    // starts, or every source reports "no active account".
+    const pool = await this.restoreAccountPool().catch((error) => ({ restored: false, reason: error.message }));
+    this.recordEvent(id, 'account_pool_ready', pool);
+
     // The container builds the egress pool itself as the first step of the run,
     // so the pool it uses is the pool that run recorded. The DO only hands over
     // where the subscription lives.
@@ -286,14 +358,30 @@ export class PipelineController extends DurableObject {
 
     const settings = this.settings();
     const status = await this.containerStatus();
-    if (!status) {
-      this.finish(runId, 'failed', 'container unreachable');
-      return { done: true, status: 'failed' };
-    }
+    // A null status is handled inside each phase rather than here: a single
+    // unreachable poll must not kill a run whose measurement is still on disk.
 
     if (row.phase === 'measuring') {
       const drained = await this.drain(runId, row.measure_offset);
       this.sql.exec('UPDATE runs SET measure_offset = ? WHERE run_id = ?', drained.next, runId);
+
+      if (!status) {
+        // A container that cannot be reached right now is not a failed run: the
+        // measurement may still be going, and the log is on disk. Bound the
+        // retries so a dead container still terminates.
+        const misses = Number(row.status_misses ?? 0) + 1;
+        this.sql.exec('UPDATE runs SET status_misses = ? WHERE run_id = ?', misses, runId);
+        if (misses >= 8) {
+          this.finish(runId, 'failed', 'container unreachable for 8 consecutive polls');
+          return { done: true, status: 'failed' };
+        }
+        await this.ctx.storage.setAlarm(Date.now() + OBSERVE_MS);
+        return { done: false, phase: 'measuring', detail: 'container unreachable' };
+      }
+      // Any successful poll clears the miss counter.
+      if (Number(row.status_misses ?? 0) !== 0) {
+        this.sql.exec('UPDATE runs SET status_misses = 0 WHERE run_id = ?', runId);
+      }
 
       if (status.phase === 'orphaned') {
         this.finish(runId, 'failed', 'container restarted mid-run');
@@ -389,6 +477,22 @@ export class PipelineController extends DurableObject {
       // overwrites the measurement's.
       const drained = await this.drain(row.deploy_run_id, row.deploy_offset);
       this.sql.exec('UPDATE runs SET deploy_offset = ? WHERE run_id = ?', drained.next, runId);
+
+      // Same rule as the measuring phase: an unreachable container is a wait,
+      // not a verdict, until it has been unreachable for a while.
+      if (!status) {
+        const misses = Number(row.status_misses ?? 0) + 1;
+        this.sql.exec('UPDATE runs SET status_misses = ? WHERE run_id = ?', misses, runId);
+        if (misses >= 8) {
+          this.finish(runId, 'failed', 'container unreachable during deploy');
+          return { done: true, status: 'failed' };
+        }
+        await this.ctx.storage.setAlarm(Date.now() + OBSERVE_MS);
+        return { done: false, phase: 'deploying', detail: 'container unreachable' };
+      }
+      if (Number(row.status_misses ?? 0) !== 0) {
+        this.sql.exec('UPDATE runs SET status_misses = 0 WHERE run_id = ?', runId);
+      }
 
       if (status.phase === 'running' && status.runId === row.deploy_run_id) {
         await this.ctx.storage.setAlarm(Date.now() + OBSERVE_MS);
@@ -511,11 +615,16 @@ export class PipelineController extends DurableObject {
       return json(await this.containerJson('/stop', { method: 'POST' }).catch((error) => ({ error: error.message })));
     }
     if (path === '/do/import-accounts' && request.method === 'POST') {
-      return json(await this.containerJson('/import-accounts', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(await request.json())
-      }));
+      const body = await request.json();
+      return json(await this.saveAccountPool(body.csv));
+    }
+    if (path === '/do/accounts') {
+      const stored = this.sql.exec('SELECT row_count, imported_at FROM account_pool WHERE id = 1').toArray()[0];
+      // Reporting the container half must not start one just to answer a query.
+      const live = this.ctx.container?.running
+        ? await this.containerJson('/accounts/stats').catch(() => null)
+        : null;
+      return json({ stored: stored ?? null, container: live });
     }
     if (path === '/do/egress/refresh' && request.method === 'POST') {
       return json(await this.refreshEgress());
@@ -552,6 +661,7 @@ export default {
       ['/api/status', '/do/status'],
       ['/api/stop', '/do/stop'],
       ['/api/accounts/import', '/do/import-accounts'],
+      ['/api/accounts', '/do/accounts'],
       ['/api/egress/refresh', '/do/egress/refresh']
     ];
     for (const [prefix, target] of routes) {
