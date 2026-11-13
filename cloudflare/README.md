@@ -99,10 +99,13 @@ Repository settings it reads:
 
 The Worker profile is **not** one of these secrets. It is committed as
 `container/profile.cloudflare.toml` and uploaded from the checkout, so editing
-it is a normal pull request rather than a secret rotate. `deploy.sh` strips its
-comments before upload: a Worker secret is capped at 5 KB and the commented
-file is 5,314 bytes — over the cap, rejected by the API rather than by wrangler,
-which is a failure that only shows up after the image has been built.
+it is a normal pull request rather than a secret rotate. The file sits just
+under the 5 KB cap on a Worker secret (about 5,030 bytes), and `deploy.sh`
+strips comments and blank lines before upload anyway: the API rejects an
+oversized secret rather than wrangler, so without the guard the failure would
+only appear after the image had been built.
+`cloudflare/container/test/profile.test.mjs` asserts the raw size, so an edit
+that pushes it over fails in CI instead.
 
 ```bash
 gh secret set CLOUDFLARE_API_TOKEN
@@ -208,7 +211,9 @@ cloudflare/scripts/seed-accounts.sh ~/account-info.txt
 ```
 
 The file is POSTed verbatim; `format: "auto"` lets the CLI decide between CSV
-and the legacy `[brand]` block format. The response is counts only.
+and the legacy `[brand]` block format. The response is counts only, and the
+script exits non-zero unless rows actually landed in the pool — a stored file
+that imports zero rows is the silent failure above, not a success.
 
 ```bash
 curl -sS "$AUTOVPN_BASE_URL/api/accounts" -H "authorization: Bearer $AUTOVPN_API_TOKEN"
@@ -219,7 +224,16 @@ curl -sS "$AUTOVPN_BASE_URL/api/accounts" -H "authorization: Bearer $AUTOVPN_API
 
 A container that already has a pool is never overwritten: the live pool may
 hold rows an operator deliberately retired, and replaying the stored CSV would
-resurrect them.
+resurrect them. That cuts both ways, so the pool is synced back the other
+direction too: as soon as a measurement finishes, the DO pulls the container's
+pool (`/accounts/export`) and replaces its stored copy. The retirement of a
+credential the vendor rejected is the one thing that accumulates across nights,
+and without the export tomorrow's replay would put it straight back into
+rotation.
+
+A run does not start at all if the replay imports nothing: it finishes as
+`failed` with `account pool could not be replayed`, rather than spending the
+night logging `no active account`.
 
 ## Operating it
 

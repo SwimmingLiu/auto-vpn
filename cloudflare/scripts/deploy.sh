@@ -81,12 +81,13 @@ node "$ROOT/scripts/ensure-pages-project.mjs" "$PROFILE_PROJECT"
 # `wrangler secret put` reads stdin, which keeps the value out of the process
 # table and out of shell history.
 #
-# A Worker secret is capped at 5 KB, and the commented profile is 5,314 bytes —
-# over the cap. Wrangler does not check that locally; the API rejects the upload,
-# so the first symptom is a deploy that fails after the image build. Comments
-# and blank lines carry no meaning for the CLI, so they are stripped before the
-# value is handed over. A full-line `#` inside a multi-line TOML string would be
-# content, not a comment, so the profile is checked for those first.
+# A Worker secret is capped at 5 KB. The profile is kept under that with room
+# to spare, and the size is asserted again below after stripping: wrangler does
+# not check it locally, and the API rejects the upload, so the first symptom
+# would be a deploy that fails after the image build. Comments and blank lines
+# carry no meaning for the CLI, so they are stripped before the value is handed
+# over. A full-line `#` inside a multi-line TOML string would be content, not a
+# comment, so the profile is checked for those first.
 SECRET_PROFILE="$CONTAINER_PROFILE"
 if grep -q '"""' "$CONTAINER_PROFILE"; then
   echo "$CONTAINER_PROFILE uses a multi-line TOML string; comment stripping is unsafe" >&2

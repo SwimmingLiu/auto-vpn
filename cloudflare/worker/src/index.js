@@ -48,10 +48,19 @@ const READY_TIMEOUT_MS = 60 * 1000;
  */
 const MAX_RUN_MS = 3 * 60 * 60 * 1000;
 
+/**
+ * Operator-tunable settings.
+ *
+ * There is deliberately no `source_runtime_seconds` here. On the VPS that knob
+ * is read by `daily-run.sh`, which rewrites each source's `max_runtime_seconds`
+ * in a staged copy of the profile before the run. On Cloudflare the profile
+ * already carries `max_runtime_seconds = 900` per source, and a setting nothing
+ * reads is worse than no setting: it reads like a bound on the crawl that does
+ * not exist.
+ */
 const DEFAULT_SETTINGS = {
   enabled: true,
   min_final_nodes: 50,
-  source_runtime_seconds: 900,
   probe_url: 'https://www.16863988.com/'
 };
 /** A run moves through these phases; `step()` is driven entirely by this. */
@@ -148,9 +157,19 @@ export class PipelineController extends DurableObject {
         id INTEGER PRIMARY KEY CHECK (id = 1),
         csv TEXT NOT NULL,
         imported_at TEXT NOT NULL,
-        row_count INTEGER NOT NULL DEFAULT 0
+        row_count INTEGER NOT NULL DEFAULT 0,
+        format TEXT NOT NULL DEFAULT 'auto'
       );
     `);
+    // A table created by an earlier deploy has no `format` column, and
+    // `CREATE TABLE IF NOT EXISTS` will not add one. The pool survives a
+    // redeploy, and a stored file that was never labelled must replay as
+    // `auto` — the value that reads both shapes.
+    const columns = this.sql.exec('PRAGMA table_info(account_pool)').toArray()
+      .map((column) => String(column.name ?? ''));
+    if (columns.length > 0 && !columns.includes('format')) {
+      this.sql.exec("ALTER TABLE account_pool ADD COLUMN format TEXT NOT NULL DEFAULT 'auto'");
+    }
   }
 
   /**
@@ -163,53 +182,128 @@ export class PipelineController extends DurableObject {
    * pushed back before a run needs it.
    */
   async restoreAccountPool() {
-    const stored = this.sql.exec('SELECT csv, row_count FROM account_pool WHERE id = 1').toArray()[0];
-    if (!stored) return { restored: false, reason: 'no stored pool' };
+    const stored = this.sql.exec('SELECT csv, row_count, format FROM account_pool WHERE id = 1').toArray()[0];
+    if (!stored) {
+      // Not a no-op: a deployment with no pool produces a night of "no active
+      // account" and a held gate. Say what to do instead.
+      return {
+        restored: false,
+        failed: true,
+        reason: 'no account pool has been seeded; run cloudflare/scripts/seed-accounts.sh first'
+      };
+    }
 
     const stats = await this.containerJson('/accounts/stats').catch(() => null);
-    // A pool that is already populated is newer than the stored copy (a run may
-    // have disabled or expired rows since), so replaying would lose that.
-    if (stats && Number(stats.active ?? 0) > 0) {
-      return { restored: false, reason: 'container already has a pool', active: stats.active };
+    // Replay whenever the container's pool is empty *or unreadable*. The import
+    // is an upsert, so replaying is safe; skipping is not. `active > 0` was the
+    // old test and it resurrected every row the previous night's run had
+    // retired: rows exist, none are active, so the operator's original file was
+    // replayed and 150 dead credentials went back into rotation.
+    if (stats && Number(stats.total ?? 0) > 0) {
+      return { restored: false, reason: 'container already has a pool', total: stats.total };
     }
     const result = await this.containerJson('/import-accounts', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ csv: stored.csv, format: 'csv' })
+      // The stored shape travels with the bytes: a legacy `[brand]` file read
+      // as CSV imports zero rows and reports success, which is the silent
+      // empty-pool failure this whole table exists to prevent.
+      body: JSON.stringify({ csv: stored.csv, format: String(stored.format ?? 'auto') })
     });
+    const imported = Number(result.imported ?? 0);
     this.recordEvent('system', 'account_pool_restored', {
       rows: Number(stored.row_count ?? 0),
-      imported: Number(result.imported ?? 0),
+      imported,
       exit_code: Number(result.exitCode ?? -1)
     });
-    return { restored: true, rows: Number(result.imported ?? 0) };
+    if (imported <= 0 || result.ok === false) {
+      // Zero rows is not "restored". The crawl would start, find no account,
+      // and hold the gate with a green schedule — the failure this table exists
+      // to make impossible.
+      return {
+        restored: false,
+        deferred: false,
+        failed: true,
+        reason: `the container imported 0 of the ${stored.row_count} stored rows: ${String(result.stderr ?? '').slice(-300) || 'no detail'}`
+      };
+    }
+    return { restored: true, rows: imported, format: String(stored.format ?? 'auto') };
+  }
+
+  /**
+   * Replace the stored pool with the container's current one.
+   *
+   * A run retires every credential a vendor rejects, and that retirement is
+   * the only thing that accumulates across nights. The container's disk does
+   * not survive it, so the result is pulled back here after the measurement —
+   * otherwise tomorrow's replay resurrects the dead rows and the crawl spends
+   * its budget rediscovering them.
+   */
+  async syncAccountPool() {
+    const exported = await this.containerJson('/accounts/export').catch(() => null);
+    if (!exported?.present || !String(exported.csv ?? '').trim()) {
+      return { synced: false, reason: exported?.error ?? 'container has no pool to export' };
+    }
+    const rowCount = Number(exported.rows ?? 0);
+    this.sql.exec(
+      `INSERT INTO account_pool (id, csv, imported_at, row_count, format) VALUES (1, ?, ?, ?, 'csv')
+       ON CONFLICT(id) DO UPDATE SET csv = excluded.csv,
+         imported_at = excluded.imported_at, row_count = excluded.row_count,
+         format = excluded.format`,
+      String(exported.csv),
+      new Date().toISOString(),
+      rowCount
+    );
+    this.recordEvent('system', 'account_pool_synced', { rows: rowCount });
+    return { synced: true, rows: rowCount };
   }
 
   /** Store the pool so `restoreAccountPool()` can replay it after a restart. */
-  async saveAccountPool(csv) {
+  async saveAccountPool(csv, format = 'auto') {
     const text = String(csv ?? '');
     if (!text.trim()) throw new Error('csv is required');
+    // `auto` is the safe default: `parseAccountFile` picks the reader from the
+    // first meaningful line, so both the CSV export and the legacy `[brand]`
+    // block file import. Pinning 'csv' here would reject the legacy file with
+    // "header is missing brand, account, password" while still storing it.
+    const shape = ['auto', 'csv', 'legacy'].includes(String(format)) ? String(format) : 'auto';
     const rowCount = Math.max(0, text.split('\n').filter((line) => line.trim()).length - 1);
     // Persist first. The durable copy is what matters: if the container is
     // unreachable right now, the pool still survives and is replayed on the
     // next boot, which is strictly better than failing the import.
     this.sql.exec(
-      `INSERT INTO account_pool (id, csv, imported_at, row_count) VALUES (1, ?, ?, ?)
+      `INSERT INTO account_pool (id, csv, imported_at, row_count, format) VALUES (1, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET csv = excluded.csv,
-         imported_at = excluded.imported_at, row_count = excluded.row_count`,
+         imported_at = excluded.imported_at, row_count = excluded.row_count,
+         format = excluded.format`,
       text,
       new Date().toISOString(),
-      rowCount
+      rowCount,
+      shape
     );
     try {
       const result = await this.containerJson('/import-accounts', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ csv: text, format: 'csv' })
+        body: JSON.stringify({ csv: text, format: shape })
       });
-      return { rows: rowCount, stored: true, imported: Number(result.imported ?? 0), accounts: result.accounts };
+      // A non-zero exit does not by itself mean nothing landed: the CLI exits 1
+      // when *some* rows were rejected among hundreds that imported fine.
+      // `ok` is the container's normalised verdict — zero usable rows, or a
+      // file whose shape it could not read at all.
+      if (result.ok === false) {
+        return {
+          rows: rowCount,
+          stored: true,
+          imported: 0,
+          failed: true,
+          exitCode: Number(result.exitCode ?? 1),
+          reason: `the container imported no rows: ${String(result.stderr ?? result.reason ?? '').slice(-400) || 'see container log'}`
+        };
+      }
+      return { rows: rowCount, stored: true, format: shape, imported: Number(result.imported ?? 0), accounts: result.accounts };
     } catch (error) {
-      return { rows: rowCount, stored: true, imported: 0, deferred: true, reason: error.message };
+      return { rows: rowCount, stored: true, deferred: true, reason: error.message };
     }
   }
 
@@ -378,6 +472,14 @@ export class PipelineController extends DurableObject {
       // starts, or every source reports "no active account".
       const pool = await this.restoreAccountPool().catch((error) => ({ restored: false, reason: error.message }));
       this.recordEvent(id, 'account_pool_ready', pool);
+      // A *deferred* replay is the silent failure this deployment exists to
+      // avoid: the crawl starts, every source finds no account, final_links is
+      // 0 and the gate holds with a green schedule. A container that cannot
+      // take the pool is not ready to crawl, so the run stops here and says so.
+      if (pool.deferred || pool.failed) {
+        this.finish(id, 'failed', `account pool could not be replayed: ${pool.reason ?? 'unknown'}`);
+        return { runId: id, started: false, reason: `account pool not restored: ${pool.reason ?? 'unknown'}` };
+      }
 
       // The container builds the egress pool itself as the first step of the run,
       // so the pool it uses is the pool that run recorded. The DO only hands over
@@ -511,6 +613,11 @@ export class PipelineController extends DurableObject {
         runId
       );
       this.recordEvent(runId, 'measurement_done', { final_links: finalLinks, artifact_dir: artifactDir });
+      // Pull the pool back while the container is still running: the run just
+      // retired every credential the vendors rejected, and that is the one
+      // piece of state whose loss costs tomorrow's crawl real time.
+      const pool = await this.syncAccountPool().catch((error) => ({ synced: false, reason: error.message }));
+      this.recordEvent(runId, 'account_pool_after_run', pool);
       // Fall through to the gate in the same step so a short run does not wait
       // an extra fourteen minutes for nothing.
       return this.step(runId);
@@ -760,10 +867,10 @@ export class PipelineController extends DurableObject {
     }
     if (path === '/do/import-accounts' && request.method === 'POST') {
       const body = await request.json();
-      return json(await this.saveAccountPool(body.csv));
+      return json(await this.saveAccountPool(body.csv, body.format));
     }
     if (path === '/do/accounts') {
-      const stored = this.sql.exec('SELECT row_count, imported_at FROM account_pool WHERE id = 1').toArray()[0];
+      const stored = this.sql.exec('SELECT row_count, imported_at, format FROM account_pool WHERE id = 1').toArray()[0];
       // Reporting the container half must not start one just to answer a query.
       const live = this.ctx.container?.running
         ? await this.containerJson('/accounts/stats').catch(() => null)

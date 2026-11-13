@@ -51,7 +51,9 @@ await check('settings default to the schedule the VPS used', async () => {
   expect(response.ok, `expected 200, got ${response.status}`);
   const settings = await response.json();
   expect(settings.min_final_nodes === 50, `min_final_nodes=${settings.min_final_nodes}`);
-  expect(settings.source_runtime_seconds === 900, `source_runtime_seconds=${settings.source_runtime_seconds}`);
+  // The crawl budget is per source in the profile (`max_runtime_seconds`);
+  // this Worker deliberately carries no second knob for it.
+  expect(settings.source_runtime_seconds === undefined, `unexpected source_runtime_seconds=${settings.source_runtime_seconds}`);
   return JSON.stringify(settings);
 });
 

@@ -8,17 +8,16 @@
 #      must not touch the subscription already in service.
 #   2. `min_final_links` agrees with the Durable Object gate (the VPS carried
 #      three thresholds, two of them dead).
-#   3. `min_iterations` is 24, not 10000. `max_runtime_seconds` and
-#      `plateau_limit` are only consulted at or past `min_iterations`, so a
-#      floor of 10,000 makes both decorative — the loop is floor-gated to
-#      10,000 rounds. 24 = one sweep of the default area list at 8/round.
+#   3. `min_iterations` is 24, not 10000: `max_runtime_seconds` and
+#      `plateau_limit` are only consulted at or past it, so a 10,000 floor makes
+#      both decorative. 24 = one sweep of the default area list at 8/round.
 #   4. Writes only to the scratch project; credentials arrive as Worker secrets
 #      and are written to the volume at boot by `installProfile()`.
 #
-# Sources in `credential` mode need only a location and lease their account
-# from the pool at extract time, so no `url`/`key` appears here: a hardcoded
-# evmess URL would bypass the pool and go stale when the vendor rotates a
-# domain, which they do weekly.
+# `credential` sources need only a location and lease an account from the pool
+# at extract time, so no `url`/`key` appears: a hardcoded evmess URL would
+# bypass the pool and go stale when the vendor rotates a domain, weekly.
+# `test/profile.test.mjs` asserts the budget floor and the claude URL below.
 
 [sources.leiting]
 mode = "credential"
@@ -99,7 +98,10 @@ allowed_hosts = ["chatgpt.com", "chat.openai.com", "auth.openai.com", "login.ope
 negative_phrases = ["unsupported country", "unsupported region", "country, region, or territory", "not available in your country"]
 
 [availability_targets.claude]
-url = "https://claude.ai/"
+# Must be /cdn-cgi/trace: the claude parser reads a `loc=` line. https://claude.ai/
+# answers 403 with a challenge page through every exit tested (37 live nodes),
+# and a 403 HTML body has no `loc=` — no candidate would pass.
+url = "https://claude.ai/cdn-cgi/trace"
 enabled = true
 allowed_hosts = ["claude.ai", "support.anthropic.com"]
 negative_phrases = ["unavailable in your region", "supported regions", "physically located in one of our supported regions", "outside of our supported locations"]

@@ -26,6 +26,7 @@ import http from 'node:http';
 import path from 'node:path';
 
 import { EgressSupervisor, DEFAULT_PROBE_HOST } from './egress.mjs';
+import { secretQueryMismatch } from './profile-guard.mjs';
 import { completedSummary } from './run-log.mjs';
 
 const PORT = Number(process.env.PORT || 8080);
@@ -184,6 +185,27 @@ async function prepareEgressForRun(options) {
   }
 }
 
+/**
+ * The Worker template a run will render, resolved the way the CLI does.
+ *
+ * `resolveWorkerTemplatePath` checks `<projectRoot>/templates/vmess_node.js`
+ * before the packaged copy, and the Dockerfile puts the packaged copy there —
+ * so this is normally the same file either way. Both are tried because a run
+ * against a mounted project tree must check the file that run will actually
+ * use, not the one baked into the image.
+ */
+async function workerTemplateSource() {
+  const candidates = [
+    path.join(PROJECT_ROOT, 'templates', 'vmess_node.js'),
+    '/usr/local/lib/node_modules/@swimmingliu/autovpn/dist/templates/vmess_node.js'
+  ];
+  for (const candidate of candidates) {
+    const text = await readFile(candidate, 'utf8').catch(() => '');
+    if (text) return { path: candidate, text };
+  }
+  return { path: '', text: '' };
+}
+
 async function startRun(options) {
   if (child && state.phase === 'running') {
     return { started: false, reason: 'a run is already in progress', state };
@@ -193,12 +215,30 @@ async function startRun(options) {
 
   // A run may only start with a profile in place; the deploy stage would
   // otherwise fail at the very end of an hour-long measurement.
+  let profileText = '';
   if (mode === 'deploy' || mode === 'run') {
     const installed = await installProfile(options.profileToml ?? process.env.AUTOVPN_PROFILE_TOML);
     if (installed.reason === 'nosupply') {
       const existing = await readFile(path.join(RUNTIME_ROOT, 'profile.toml'), 'utf8').catch(() => '');
       if (!existing.trim()) return { started: false, reason: 'no profile installed on the volume' };
+      profileText = existing;
+    } else {
+      profileText = String(options.profileToml ?? process.env.AUTOVPN_PROFILE_TOML ?? '');
     }
+  }
+
+  // The bundle bakes the secret key into the Worker source. A profile whose
+  // `secret_query` disagrees with the template's guard publishes a Worker that
+  // ignores the URL the profile advertises and still returns success from
+  // every stage — found at publish time, it costs a night and a live
+  // subscription; found here, it costs a message.
+  if (mode === 'run') {
+    const template = await workerTemplateSource();
+    if (!template.text) {
+      return { started: false, reason: 'no Worker template found to build the bundle from' };
+    }
+    const mismatch = secretQueryMismatch(profileText, template.text);
+    if (mismatch) return { started: false, reason: mismatch };
   }
 
   await mkdir(RUN_LOG_DIR, { recursive: true });
@@ -389,7 +429,14 @@ async function importAccounts(body) {
   } catch {
     parsed = { ok: code === 0, raw: last.slice(0, 2000) };
   }
-  return { exitCode: code, ...parsed, stderr: stderr.slice(-2000) };
+  // The CLI reports `parsed` (rows the file yielded) and an outcome breakdown,
+  // not `imported`. It also exits 1 when *some* rows were rejected while the
+  // rest imported — a legacy file with two malformed lines among 631 — so the
+  // exit code alone cannot mean "nothing landed". Add one unambiguous number
+  // and one unambiguous verdict; they come after the spread so they win.
+  const imported = Number(parsed.parsed ?? 0);
+  const ok = parsed.ok !== false && imported > 0;
+  return { ...parsed, exitCode: code, ok, imported, stderr: stderr.slice(-2000) };
 }
 
 /** Report the pool only as counts; the rows themselves are credentials. */
@@ -416,6 +463,40 @@ async function accountStats() {
   } catch {
     return { present: true, total: -1, active: -1 };
   }
+}
+
+/**
+ * Export the live pool as CSV.
+ *
+ * The pool is the only state a run *changes*: every rejected credential is
+ * retired in place. Those retirements live in this container's sqlite and are
+ * wiped with it, so without an export the next boot replays the operator's
+ * original file and puts every dead account back into rotation — the crawl then
+ * spends its budget rediscovering them, night after night.
+ */
+async function exportAccounts() {
+  const dbPath = path.join(RUNTIME_ROOT, 'accounts.db');
+  try {
+    await stat(dbPath);
+  } catch {
+    return { present: false, rows: 0, csv: '' };
+  }
+  const target = path.join(RUNTIME_ROOT, `accounts-export-${Date.now()}.csv`);
+  const proc = spawn(NODE_BIN, [
+    CLI_ENTRY, 'accounts', 'export', target,
+    '--project-root', PROJECT_ROOT,
+    '--output', 'jsonl'
+  ], { cwd: PROJECT_ROOT, env: childEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
+  let stdout = '';
+  proc.stdout?.on('data', (chunk) => { stdout += String(chunk); });
+  let stderr = '';
+  proc.stderr?.on('data', (chunk) => { stderr += String(chunk); });
+  const code = await new Promise((resolve) => proc.on('close', resolve));
+  if (code !== 0) {
+    return { present: true, rows: 0, csv: '', error: `accounts export exited ${code}: ${stderr.slice(-400)}` };
+  }
+  const csv = await readFile(target, 'utf8');
+  return { present: true, rows: Math.max(0, csv.split('\n').filter((line) => line.trim()).length - 1), csv };
 }
 
 async function route(request, response) {
@@ -470,6 +551,10 @@ async function route(request, response) {
 
   if (request.method === 'GET' && url.pathname === '/accounts/stats') {
     return json(response, 200, await accountStats());
+  }
+
+  if (request.method === 'GET' && url.pathname === '/accounts/export') {
+    return json(response, 200, await exportAccounts());
   }
 
   return json(response, 404, { error: 'not found', path: url.pathname });

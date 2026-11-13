@@ -55,8 +55,16 @@ console.log("stored rows:   ", payload.rows ?? "?");
 console.log("imported:      ", payload.imported ?? "?");
 console.log("container pool:", container.present ? `${container.active}/${container.total} active` : "not started yet");
 if (payload.deferred) console.log("note: the container was not reachable; the pool is stored and will be replayed on the next boot");
-if (payload.exitCode && payload.exitCode !== 0) {
-  console.error("import exited", payload.exitCode, payload.stderr ?? "");
+// A stored file is not an imported pool. The whole point of this script is to
+// leave the deployment with usable credentials, so anything that did not put
+// rows into rotation exits non-zero — otherwise the schedule stays green for
+// days while every source logs "no active account".
+if (payload.failed || (payload.exitCode && payload.exitCode !== 0)) {
+  console.error("import rejected:", payload.reason ?? payload.stderr ?? `exit ${payload.exitCode}`);
+  process.exit(1);
+}
+if (!payload.deferred && !(Number(payload.imported) > 0)) {
+  console.error("the file parsed to zero importable rows; check brand/account/password columns");
   process.exit(1);
 }
 ' "$RESPONSE"

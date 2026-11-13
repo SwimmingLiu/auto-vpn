@@ -185,8 +185,11 @@ test('settings round-trip and unknown keys are ignored', async () => {
   const updated = controller.putSettings({ min_final_nodes: 12, nonsense: 'x' });
   assert.equal(updated.min_final_nodes, 12);
   assert.equal(updated.nonsense, undefined);
-  // Unset keys keep their defaults.
-  assert.equal(updated.source_runtime_seconds, 900);
+  // Unset keys keep their defaults. There is no `source_runtime_seconds`: the
+  // crawl budget is `max_runtime_seconds` in the profile, and a setting nothing
+  // reads would look like it bounds the run.
+  assert.equal(updated.min_final_nodes, 12);
+  assert.equal(updated.source_runtime_seconds, undefined);
 });
 
 test('disabled settings skip the run entirely', async () => {
@@ -271,6 +274,131 @@ test('the account pool is replayed into an empty container', async () => {
   assert.equal(result.restored, true);
   assert.equal(result.rows, 2);
   assert.match(imported.csv, /^brand,account,password/);
+  // `auto` reads both shapes; a stored file from before this column existed
+  // has no label and must not be forced through the CSV reader.
+  assert.equal(imported.format, 'auto');
+  assert.equal(result.format, 'auto');
+});
+
+test('a legacy [brand] pool replays as auto, not as CSV', async () => {
+  const { PipelineController } = await loadWorker();
+  const { ctx } = await makeHarness();
+  const controller = stubContainer(new PipelineController(ctx, {}));
+  let imported = null;
+  controller.containerJson = async (pathname, init) => {
+    if (pathname === '/accounts/stats') return { present: false, total: 0, active: 0 };
+    if (pathname === '/import-accounts') {
+      imported = JSON.parse(init.body);
+      return { exitCode: 0, imported: 2, accounts: { present: true, total: 2, active: 2 } };
+    }
+    return {};
+  };
+  await controller.saveAccountPool('[雷霆加速器]\n官网：https://www.68123836.com\n账号：a\n密码：b\n', 'auto');
+  assert.equal(imported.format, 'auto');
+  // The stored shape travels with the bytes; replaying the legacy file as CSV
+  // imports zero rows and still reports the file as stored.
+  const stored = controller.sql.exec('SELECT format FROM account_pool WHERE id = 1').toArray()[0];
+  assert.equal(stored.format, 'auto');
+  await controller.restoreAccountPool();
+  assert.equal(imported.format, 'auto');
+});
+
+test('an unknown import format falls back to auto instead of reaching the CLI', async () => {
+  const { PipelineController } = await loadWorker();
+  const { ctx } = await makeHarness();
+  const controller = stubContainer(new PipelineController(ctx, {}));
+  let received = null;
+  controller.containerJson = async (pathname, init) => {
+    if (pathname === '/import-accounts') { received = JSON.parse(init.body); return { exitCode: 0, imported: 1 }; }
+    return {};
+  };
+  await controller.saveAccountPool('a,b\nc,d\n', 'excel');
+  assert.equal(received.format, 'auto');
+});
+
+test('an import the CLI rejects is reported as failed, not stored', async () => {
+  const { PipelineController } = await loadWorker();
+  const { ctx } = await makeHarness();
+  const controller = stubContainer(new PipelineController(ctx, {}));
+  controller.containerJson = async (pathname) => {
+    if (pathname === '/import-accounts') {
+      return {
+        exitCode: 1,
+        ok: false,
+        imported: 0,
+        stderr: 'header is missing brand, account, password'
+      };
+    }
+    return {};
+  };
+  const result = await controller.saveAccountPool('[not a csv]\nx\n');
+  // The bytes are kept — they are not lost — but the caller must not read this
+  // as a working pool.
+  assert.equal(result.stored, true);
+  assert.equal(result.failed, true);
+  assert.equal(result.imported, 0);
+  assert.match(result.reason, /imported no rows/);
+});
+
+test('a replay that imports nothing fails the run instead of starting it', async () => {
+  const { PipelineController } = await loadWorker();
+  const { ctx } = await makeHarness();
+  const controller = stubContainer(new PipelineController(ctx, {}));
+  controller.ensureContainer = async () => ({});
+  controller.containerJson = async (pathname) => {
+    if (pathname === '/accounts/stats') return { present: false, total: 0, active: 0 };
+    if (pathname === '/import-accounts') return { exitCode: 1, ok: false, imported: 0, stderr: 'no usable rows' };
+    if (pathname === '/run') throw new Error('the crawl must not start with an empty pool');
+    return {};
+  };
+  controller.sql.exec(
+    "INSERT INTO account_pool (id, csv, imported_at, row_count) VALUES (1, 'junk', '2026-01-01', 631)"
+  );
+  const result = await controller.startDailyRun({ runId: 'poolless' });
+  // Starting anyway produces a night of "no active account", final_links = 0,
+  // a held gate and a green schedule. Failing loudly is the only outcome an
+  // operator can act on.
+  assert.equal(result.started, false);
+  assert.match(result.reason, /account pool not restored/);
+  assert.equal(controller.runRow('poolless').status, 'failed');
+});
+
+test('the post-run pool replaces the stored one so retirements survive', async () => {
+  const { PipelineController } = await loadWorker();
+  const { ctx } = await makeHarness();
+  const controller = stubContainer(new PipelineController(ctx, {}));
+  controller.containerJson = async (pathname) => {
+    if (pathname === '/accounts/export') {
+      return {
+        present: true,
+        rows: 2,
+        csv: 'brand,account,password,official_site,expires_at,status,note\nleiting,a,1,,,active,\nheidong,b,2,,,invalid,\n'
+      };
+    }
+    return {};
+  };
+  const result = await controller.syncAccountPool();
+  assert.equal(result.synced, true);
+  assert.equal(result.rows, 2);
+  const stored = controller.sql.exec('SELECT row_count, format, csv FROM account_pool WHERE id = 1').toArray()[0];
+  assert.equal(stored.row_count, 2);
+  // It is a CSV export now, whatever the operator originally uploaded.
+  assert.equal(stored.format, 'csv');
+  assert.match(stored.csv, /heidong,b,2,,,invalid,/);
+});
+
+test('a container with no pool to export leaves the stored one alone', async () => {
+  const { PipelineController } = await loadWorker();
+  const { ctx } = await makeHarness();
+  const controller = stubContainer(new PipelineController(ctx, {}));
+  controller.containerJson = async () => ({ present: false, rows: 0, csv: '' });
+  controller.sql.exec(
+    "INSERT INTO account_pool (id, csv, imported_at, row_count) VALUES (1, 'original', '2026-01-01', 5)"
+  );
+  const result = await controller.syncAccountPool();
+  assert.equal(result.synced, false);
+  const stored = controller.sql.exec('SELECT csv FROM account_pool WHERE id = 1').toArray()[0];
+  assert.equal(stored.csv, 'original');
 });
 
 test('a container that already has a pool is not overwritten', async () => {
@@ -291,7 +419,29 @@ test('a container that already has a pool is not overwritten', async () => {
   // would resurrect credentials an operator deliberately retired.
   assert.equal(result.restored, false);
   assert.equal(importCalled, false);
-  assert.equal(result.active, 7);
+  assert.equal(result.total, 9);
+});
+
+test('a container with rows but none active still owns its pool', async () => {
+  const { PipelineController } = await loadWorker();
+  const { ctx } = await makeHarness();
+  const controller = stubContainer(new PipelineController(ctx, {}));
+  let importCalled = false;
+  controller.containerJson = async (pathname) => {
+    // Every row the previous night's run saw was retired: rows exist, none are
+    // in rotation. The guard is `total`, not `active` — a container that has
+    // any pooled rows has the run's own picture of them, and replaying the
+    // stored copy would undo retirements it may not agree with.
+    if (pathname === '/accounts/stats') return { present: true, total: 631, active: 0 };
+    if (pathname === '/import-accounts') { importCalled = true; return { exitCode: 0, imported: 631 }; }
+    return {};
+  };
+  controller.sql.exec(
+    "INSERT INTO account_pool (id, csv, imported_at, row_count) VALUES (1, 'csv,data', '2026-01-01', 631)"
+  );
+  const result = await controller.restoreAccountPool();
+  assert.equal(result.restored, false);
+  assert.equal(importCalled, false);
 });
 
 test('importing stores the pool before pushing it to the container', async () => {
@@ -305,7 +455,10 @@ test('importing stores the pool before pushing it to the container', async () =>
   };
   const result = await controller.saveAccountPool('brand,account\nleiting,a\nheidong,b\nmifeng,c\n');
   assert.equal(result.rows, 3);
-  assert.equal(received.format, 'csv');
+  // `auto` — the container picks the reader from the file's first line. A
+  // hard-coded 'csv' rejects the legacy [brand] file the README tells the
+  // operator to seed with.
+  assert.equal(received.format, 'auto');
   const stored = controller.sql.exec('SELECT row_count FROM account_pool WHERE id = 1').toArray()[0];
   assert.equal(stored.row_count, 3);
 });
