@@ -27,10 +27,21 @@ const probes = [
   // is not a real route; probing it returns the same 403 a missing scope does,
   // which would keep reporting MISSING even on a correctly scoped token.
   { need: 'Containers:Edit', why: 'create and push the container application', path: `/accounts/${accountId}/containers/applications` },
+  // Informational, deliberately not counted as a missing permission: a 403
+  // here means either the scope is absent or the account has no Containers
+  // entitlement, and the two are indistinguishable from this endpoint. It is
+  // printed so that "every permission ok, deploy still says Authentication
+  // error" has a visible next suspect (a Free-plan account) instead of none.
+  {
+    need: 'Containers plan',
+    why: 'informational: 403 here can also mean no Workers Paid plan',
+    path: `/accounts/${accountId}/containers/usage`,
+    optional: true
+  },
   { need: 'Account Settings:Read', why: 'resolve the account', path: `/accounts/${accountId}` },
   { need: 'Pages:Edit', why: 'the pipeline publishes a subscription', path: `/accounts/${accountId}/pages/projects` },
-  { need: 'D1:Edit', why: 'optional: the account pool', path: `/accounts/${accountId}/d1/database` },
-  { need: 'Workers KV Storage:Edit', why: 'optional: brand fingerprints', path: `/accounts/${accountId}/storage/kv/namespaces` }
+  { need: 'D1:Edit', why: 'optional: the account pool', path: `/accounts/${accountId}/d1/database`, optional: true },
+  { need: 'Workers KV Storage:Edit', why: 'optional: brand fingerprints', path: `/accounts/${accountId}/storage/kv/namespaces`, optional: true }
 ];
 
 let missing = 0;
@@ -50,15 +61,19 @@ for (const probe of probes) {
   } catch (error) {
     status = 'ERROR';
   }
-  if (status !== 'ok' && probe.need !== 'D1:Edit' && probe.need !== 'Workers KV Storage:Edit') {
+  if (status !== 'ok' && !probe.optional) {
     missing += 1;
   }
-  console.log(`  ${status.padEnd(7)} ${probe.need.padEnd(26)} ${probe.why}`);
+  console.log(`  ${status.padEnd(7)} ${probe.need.padEnd(26)} ${probe.why}${probe.optional ? ' (informational)' : ''}`);
 }
 
 console.log('');
 if (missing === 0) {
   console.log('All required permissions are present.');
+  // The one thing this table cannot settle: a Free-plan account answers 403 to
+  // every containers route no matter what the token carries.
+  console.log('If `wrangler deploy` still reports "Authentication error" with every row ok,');
+  console.log('check the plan: Containers requires Workers Paid.');
 } else {
   console.log(`${missing} required permission(s) missing.`);
   console.log('Edit the token at https://dash.cloudflare.com/profile/api-tokens and add them:');

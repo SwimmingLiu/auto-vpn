@@ -148,8 +148,32 @@ ${WRANGLER} deploy --cwd "$ROOT"
 step "smoke"
 BASE="${AUTOVPN_BASE_URL:-}"
 if [ -n "$BASE" ]; then
-  curl -fsS "$BASE/health" && echo
-  curl -fsS "$BASE/api/status" -H "authorization: Bearer $AUTOVPN_API_TOKEN" | head -c 600 && echo
+  # `/health` sits behind the bearer token, like every other route: an
+  # unauthenticated probe answers 401 on a perfectly healthy deployment.
+  #
+  # A freshly deployed Worker can 404 or 5xx for a few seconds while the route
+  # propagates, so this retries. Past the retries it fails the run on purpose:
+  # `wrangler deploy` exiting zero means the bundle was accepted, not that the
+  # thing answers.
+  smoke() {
+    curl -fsS --max-time 20 "$1" -H "authorization: Bearer $AUTOVPN_API_TOKEN"
+  }
+  ok=0
+  for attempt in 1 2 3 4 5; do
+    if smoke "$BASE/health" > /dev/null 2>&1; then ok=1; break; fi
+    sleep $((attempt * 3))
+  done
+  if [ "$ok" != "1" ]; then
+    echo "deployed, but $BASE/health never answered with the bearer token" >&2
+    echo "  check: curl -i $BASE/health -H 'authorization: Bearer <token>'" >&2
+    exit 1
+  fi
+  echo "health ok"
+  # `| head -c 600` closes the pipe early, which kills curl with SIGPIPE and
+  # would end the script under `set -e` — after the deploy already succeeded.
+  # Truncate the captured body instead of the stream.
+  status_body="$(smoke "$BASE/api/status" || true)"
+  printf '%s\n' "${status_body:0:600}"
 else
   echo "set AUTOVPN_BASE_URL to the deployed workers.dev URL to smoke-test it here."
 fi

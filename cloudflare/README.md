@@ -106,11 +106,17 @@ which is a failure that only shows up after the image has been built.
 
 ```bash
 gh secret set CLOUDFLARE_API_TOKEN
-gh secret set AUTOVPN_API_TOKEN --env-file -   # or paste a fixed random string
+# paste the value from ~/.autovpn-api-token when prompted, or:
+gh secret set AUTOVPN_API_TOKEN < ~/.autovpn-api-token
 gh secret set AUTOVPN_SUBSCRIPTION_URL
 gh variable set CLOUDFLARE_ACCOUNT_ID --body '<account id>'
 gh variable set AUTOVPN_BASE_URL --body 'https://autovpn-cloud.<subdomain>.workers.dev'
 ```
+
+`gh secret set NAME` with no `--body` reads stdin, which is the form to use for
+a raw token. `--env-file` expects dotenv `NAME=value` lines — handed a bare
+token it fails to parse, and handed a file it takes the names from the file and
+ignores the positional one.
 
 The job is bound to the `cloudflare` environment. That environment exists
 automatically on first run with no protection; add required reviewers to it in
