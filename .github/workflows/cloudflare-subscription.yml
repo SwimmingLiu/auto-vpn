@@ -21,10 +21,6 @@ on:
         description: 'Measure only; do not publish'
         type: boolean
         default: false
-      project:
-        description: 'Pages project to publish to'
-        type: string
-        default: 'autovpn-cf-deploytest'
   schedule:
     # 20:15 UTC, the same slot the Worker cron uses.
     - cron: '15 20 * * *'
@@ -154,25 +150,46 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
         run: |
-          PROJECT="${{ inputs.project || 'autovpn-cf-deploytest' }}"
           ARTIFACT="$(ls -dt "$RUNNER_TEMP"/autovpn/artifacts/* | head -1)"
+          echo "ARTIFACT=$ARTIFACT" >> "$GITHUB_ENV"
           # The deploy stage is the CLI's own: it obfuscates, bundles and
-          # uploads the exact artifact this run measured.
+          # uploads the exact artifact this run measured. It also enforces
+          # `min_final_links` against the profile, so a thin sweep still cannot
+          # replace a working subscription.
           autovpn retry-stage --project-root "$RUNNER_TEMP/autovpn" \
             --artifact-dir "$ARTIFACT" --stage deploy --output jsonl \
-            | tee "$RUNNER_TEMP/deploy.jsonl" \
-            | grep --line-buffered -E '"(stage|summary|run_failed)"' || true
-          echo "ARTIFACT=$ARTIFACT" >> "$GITHUB_ENV"
+            > "$RUNNER_TEMP/deploy.jsonl" 2>&1 || true
+          node -e '
+            const fs = require("node:fs");
+            const lines = fs.readFileSync(process.argv[1], "utf8").trim().split("\n");
+            let summary = null;
+            for (const line of lines) { try { const e = JSON.parse(line); if (e.type === "summary") summary = e; } catch {} }
+            if (!summary) { console.error("no summary in the deploy log"); process.exit(1); }
+            const d = summary.deployment ?? {};
+            console.log(`deploy rc=${d.returncode} project=${d.project_name} url=${d.pages_project_url}`);
+            // The project and URL are read back from the deploy, not assumed:
+            // a blocked project name falls back to an auto-created one, and
+            // verifying the requested name would check a host this run never
+            // touched.
+            fs.appendFileSync(process.env.GITHUB_ENV, `DEPLOY_URL=${d.pages_project_url}\n`);
+            if (summary.run_status !== "success" || Number(d.returncode ?? 1) !== 0) {
+              console.error(summary.error ?? "the deploy stage failed");
+              process.exit(1);
+            }
+          ' "$RUNNER_TEMP/deploy.jsonl"
 
       # A 200 is not success: a wrong key and a stale deployment answer 200 too.
       # Decode the body and require this run's own links to be in it.
       - name: Verify what is actually served
         if: ${{ inputs.dry_run != true }}
         run: |
-          PROJECT="${{ inputs.project || 'autovpn-cf-deploytest' }}"
-          node cloudflare/scripts/verify-published.mjs \
-            "https://${PROJECT}.pages.dev/?${{ vars.AUTOVPN_SECRET_QUERY }}" \
-            "$ARTIFACT"
+          # The key is taken from the profile the deploy used, not from a
+          # separate variable that can drift away from it.
+          SECRET_QUERY="$(sed -nE 's/^[[:space:]]*secret_query[[:space:]]*=[[:space:]]*"([^"]*)".*/\1/p' \
+            cloudflare/container/profile.cloudflare.toml | head -1)"
+          if [ -z "$SECRET_QUERY" ]; then echo "the profile has no secret_query" >&2; exit 1; fi
+          if [ -z "$DEPLOY_URL" ]; then echo "the deploy reported no pages_project_url" >&2; exit 1; fi
+          node cloudflare/scripts/verify-published.mjs "${DEPLOY_URL}/?${SECRET_QUERY}" "$ARTIFACT"
 
       - name: Upload the run log
         if: always()
