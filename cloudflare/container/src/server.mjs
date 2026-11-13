@@ -26,6 +26,7 @@ import http from 'node:http';
 import path from 'node:path';
 
 import { EgressSupervisor, DEFAULT_PROBE_HOST } from './egress.mjs';
+import { completedSummary } from './run-log.mjs';
 
 const PORT = Number(process.env.PORT || 8080);
 const RUNTIME_ROOT = process.env.VPN_AUTOMATION_RUNTIME_ROOT || '/data/auto-vpn';
@@ -204,6 +205,27 @@ async function startRun(options) {
 
   const runId = String(options.runId ?? `run-${Date.now()}`);
   const logPath = path.join(RUN_LOG_DIR, `${runId}.jsonl`);
+
+  // This id already produced a verdict. Re-running would deploy the same
+  // artifact a second time; report the existing result instead, so the caller
+  // can drain that log and reach the same conclusion.
+  const previous = await completedSummary(logPath);
+  if (previous) {
+    Object.assign(state, {
+      runId,
+      mode,
+      phase: previous.run_status === 'success' ? 'succeeded' : 'failed',
+      exitCode: previous.run_status === 'success' ? 0 : 1,
+      artifactDir: String(options.artifactDir ?? previous.artifact_dir ?? ''),
+      error: previous.run_status === 'success' ? '' : String(previous.error ?? 'previous attempt failed'),
+      logPath,
+      stage: '',
+      egress: state.egress
+    });
+    await persistState();
+    return { started: true, replayed: true, runId, state };
+  }
+
   // A retried run must not read the previous attempt's events as its own.
   await writeFile(logPath, '', 'utf8');
 
