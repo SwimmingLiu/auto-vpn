@@ -60,7 +60,31 @@ export class PipelineController extends DurableObject {
       if (this.ctx.container?.running) {
         await this.ctx.container.setInactivityTimeout(INACTIVITY_TIMEOUT_MS);
       }
+      await this.reconcileOrphanAlarm();
     });
+  }
+
+  /**
+   * Re-arm a run whose alarm was lost.
+   *
+   * A row stuck in `running` with no pending alarm blocks every future run:
+   * `startDailyRun` refuses while any run is running, and nothing else would
+   * ever advance this one. That state is invisible from the outside — the
+   * alarm is exactly the thing that would report it — so it is repaired here,
+   * on every object wake, rather than left for an operator to notice.
+   */
+  async reconcileOrphanAlarm() {
+    const run = this.sql.exec(
+      "SELECT run_id FROM runs WHERE status = 'running' ORDER BY started_at DESC LIMIT 1"
+    ).toArray()[0];
+    if (!run) return;
+    const pending = await this.ctx.storage.getAlarm();
+    if (pending === null) {
+      await this.ctx.storage.setAlarm(Date.now() + OBSERVE_MS);
+      this.recordEvent(run.run_id, 'alarm_rearmed', {
+        reason: 'a running row had no pending alarm'
+      });
+    }
   }
 
   schema() {
@@ -242,7 +266,16 @@ export class PipelineController extends DurableObject {
 
   async containerJson(pathname, init = {}) {
     const response = await this.containerFetch(pathname, init);
-    if (!response.ok) throw new Error(`${pathname} -> ${response.status}`);
+    if (!response.ok) {
+      // A 409 from `/run` means the container already has a run in flight —
+      // a state this call has to tell apart from a broken container, because
+      // the caller's "wait it out" branch depends on it. The status code is
+      // the only signal, so it is carried on the error rather than flattened
+      // into a message.
+      const error = new Error(`${pathname} -> ${response.status}`);
+      error.status = response.status;
+      throw error;
+    }
     return response.json();
   }
 
@@ -286,62 +319,80 @@ export class PipelineController extends DurableObject {
     if (active) return { skipped: true, reason: `run ${active.run_id} still running` };
 
     const id = String(runId || new Date().toISOString().replace(/[:.]/g, '-'));
-    this.sql.exec(
+    // `ON CONFLICT DO NOTHING` means a replayed cron for an id already on file
+    // inserts nothing — but the code below then drives whatever row is there.
+    // Report that instead of pretending a new run started: the caller's
+    // event log would otherwise attribute the old attempt's events to this one.
+    const inserted = this.sql.exec(
       `INSERT INTO runs (run_id, status, phase, started_at) VALUES (?, 'running', 'measuring', ?)
        ON CONFLICT(run_id) DO NOTHING`,
       id,
       new Date().toISOString()
     );
+    if (Number(inserted.rowsWritten ?? 0) === 0) {
+      return { skipped: true, reason: `run ${id} already exists` };
+    }
     this.recordEvent(id, 'run_requested', { run_id: id, trigger });
 
-    await this.ensureContainer();
+    // Arm the wakeup *before* touching the container.
+    //
+    // Everything between here and the alarm at the end of this method can
+    // throw: a cold container can miss READY_TIMEOUT_MS, `/run` can answer
+    // 409 or 500. Any throw used to leave a `running` row that no alarm would
+    // ever advance, and `startDailyRun` refuses to start while any run is
+    // running — so one slow boot silently disabled every future night. With
+    // the alarm already armed, the same throw is picked up by `alarm()`, which
+    // retries and eventually fails the run.
+    await this.ctx.storage.setAlarm(Date.now() + OBSERVE_MS);
 
-    // A fresh container has no pool; replay the stored one before the crawl
-    // starts, or every source reports "no active account".
-    const pool = await this.restoreAccountPool().catch((error) => ({ restored: false, reason: error.message }));
-    this.recordEvent(id, 'account_pool_ready', pool);
+    try {
+      await this.ensureContainer();
 
-    // The container builds the egress pool itself as the first step of the run,
-    // so the pool it uses is the pool that run recorded. The DO only hands over
-    // where the subscription lives.
-    const started = await this.containerJson('/run', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        runId: id,
-        mode: 'run',
-        skipDeploy: true,
-        skipVerify: true,
-        subscriptionUrl: this.env.SUBSCRIPTION_URL,
-        probeUrl: settings.probe_url,
-        // Delivered on every start: an operator edits one Worker secret and the
-        // next run uses it, with no image rebuild and no volume edit.
-        profileToml: this.env.AUTOVPN_PROFILE_TOML,
-        cloudflareApiToken: this.env.CLOUDFLARE_API_TOKEN
-      })
-    });
-    if (!started.started) {
-      this.recordEvent(id, 'run_rejected', started);
+      // A fresh container has no pool; replay the stored one before the crawl
+      // starts, or every source reports "no active account".
+      const pool = await this.restoreAccountPool().catch((error) => ({ restored: false, reason: error.message }));
+      this.recordEvent(id, 'account_pool_ready', pool);
+
+      // The container builds the egress pool itself as the first step of the run,
+      // so the pool it uses is the pool that run recorded. The DO only hands over
+      // where the subscription lives.
+      const started = await this.containerJson('/run', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          runId: id,
+          mode: 'run',
+          skipDeploy: true,
+          skipVerify: true,
+          subscriptionUrl: this.env.SUBSCRIPTION_URL,
+          probeUrl: settings.probe_url,
+          // Delivered on every start: an operator edits one Worker secret and the
+          // next run uses it, with no image rebuild and no volume edit.
+          profileToml: this.env.AUTOVPN_PROFILE_TOML,
+          cloudflareApiToken: this.env.CLOUDFLARE_API_TOKEN
+        })
+      });
+      if (!started.started) {
+        this.recordEvent(id, 'run_rejected', started);
+        this.finish(id, 'failed', String(started.reason ?? ''));
+        return { runId: id, ...started };
+      }
+      const egress = started.state?.egress ?? {};
+      this.recordEvent(id, 'egress_ready', egress);
       this.sql.exec(
-        'UPDATE runs SET status = ?, error = ?, finished_at = ? WHERE run_id = ?',
-        'failed',
-        String(started.reason ?? ''),
-        new Date().toISOString(),
+        'UPDATE runs SET egress_mode = ?, egress_nodes = ? WHERE run_id = ?',
+        String(egress.mode ?? ''),
+        Number(egress.nodes_healthy ?? 0),
         id
       );
-      return { runId: id, ...started };
+      return { runId: id, started: true, egress };
+    } catch (error) {
+      // The run cannot start, so it is not allowed to sit in `running`: that
+      // is what blocks the next night. The alarm stays armed harmlessly; the
+      // step it triggers sees a terminal row.
+      this.finish(id, 'failed', `could not start: ${error.message}`);
+      return { runId: id, started: false, reason: error.message };
     }
-    const egress = started.state?.egress ?? {};
-    this.recordEvent(id, 'egress_ready', egress);
-    this.sql.exec(
-      'UPDATE runs SET egress_mode = ?, egress_nodes = ? WHERE run_id = ?',
-      String(egress.mode ?? ''),
-      Number(egress.nodes_healthy ?? 0),
-      id
-    );
-
-    await this.ctx.storage.setAlarm(Date.now() + OBSERVE_MS);
-    return { runId: id, started: true, egress };
   }
 
   /**

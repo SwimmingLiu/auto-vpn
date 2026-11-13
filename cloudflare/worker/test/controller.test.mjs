@@ -277,3 +277,79 @@ test('the bearer check is constant-time and rejects empty configuration', async 
   const response = await worker.default.fetch(request('abc'), {});
   assert.equal(response.status, 401, 'an unset secret must deny everything');
 });
+
+test('a container that never becomes ready fails the run instead of wedging it', async () => {
+  const { PipelineController } = await loadWorker();
+  const { ctx } = await makeHarness();
+  const controller = new PipelineController(ctx, {});
+  // A cold boot can miss READY_TIMEOUT_MS. Before the fix this left a
+  // `running` row with no alarm, and every later cron was skipped forever.
+  controller.ensureContainer = async () => { throw new Error('container did not become ready in time'); };
+
+  const result = await controller.startDailyRun({ runId: 'wedged' });
+  assert.equal(result.started, false);
+  const row = controller.runRow('wedged');
+  assert.equal(row.status, 'failed', 'the row must not stay running');
+  assert.match(row.error, /could not start/);
+
+  // The next night must be allowed to start.
+  controller.ensureContainer = async () => ({});
+  controller.restoreAccountPool = async () => ({ restored: false, reason: 'none stored' });
+  controller.containerJson = async (pathname) => (pathname === '/run'
+    ? { started: true, state: { egress: { mode: 'proxy', nodes_healthy: 3 } } }
+    : {});
+  const next = await controller.startDailyRun({ runId: 'next-night' });
+  assert.equal(next.started, true, 'a wedged run must not block the schedule');
+});
+
+test('an alarm is armed before the container is touched', async () => {
+  const { PipelineController } = await loadWorker();
+  const { ctx, alarms } = await makeHarness();
+  const controller = new PipelineController(ctx, {});
+  let alarmsAtEnsure = -1;
+  controller.ensureContainer = async () => {
+    alarmsAtEnsure = alarms.length;
+    throw new Error('boom');
+  };
+  await controller.startDailyRun({ runId: 'armed' });
+  assert.ok(alarmsAtEnsure > 0, 'the alarm must exist before the first await');
+});
+
+test('a running row with no alarm is repaired on the next object wake', async () => {
+  const { PipelineController } = await loadWorker();
+  const { ctx, alarms } = await makeHarness();
+  const controller = new PipelineController(ctx, {});
+  controller.sql.exec(
+    "INSERT INTO runs (run_id, status, phase, started_at) VALUES ('orphan','running','measuring','2026-11-12')"
+  );
+  alarms.length = 0; // simulate the alarm lost to an eviction
+  await controller.reconcileOrphanAlarm();
+  assert.equal(alarms.length, 1, 'a lost alarm must be re-armed');
+  assert.equal(controller.latestEvent('orphan', 'alarm_rearmed') !== null, true);
+});
+
+test('a run id that already exists is reported, not silently reused', async () => {
+  const { PipelineController } = await loadWorker();
+  const { ctx } = await makeHarness();
+  const controller = new PipelineController(ctx, {});
+  let containerCalls = 0;
+  controller.ensureContainer = async () => { containerCalls += 1; return {}; };
+  controller.sql.exec(
+    "INSERT INTO runs (run_id, status, phase, started_at) VALUES ('dup','held','done','2026-11-12')"
+  );
+  const result = await controller.startDailyRun({ runId: 'dup' });
+  assert.equal(result.skipped, true);
+  assert.match(result.reason, /already exists/);
+  assert.equal(containerCalls, 0, 'a duplicate id must not start a second run');
+});
+
+test('a 409 from the container carries its status so the caller can wait it out', async () => {
+  const { PipelineController } = await loadWorker();
+  const { ctx } = await makeHarness();
+  const controller = new PipelineController(ctx, {});
+  controller.containerFetch = async () => new Response('busy', { status: 409 });
+  await assert.rejects(
+    () => controller.containerJson('/run', {}),
+    (error) => error.status === 409
+  );
+});
