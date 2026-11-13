@@ -188,6 +188,26 @@ test('disabled settings skip the run entirely', async () => {
   assert.match(result.reason, /disabled/);
 });
 
+test('a container that never accepts the deploy eventually fails the run', async () => {
+  const { PipelineController } = await loadWorker();
+  const { ctx } = await makeHarness();
+  const controller = stubContainer(new PipelineController(ctx, {}), {
+    onRun: () => ({ started: false, reason: 'a run is already in progress' })
+  });
+  controller.sql.exec(
+    "INSERT INTO runs (run_id, status, phase, started_at, final_links) VALUES ('r6','running','gating','2026-11-12', 900)"
+  );
+  // Ten refusals must end the run; without the bound this re-arms forever.
+  let result = null;
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    result = await controller.step('r6');
+    if (result.done) break;
+  }
+  assert.equal(result.done, true);
+  assert.equal(result.status, 'failed');
+  assert.match(controller.runRow('r6').error, /deploy never started/);
+});
+
 test('the bearer check is constant-time and rejects empty configuration', async () => {
   const worker = await loadWorker();
   const request = (token) => new Request('https://x/health', {

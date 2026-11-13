@@ -80,7 +80,8 @@ export class PipelineController extends DurableObject {
         error TEXT NOT NULL DEFAULT '',
         egress_mode TEXT NOT NULL DEFAULT '',
         egress_nodes INTEGER NOT NULL DEFAULT 0,
-        alarm_failures INTEGER NOT NULL DEFAULT 0
+        alarm_failures INTEGER NOT NULL DEFAULT 0,
+        deploy_stalls INTEGER NOT NULL DEFAULT 0
       );
       CREATE TABLE IF NOT EXISTS events (
         seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -360,7 +361,15 @@ export class PipelineController extends DurableObject {
         })
       });
       if (!started.started) {
-        // The previous step's deploy is still winding down; wait it out.
+        // The previous step's deploy is still winding down. Wait it out — but
+        // not forever: a container that keeps refusing would otherwise re-arm
+        // this alarm every minute for the life of the deployment.
+        const stalls = Number(row.deploy_stalls ?? 0) + 1;
+        this.sql.exec('UPDATE runs SET deploy_stalls = ? WHERE run_id = ?', stalls, runId);
+        if (stalls >= 10) {
+          this.finish(runId, 'failed', `deploy never started: ${started.reason ?? 'container busy'}`);
+          return { done: true, status: 'failed' };
+        }
         await this.ctx.storage.setAlarm(Date.now() + 60000);
         return { done: false, phase: 'gating', detail: started.reason };
       }
