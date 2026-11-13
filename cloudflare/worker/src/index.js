@@ -15,7 +15,19 @@
 
 import { DurableObject } from 'cloudflare:workers';
 
+/** The port `container/server.mjs` listens on. */
 const CONTAINER_PORT = 8080;
+
+/**
+ * The instance type a run needs.
+ *
+ * Memory and disk are billed on provisioned capacity for the whole time the
+ * instance is up, so the cheapest type that still runs the pipeline is the
+ * right default. `lite` (0.25 GiB) cannot hold an APK parse that peaks in the
+ * hundreds of MB; `basic` (1 GiB) can. `standard-1` costs 4x the idle rate of
+ * `basic` for memory this job never touches.
+ */
+const CONTAINER_INSTANCE = 'basic';
 /** Platform maximum for an idle instance. */
 const INACTIVITY_TIMEOUT_MS = 6 * 60 * 60 * 1000;
 /** One alarm observation window; `monitor()` resolves or rejects inside this. */
@@ -240,7 +252,7 @@ export class PipelineController extends DurableObject {
       container.start({
         image: container.images?.autovpn,
         enableInternet: true,
-        instance: 'standard-1',
+        instance: CONTAINER_INSTANCE,
         env: {
           VPN_AUTOMATION_RUNTIME_ROOT: '/data/auto-vpn',
           AUTOVPN_PROJECT_ROOT: '/opt/autovpn',
@@ -641,7 +653,34 @@ export class PipelineController extends DurableObject {
       runId
     );
     this.recordEvent(runId, 'run_finished', { status, error: String(error ?? '') });
+    // Stop billing the moment the run is over.
+    //
+    // Memory and disk are charged on *provisioned* resources for as long as
+    // the instance runs, not on what the run actually used — a standard-1
+    // sitting idle costs 4 GiB-hours an hour, and `setInactivityTimeout` is
+    // six hours, so a finished run would keep the meter running until the next
+    // night. The container holds nothing worth keeping: the pool is replayed
+    // from DO storage and the artifact is on the volume only until the next
+    // cold start anyway.
+    this.stopContainer();
     return true;
+  }
+
+  /**
+   * Best-effort teardown after a terminal transition.
+   *
+   * Never allowed to fail the caller: the run's verdict is already recorded,
+   * and a container that will not die is a billing concern, not a correctness
+   * one. The next `ensureContainer()` starts a fresh instance either way.
+   */
+  stopContainer() {
+    const container = this.ctx.container;
+    if (!container?.running) return;
+    try {
+      container.destroy?.('run finished');
+    } catch {
+      // The platform will stop it on the inactivity timeout regardless.
+    }
   }
 
   async alarm() {

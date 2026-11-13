@@ -412,6 +412,41 @@ test('a skipped cron leaves a trace instead of failing silently', async () => {
   assert.match(warnings[0], /still running/);
 });
 
+test('a finished run stops the container so it stops billing', async () => {
+  const { PipelineController } = await loadWorker();
+  const { ctx } = await makeHarness();
+  // standard-1 memory is billed on provisioned capacity for as long as the
+  // instance runs; nothing else in the class ever stops it.
+  let destroyed = null;
+  ctx.container = {
+    running: true,
+    destroy: (reason) => { destroyed = reason; },
+    setInactivityTimeout: async () => {}
+  };
+  const controller = new PipelineController(ctx, {});
+  controller.sql.exec(
+    `INSERT INTO runs (run_id, status, phase, started_at) VALUES ('bill','running','measuring','${isoNow()}')`
+  );
+  controller.finish('bill', 'held', '');
+  assert.ok(destroyed !== null, 'the container must be torn down when the run ends');
+});
+
+test('a container that refuses to die does not fail the run', async () => {
+  const { PipelineController } = await loadWorker();
+  const { ctx } = await makeHarness();
+  ctx.container = {
+    running: true,
+    destroy: () => { throw new Error('already gone'); },
+    setInactivityTimeout: async () => {}
+  };
+  const controller = new PipelineController(ctx, {});
+  controller.sql.exec(
+    `INSERT INTO runs (run_id, status, phase, started_at) VALUES ('stub','running','measuring','${isoNow()}')`
+  );
+  assert.equal(controller.finish('stub', 'failed', 'measurement failed'), true);
+  assert.equal(controller.runRow('stub').status, 'failed');
+});
+
 test('the bearer check is constant-time and rejects empty configuration', async () => {
   const worker = await loadWorker();
   const request = (token) => new Request('https://x/health', {
