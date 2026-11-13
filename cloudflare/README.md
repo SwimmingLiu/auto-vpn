@@ -160,6 +160,39 @@ To skip a local build entirely, push a digest-pinned image yourself and point
 `containers[].images.autovpn.image` at
 `registry.cloudflare.com/<account-id>/<repo>@sha256:<64 hex>`.
 
+### Seed the account pool before the first run
+
+The crawl leases one pooled account per vendor request. An empty pool does not
+fail loudly: every source records `account pool has no active <brand> account`,
+the run ends with `final_links = 0`, and the gate holds — so the subscription is
+never replaced and the schedule looks healthy while publishing nothing.
+
+The pool is credentials, so it cannot go in the image (the image is pushed to a
+registry) and cannot stay on the container disk (every restart, sleep and
+rollout wipes `/data`). The Durable Object holds the CSV and replays it into
+each fresh container before a run:
+
+```bash
+export AUTOVPN_API_TOKEN="$(cat ~/.autovpn-api-token)"
+export AUTOVPN_BASE_URL="https://autovpn-cloud.<subdomain>.workers.dev"
+
+cloudflare/scripts/seed-accounts.sh ~/account-info.txt
+```
+
+The file is POSTed verbatim; `format: "auto"` lets the CLI decide between CSV
+and the legacy `[brand]` block format. The response is counts only.
+
+```bash
+curl -sS "$AUTOVPN_BASE_URL/api/accounts" -H "authorization: Bearer $AUTOVPN_API_TOKEN"
+```
+
+`stored.row_count` is what the DO holds; `container` is the live count, and
+`null` when no container is running — a status query does not start one.
+
+A container that already has a pool is never overwritten: the live pool may
+hold rows an operator deliberately retired, and replaying the stored CSV would
+resurrect them.
+
 ## Operating it
 
 ```bash
