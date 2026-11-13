@@ -86,6 +86,15 @@ fi
 printf '%s' "$CLOUDFLARE_API_TOKEN" | ${WRANGLER} secret put CLOUDFLARE_API_TOKEN --cwd "$ROOT"
 
 if [ -z "${AUTOVPN_API_TOKEN:-}" ]; then
+  # In CI an unset token must fail, not mint a replacement: a new bearer would
+  # be pushed to the Worker and every existing client would start getting 401.
+  # A workstation can recover the generated value from the printed path; a
+  # pipeline cannot recover anything, because the path is on the runner.
+  if [ -n "${CI:-}" ]; then
+    echo "AUTOVPN_API_TOKEN is unset and CI is set; refusing to rotate the bearer." >&2
+    echo "  store it once: gh secret set AUTOVPN_API_TOKEN" >&2
+    exit 1
+  fi
   AUTOVPN_API_TOKEN="$(node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("base64url"))')"
   # Written to a 0600 file rather than echoed: a token in stdout also lands in
   # the terminal scrollback and, under some shells, in history.

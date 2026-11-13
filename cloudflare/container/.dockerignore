@@ -1,2 +1,7 @@
-vendor/mihomo-linux-amd64
+# The vendored binary must reach the build context: the Dockerfile installs it
+# when present and only downloads when it is absent. Excluding it here made the
+# vendor path dead code — every build downloaded from GitHub, from a VM that is
+# often unable to reach the release CDN.
+#
+# Only the transient download artifact is excluded.
 vendor/*.gz

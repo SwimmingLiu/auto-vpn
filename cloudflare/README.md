@@ -73,6 +73,49 @@ cloudflare/
 
 ## Deploy
 
+Two paths. CI is the normal one; the local script exists so a workstation can
+deploy without a commit.
+
+### From GitHub Actions
+
+`.github/workflows/deploy-cloudflare.yml` runs the unit tests, then builds and
+deploys. It triggers on a push to `main` that touches `cloudflare/**`, or
+manually from the Actions tab.
+
+It runs on `ubuntu-24.04`, which matters for one reason: the image is
+`linux/amd64`, and a GitHub runner is that natively. Building on Apple silicon
+means emulation.
+
+Repository settings it reads:
+
+| Kind | Name | Required | Purpose |
+|---|---|---|---|
+| secret | `CLOUDFLARE_API_TOKEN` | yes | deploy the Worker and push the image |
+| secret | `AUTOVPN_API_TOKEN` | yes | the Worker's own bearer token |
+| secret | `AUTOVPN_SUBSCRIPTION_URL` | recommended | the egress pool's source |
+| variable | `CLOUDFLARE_ACCOUNT_ID` | yes | target account |
+| variable | `AUTOVPN_BASE_URL` | no | smoke-test URL, e.g. `https://autovpn-cloud.<subdomain>.workers.dev` |
+| variable | `AUTOVPN_ALLOW_LIVE_PROJECT` | no | `1` lets the deploy target a real Pages project |
+
+```bash
+gh secret set CLOUDFLARE_API_TOKEN
+gh secret set AUTOVPN_API_TOKEN --env-file -   # or paste a fixed random string
+gh secret set AUTOVPN_SUBSCRIPTION_URL
+gh variable set CLOUDFLARE_ACCOUNT_ID --body '<account id>'
+gh variable set AUTOVPN_BASE_URL --body 'https://autovpn-cloud.<subdomain>.workers.dev'
+```
+
+The job is bound to the `cloudflare` environment. That environment exists
+automatically on first run with no protection; add required reviewers to it in
+Settings → Environments if a deploy should wait for a human.
+
+`AUTOVPN_API_TOKEN` is **required**, not generated. `deploy.sh` mints one when
+it is unset, which is correct on a workstation and wrong in CI: it would rotate
+the bearer on every push and lock out every client. The workflow checks for it
+before the ten-minute build.
+
+### From a workstation
+
 ```bash
 # 0. one-time: seed the secrets the Worker and the container read
 npx wrangler secret put AUTOVPN_API_TOKEN       # any long random string
@@ -84,6 +127,15 @@ npx wrangler secret put SUBSCRIPTION_URL        # the live subscription, with ?s
 cloudflare/scripts/fetch-mihomo.sh
 cloudflare/scripts/deploy.sh
 ```
+
+### Token scopes
+
+`node cloudflare/scripts/check-token.mjs` probes each endpoint the deploy
+touches and prints a table; run it before anything else when a deploy fails.
+The one that catches people is **Containers → Edit** — the permission is listed
+under Account permissions as "Containers Edit", while some API references call
+it "Workers Containers Write". Without it, `wrangler deploy` fails with a bare
+`Authentication error` after the image has already been built.
 
 ### wrangler version
 

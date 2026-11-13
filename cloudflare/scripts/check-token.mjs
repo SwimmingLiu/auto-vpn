@@ -23,7 +23,10 @@ const base = 'https://api.cloudflare.com/client/v4';
 /** Each probe is one permission the deploy path actually exercises. */
 const probes = [
   { need: 'Workers Scripts:Edit', why: 'upload the Worker', path: `/accounts/${accountId}/workers/scripts` },
-  { need: 'Containers:Edit', why: 'create and push the container application', path: `/accounts/${accountId}/containers/me` },
+  // Documented as `GET /accounts/{id}/containers/applications`. `/containers/me`
+  // is not a real route; probing it returns the same 403 a missing scope does,
+  // which would keep reporting MISSING even on a correctly scoped token.
+  { need: 'Containers:Edit', why: 'create and push the container application', path: `/accounts/${accountId}/containers/applications` },
   { need: 'Account Settings:Read', why: 'resolve the account', path: `/accounts/${accountId}` },
   { need: 'Pages:Edit', why: 'the pipeline publishes a subscription', path: `/accounts/${accountId}/pages/projects` },
   { need: 'D1:Edit', why: 'optional: the account pool', path: `/accounts/${accountId}/d1/database` },

@@ -1,0 +1,124 @@
+name: Deploy Cloudflare
+
+# Builds the container image, pushes it, and rolls the Worker.
+#
+# The deploy needs a Cloudflare API token with **Workers Containers -> Edit**.
+# That scope is not part of the stock Workers templates, and `wrangler deploy`
+# only says "Authentication error" when it is absent — so `deploy.sh` probes
+# every permission first and fails in seconds instead of after a ten-minute
+# image build.
+#
+# Runs on a native linux/amd64 runner: the image is linux/amd64, so CI builds
+# it without the emulation a local Apple silicon Docker would need.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'cloudflare/**'
+      - '.github/workflows/deploy-cloudflare.yml'
+  # PRs run the test job only: the deploy job needs secrets, which are not
+  # exposed to pull requests, and a fork's PR must never reach the account.
+  pull_request:
+    paths:
+      - 'cloudflare/**'
+      - '.github/workflows/deploy-cloudflare.yml'
+
+permissions:
+  contents: read
+
+# Two deploys must never interleave: `wrangler deploy` replaces the Worker and
+# the container application as a unit, so a slower earlier run finishing last
+# would leave the account on stale code.
+concurrency:
+  group: deploy-cloudflare
+  cancel-in-progress: false
+
+env:
+  NPM_CONFIG_REGISTRY: "https://registry.npmjs.org/"
+  NPM_CONFIG_AUDIT: "false"
+  NPM_CONFIG_FUND: "false"
+
+jobs:
+  test:
+    name: Unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # Neither suite needs the platform or the wrangler install: the worker
+      # tests load `src/index.js` through a shim and run the Durable Object
+      # logic against a real in-memory sqlite.
+      - name: Egress supervisor tests
+        working-directory: cloudflare/container
+        run: node --test test/*.test.mjs
+
+      - name: Pipeline controller tests
+        working-directory: cloudflare/worker
+        run: node --test test/*.test.mjs
+
+  deploy:
+    name: Deploy Worker and Container
+    needs: test
+    # Secrets are not exposed to pull requests, so this never runs on one.
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    # Attach required reviewers to this environment in repository settings to
+    # turn every deploy into an approval. Without that it simply runs.
+    environment: cloudflare
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: cloudflare/worker/package-lock.json
+
+      # `deploy.sh` treats an absent AUTOVPN_API_TOKEN as "generate a new one",
+      # which is right on a workstation and wrong here: it would rotate the
+      # bearer token on every deploy and lock out every existing client. Fail
+      # before the build instead.
+      - name: Check required configuration
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          API_TOKEN: ${{ secrets.AUTOVPN_API_TOKEN }}
+          SUB_URL: ${{ secrets.AUTOVPN_SUBSCRIPTION_URL }}
+        run: |
+          missing=0
+          check() { if [ -z "$2" ]; then echo "missing $1" >&2; missing=1; fi; }
+          check "secret CLOUDFLARE_API_TOKEN" "$CF_TOKEN"
+          check "variable CLOUDFLARE_ACCOUNT_ID" "$CF_ACCOUNT"
+          check "secret AUTOVPN_API_TOKEN" "$API_TOKEN"
+          if [ -z "$SUB_URL" ]; then
+            echo "warning: secret AUTOVPN_SUBSCRIPTION_URL is unset; the crawl will start with no egress pool and go out direct" >&2
+          fi
+          exit "$missing"
+
+      - name: Install wrangler
+        run: npm ci --prefix cloudflare/worker
+
+      - name: Deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          AUTOVPN_API_TOKEN: ${{ secrets.AUTOVPN_API_TOKEN }}
+          AUTOVPN_SUBSCRIPTION_URL: ${{ secrets.AUTOVPN_SUBSCRIPTION_URL }}
+          AUTOVPN_BASE_URL: ${{ vars.AUTOVPN_BASE_URL }}
+          # Only set this variable once the scratch project has served one good
+          # run; until then the deploy refuses to target a real subscription.
+          AUTOVPN_ALLOW_LIVE_PROJECT: ${{ vars.AUTOVPN_ALLOW_LIVE_PROJECT }}
+        run: cloudflare/scripts/deploy.sh
