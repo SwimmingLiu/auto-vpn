@@ -71,6 +71,13 @@ case "$PROFILE_PROJECT" in
     ;;
 esac
 
+# The deploy stage inside the container publishes to this project. Wrangler
+# refuses a missing project in a non-interactive shell and there is no recovery
+# mid-run — the artifact lives on a volume the container loses when it sleeps —
+# so the project is created here, before anything is built.
+step "pages project"
+node "$ROOT/scripts/ensure-pages-project.mjs" "$PROFILE_PROJECT"
+
 # `wrangler secret put` reads stdin, which keeps the value out of the process
 # table and out of shell history.
 #
