@@ -24,6 +24,10 @@ on:
   schedule:
     # 20:15 UTC, the same slot the Worker cron uses.
     - cron: '15 20 * * *'
+  # TEMPORARY: lets the branch be exercised before this lands on main, where
+  # `workflow_dispatch` and `schedule` both require it. Removed before merge.
+  push:
+    branches: [feat/cloudflare-deployment]
 
 permissions:
   contents: read
