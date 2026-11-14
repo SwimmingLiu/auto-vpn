@@ -91,7 +91,14 @@ jobs:
           install -m 0755 cloudflare/container/vendor/mihomo-linux-amd64 "$RUNNER_TEMP/mihomo"
           "$RUNNER_TEMP/mihomo" -v
 
+      # The pool lives at `<runtime-root>/accounts.db`, resolved from
+      # VPN_AUTOMATION_RUNTIME_ROOT. Without it the import writes to
+      # `~/.auto-vpn` while the run reads `$RUNNER_TEMP/autovpn`, which is how a
+      # pool of 631 accounts imported cleanly and every source then reported
+      # "account pool has no active <brand> account".
       - name: Import the account pool
+        env:
+          VPN_AUTOMATION_RUNTIME_ROOT: ${{ runner.temp }}/autovpn
         run: |
           autovpn accounts import "$RUNNER_TEMP/account-info.txt" \
             --project-root "$RUNNER_TEMP/autovpn" --format auto --output jsonl > "$RUNNER_TEMP/import.jsonl"
@@ -101,6 +108,9 @@ jobs:
             const result = JSON.parse(line);
             console.log(`imported ${result.parsed}, pool ${result.stats?.total} total / ${result.stats?.active} active`);
             if (!(result.parsed > 0)) { console.error("the pool imported zero rows"); process.exit(1); }
+            // A pool that imported but cannot lease is the same failure one step
+            // later, and it reads as "no accounts" from inside the crawl.
+            if (!(result.stats?.active > 0)) { console.error("the pool has no active accounts after import"); process.exit(1); }
           ' "$RUNNER_TEMP/import.jsonl"
 
       # Build the crawl egress before the measurement: the crawl must leave
