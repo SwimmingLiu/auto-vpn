@@ -1,13 +1,10 @@
 # Cloudflare deployment profile for AutoVPN. Rationale: cloudflare/README.md.
 #
-# Four deliberate differences from the VPS profile:
-#
-#   1. `project_name` is this deployment's own project, never the VPS's: the
-#      deploy stage replaces that project's whole production deployment.
+# Deliberate differences from the VPS profile:
+#   1. `project_name` is this deployment's own project, never the VPS's.
 #   2. `min_final_links` agrees with the Durable Object gate.
-#   3. `min_iterations` is 24, not 10000: `max_runtime_seconds` and
-#      `plateau_limit` are only consulted at or past it, so a 10,000 floor makes
-#      both decorative. 24 = one sweep of the default area list at 8/round.
+#   3. `min_iterations` is 24, not 10000: the budget and plateau are only
+#      consulted at or past it, so a 10,000 floor makes both decorative.
 #   4. Credentials arrive as Worker secrets, never in this file.
 #
 # `credential` sources need only a location and lease an account from the pool
@@ -73,7 +70,11 @@ max_runtime_seconds = 900
 [speed_test]
 min_download_mb_s = 1
 timeout_seconds = 20
-concurrency = 20
+# 8, not 20: each link measured gets its own mihomo child, and 4 vCPU is the
+# binding constraint. At 20 an identical run hit 343 controller timeouts and
+# 124 503s, never measured a third of its candidates, and ended with 23 links
+# against 49.
+concurrency = 8
 urls = ["https://raw.githubusercontent.com/bulianglin/demo/main/10MB.bin"]
 probe_url = "http://www.gstatic.com/generate_204"
 max_download_bytes = 10000000
