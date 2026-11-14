@@ -73,7 +73,9 @@ min_download_mb_s = 1
 timeout_seconds = 60
 # 8: one mihomo child per measured link (README § speed test).
 concurrency = 8
-urls = ["https://raw.githubusercontent.com/bulianglin/demo/main/10MB.bin"]
+# Anycast and close to the container: the old GitHub URL was the slowest hop
+# (1.44 MB/s vs 2.7 MB/s here), and a node cannot measure faster than that.
+urls = ["https://speed.cloudflare.com/__down?bytes=10000000"]
 probe_url = "http://www.gstatic.com/generate_204"
 max_download_bytes = 10000000
 startup_wait_seconds = 1
