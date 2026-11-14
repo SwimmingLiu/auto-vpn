@@ -35,3 +35,4 @@ cloudflare/worker/node_modules/
 cloudflare/node_modules/
 cloudflare/.wrangler/
 .e2e/
+.probe/
