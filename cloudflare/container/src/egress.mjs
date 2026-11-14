@@ -244,6 +244,19 @@ async function waitForController(timeoutMs) {
   return false;
 }
 
+/**
+ * A run may only start behind a healthy subscription node.
+ *
+ * `direct` is the supervisor's internal answer to an empty or dead pool; it is
+ * not a run mode. The runner path already refuses it, and the operator's
+ * requirement is that the crawl leaves through the subscription's nodes — so a
+ * direct crawl is a refusal, not a degraded night.
+ */
+export function requireProxiedEgress(state) {
+  if (state?.mode === 'proxy') return state;
+  throw new Error(`egress pool has no healthy node (${state?.last_error || 'no reason recorded'}); refusing to crawl direct`);
+}
+
 export class EgressSupervisor {
   constructor(options = {}) {
     this.dir = options.dir || EGRESS_DIR;

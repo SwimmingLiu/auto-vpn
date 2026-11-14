@@ -25,7 +25,7 @@ import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
 
-import { EgressSupervisor, DEFAULT_PROBE_HOST } from './egress.mjs';
+import { EgressSupervisor, DEFAULT_PROBE_HOST, requireProxiedEgress } from './egress.mjs';
 import { secretQueryMismatch } from './profile-guard.mjs';
 import { completedSummary } from './run-log.mjs';
 
@@ -173,15 +173,25 @@ function runArgs(mode, options) {
  */
 async function prepareEgressForRun(options) {
   if (options.skipEgress === true) return { skipped: true };
+  let state;
   try {
-    return await egress.prepare({
+    state = await egress.prepare({
       subscriptionUrl: options.subscriptionUrl ?? process.env.SUBSCRIPTION_URL,
       subscriptionBody: options.subscriptionBody,
       probeUrl: options.probeUrl || DEFAULT_PROBE_HOST
     });
   } catch (error) {
-    // A failed pool is not a failed run: degrade to direct and say so.
-    return { mode: 'direct', nodes_total: 0, nodes_healthy: 0, last_error: `egress prepare failed: ${error.message}` };
+    await egress.stop().catch(() => {});
+    return { refused: `egress pool failed to start (${error.message}); refusing to crawl direct` };
+  }
+  // `direct` is the supervisor's internal degradation, not a run mode. A crawl
+  // that leaves from the container's own address is the one thing this design
+  // exists to prevent — the runner path already refuses it.
+  try {
+    return requireProxiedEgress(state);
+  } catch (error) {
+    await egress.stop().catch(() => {});
+    return { refused: error.message };
   }
 }
 
@@ -273,6 +283,7 @@ async function startRun(options) {
   // deploy stage talks to the Cloudflare API, which wants a stable address, and
   // routing it through a rotating vendor node would be strictly worse.
   const egressState = mode === 'run' ? await prepareEgressForRun(options) : { skipped: true };
+  if (egressState.refused) return { started: false, reason: egressState.refused };
 
   Object.assign(state, {
     runId,

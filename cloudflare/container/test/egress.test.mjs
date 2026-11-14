@@ -5,6 +5,7 @@ import {
   buildConfig,
   decodeSubscriptionPayload,
   parseVmess,
+  requireProxiedEgress,
   toMihomoProxy
 } from '../src/egress.mjs';
 
@@ -115,6 +116,19 @@ test('an empty pool degrades to a direct config, not a crash', () => {
   assert.deepEqual(config.proxies, []);
   assert.deepEqual(config['proxy-groups'], [{ name: 'EGRESS', type: 'select', proxies: ['DIRECT'] }]);
   assert.deepEqual(config.rules, ['MATCH,EGRESS']);
+});
+
+test('a run refuses to start behind a direct pool', () => {
+  // The supervisor may still build a DIRECT config in isolation, but the run
+  // path must not accept it: crawling from the container's own address is the
+  // outcome the egress supervisor exists to prevent, and the runner path
+  // already refuses it. A refusal here is the two paths agreeing.
+  assert.throws(
+    () => requireProxiedEgress({ mode: 'direct', last_error: 'none of 37 nodes reached the probe' }),
+    /refusing to crawl direct/
+  );
+  assert.throws(() => requireProxiedEgress({ mode: 'unknown' }), /refusing to crawl direct/);
+  assert.equal(requireProxiedEgress({ mode: 'proxy', nodes_healthy: 36 }).nodes_healthy, 36);
 });
 
 test('a malformed link is skipped rather than aborting the whole pool', () => {

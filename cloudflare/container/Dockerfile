@@ -8,7 +8,11 @@
 FROM node:22-bookworm-slim
 
 ARG MIHOMO_VERSION=v1.19.34
-ARG AUTOVPN_VERSION=2.2.4
+# Must equal `npm/autovpn-cli/package.json`; a test pins it. The image is built
+# from the published package, so this version has to be released (npm publish
+# runs on GitHub release) before the container path is deployed. Pinning an
+# older CLI silently shipped a pipeline without the probe budget.
+ARG AUTOVPN_VERSION=2.3.3
 # Build-time only. Cloudflare's builder has no route to GitHub from every
 # region; pass the operator's proxy here when building locally for a push.
 ARG HTTPS_PROXY
