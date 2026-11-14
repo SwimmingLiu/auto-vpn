@@ -42,7 +42,9 @@ entrance = ""
 twins = "entrance"
 ```
 
-同一组值也可以直接写成分享 Worker 的环境变量：`STATIC_EXIT`、`STATIC_EXIT_JSON`、`STATIC_EXIT_GROUP`、`STATIC_EXIT_ENTRANCE`、`STATIC_EXIT_TWINS`。部署时 `deploy.ts` 会把 profile 里的值同步到 Cloudflare Pages 项目的 env vars。
+同一组值也可以直接写成分享 Worker 的环境变量：`STATIC_EXIT`、`STATIC_EXIT_JSON`、`STATIC_EXIT_GROUP`、`STATIC_EXIT_ENTRANCE`、`STATIC_EXIT_TWINS`。部署时 `deploy.ts` 会把 profile 里的值同步到 Cloudflare Pages 项目的 env vars，`preview` 与 `production` 都写：这个项目不部署 preview 分支，两个环境写同一份值只是让 Pages 侧保持一致，多出来的暴露面是零。空的键不会写入，所以没配出口时不会把项目上已有的变量清空。
+
+写进 env vars 意味着出口账号会落在 Cloudflare 项目的配置里，能被有权访问该项目的人读到。如果不想让它离开本机，用第 4.1 节的 Verge 扩展脚本，那里的凭证只存在你本地的 `profiles/*.js`。
 
 `exit_json` 里的每条记录就是一条 mihomo 代理，字段原样透传：
 
