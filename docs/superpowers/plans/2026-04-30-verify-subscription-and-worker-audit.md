@@ -63,7 +63,7 @@ class DeployConfig:
     subscription_url: str
     verify_subscription_url: str = "https://www.swimmingliu.online/sub?token=8410fb43eb2176497f5beafc0c39f5bc"
     pages_project_url: str = "https://sub-nodes.pages.dev"
-    secret_query: str = "serect_key=swimmingliu"
+    secret_query: str = "{{SUBSCRIPTION_KEY}}"
     account_id: str = "e743286b4304e96ee8795d62917052aa"
     use_wrangler: bool = True
 ```
@@ -372,7 +372,7 @@ rtk git commit -m "fix: normalize undecorated country codes to us"
 
 ```python
 def test_build_worker_artifacts_uses_audit_friendly_worker_names() -> None:
-    artifacts = build_worker_artifacts(rendered, config, "serect_key=swimmingliu")
+    artifacts = build_worker_artifacts(rendered, config, "{{SUBSCRIPTION_KEY}}")
 
     assert "SUBSCRIPTION_PAYLOAD" in artifacts.transformed_source
     assert "handleSubscriptionRequest" in artifacts.transformed_source

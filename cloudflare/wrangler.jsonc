@@ -1,0 +1,49 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "autovpn-cloud",
+  "main": "worker/src/index.js",
+  "compatibility_date": "2026-11-12",
+  "compatibility_flags": ["nodejs_compat"],
+
+  "containers": [
+    {
+      "class_name": "PipelineController",
+      "scheduling_policy": "durable_object",
+      "images": {
+        "autovpn": {
+          "dockerfile": "container/Dockerfile",
+          // The build context must contain `vendor/` (the mihomo binary) and
+          // `src/`, both of which live under container/. The Dockerfile path is
+          // still resolved from the config file.
+          "build_context": "container"
+        }
+      },
+      "observability": { "enabled": true }
+    }
+  ],
+
+  "durable_objects": {
+    "bindings": [{ "name": "PIPELINE", "class_name": "PipelineController" }]
+  },
+
+  "exports": {
+    "PipelineController": { "type": "durable-object", "storage": "sqlite" }
+  },
+
+  "triggers": {
+    "crons": ["15 20 * * *"]
+  },
+
+  "observability": {
+    "enabled": true
+  },
+
+  // Not a `var`: the real value carries the subscription's secret key, so it
+  // is set as a Worker secret (`wrangler secret put SUBSCRIPTION_URL`). Leaving
+  // it unset makes the egress supervisor report "no subscription URL" and crawl
+  // direct, which is a visible, safe failure. A stale var here would instead
+  // point the pool at a project that no longer serves the subscription.
+  "dev": {
+    "enable_containers": true
+  }
+}

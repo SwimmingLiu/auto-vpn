@@ -163,3 +163,34 @@ test('Node doctor finds Windows node.exe and npm.cmd binaries', async () => {
   assert.equal(checks.node_binaries.status, 'pass');
   assert.deepEqual(checks.node_binaries.details.missing, []);
 });
+
+test('Node doctor prefers MIHOMO_BIN over a mihomo on PATH', async () => {
+  // A host that ships its own binary puts it where it likes: the runner uses
+  // `$RUNNER_TEMP/mihomo`, the image `/usr/local/bin/mihomo`. If doctor reports
+  // whatever is on PATH instead, the preflight passes on a binary the run will
+  // not spawn — which is how a night can report `doctor: success` and then die
+  // on `spawn mihomo ENOENT`.
+  const { root, runtimeRoot } = await makeProjectRoot();
+  const configuredDir = await mkdtemp(path.join(os.tmpdir(), 'autovpn-doctor-bin-'));
+  const configured = path.join(configuredDir, 'mihomo');
+  await writeFile(configured, '#!/bin/sh\n', 'utf8');
+  await chmod(configured, 0o755);
+
+  const pathDir = await mkdtemp(path.join(os.tmpdir(), 'autovpn-doctor-path-'));
+  const onPath = path.join(pathDir, 'mihomo');
+  await writeFile(onPath, '#!/bin/sh\n', 'utf8');
+  await chmod(onPath, 0o755);
+
+  const result = await runDoctor(root, [], {
+    HOME: '/nonexistent-home',
+    PATH: pathDir,
+    MIHOMO_BIN: configured,
+    VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot
+  }, {
+    safeRun: (command) => ({ ok: command[0] === configured, message: 'mihomo ok' })
+  });
+  const checks = Object.fromEntries(result.payload.checks.map((item) => [item.name, item]));
+
+  assert.equal(checks.mihomo.status, 'pass');
+  assert.equal(checks.mihomo.details.path, configured);
+});

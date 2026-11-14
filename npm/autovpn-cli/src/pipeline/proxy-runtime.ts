@@ -335,7 +335,14 @@ async function firstExistingFile(candidates: string[]): Promise<string> {
 
 function mihomoInstallCandidates(env: NodeJS.ProcessEnv = process.env): string[] {
   const homeDir = String(env.HOME ?? env.USERPROFILE ?? '').trim();
+  // `MIHOMO_BIN` first: a host that provisions the binary itself (a CI runner,
+  // a container image) puts it somewhere of its own choosing, and the fixed
+  // list below is a guess about the operator's workstation. Without this the
+  // speed-test stage spawned a mihomo that did not exist, every link failed in
+  // 0 ms with `spawn mihomo ENOENT`, and the run ended at `speedtest_links: 0`.
+  const configured = String(env.MIHOMO_BIN ?? '').trim();
   return [
+    configured,
     homeDir ? path.join(homeDir, 'clashctl', 'bin', 'mihomo') : '',
     '/opt/homebrew/bin/mihomo',
     '/usr/local/bin/mihomo',
@@ -344,6 +351,12 @@ function mihomoInstallCandidates(env: NodeJS.ProcessEnv = process.env): string[]
 }
 
 async function resolveMihomoCommand(runtimePath?: string, env: NodeJS.ProcessEnv = process.env): Promise<string> {
+  // An explicit `MIHOMO_BIN` is the host saying where the binary is; nothing
+  // derived from the artifact directory should outrank it.
+  const configured = String(env.MIHOMO_BIN ?? '').trim();
+  if (configured && await fileExists(configured)) {
+    return configured;
+  }
   const candidate = String(runtimePath ?? '').trim();
   if (!candidate) {
     return await firstExistingFile(mihomoInstallCandidates(env)) || 'mihomo';

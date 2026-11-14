@@ -1,0 +1,14 @@
+{
+  "name": "autovpn-cloudflare-worker",
+  "private": true,
+  "type": "module",
+  "description": "Control plane for the AutoVPN Cloudflare deployment",
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "4.160.1"
+  }
+}

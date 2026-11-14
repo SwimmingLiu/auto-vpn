@@ -1,0 +1,4 @@
+node_modules/
+.wrangler/
+vendor/mihomo-linux-amd64
+vendor/*.gz

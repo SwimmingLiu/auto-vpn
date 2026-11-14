@@ -241,7 +241,7 @@ def test_build_worker_artifacts_fragments_secret_literals() -> None:
     config = WorkerBuildConfig(variable_prefix="edge", random_noise_min_length=8, random_noise_max_length=12)
     rendered = """const MainData = `alpha`; export default { async fetch(request) { return request.url; } };"""
 
-    artifacts = build_worker_artifacts(rendered, config, "serect_key=swimmingliu")
+    artifacts = build_worker_artifacts(rendered, config, "{{SUBSCRIPTION_KEY}}")
 
     assert "['ser', 'ect', '_key'].join('')" in artifacts.transformed_source
     assert "['swim', 'ming', 'liu'].join('')" in artifacts.transformed_source
@@ -253,7 +253,7 @@ def test_build_worker_artifacts_emits_sidecar_modules_and_manifest() -> None:
     config = WorkerBuildConfig(environment_name="staging", variable_prefix="vf")
     rendered = "const MainData = `payload`;"
 
-    artifacts = build_worker_artifacts(rendered, config, "serect_key=swimmingliu")
+    artifacts = build_worker_artifacts(rendered, config, "{{SUBSCRIPTION_KEY}}")
 
     assert sorted(artifacts.modules) == [
         "modules/guard.js",
@@ -376,7 +376,7 @@ from vpn_automation.pipeline.worker_build import build_worker_artifacts
 
 def test_build_pages_bundle_writes_modules_and_manifest(tmp_path: Path) -> None:
     config = WorkerBuildConfig()
-    artifacts = build_worker_artifacts("const MainData = `payload`;", config, "serect_key=swimmingliu")
+    artifacts = build_worker_artifacts("const MainData = `payload`;", config, "{{SUBSCRIPTION_KEY}}")
 
     bundle_dir = build_pages_bundle("obfuscated", tmp_path / "pages_bundle", artifacts, config)
 

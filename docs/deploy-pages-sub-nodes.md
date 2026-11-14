@@ -199,7 +199,7 @@ npx wrangler pages deploy <pages_bundle> --project-name sub-nodes --branch main
 - Pages deploy 成功
 - `https://sub-nodes.pages.dev/` 返回 `200`
 - `build_secret_url()` 返回的正式校验地址：
-  - `https://sub-nodes.pages.dev/?serect_key=swimmingliu`
+  - `https://sub-nodes.pages.dev/?{{SUBSCRIPTION_KEY}}`
 - 正式地址响应内容与本次部署的样例 payload 完全匹配
 
 本次验证产物目录：

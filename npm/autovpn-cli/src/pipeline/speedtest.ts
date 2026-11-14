@@ -35,6 +35,21 @@ export interface SpeedTestConfigInput {
   max_download_bytes?: number;
   startup_wait_seconds?: number;
   max_download_candidates?: number;
+  /**
+   * Cap on how many links reach the probe stage.
+   *
+   * `max_download_candidates` bounds only the full download test, which runs
+   * after every candidate has already been probed: a run that extracts 10,790
+   * links pays 10,790 probes either way. At 8 concurrent and up to 60 s each,
+   * that is hours of wall-clock for a night whose useful output is 40-60 links,
+   * and the run is killed by the platform long before it publishes.
+   *
+   * The cap is applied before probing, and the links are taken in artifact
+   * order — extraction already writes them in the order it found them, so the
+   * cut keeps the earliest finds rather than an arbitrary subset. 0 keeps the
+   * old behaviour of probing everything, which is right on a small sweep.
+   */
+  max_probe_candidates?: number;
 }
 
 export interface ProbeResult {
@@ -88,8 +103,37 @@ export function normalizeSpeedTestConfig(config: SpeedTestConfigInput): Required
     probe_url: config.probe_url ?? 'https://www.gstatic.com/generate_204',
     max_download_bytes: Number(config.max_download_bytes ?? 5_000_000),
     startup_wait_seconds: Number(config.startup_wait_seconds ?? 1.0),
-    max_download_candidates: Number(config.max_download_candidates ?? 50)
+    max_download_candidates: Number(config.max_download_candidates ?? 50),
+    // 0 = probe everything, the behaviour before this option existed.
+    max_probe_candidates: Number(config.max_probe_candidates ?? 0)
   };
+}
+
+/**
+ * Take `limit` links spread evenly across the artifact rather than the first
+ * `limit` of it.
+ *
+ * The artifact is written source by source, so a prefix is not a sample: one
+ * night produced 9 heidong, 230 mifeng, 164 leiting and 10,387 xuanfeng links,
+ * and the first 600 were three whole sources plus **1.9% of the fourth**. The
+ * vendor whose links were cut is the one the operator may most want, and the
+ * cut is invisible in the yield — it looks like that vendor performed badly.
+ *
+ * An even stride over the whole list keeps every source in proportion. Ties go
+ * to the earlier index, so the result is a deterministic function of the input
+ * and the same artifact always probes the same links.
+ */
+export function sampleAcrossArtifact(links: string[], limit: number): string[] {
+  if (limit <= 0 || links.length <= limit) {
+    return links;
+  }
+  const picked: string[] = [];
+  // Position of the i-th pick in a list of `total` taking `limit` evenly.
+  for (let index = 0; index < limit; index += 1) {
+    const position = Math.floor((index * links.length) / limit);
+    picked.push(links[position]);
+  }
+  return picked;
 }
 
 export function selectSpeedtestCandidates(probes: ProbeResult[], limit: number): string[] {
@@ -659,12 +703,25 @@ async function speedtestInNode(input: SpeedTestInput, options: SpeedTestBackendO
     urls: [...config.urls]
   });
 
-  const probes = await probeLinks(input.links, config, { runtime_path: runtimePath });
+  // Probe the whole set unless the profile bounds it. The cap goes here rather
+  // than at `max_download_candidates` because probing happens first: a sweep
+  // that extracts 10,790 links pays for 10,790 probes before a single download
+  // is measured, and the job is killed long before it publishes.
+  const probeInput = config.max_probe_candidates > 0
+    ? sampleAcrossArtifact(input.links, config.max_probe_candidates)
+    : input.links;
+  if (probeInput.length < input.links.length) {
+    options.progressCallback?.(
+      `[speedtest] probing ${probeInput.length}/${input.links.length} links (max_probe_candidates)`
+    );
+  }
+
+  const probes = await probeLinks(probeInput, config, { runtime_path: runtimePath });
   for (let index = 0; index < probes.length; index += 1) {
     const probe = probes[index];
     emitEvent(options.eventCallback, 'speedtest_probe_result', {
       completed: index + 1,
-      total: input.links.length,
+      total: probeInput.length,
       link: probe.link,
       reachable: probe.reachable,
       latency_ms: probe.latency_ms,
@@ -723,11 +780,16 @@ export async function probeSpeedtestLinksInNode(input: SpeedTestInput, options: 
   const runtimePath = input.runtime_path ?? '';
   const requestedRuntime = String((options.env ?? process.env).AUTOVPN_SPEEDTEST_RUNTIME ?? '').trim().toLowerCase();
   const useMihomoRuntime = requestedRuntime !== 'direct';
+  // Same cap as the full speed test: a caller that bounds probing must not pay
+  // for a sweep the run would have cut anyway.
+  const links = config.max_probe_candidates > 0
+    ? sampleAcrossArtifact(input.links, config.max_probe_candidates)
+    : input.links;
   const emitProbe = (result: ProbeResult, completed: number): void => {
-    options.progressCallback?.(`[speedtest:probe] ${completed}/${input.links.length} reachable=${result.reachable} latency=${result.latency_ms}ms`);
+    options.progressCallback?.(`[speedtest:probe] ${completed}/${links.length} reachable=${result.reachable} latency=${result.latency_ms}ms`);
     emitEvent(options.eventCallback, 'speedtest_probe_result', {
       completed,
-      total: input.links.length,
+      total: links.length,
       link: result.link,
       reachable: result.reachable,
       latency_ms: result.latency_ms,
@@ -735,13 +797,13 @@ export async function probeSpeedtestLinksInNode(input: SpeedTestInput, options: 
     });
   };
   if (options.probeLinks) {
-    const results = await options.probeLinks(input.links, config, { runtime_path: runtimePath });
+    const results = await options.probeLinks(links, config, { runtime_path: runtimePath });
     results.forEach((result, index) => emitProbe(result, index + 1));
     return results;
   }
   return useMihomoRuntime
-    ? probeLinksMihomo(input.links, config, runtimePath, options, emitProbe)
-    : probeLinksDirect(input.links, config, options, emitProbe);
+    ? probeLinksMihomo(links, config, runtimePath, options, emitProbe)
+    : probeLinksDirect(links, config, options, emitProbe);
 }
 
 export async function testSpeedtestLinkInNode(input: { link: string; config: SpeedTestConfigInput; runtime_path?: string }, options: SpeedTestBackendOptions = {}): Promise<SpeedTestResult> {

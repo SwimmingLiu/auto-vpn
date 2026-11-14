@@ -1,0 +1,7 @@
+# Keeps the directory in git.
+#
+# The build context needs `vendor/` to exist even when the binary is absent:
+# `COPY vendor/ /tmp/vendor/` fails with "not found" on a directory that does
+# not exist at all, and a fresh clone has no vendor/ because the binary itself
+# is gitignored. With this file the COPY succeeds, the Dockerfile sees no
+# binary, and falls back to downloading mihomo — which is what CI does.
