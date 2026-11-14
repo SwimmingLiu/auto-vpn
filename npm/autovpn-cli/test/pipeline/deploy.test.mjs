@@ -13,6 +13,9 @@ import {
   buildPagesProjectRootUrl,
   buildSecretUrl,
   buildWranglerAuthEnv,
+  resolveSecretQuery,
+  SUBSCRIPTION_KEY_ENV,
+  SUBSCRIPTION_KEY_SENTINEL,
   cleanupBlockedPagesProjects,
   CloudflareHttpClient,
   defaultVerifyDeployment,
@@ -720,6 +723,7 @@ test('Node deploy backend syncs share project SUB to final Pages URL', async () 
       project_name: 'sub-nodes',
       pages_project_url: 'https://sub-nodes.pages.dev',
       subscription_url: 'https://origin.example/sub',
+      secret_query: 'serect_key=test-key',
       share_project_name: 'sub-links-share-03',
       cloudflare_api_token: 'token-1'
     }
@@ -736,15 +740,15 @@ test('Node deploy backend syncs share project SUB to final Pages URL', async () 
   assert.equal(result.returncode, 0);
   assert.equal(result.share_project_sync_ok, true);
   assert.equal(result.share_project_name, 'sub-links-share-03');
-  assert.equal(result.share_project_sub_value, 'https://sub-nodes.pages.dev/?serect_key=swimmingliu');
+  assert.equal(result.share_project_sub_value, 'https://sub-nodes.pages.dev/?serect_key=test-key');
   assert.equal(runCalls.length, 2);
   assert.equal(runCalls[0].command[5], 'sub-nodes');
   assert.equal(runCalls[1].command[5], 'sub-links-share-03');
   assert.ok(runCalls[1].command[3].endsWith('/electron/runtime/share-worker/share_pages_bundle'));
   const update = calls.find((call) => call[0] === 'updatePagesProject');
   assert.equal(update[1], 'sub-links-share-03');
-  assert.equal(update[2].deployment_configs.preview.env_vars.SUB.value, 'https://sub-nodes.pages.dev/?serect_key=swimmingliu');
-  assert.equal(update[2].deployment_configs.production.env_vars.SUB.value, 'https://sub-nodes.pages.dev/?serect_key=swimmingliu');
+  assert.equal(update[2].deployment_configs.preview.env_vars.SUB.value, 'https://sub-nodes.pages.dev/?serect_key=test-key');
+  assert.equal(update[2].deployment_configs.production.env_vars.SUB.value, 'https://sub-nodes.pages.dev/?serect_key=test-key');
   assert.ok(String(result.share_project_worker_entry).endsWith('/share_pages_bundle/_worker.js'));
 });
 
@@ -939,7 +943,7 @@ test('Node deploy backend recovers latest existing share project when requested 
     },
     async updatePagesProject(projectName, payload) {
       assert.equal(projectName, 'sub-links-share-05');
-      assert.equal(payload.deployment_configs.preview.env_vars.SUB.value, 'https://sub-nodes-04.pages.dev/?serect_key=swimmingliu');
+      assert.equal(payload.deployment_configs.preview.env_vars.SUB.value, 'https://sub-nodes-04.pages.dev/?serect_key=test-key');
       return { name: projectName };
     },
     async createPagesProject() { throw new Error('unexpected create'); },
@@ -955,6 +959,7 @@ test('Node deploy backend recovers latest existing share project when requested 
     deploy: {
       project_name: 'sub-nodes-04',
       pages_project_url: 'https://sub-nodes-04.pages.dev',
+      secret_query: 'serect_key=test-key',
       share_project_name: 'sub-links-share-03',
       cloudflare_api_token: 'token-1'
     }
@@ -1188,4 +1193,37 @@ test('verify success helper keeps Node deployment semantics', async () => {
   assert.equal(isVerifySuccess({ pages_domain_ok: true, secret_ok: true, subscription_ok: false }), false);
   assert.equal(isVerifySuccess({ secret_ok: true, subscription_ok: true, custom_domain_ok: true, custom_domain_subscription_ok: false }), false);
   assert.equal(isVerifySuccess({ secret_ok: true, subscription_ok: true, custom_domain_ok: true, custom_domain_dns_ok: false }), false);
+});
+
+test('the subscription key comes from the environment when the profile defers it', () => {
+  // A key committed to the profile is a published key: the file is in the
+  // repository and is also uploaded as a Worker secret. The sentinel lets the
+  // profile stay public while the value lives in a GitHub secret.
+  assert.equal(
+    resolveSecretQuery({ secret_query: SUBSCRIPTION_KEY_SENTINEL }, { [SUBSCRIPTION_KEY_ENV]: 'key=abc123' }),
+    'key=abc123'
+  );
+});
+
+test('a profile with a literal key still works, so the VPS profile is untouched', () => {
+  assert.equal(resolveSecretQuery({ secret_query: 'key=legacy' }, {}), 'key=legacy');
+});
+
+test('the sentinel with no variable throws instead of publishing the sentinel', () => {
+  // Publishing a subscription whose key is the literal `{{SUBSCRIPTION_KEY}}`
+  // is worse than failing: it serves a working subscription to anyone who
+  // guesses the sentinel, which is written in the public profile.
+  assert.throws(
+    () => resolveSecretQuery({ secret_query: SUBSCRIPTION_KEY_SENTINEL }, {}),
+    /VPN_AUTOMATION_SUBSCRIPTION_KEY is unset|which is unset/
+  );
+});
+
+test('the environment outranks a literal when both are present', () => {
+  // A stale literal left in a profile must not silently win over the secret
+  // the deployment was told to use.
+  assert.equal(
+    resolveSecretQuery({ secret_query: SUBSCRIPTION_KEY_SENTINEL }, { [SUBSCRIPTION_KEY_ENV]: 'key=fresh' }),
+    'key=fresh'
+  );
 });

@@ -1,0 +1,136 @@
+# Cloudflare deployment profile for AutoVPN. Rationale: cloudflare/README.md.
+#
+# Differences from the VPS profile: `project_name` is this deployment's own (never
+# the VPS's), `min_final_links` agrees with the Durable Object gate, and every
+# credential arrives as a secret, never in this file.
+#
+# Sources are in LAP mode: `max_laps` switches the unit to "one lap of every
+# area", and only `min_laps`/`max_laps`/`dry_laps`/`max_runtime_seconds` then
+# decide runtime. `min_laps` is the floor the budget cannot cut; omitting it let
+# 900 s stop every source at 3-6 laps. README § speed test has the numbers.
+#
+# `credential` sources need only a location and lease an account from the pool at
+# extract time: a hardcoded evmess URL would bypass the pool and go stale when
+# the vendor rotates a domain, weekly.
+
+[sources.leiting]
+mode = "credential"
+official_site = "https://www.leitingku.com"
+enabled = true
+platforms = ["android", "ios"]
+area_concurrency = 4
+max_laps = 1000
+dry_laps = 20
+min_laps = 24
+max_runtime_seconds = 900
+
+[sources.heidong]
+mode = "credential"
+official_site = "https://www.heidongm.com"
+enabled = true
+platforms = ["android", "ios"]
+area_concurrency = 4
+max_laps = 1000
+dry_laps = 20
+min_laps = 24
+max_runtime_seconds = 900
+
+[sources.mifeng]
+mode = "credential"
+official_site = "https://www.mifengbuzz.com"
+enabled = true
+platforms = ["android", "ios"]
+area_concurrency = 4
+max_laps = 1000
+dry_laps = 20
+min_laps = 24
+max_runtime_seconds = 900
+
+[sources.xuanfeng]
+mode = "credential"
+official_site = "https://www.16863988.com"
+enabled = true
+platforms = ["android", "ios"]
+area_concurrency = 4
+max_laps = 1000
+dry_laps = 20
+min_laps = 24
+max_runtime_seconds = 900
+
+[speed_test]
+min_download_mb_s = 1
+# 60: at 20 s, 82 links passed where the VPS passed 134.
+timeout_seconds = 60
+# 8: one mihomo child per measured link.
+concurrency = 8
+# Anycast, near the runner: a node cannot measure faster than the hop to the
+# file it downloads.
+urls = ["https://speed.cloudflare.com/__down?bytes=10000000"]
+probe_url = "http://www.gstatic.com/generate_204"
+max_download_bytes = 10000000
+startup_wait_seconds = 1
+max_download_candidates = 0
+# 600, not 0: probing runs before any download, so unbounded makes a
+# 10,790-link night pay 10,790 probes at 8 concurrent and the job is killed
+# before it publishes. The sample is taken evenly across the artifact, so no
+# vendor is cut for being later in the file.
+max_probe_candidates = 600
+
+[availability_targets.gemini]
+url = "https://gemini.google.com/"
+enabled = true
+allowed_hosts = ["gemini.google.com", "accounts.google.com"]
+negative_phrases = ["not available in your country", "not available in your country or territory", "isn't available in your country", "not available in your region"]
+
+[availability_targets.chatgpt]
+url = "https://chatgpt.com/"
+enabled = true
+allowed_hosts = ["chatgpt.com", "chat.openai.com", "auth.openai.com", "login.openai.com"]
+negative_phrases = ["unsupported country", "unsupported region", "country, region, or territory", "not available in your country"]
+
+[availability_targets.claude]
+# Must be /cdn-cgi/trace: the claude parser reads a `loc=` line. https://claude.ai/
+# answers 403 with a challenge page through every exit tested (37 live nodes),
+# and a 403 HTML body has no `loc=` — no candidate would pass.
+url = "https://claude.ai/cdn-cgi/trace"
+enabled = true
+allowed_hosts = ["claude.ai", "support.anthropic.com"]
+negative_phrases = ["unavailable in your region", "supported regions", "physically located in one of our supported regions", "outside of our supported locations"]
+
+[network]
+# The crawl's upstream proxy is this host's own mihomo, built from the
+# published subscription on every run.
+proxy_mode = "proxy"
+proxy_url = "http://127.0.0.1:7897"
+
+[deploy]
+# This deployment's own project, never the VPS's (`sub-nodes-04`).
+project_name = "sub-nodes-cf"
+# No key here: the profile is committed and also uploaded as a Worker secret, so
+# a literal publishes the subscription. The deploy composes `<url>/?<secret_query>`.
+subscription_url = "https://sub-nodes-cf.pages.dev"
+verify_subscription_url = "https://sub-nodes-cf.pages.dev"
+pages_project_url = "https://sub-nodes-cf.pages.dev"
+custom_domain = ""
+# Sentinel: resolves from VPN_AUTOMATION_SUBSCRIPTION_KEY at build time. A
+# literal works; sentinel-without-variable throws, not a `{{...}}` key.
+secret_query = "{{SUBSCRIPTION_KEY}}"
+cloudflare_auth_mode = "api_token"
+cloudflare_api_token = ""
+cloudflare_global_key = ""
+cloudflare_email = ""
+account_id = "e743286b4304e96ee8795d62917052aa"
+use_wrangler = true
+auto_create_project_on_blocked = true
+fallback_project_prefix = "autovpn-cf"
+# 40, not 50: the floor stops a broken night from replacing a working
+# subscription; it is not a demand for a record night. A floor of 50 held five
+# nights straight on the VPS (48, 30, 50, 44, 43), publishing nothing while the
+# served subscription aged. 40 clears every normal night.
+min_final_links = 40
+
+[worker_build]
+environment_name = "production"
+entry_filename = "_worker.js"
+bundle_subdir = "pages_bundle"
+modules_subdir = "modules"

@@ -71,7 +71,12 @@ function firstExistingPath(candidates: string[]): string {
 
 function mihomoInstallCandidates(env: NodeJS.ProcessEnv): string[] {
   const homeDir = String(env.HOME ?? env.USERPROFILE ?? '').trim();
+  // Same order as `proxy-runtime.ts`: an explicit `MIHOMO_BIN` is the host
+  // saying where the binary is. Keeping the two lists identical is what makes
+  // `doctor` a real preflight instead of a second, disagreeing opinion.
+  const configured = String(env.MIHOMO_BIN ?? '').trim();
   return [
+    configured,
     homeDir ? path.join(homeDir, 'clashctl', 'bin', 'mihomo') : '',
     '/opt/homebrew/bin/mihomo',
     '/usr/local/bin/mihomo',
@@ -80,6 +85,14 @@ function mihomoInstallCandidates(env: NodeJS.ProcessEnv): string[] {
 }
 
 function mihomoPath(env: NodeJS.ProcessEnv): string {
+  // `MIHOMO_BIN` outranks PATH, exactly as in the speed-test stage. Otherwise a
+  // host that ships its own binary (`$RUNNER_TEMP/mihomo`, `/usr/local/bin` in
+  // the image) is told about whatever `mihomo` happens to be on PATH, and the
+  // preflight passes on a binary the run will not use.
+  const configured = String(env.MIHOMO_BIN ?? '').trim();
+  if (configured && firstExistingPath([configured])) {
+    return configured;
+  }
   return commandPath('mihomo', env) || firstExistingPath(mihomoInstallCandidates(env));
 }
 

@@ -24,7 +24,7 @@ import { checkLinkAvailabilityBatchWithBackend, AvailabilityResultDict } from '.
 import { decorateLinkWithCountry, postprocessLinksWithBackend } from './postprocess.js';
 import { renderMainDataWithBackend } from './render.js';
 import { buildWorkerArtifactsWithBackend, WorkerBuildArtifacts } from './obfuscate.js';
-import { deployPagesWithBackend, isVerifySuccess, verifyDeploymentWithBackend } from './deploy.js';
+import { deployPagesWithBackend, isVerifySuccess, resolveSecretQuery, verifyDeploymentWithBackend } from './deploy.js';
 import { safeDeployment } from '../runtime/redaction.js';
 import { RunStore, readLatestStageStatuses } from './run-store.js';
 import { AsyncPermitPool, BoundedWorkerPool } from './streaming-coordinator.js';
@@ -708,11 +708,46 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
       }
     });
 
+    // The streaming path discovers links one at a time, so it cannot sample a
+    // known set the way `sampleAcrossArtifact` does. What it can do is bound the
+    // *rate*: once the budget is exceeded, keep every Nth new link so the
+    // measured subset still spans every source and every lap, instead of being
+    // whatever arrived before the budget ran out.
+    //
+    // Without this, `max_probe_candidates` had no effect at all here: the pool
+    // received all 1,409 links from one night and the speed test alone ran for
+    // over an hour. The budget is now enforced where links enter, which is the
+    // only place that sees every link.
+    const probeBudget = Math.max(0, Number(speedConfig.max_probe_candidates ?? 0));
+    let acceptedForProbe = 0;
+    let skippedForProbe = 0;
+    const shouldSubmitForProbe = (): boolean => {
+      if (probeBudget <= 0) {
+        acceptedForProbe += 1;
+        return true;
+      }
+      if (acceptedForProbe < probeBudget) {
+        acceptedForProbe += 1;
+        return true;
+      }
+      // Past the budget: take every other link, then every third, and so on.
+      // The stride grows with how far past the budget we are, so the kept links
+      // stay spread across the remainder rather than clustering at its start.
+      skippedForProbe += 1;
+      const stride = Math.max(2, Math.floor(skippedForProbe / Math.max(1, probeBudget)) + 1);
+      if (skippedForProbe % stride === 0) {
+        acceptedForProbe += 1;
+        return true;
+      }
+      return false;
+    };
+
     const onExtractedLinks = async (sourceName: string, links: string[]): Promise<void> => {
       for (const link of links) {
         await ensureDedupeStageStarted();
         const recorded = runStore.recordExtractedNode(sourceName, link);
         if (recorded.inserted) {
+          if (!shouldSubmitForProbe()) continue;
           await ensureSpeedStageStarted();
           await speedPool.submit(link);
         }
@@ -929,7 +964,7 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
     await setStage('render', 'success');
 
     await setStage('obfuscate', 'running');
-    const secretQuery = String(profile.deploy?.secret_query ?? '');
+    const secretQuery = resolveSecretQuery(profile.deploy ?? {}, env);
     const workerArtifacts = context.stages?.obfuscate
       ? await context.stages.obfuscate({ transformedSource: rendered.rendered_source, config: profile.worker_build ?? {}, secretQuery })
       : await buildWorkerArtifactsWithBackend({
@@ -1186,7 +1221,7 @@ export async function retryNodePipelineStage(options: NodeRetryStageOptions, con
       }
       await setStage('obfuscate', 'running');
       const renderedSource = await readFile(renderedPath, 'utf8');
-      const secretQuery = String(profile.deploy?.secret_query ?? '');
+      const secretQuery = resolveSecretQuery(profile.deploy ?? {}, env);
       const workerArtifacts = context.stages?.obfuscate
         ? await context.stages.obfuscate({ transformedSource: renderedSource, config: profile.worker_build ?? {}, secretQuery })
         : await buildWorkerArtifactsWithBackend({
@@ -1706,7 +1741,7 @@ export async function resumeNodePipeline(options: NodeResumeOptions, context: Ru
     await setStage('render', 'success');
 
     await setStage('obfuscate', 'running');
-    const secretQuery = String(profile.deploy?.secret_query ?? '');
+    const secretQuery = resolveSecretQuery(profile.deploy ?? {}, env);
     const workerArtifacts = context.stages?.obfuscate
       ? await context.stages.obfuscate({ transformedSource: rendered.rendered_source, config: profile.worker_build ?? {}, secretQuery })
       : await buildWorkerArtifactsWithBackend({

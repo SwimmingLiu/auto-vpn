@@ -111,8 +111,43 @@ export function derivePagesProjectUrl(projectName: string): string {
   return `https://${projectName}.pages.dev`;
 }
 
-export function buildSecretUrl(deploy: DeployLike): string {
-  return `${getString(deploy, 'pages_project_url').replace(/\/+$/g, '')}/?${getString(deploy, 'secret_query')}`;
+export function buildSecretUrl(deploy: DeployLike, secretQuery?: string): string {
+  const query = secretQuery !== undefined ? secretQuery : getString(deploy, 'secret_query');
+  return `${getString(deploy, 'pages_project_url').replace(/\/+$/g, '')}/?${query}`;
+}
+
+/**
+ * The subscription key, resolved from the environment first.
+ *
+ * A key in the profile is a published key: the profile is committed, and it is
+ * also uploaded as a Worker secret, so the value would exist in two readable
+ * places. The profile therefore carries a sentinel and the real value comes
+ * from `VPN_AUTOMATION_SUBSCRIPTION_KEY` — a GitHub secret on the runner, an
+ * environment variable on a workstation.
+ *
+ * A profile that still holds a literal key keeps working (the VPS does not set
+ * the variable), but a profile that holds the sentinel and no variable throws
+ * rather than publishing a subscription whose key is the sentinel itself.
+ */
+export const SUBSCRIPTION_KEY_SENTINEL = '{{SUBSCRIPTION_KEY}}';
+export const SUBSCRIPTION_KEY_ENV = 'VPN_AUTOMATION_SUBSCRIPTION_KEY';
+
+export function resolveSecretQuery(deploy: DeployLike, env: NodeJS.ProcessEnv = process.env): string {
+  const configured = getString(deploy, 'secret_query');
+  if (configured && configured !== SUBSCRIPTION_KEY_SENTINEL) {
+    return configured;
+  }
+  const fromEnv = String(env[SUBSCRIPTION_KEY_ENV] ?? '').trim();
+  if (fromEnv) {
+    return fromEnv;
+  }
+  if (configured === SUBSCRIPTION_KEY_SENTINEL) {
+    throw new Error(
+      `the profile defers its subscription key to ${SUBSCRIPTION_KEY_ENV}, which is unset; ` +
+        'refusing to publish a subscription keyed by the sentinel'
+    );
+  }
+  return '';
 }
 
 export function buildPagesProjectRootUrl(deploy: DeployLike): string {
@@ -326,8 +361,13 @@ function resolveDeployProxyUrl(env: NodeJS.ProcessEnv): string {
 }
 
 function resolvePagesSecretValue(secretName: string, runtimeEnv: Record<string, string | undefined>): string {
+  // The admin secret may arrive as a profile value (`pages_secret_admin`) or
+  // from the environment. There is deliberately no built-in default: a
+  // hardcoded fallback is a password every clone of this repository knows,
+  // which is the opposite of a secret, and `ADMIN` guards the share worker's
+  // control endpoints.
   const configuredDefault = secretName === 'ADMIN'
-    ? clean(runtimeEnv.VPN_AUTOMATION_DEFAULT_PAGES_SECRET_ADMIN) || 'swimmingliu'
+    ? clean(runtimeEnv.VPN_AUTOMATION_DEFAULT_PAGES_SECRET_ADMIN) || ''
     : '';
   for (const key of [`${PAGES_SECRET_ENV_PREFIX}${secretName}`, secretName]) {
     const value = clean(runtimeEnv[key]) || clean(process.env[key]);
@@ -837,11 +877,12 @@ async function syncShareProjectSub(
 ): Promise<Record<string, unknown>> {
   let requestedName = getString(deploy, 'share_project_name');
   const envKey = getString(deploy, 'share_project_sub_env_key') || 'SUB';
+  // Resolved from the environment when the profile defers it, so the share
+  // worker receives the real key rather than the sentinel.
   const subValue = buildSecretUrl({
     ...deploy,
-    pages_project_url: options.pagesProjectUrl,
-    secret_query: getString(deploy, 'secret_query') || 'serect_key=swimmingliu'
-  });
+    pages_project_url: options.pagesProjectUrl
+  }, resolveSecretQuery(deploy));
   const shareAutoFallback = deploy.share_project_auto_fallback ?? true;
   let shareLastUsedSuffix = nonNegativeInt(deploy.share_project_fallback_last_used_suffix);
   const result: Record<string, unknown> = {
@@ -1005,7 +1046,11 @@ export async function deployPagesWithBackend(input: DeployInput, options: Deploy
     const customDomain = getString(deploy, 'custom_domain');
     const runtimeEnv = {
       ...env,
-      VPN_AUTOMATION_DEFAULT_PAGES_SECRET_ADMIN: getString(deploy, 'pages_secret_admin') || 'swimmingliu'
+      // From the profile when present, else the environment. No `|| 'admin'`
+      // fallback: a committed default is not a secret.
+      VPN_AUTOMATION_DEFAULT_PAGES_SECRET_ADMIN:
+        getString(deploy, 'pages_secret_admin')
+        || String(env.VPN_AUTOMATION_DEFAULT_PAGES_SECRET_ADMIN ?? '')
     };
     const credentials = resolveCloudflareCredentials(deploy, runtimeEnv);
     const baseEnv = buildWranglerAuthEnv(credentials);
