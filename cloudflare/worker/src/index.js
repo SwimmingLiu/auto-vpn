@@ -60,7 +60,11 @@ const MAX_RUN_MS = 3 * 60 * 60 * 1000;
  */
 const DEFAULT_SETTINGS = {
   enabled: true,
-  min_final_nodes: 50,
+  // The same floor `profile.cloudflare.toml` enforces. The two paths publish
+  // the same artifact, so a value that differs here would let one path publish
+  // what the other holds — the failure the feasibility doc's "one threshold"
+  // requirement names.
+  min_final_nodes: 40,
   probe_url: 'https://www.16863988.com/'
 };
 /** A run moves through these phases; `step()` is driven entirely by this. */
@@ -624,6 +628,19 @@ export class PipelineController extends DurableObject {
     }
 
     if (row.phase === 'gating') {
+      // A run that crawled from the container's own address measured a
+      // different network than the one the subscription promises, and the
+      // operator's requirement is that the crawl leaves through the
+      // subscription's nodes. The container now refuses to start such a run;
+      // this is the second lock, for a run recorded by an older image.
+      if (row.egress_mode === 'direct') {
+        this.recordEvent(runId, 'deploy_held', {
+          final_links: row.final_links,
+          reason: 'egress was direct, not a subscription node'
+        });
+        this.finish(runId, 'held', '');
+        return { done: true, status: 'held', final_links: row.final_links };
+      }
       // Mirrors `daily-run.sh`: publish only when the node count clears the
       // threshold, so a thin sweep never replaces a working subscription.
       if (row.final_links <= settings.min_final_nodes) {

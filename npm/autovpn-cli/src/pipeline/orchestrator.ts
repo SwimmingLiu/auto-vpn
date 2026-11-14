@@ -27,6 +27,7 @@ import { buildWorkerArtifactsWithBackend, WorkerBuildArtifacts } from './obfusca
 import { deployPagesWithBackend, isVerifySuccess, resolveSecretQuery, verifyDeploymentWithBackend } from './deploy.js';
 import { safeDeployment } from '../runtime/redaction.js';
 import { RunStore, readLatestStageStatuses } from './run-store.js';
+import { createProbeGate } from './probe-budget.js';
 import { AsyncPermitPool, BoundedWorkerPool } from './streaming-coordinator.js';
 import { createGeoIpLookup, GeoIpLookupOptions } from './geoip.js';
 import { FingerprintStore, resolveFingerprintCacheDir } from './brand-cache.js';
@@ -202,8 +203,12 @@ function deployMinimumFinalLinks(profile: PipelineProfile): number {
 
 function assertDeployMinimumFinalLinks(profile: PipelineProfile, finalLinks: string[]): void {
   const minimum = deployMinimumFinalLinks(profile);
-  if (minimum > 0 && finalLinks.length < minimum) {
-    throw new Error(`final node count ${finalLinks.length} is below deploy minimum ${minimum}`);
+  // `<=`, not `<`: this is the comparison `scripts/server/daily-run.sh`, the
+  // runner's gate and the Durable Object already make. A floor of 40 means 40
+  // holds and 41 publishes; a `<` here would publish the one night the source
+  // server holds, and the two paths would disagree by exactly one link.
+  if (minimum > 0 && finalLinks.length <= minimum) {
+    throw new Error(`final node count ${finalLinks.length} does not clear deploy minimum ${minimum}`);
   }
 }
 
@@ -709,45 +714,26 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
     });
 
     // The streaming path discovers links one at a time, so it cannot sample a
-    // known set the way `sampleAcrossArtifact` does. What it can do is bound the
-    // *rate*: once the budget is exceeded, keep every Nth new link so the
-    // measured subset still spans every source and every lap, instead of being
-    // whatever arrived before the budget ran out.
+    // known set the way `sampleAcrossArtifact` does. `createProbeGate` bounds
+    // what reaches the pool: the first `max_probe_candidates` links are always
+    // admitted, and past that the gate keeps every Nth link with N growing as
+    // the sweep runs on, so the measured subset still reaches the tail of the
+    // sweep instead of stopping when the budget does. The first links are a
+    // prefix by necessity — a thin night must probe everything it found — but
+    // they are not the whole sample on a large night.
     //
     // Without this, `max_probe_candidates` had no effect at all here: the pool
     // received all 1,409 links from one night and the speed test alone ran for
-    // over an hour. The budget is now enforced where links enter, which is the
-    // only place that sees every link.
-    const probeBudget = Math.max(0, Number(speedConfig.max_probe_candidates ?? 0));
-    let acceptedForProbe = 0;
-    let skippedForProbe = 0;
-    const shouldSubmitForProbe = (): boolean => {
-      if (probeBudget <= 0) {
-        acceptedForProbe += 1;
-        return true;
-      }
-      if (acceptedForProbe < probeBudget) {
-        acceptedForProbe += 1;
-        return true;
-      }
-      // Past the budget: take every other link, then every third, and so on.
-      // The stride grows with how far past the budget we are, so the kept links
-      // stay spread across the remainder rather than clustering at its start.
-      skippedForProbe += 1;
-      const stride = Math.max(2, Math.floor(skippedForProbe / Math.max(1, probeBudget)) + 1);
-      if (skippedForProbe % stride === 0) {
-        acceptedForProbe += 1;
-        return true;
-      }
-      return false;
-    };
+    // over an hour. The budget is enforced where links enter, which is the only
+    // place that sees every link.
+    const probeGate = createProbeGate(Number(speedConfig.max_probe_candidates ?? 0));
 
     const onExtractedLinks = async (sourceName: string, links: string[]): Promise<void> => {
       for (const link of links) {
         await ensureDedupeStageStarted();
         const recorded = runStore.recordExtractedNode(sourceName, link);
         if (recorded.inserted) {
-          if (!shouldSubmitForProbe()) continue;
+          if (!probeGate.shouldSubmit()) continue;
           await ensureSpeedStageStarted();
           await speedPool.submit(link);
         }

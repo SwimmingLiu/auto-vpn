@@ -96,18 +96,31 @@ test('gate holds when final_links does not clear the threshold', async () => {
   const { ctx } = await makeHarness();
   const controller = stubContainer(new PipelineController(ctx, {}));
   controller.latestEvent = (runId, type) => (type === 'summary'
-    ? { run_status: 'success', artifact_dir: '/data/x', counts: { final_links: 50 } }
+    ? { run_status: 'success', artifact_dir: '/data/x', counts: { final_links: 40 } }
     : null);
 
   controller.sql.exec(
     `INSERT INTO runs (run_id, status, phase, started_at) VALUES ('r1','running','measuring','${isoNow()}')`
   );
   const result = await controller.step('r1');
-  // daily-run.sh uses `-le`: exactly 50 holds, it does not deploy.
+  // daily-run.sh uses `-le`: exactly the floor holds, it does not deploy. The
+  // profile and this default are both 40, so this is the shared boundary.
   assert.equal(result.status, 'held');
   const row = controller.runRow('r1');
   assert.equal(row.status, 'held');
-  assert.equal(row.final_links, 50);
+  assert.equal(row.final_links, 40);
+});
+
+test('gate holds a run that crawled direct even above the threshold', async () => {
+  const { PipelineController } = await loadWorker();
+  const { ctx } = await makeHarness();
+  const controller = stubContainer(new PipelineController(ctx, {}));
+  controller.sql.exec(
+    `INSERT INTO runs (run_id, status, phase, started_at, final_links, egress_mode) VALUES ('rd','running','gating','${isoNow()}', 900, 'direct')`
+  );
+  const result = await controller.step('rd');
+  assert.equal(result.status, 'held');
+  assert.equal(controller.runRow('rd').status, 'held');
 });
 
 test('gate passes and starts a deploy run above the threshold', async () => {

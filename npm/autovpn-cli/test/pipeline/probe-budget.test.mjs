@@ -1,28 +1,19 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { createProbeGate } from '../../dist/pipeline/probe-budget.js';
+
 /**
  * The streaming speed-test path submits links as they are extracted, so it can
  * never see the final set. `max_probe_candidates` was honoured only on the
  * batch path, which production does not use — one night pushed all 1,409 links
  * into the pool and spent over an hour in the speed test.
  *
- * This mirrors the admission rule that now guards the pool.
+ * These tests import the gate the orchestrator itself uses, so the rule under
+ * test cannot drift from the rule in production.
  */
 function makeGate(budget) {
-  let accepted = 0;
-  let skipped = 0;
-  return {
-    shouldSubmit() {
-      if (budget <= 0) { accepted += 1; return true; }
-      if (accepted < budget) { accepted += 1; return true; }
-      skipped += 1;
-      const stride = Math.max(2, Math.floor(skipped / Math.max(1, budget)) + 1);
-      if (skipped % stride === 0) { accepted += 1; return true; }
-      return false;
-    },
-    get accepted() { return accepted; }
-  };
+  return createProbeGate(budget);
 }
 
 test('a budget of zero admits everything, so the old behaviour is reachable', () => {

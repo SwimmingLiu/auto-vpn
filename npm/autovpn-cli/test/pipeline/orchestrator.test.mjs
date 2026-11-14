@@ -447,12 +447,44 @@ test('runNodePipeline blocks deploy when final node count is below the configure
         throw new Error('deploy must not run below minimum final links');
       }
     }
-  }), /final node count 2 is below deploy minimum 10/);
+  }), /final node count 2 does not clear deploy minimum 10/);
 
   const summary = events.find((event) => event.type === 'summary');
   assert.equal(summary.stage_status.speedtest, 'success');
   assert.equal(summary.stage_status.availability, 'success');
   assert.equal(summary.stage_status.deploy, 'failed');
+});
+
+test('runNodePipeline holds deploy at exactly the configured minimum', async () => {
+  // `daily-run.sh`, the runner gate and the Durable Object all use `-le`:
+  // a floor of 2 holds at 2 and publishes at 3. The CLI used `<`, which would
+  // deploy the one night the source server holds.
+  const projectRoot = await makeProject();
+  await setDeployMinFinalLinks(projectRoot, 2);
+  const firstLink = vmessLink('first', 'one.example');
+  const secondLink = vmessLink('second', 'two.example');
+
+  await assert.rejects(() => runNodePipeline({
+    projectRoot,
+    skipDeploy: false,
+    skipVerify: true,
+    output: 'jsonl'
+  }, {
+    env: {
+      VPN_AUTOMATION_RUNTIME_ROOT: path.join(projectRoot, '.runtime'),
+      VPN_AUTOMATION_PROFILE_PATH: path.join(projectRoot, 'state', 'profile.toml')
+    },
+    now: () => new Date('2026-06-29T01:02:03Z'),
+    emit: () => {},
+    stages: {
+      extract: async () => ({ source_name: 'fixture', requested_iterations: 1, successful_iterations: 1, failed_iterations: 0, links: [firstLink, secondLink] }),
+      speedtest: async (links) => links.map((link) => ({ link, reachable: true, average_download_mb_s: 3, latency_ms: 20, error: '' })),
+      availability: async (results) => results.map((speedResult) => ({ ...speedResult, all_passed: true, provider_results: {} })),
+      countryLookup: () => 'US',
+      obfuscate: async ({ transformedSource }) => ({ transformed_source: transformedSource, modules: {}, manifest: { main_module: '_worker.js', modules: [] } }),
+      deploy: async () => { throw new Error('deploy must not run at exactly the minimum'); }
+    }
+  }), /final node count 2 does not clear deploy minimum 2/);
 });
 
 test('runNodePipeline speedtests every unique streamed link without waiting for global selection', async () => {
