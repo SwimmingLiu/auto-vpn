@@ -3,7 +3,7 @@ import path from 'node:path';
 
 import { artifactLatest, artifactList, artifactWorkedAt } from '../artifacts/list.js';
 import { previewArtifact, type FinalNodeRow } from '../artifacts/preview.js';
-import { profilePayload, saveProfilePayload } from '../config/profile.js';
+import { preserveRedactedStaticExit, profilePayload, redactStaticExitForClient, saveProfilePayload } from '../config/profile.js';
 import {
   startDetachedRetry as defaultStartDetachedRetry,
   startDetachedRun as defaultStartDetachedRun,
@@ -99,10 +99,16 @@ export function sanitizeProfileForServer(profile: Record<string, any>): Record<s
       source.password = '<redacted>';
     }
   }
+  // The fixed-IP egress list embeds proxy credentials in its address form.
+  // Only touch the section when the profile actually carries one, so
+  // `/api/state` keeps its existing shape for every profile without it.
+  if (safe.static_exit !== undefined) {
+    safe.static_exit = redactStaticExitForClient(safe.static_exit);
+  }
   return safe;
 }
 
-function preserveRedactedSecrets(incoming: Record<string, any>, current: Record<string, any>): Record<string, any> {
+export function preserveRedactedSecrets(incoming: Record<string, any>, current: Record<string, any>): Record<string, any> {
   const merged = structuredClone(incoming ?? {});
   const currentSources = (current.sources ?? {}) as Record<string, any>;
   for (const [name, source] of Object.entries((merged.sources ?? {}) as Record<string, any>)) {
@@ -121,6 +127,9 @@ function preserveRedactedSecrets(incoming: Record<string, any>, current: Record<
     if (deploy[key] === '<redacted>' || deploy[key] === redactedLabel(key)) {
       deploy[key] = currentDeploy[key] ?? '';
     }
+  }
+  if (merged.static_exit !== undefined) {
+    merged.static_exit = preserveRedactedStaticExit(merged.static_exit, current.static_exit);
   }
   return merged;
 }

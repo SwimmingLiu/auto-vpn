@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { AccountStore } from '../../dist/pool/account-store.js';
-import { createServerRuntime, sanitizeProfileForServer } from '../../dist/server/runtime.js';
+import { createServerRuntime, preserveRedactedSecrets, sanitizeProfileForServer } from '../../dist/server/runtime.js';
 import { RunStore } from '../../dist/pipeline/run-store.js';
 
 function writeJson(filePath, payload) {
@@ -1343,4 +1343,30 @@ test('loading the pool from serve erases retired rows past the retention window'
   } finally {
     await later.close?.();
   }
+});
+
+test('server profile keeps static-exit proxy credentials off the wire but preserves them on save', () => {
+  const stored = {
+    static_exit: {
+      exit: 'socks5://USER:PASS@198.51.100.10:1080#香港静态IP',
+      exit_json: '[{"name":"住宅","type":"http","server":"198.51.100.7","port":8080}]',
+      twins: 'all'
+    }
+  };
+  const profile = sanitizeProfileForServer(stored);
+
+  const text = JSON.stringify(profile);
+  assert.doesNotMatch(text, /PASS/);
+  assert.doesNotMatch(text, /198\.51\.100\.10/);
+  assert.equal(profile.static_exit.exit, '<redacted>');
+  assert.equal(profile.static_exit.exit_json, '<redacted>');
+  assert.equal(profile.static_exit.twins, 'all');
+
+  const saved = preserveRedactedSecrets(
+    { static_exit: { exit: '<redacted>', exit_json: '<redacted>', twins: 'off' } },
+    stored
+  );
+  assert.equal(saved.static_exit.exit, stored.static_exit.exit);
+  assert.equal(saved.static_exit.exit_json, stored.static_exit.exit_json);
+  assert.equal(saved.static_exit.twins, 'off');
 });
