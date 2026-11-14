@@ -343,6 +343,29 @@ curl -X POST -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
 - **Electron.** It is a local client; pointing it at this API is a product
   decision, not a migration step.
 
+## Speed test: the two numbers that decide whether a night publishes
+
+Both are in `[speed_test]`, and both were wrong here before a run was compared
+against the VPS's own numbers.
+
+**`timeout_seconds = 60`** (was 20). These nodes answer a delay probe in 2–3 s
+and then take far longer for the first byte of a 10 MB download. At 20 s the
+identical run passed **82** links where the VPS passed **134** from the same
+candidates — the ceiling was failing healthy nodes, and every one of them is a
+link that never reaches the subscription.
+
+**`concurrency = 8`** (was 20). Each measured link gets its own mihomo child, so
+this is how many start at once. At 20, this stage logged 343 `controller request
+timed out after 20000ms` and 124 `503 Service Unavailable` — mihomo's own local
+API not answering, which is saturation, not the vendor. The candidates have all
+answered a probe by this point, so a narrower sweep costs wall-clock, not
+coverage.
+
+The same class of mistake appeared once already, in the egress supervisor: two
+health sweeps of the same nodes landing together made every node look dead (see
+§ How the IP problem is solved). The lesson both times: a stage that reports
+"everything unreachable" is usually reporting on its own load.
+
 ## Costs
 
 Workers Paid is $5/month and includes 375 vCPU-minutes, 25 GiB-hours of memory
