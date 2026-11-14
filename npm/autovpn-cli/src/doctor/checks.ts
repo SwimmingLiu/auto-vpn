@@ -85,6 +85,14 @@ function mihomoInstallCandidates(env: NodeJS.ProcessEnv): string[] {
 }
 
 function mihomoPath(env: NodeJS.ProcessEnv): string {
+  // `MIHOMO_BIN` outranks PATH, exactly as in the speed-test stage. Otherwise a
+  // host that ships its own binary (`$RUNNER_TEMP/mihomo`, `/usr/local/bin` in
+  // the image) is told about whatever `mihomo` happens to be on PATH, and the
+  // preflight passes on a binary the run will not use.
+  const configured = String(env.MIHOMO_BIN ?? '').trim();
+  if (configured && firstExistingPath([configured])) {
+    return configured;
+  }
   return commandPath('mihomo', env) || firstExistingPath(mihomoInstallCandidates(env));
 }
 
