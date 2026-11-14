@@ -40,16 +40,30 @@ const RULES_TO_EXIT = [];
 const SEP = ' ➜ ';
 const TWIN_SUFFIX = '（链式）';
 
+// mihomo 只认这几个类型名。`socks5h` / `https` 是 URI 写法里的叫法，直接写进
+// 配置会让 mihomo 报 `unsupport proxy type` 并拒绝整份文件，所以在这里归一。
+const 类型映射 = {
+  socks5: 'socks5',
+  socks5h: 'socks5',
+  socks: 'socks5',
+  http: 'http',
+  https: 'http',
+  'http+tls': 'http',
+};
+
 function 解析出口(条目) {
+  const 原始类型 = String(条目.type || 'socks5').toLowerCase();
   const 出口 = {
     name: String(条目.name || `${条目.server}:${条目.port}`),
-    type: String(条目.type || 'socks5').toLowerCase(),
+    type: 类型映射[原始类型] || 原始类型,
     server: 条目.server,
     port: Number(条目.port),
   };
+  // `https://` 与 `http+tls` 走的是带 TLS 的 HTTP 代理，缺了 tls 会被
+  // 当成明文 HTTP 连过去，握手直接失败。
+  if (条目.tls || 原始类型 === 'https' || 原始类型 === 'http+tls') 出口.tls = true;
   if (条目.username !== undefined) 出口.username = 条目.username;
   if (条目.password !== undefined) 出口.password = 条目.password;
-  if (条目.tls) 出口.tls = true;
   if (条目['skip-cert-verify']) 出口['skip-cert-verify'] = true;
   if (条目.udp !== undefined) 出口.udp = Boolean(条目.udp);
   else if (出口.type === 'socks5') 出口.udp = true;
@@ -70,14 +84,6 @@ function 已注入(分组列表, 候选名) {
   });
 }
 
-// 出口节点是否已经在配置里。按「同一个 server:port」判断，而不是按名字：
-// 名字会因避让改后缀，server:port 是这条出口的身份。
-function 出口节点已存在(代理列表) {
-  return 代理列表.some((p) => {
-    if (!p || typeof p !== 'object') return false;
-    return STATIC_EXITS.some((e) => e && e.server === p.server && Number(e.port) === Number(p.port));
-  });
-}
 
 function main(config) {
   if (!config || typeof config !== 'object') return config;
@@ -88,9 +94,10 @@ function main(config) {
 
   // 已经注入过就原样返回，避免脚本重复执行时叠加。
   //
-  // 主判据是出口组存在，旁证是至少一个出口节点已在 proxies 里——用户可能在
-  // 界面上删掉了分组但节点还在，只看分组会重复注入一遍。
-  if (已注入(现有分组, EXIT_GROUP) || 出口节点已存在(config.proxies)) return config;
+  // 判据是出口组存在：分组名可能因避让改成 `… 2`，所以按「EXIT_GROUP 或它加
+  // 数字后缀」认。用户可能在界面上删了分组但节点还在，那种情况不早退——下面
+  // 会靠命名避让把缺的东西补齐，不会重复。
+  if (已注入(现有分组, EXIT_GROUP)) return config;
 
   const 出口清单 = STATIC_EXITS.map(解析出口).filter((e) => e.server && e.port > 0);
   if (出口清单.length === 0) return config;
@@ -113,11 +120,27 @@ function main(config) {
 
   const 机场节点 = config.proxies
     .map((p) => p && p.name)
-    .filter((名) => 名 && !名.includes(SEP) && !名.endsWith(TWIN_SUFFIX));
+    .filter((名) => typeof 名 === 'string' && 名 && !名.includes(SEP) && !名.endsWith(TWIN_SUFFIX));
+
+  // 判断某个节点是不是本脚本上一轮注入的那条出口：类型、地址都一致，
+  // 且名字是「配置名」或「配置名 数字」——链式节点带 SEP 后缀，不算。
+  const 是已注入的出口 = (p, 出口) => {
+    if (!p || typeof p !== 'object' || typeof p.name !== 'string') return false;
+    if (p.server !== 出口.server || Number(p.port) !== Number(出口.port)) return false;
+    if (p.name.includes(SEP) || p.name.endsWith(TWIN_SUFFIX)) return false;
+    return p.name === 出口.name || p.name.startsWith(`${出口.name} `);
+  };
 
   const 新节点 = [];
   const 出口名 = new Map();
   for (const 出口 of 出口清单) {
+    // 这个出口已经注入过（用户删掉了分组、节点还在）就复用它的名字，不再加
+    // 一份——否则每删一次分组就多一对节点。
+    const 已有 = config.proxies.find((p) => 是已注入的出口(p, 出口));
+    if (已有) {
+      出口名.set(出口, 已有.name);
+      continue;
+    }
     const 名称 = 唯一(出口.name);
     出口名.set(出口, 名称);
     新节点.push({ ...出口, name: 名称 });
@@ -128,14 +151,24 @@ function main(config) {
     if (MODE === 'all') {
       for (const 出口 of 出口清单) {
         for (const 入口 of 机场节点) {
-          const 名称 = 唯一(`${入口}${SEP}${出口名.get(出口)}`);
+          const 期望名 = `${入口}${SEP}${出口名.get(出口)}`;
+          // 按名字认，不校验 dialer-proxy：入口组可能因避让换过名字，
+          // 旧链式节点的指向会与这一轮算出来的不同，但节点本身还是那条。
+          const 已有 = config.proxies.find((p) => p && typeof p === 'object' && typeof p.name === 'string'
+            && (p.name === 期望名 || p.name.startsWith(`${期望名} `)));
+          if (已有) { 链式名.push(已有.name); continue; }
+          const 名称 = 唯一(期望名);
           新节点.push({ ...出口, name: 名称, 'dialer-proxy': 入口 });
           链式名.push(名称);
         }
       }
     } else {
       for (const 出口 of 出口清单) {
-        const 名称 = 唯一(`${出口名.get(出口)}${TWIN_SUFFIX}`);
+        const 期望名 = `${出口名.get(出口)}${TWIN_SUFFIX}`;
+        const 已有 = config.proxies.find((p) => p && typeof p === 'object' && typeof p.name === 'string'
+          && (p.name === 期望名 || p.name.startsWith(`${期望名} `)));
+        if (已有) { 链式名.push(已有.name); continue; }
+        const 名称 = 唯一(期望名);
         新节点.push({ ...出口, name: 名称, 'dialer-proxy': 入口组名 });
         链式名.push(名称);
       }
@@ -165,8 +198,20 @@ function main(config) {
   });
   config['proxy-groups'] = [...分组副本, ...新分组];
 
-  if (Array.isArray(RULES_TO_EXIT) && RULES_TO_EXIT.length > 0 && Array.isArray(config.rules)) {
-    config.rules = [...RULES_TO_EXIT, ...config.rules];
+  if (Array.isArray(RULES_TO_EXIT) && RULES_TO_EXIT.length > 0) {
+    // 规则里写的是配置区的分组名，但分组可能因避让改了名（`… 2`）。
+    // 规则格式是 `TYPE,payload,TARGET`，目标永远是最后一个逗号之后那段，
+    // 所以只替换尾段，不碰域名/进程名里可能出现的同名字符串。
+    const 改目标 = (规则行) => {
+      const 文本 = String(规则行);
+      const 位 = 文本.lastIndexOf(',');
+      if (位 < 0) return 文本;
+      const 目标 = 文本.slice(位 + 1);
+      if (目标 !== EXIT_GROUP) return 文本;
+      return `${文本.slice(0, 位 + 1)}${出口组名}`;
+    };
+    const 规则 = Array.isArray(config.rules) ? config.rules : [];
+    config.rules = [...RULES_TO_EXIT.map(改目标), ...规则];
   }
 
   return config;

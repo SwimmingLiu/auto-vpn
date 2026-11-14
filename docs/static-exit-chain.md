@@ -42,7 +42,9 @@ entrance = ""
 twins = "entrance"
 ```
 
-同一组值也可以直接写成分享 Worker 的环境变量：`STATIC_EXIT`、`STATIC_EXIT_JSON`、`STATIC_EXIT_GROUP`、`STATIC_EXIT_ENTRANCE`、`STATIC_EXIT_TWINS`。部署时 `deploy.ts` 会把 profile 里的值同步到 Cloudflare Pages 项目的 env vars，`preview` 与 `production` 都写：这个项目不部署 preview 分支，两个环境写同一份值只是让 Pages 侧保持一致，多出来的暴露面是零。空的键不会写入，所以没配出口时不会把项目上已有的变量清空。
+同一组值也可以直接写成分享 Worker 的环境变量：`STATIC_EXIT`、`STATIC_EXIT_JSON`、`STATIC_EXIT_GROUP`、`STATIC_EXIT_ENTRANCE`、`STATIC_EXIT_TWINS`。部署时 `deploy.ts` 会把 profile 里的值同步到 Cloudflare Pages 项目的 env vars，`preview` 与 `production` 都写：这个项目不部署 preview 分支，两个环境写同一份值只是让 Pages 侧保持一致，多出来的暴露面是零。
+
+profile 里只要有 `[static_exit]` 段，这五个键就会整组写入，空的也照写——**这是清空出口的方式**：把 `exit` 和 `exit_json` 都置空再部署一次，项目上旧的 `user:pass@host` 会被空值覆盖掉。不这样写的话，删掉的出口会一直留在项目上，继续注入给每个订阅者。profile 里完全没有这个段时一个键都不写，所以旧版本的 profile 不会误伤已有配置。
 
 写进 env vars 意味着出口账号会落在 Cloudflare 项目的配置里，能被有权访问该项目的人读到。如果不想让它离开本机，用第 4.1 节的 Verge 扩展脚本，那里的凭证只存在你本地的 `profiles/*.js`。
 
@@ -83,7 +85,7 @@ proxy-groups:
       - DIRECT
 ```
 
-`🛡️ 静态IP出口` 会被追加到每个 `select` 分组的末尾，所以「🚀 节点选择」以及各类业务分组里都能直接选到它。`url-test` / `load-balance` 分组不会挂它，因为 mihomo 不允许在测速分组里嵌套只有选项的分组。
+`🛡️ 静态IP出口` 会被追加到每个 `select` 分组的末尾，所以「🚀 节点选择」以及各类业务分组里都能直接选到它。`url-test` / `load-balance` 分组不会挂它——不是 mihomo 不允许（实测 1.19.33 允许测速分组里嵌套 `select`），而是把出口放进自动测速组没有意义：出口只有一两个，选中哪个用户也管不了，测速还会反复把流量切来切去。想让它进测速组，在 Verge 的代理页手动加即可。
 
 ## 4. 在 Clash Verge Rev 里怎么用
 

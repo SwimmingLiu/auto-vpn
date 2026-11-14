@@ -109,3 +109,88 @@ test('the Verge extension output loads in mihomo', async (t) => {
     assert.match(`${stdout}${stderr}`, /test is successful/, `${label} mode must load in mihomo`);
   }
 });
+
+test('the Verge extension normalises exit types mihomo would reject', async () => {
+  const source = await readFile(scriptPath, 'utf8');
+  // `socks5h` is a URI spelling; mihomo only knows `socks5` and answers
+  // `unsupport proxy type: socks5h`, which fails the whole profile.
+  for (const [declared, expected, tls] of [
+    ['socks5h', 'socks5', false],
+    ['socks', 'socks5', false],
+    ['https', 'http', true],
+    ['http+tls', 'http', true]
+  ]) {
+    const patched = source.replace("type: 'socks5'", `type: '${declared}'`);
+    const main = await loadExtension(patched);
+    const out = main(structuredClone(baseProfile), 'p');
+    const exit = out.proxies.find((p) => p.name === '🇭🇰 香港静态IP');
+    assert.ok(exit, `${declared}: the exit must be injected`);
+    assert.equal(exit.type, expected, `${declared} must become ${expected}`);
+    if (tls) assert.equal(exit.tls, true, `${declared} must carry tls`);
+  }
+});
+
+test('the Verge extension tolerates a non-string proxy name', async () => {
+  const source = await readFile(scriptPath, 'utf8');
+  const main = await loadExtension(source);
+  const profile = structuredClone(baseProfile);
+  profile.proxies.push({ name: 123, type: 'vmess', server: '2.2.2.2', port: 443, uuid: 'x' });
+  // A numeric name used to throw `名.includes is not a function` and abort main(),
+  // so the subscription got no exit at all.
+  const out = main(profile, 'p');
+  assert.ok(out.proxies.some((p) => p.name === '🇭🇰 香港静态IP'));
+});
+
+test('the Verge extension still injects when a node shares the exit address', async () => {
+  const source = await readFile(scriptPath, 'utf8');
+  const main = await loadExtension(source);
+  const profile = structuredClone(baseProfile);
+  // Same server:port as the configured exit, different name: this is a normal
+  // node, not an injected one, and must not make the guard skip injection.
+  profile.proxies.push({ name: '我的香港', type: 'vmess', server: '198.51.100.10', port: 1080, uuid: 'x' });
+  const out = main(profile, 'p');
+  assert.ok(out.proxies.some((p) => p.name === '🇭🇰 香港静态IP（链式）'));
+});
+
+test('the Verge extension rewrites RULES_TO_EXIT when the group was renamed', async () => {
+  const source = await readFile(scriptPath, 'utf8');
+  const patched = source.replace(
+    'const RULES_TO_EXIT = [];',
+    "const RULES_TO_EXIT = ['DOMAIN-SUFFIX,openai.com,🛡️ 静态IP出口'];"
+  );
+  const main = await loadExtension(patched);
+  const profile = structuredClone(baseProfile);
+  // A proxy already holds the exit group's name, so the group becomes `… 2`.
+  profile.proxies.push({ name: '🛡️ 静态IP出口', type: 'vmess', server: '9.9.9.9', port: 443, uuid: 'x' });
+  const out = main(profile, 'p');
+  const 出口组 = out['proxy-groups'].find((g) => g.name.startsWith('🛡️ 静态IP出口'));
+  assert.ok(出口组);
+  // The rule must point at the group that actually exists, or mihomo rejects the file.
+  assert.equal(out.rules[0], `DOMAIN-SUFFIX,openai.com,${出口组.name}`);
+});
+
+test('the Verge extension creates a rules list when the profile has none', async () => {
+  const source = await readFile(scriptPath, 'utf8');
+  const patched = source.replace(
+    'const RULES_TO_EXIT = [];',
+    "const RULES_TO_EXIT = ['DOMAIN-SUFFIX,openai.com,🛡️ 静态IP出口'];"
+  );
+  const main = await loadExtension(patched);
+  const profile = structuredClone(baseProfile);
+  delete profile.rules;
+  const out = main(profile, 'p');
+  assert.ok(Array.isArray(out.rules) && out.rules.length === 1, 'a rules list must be created');
+});
+
+test('the Verge extension recovers a deleted group without duplicating nodes', async () => {
+  const source = await readFile(scriptPath, 'utf8');
+  const main = await loadExtension(source);
+  const once = main(structuredClone(baseProfile), 'p');
+  // The user deleted the group in the UI; the exit nodes are still there.
+  const held = structuredClone(once);
+  held['proxy-groups'] = held['proxy-groups'].filter((g) => !g.name.startsWith('🛡️'));
+  const again = main(held, 'p');
+  const 出口节点 = again.proxies.filter((p) => String(p.name).includes('静态IP'));
+  assert.equal(出口节点.length, 2, 'the exit node and its chain must not be duplicated');
+  assert.ok(again['proxy-groups'].some((g) => g.name.startsWith('🛡️')));
+});
