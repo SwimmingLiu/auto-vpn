@@ -131,6 +131,14 @@ files exist, `$HOME/.auto-vpn/profile.toml` remains the source of truth.
 
 Set `VPN_AUTOMATION_RUNTIME_ROOT` to move them together.
 
+### Fixed-IP egress and Clash chains
+
+The share Worker can inject a fixed-IP SOCKS5/HTTP egress into the Clash
+subscription and expose it as a chained proxy (`dialer-proxy`) that runs
+through any node you pick in Clash Verge Rev. Configure it under
+`[static_exit]` in the runtime profile; see
+[docs/static-exit-chain.md](docs/static-exit-chain.md).
+
 ## License
 
 AutoVPN is licensed under the GNU Affero General Public License v3.0

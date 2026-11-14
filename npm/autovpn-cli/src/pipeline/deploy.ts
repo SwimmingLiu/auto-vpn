@@ -391,26 +391,49 @@ function cloneProjectDeploymentConfigs(projectPayload: Record<string, unknown>, 
 
 function rewriteShareProjectSubValue(
   deploymentConfigs: Record<string, unknown>,
-  options: { envKey: string; subValue: string }
+  options: { envKey: string; subValue: string; staticExitEnv?: Record<string, string> }
 ): Record<string, unknown> {
   const rewritten: Record<string, unknown> = {};
   for (const [environmentName, config] of Object.entries(deploymentConfigs)) {
     rewritten[environmentName] = { ...(config as Record<string, unknown>) };
   }
+  const staticExitEnv = Object.fromEntries(
+    Object.entries(options.staticExitEnv ?? {}).filter(([, value]) => String(value ?? '').trim())
+  );
   for (const environmentName of ['preview', 'production']) {
     const envConfig = { ...((rewritten[environmentName] as Record<string, unknown> | undefined) ?? {}) };
     const envVars = { ...((envConfig.env_vars as Record<string, unknown> | undefined) ?? {}) };
     envVars[options.envKey] = { type: 'plain_text', value: options.subValue };
+    for (const [key, value] of Object.entries(staticExitEnv)) {
+      envVars[key] = { type: 'plain_text', value };
+    }
     envConfig.env_vars = envVars;
     rewritten[environmentName] = envConfig;
   }
   return rewritten;
 }
 
+/**
+ * The fixed-IP egress list the share Worker injects into its Clash output.
+ *
+ * Only non-empty values are forwarded, so an unset profile leaves the share
+ * project's existing variables untouched instead of blanking them.
+ */
+export function buildShareStaticExitEnv(deploy: DeployLike): Record<string, string> {
+  const pairs: Array<[string, string]> = [
+    ['STATIC_EXIT', getString(deploy, 'static_exit')],
+    ['STATIC_EXIT_JSON', getString(deploy, 'static_exit_json')],
+    ['STATIC_EXIT_GROUP', getString(deploy, 'static_exit_group')],
+    ['STATIC_EXIT_ENTRANCE', getString(deploy, 'static_exit_entrance')],
+    ['STATIC_EXIT_TWINS', getString(deploy, 'static_exit_twins')]
+  ];
+  return Object.fromEntries(pairs.filter(([, value]) => value.trim()));
+}
+
 function buildShareProjectUpdatePayload(
   sourceProject: Record<string, unknown>,
   runtimeEnv: Record<string, string | undefined>,
-  options: { envKey: string; subValue: string }
+  options: { envKey: string; subValue: string; staticExitEnv?: Record<string, string> }
 ): Record<string, unknown> {
   const clonedConfigs = cloneProjectDeploymentConfigs(sourceProject, runtimeEnv);
   return {
@@ -886,7 +909,8 @@ async function syncShareProjectSub(
 
   const payload = buildShareProjectUpdatePayload(sourceProject, options.runtimeEnv, {
     envKey,
-    subValue
+    subValue,
+    staticExitEnv: buildShareStaticExitEnv(deploy)
   });
   const shareBundle = await stageShareProjectWorkerBundle(options.projectRoot, options.env);
   result.share_project_source_path = shareBundle.sourcePath;

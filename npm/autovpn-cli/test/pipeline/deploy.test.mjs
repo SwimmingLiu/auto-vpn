@@ -748,6 +748,61 @@ test('Node deploy backend syncs share project SUB to final Pages URL', async () 
   assert.ok(String(result.share_project_worker_entry).endsWith('/share_pages_bundle/_worker.js'));
 });
 
+test('Node deploy backend forwards the static-exit profile section to the share project', async () => {
+  const projectRoot = await makeShareProjectRoot();
+  const calls = [];
+  const client = {
+    async getPagesProject(projectName) {
+      return {
+        name: projectName,
+        deployment_configs: {
+          preview: { env_vars: { SUB: { type: 'plain_text', value: 'https://old.pages.dev' } } },
+          production: { env_vars: { SUB: { type: 'plain_text', value: 'https://old.pages.dev' } } }
+        }
+      };
+    },
+    async updatePagesProject(projectName, payload) {
+      calls.push(['updatePagesProject', projectName, payload]);
+      return { name: projectName };
+    },
+    async listPagesProjects() { return [{ name: 'sub-links-share-03' }]; },
+    async createPagesProject() { throw new Error('unexpected create'); },
+    async copyPagesProjectConfig() { throw new Error('unexpected copy'); },
+    async verifyUrl() { return true; },
+    async verifySubdomainCname() { return true; },
+    async deletePagesProject() { return {}; }
+  };
+
+  await deployPagesWithBackend({
+    projectRoot,
+    bundleDir: path.join(projectRoot, 'artifacts/pages_bundle'),
+    deploy: {
+      project_name: 'sub-nodes',
+      pages_project_url: 'https://sub-nodes.pages.dev',
+      subscription_url: 'https://origin.example/sub',
+      share_project_name: 'sub-links-share-03',
+      static_exit: 'socks5://user:p%40ss@198.51.100.10:1080#香港静态IP',
+      static_exit_twins: 'all',
+      cloudflare_api_token: 'token-1'
+    }
+  }, {
+    env: {},
+    resolveManagedNpmTool: resolveTestManagedWrangler,
+    cloudflareDeployClient: client,
+    runCommand: async () => ({ returncode: 0, stdout: 'ok', stderr: '' })
+  });
+
+  const update = calls.find((call) => call[0] === 'updatePagesProject');
+  for (const environment of ['preview', 'production']) {
+    const envVars = update[2].deployment_configs[environment].env_vars;
+    assert.equal(envVars.STATIC_EXIT.value, 'socks5://user:p%40ss@198.51.100.10:1080#香港静态IP');
+    assert.equal(envVars.STATIC_EXIT_TWINS.value, 'all');
+    // Unset keys must not be pushed as empty values, or they would blank the project.
+    assert.equal(envVars.STATIC_EXIT_GROUP, undefined);
+    assert.equal(envVars.STATIC_EXIT_ENTRANCE, undefined);
+  }
+});
+
 test('Node deploy backend falls back when share project update is blocked', async () => {
   const projectRoot = await makeShareProjectRoot();
   const calls = [];
