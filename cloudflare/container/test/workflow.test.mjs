@@ -82,3 +82,20 @@ test('the CLI is built from this checkout, not installed by version number', () 
   );
   assert.match(install.body, /npm install -g[^\n]*\.\/npm\/autovpn-cli/, 'the built CLI is not installed');
 });
+
+test('the uploaded log is the redacted one, and nothing uploads the raw log', () => {
+  // A public repository's artifacts are downloadable without authentication.
+  // The raw log carries one event per link with the full vmess payload, so
+  // uploading it as-is publishes the subscription.
+  const upload = steps(raw).find((step) => /upload-artifact/.test(step.body));
+  assert.ok(upload, 'no upload-artifact step');
+  assert.match(upload.body, /run\.redacted\.jsonl/, 'the raw run log is what gets uploaded');
+  assert.doesNotMatch(
+    upload.body,
+    /\$\{\{ runner\.temp \}\}\/run\.jsonl/,
+    'the upload path still names the unredacted log'
+  );
+  const redact = steps(raw).find((step) => /redact-run-log\.mjs/.test(step.body));
+  assert.ok(redact, 'nothing redacts the log before upload');
+  assert.match(redact.body, /grep -qE/, 'the redaction step does not verify its own output');
+});

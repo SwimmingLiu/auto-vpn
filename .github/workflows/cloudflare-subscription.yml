@@ -238,12 +238,38 @@ jobs:
           if [ -z "$DEPLOY_URL" ]; then echo "the deploy reported no pages_project_url" >&2; exit 1; fi
           node cloudflare/scripts/verify-published.mjs "${DEPLOY_URL}/?${SECRET_QUERY}" "$ARTIFACT"
 
+      # A public repository's artifacts are downloadable without authentication,
+      # and the log carries one event per probed and measured link with the full
+      # `vmess://` payload — server, port, UUID. Uploading it as-is publishes the
+      # subscription. The yield statistics are the reason to keep the log, so
+      # each link becomes a stable short fingerprint instead of being dropped.
+      - name: Strip node links from the log
+        if: always()
+        run: |
+          node cloudflare/scripts/redact-run-log.mjs \
+            "$RUNNER_TEMP/run.jsonl" "$RUNNER_TEMP/run.redacted.jsonl"
+          # The deploy log is absent when the gate holds; redact it when present.
+          if [ -f "$RUNNER_TEMP/deploy.jsonl" ]; then
+            node cloudflare/scripts/redact-run-log.mjs \
+              "$RUNNER_TEMP/deploy.jsonl" "$RUNNER_TEMP/deploy.redacted.jsonl"
+          fi
+          for f in "$RUNNER_TEMP"/run.redacted.jsonl "$RUNNER_TEMP"/deploy.redacted.jsonl; do
+            [ -f "$f" ] || continue
+            if grep -qE '(vmess|vless|trojan|ss|hysteria2?)://[A-Za-z0-9_-]' "$f"; then
+              echo "a node link survived redaction in $f; refusing to upload it" >&2
+              exit 1
+            fi
+          done
+
       - name: Upload the run log
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: cloudflare-subscription-run
           path: |
-            ${{ runner.temp }}/run.jsonl
-            ${{ runner.temp }}/deploy.jsonl
+            ${{ runner.temp }}/run.redacted.jsonl
+            ${{ runner.temp }}/deploy.redacted.jsonl
+          # A held night produces no deploy log; that is the gate working, not
+          # a reason to fail the run.
+          if-no-files-found: warn
           retention-days: 14
