@@ -141,6 +141,18 @@ export function toMihomoProxy(link, index) {
 export function buildConfig(proxies, {
   probeUrl = DEFAULT_PROBE_HOST,
   direct = false,
+  // Phase 1 turns the group health check off. mihomo probes every member the
+  // moment the config loads when `lazy` is false, and the supervisor probes the
+  // same nodes immediately after — two sweeps of the vendor's host landing
+  // together, which reads as a burst and gets refused. Measured on 37 live
+  // nodes with a probe of the real vendor host:
+  //
+  //   fallback + lazy:false   ->  0/37 healthy, 15 s (all failed fast)
+  //   select, no health check -> 36/37 healthy, 23 s
+  //
+  // Same subscription, same image, same probe concurrency. So phase 1 runs with
+  // its own checks off and lets the supervisor be the only prober.
+  healthCheck = true,
   // The listener port is a parameter only so tests can run beside a live
   // instance. Production always uses 7897, which is what `egress.ts` defaults to.
   port = EGRESS_PORT,
@@ -177,19 +189,28 @@ export function buildConfig(proxies, {
       // An explicit GLOBAL that selects EGRESS. Without it mihomo synthesizes
       // its own GLOBAL (DIRECT first) and `mode: global` would bypass the pool.
       { name: 'GLOBAL', type: 'select', proxies: ['EGRESS'] },
-      {
-        name: 'EGRESS',
-        // `fallback` holds one node until it fails a health check, then moves on.
-        // `url-test` would re-rank on latency every interval and flap the crawl
-        // between exit IPs, which looks exactly like account takeover to a
-        // vendor's risk engine.
-        type: 'fallback',
-        proxies: proxies.map((proxy) => proxy.name),
-        url: probeUrl,
-        interval: 120,
-        timeout: 5000,
-        lazy: false
-      }
+      healthCheck
+        ? {
+          name: 'EGRESS',
+          // `fallback` holds one node until it fails a health check, then moves on.
+          // `url-test` would re-rank on latency every interval and flap the crawl
+          // between exit IPs, which looks exactly like account takeover to a
+          // vendor's risk engine.
+          type: 'fallback',
+          proxies: proxies.map((proxy) => proxy.name),
+          url: probeUrl,
+          interval: 120,
+          timeout: 5000,
+          lazy: false
+        }
+        : {
+          name: 'EGRESS',
+          // Same group shape, no `url`/`interval`/`lazy`: a plain selector does
+          // not probe its members, so the supervisor's sweep is the only one
+          // the vendor host sees.
+          type: 'select',
+          proxies: proxies.map((proxy) => proxy.name)
+        }
     ],
     rules: ['MATCH,EGRESS']
   };
@@ -363,7 +384,14 @@ export class EgressSupervisor {
     }
 
     // Phase 1: start every candidate so the controller can health-check them.
-    await this.launch(buildConfig(entries.map((entry) => entry.proxy), { probeUrl }));
+    // Its own group health check is off — see `healthCheck` in `buildConfig`:
+    // mihomo probing all 37 members at load collides with the sweep below and
+    // made every node look dead.
+    await this.launch(buildConfig(entries.map((entry) => entry.proxy), { probeUrl, healthCheck: false }));
+    // `launch` returns as soon as the controller answers, which is before every
+    // proxy has finished loading. Without this the first probes race that load
+    // and time out against a node that is actually fine.
+    await sleep(1500);
     const healthy = await this.probeNodes(entries.map((entry) => entry.name), probeUrl);
 
     if (healthy.length === 0) {

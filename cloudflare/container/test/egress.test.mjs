@@ -70,6 +70,25 @@ test('the proxy group is fallback, not url-test', () => {
   assert.equal(group.interval, 120);
 });
 
+test('the probing phase disables mihomo\'s own health check', () => {
+  // Phase 1 starts every candidate only so the supervisor can probe them. With
+  // the group's own health check on, mihomo probes all members at load and the
+  // supervisor probes them again immediately: measured on 37 live nodes, that
+  // made 0/37 look healthy in 15 s, while the same sweep with the group's check
+  // off found 36/37 in 23 s. Healthy-looking nodes then got skipped and the
+  // crawl silently fell back to DIRECT.
+  const config = buildConfig([toMihomoProxy(SAMPLE_LINK, 0).proxy], { healthCheck: false });
+  const group = config['proxy-groups'].find((g) => g.name === 'EGRESS');
+  assert.equal(group.type, 'select');
+  assert.equal(group.url, undefined);
+  assert.equal(group.interval, undefined);
+  assert.equal(group.lazy, undefined);
+  // It must still be a real group over the candidates, not a DIRECT shortcut.
+  assert.deepEqual(group.proxies, ['n0']);
+  const global = config['proxy-groups'].find((g) => g.name === 'GLOBAL');
+  assert.deepEqual(global.proxies, ['EGRESS']);
+});
+
 test('neither global nor rule mode can fall through to DIRECT', () => {
   const config = buildConfig([toMihomoProxy(SAMPLE_LINK, 0).proxy]);
   // Verified against mihomo 1.19.24: with `mode: 'global'` and no explicit
