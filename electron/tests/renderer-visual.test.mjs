@@ -13,18 +13,18 @@ const __dirname = path.dirname(__filename);
 
 const EXPECTED_DIGESTS_BY_PLATFORM = {
   darwin: {
-    dashboard: '648db40b62a719b4deac37b2b95aedac39bce2ba4e8614a162e0ceb3b72049e2',
-    runs: '6e95e5e5c9e2b8f81d6b128827528f36cdc774a7ca08d5490d86d197131edda3',
-    results: '0ccd16a2a754ec92b6e1e6f9bba0a25a2b182d3b6a5d4fa36826e0a6decbe438',
-    logs: '17aa54116a49dc1bf92168bb32d440c48e4ef2effe48be16a1a492f686f4940a',
-    settings: '04d64f2d076bd8fef9f181b652f308a3c4e18057eaaec88c1578613ad9a0ffd0'
+    dashboard: '29019c3cce1004624bb878e99cea12a4fbf72939a4c346c13900f597dc342a43',
+    runs: '44bac8cb949aef95d5ade745ec4eb0c22bf29b6c30c83e94fd8a5d54e8d0187a',
+    results: 'c1f2f5cf5253ba4ea18c650effa5e6938a9e04ef0314a7fbeb1f20e2fcc8919c',
+    logs: '074b7737576cb63d9bfd61a049f7eac39314903d12ecb631441fb4e94511c24f',
+    settings: '50ca564bd2c8c9f1ad0b6d14e06fc068fd49872789678eef9718704ebaef600b'
   },
   linux: {
-    dashboard: '879f743828a7c17f2044492ac96bf22155002a6eeefadaed1b7cbaa59e3cf06c',
-    runs: 'b46887f5a7d91cf2af91b7ddaad3ceff5314aaae399eddd475a82d37183f45aa',
-    results: '17c36dd2053361244fa4227673a5822e03210bf8175be4c32b42fbc2541e0054',
-    logs: 'e1cbbbaa435dcdca43098fc9fb499609e85e4787243267b6aa4d29d04778d649',
-    settings: 'f39c8977860f668d8dbcc30cffd3eae3eb5df2f3151f24406430305e1dad8fd0'
+    dashboard: 'e9b11c0a82d3025fee8b211c27a685f466d9bbb056afad02f113c10afc7fe02c',
+    runs: '6bef24be05612deabc3638392dba748173ccc8474a5cc68a08146967ee4bd4a2',
+    results: '190dcbbe319f87d5b431e1af2be9107150a200c7acc48d696259f2c71759de79',
+    logs: '58ba1ac13b2cb2ae72fecc260759090ea2c33d07e091a655e944480932a480ff',
+    settings: '2172d4b31955c164a121a91ccaa7cd515741c11d8601e7bf4d82c5636e0cec2d'
   }
 };
 

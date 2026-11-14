@@ -9,7 +9,11 @@ __pycache__/
 artifacts/
 state/
 .superpowers/
-node_modules/
+# No trailing slash: a trailing slash only matches real directories, so a
+# worktree that shares one checkout's dependencies through a `node_modules`
+# symlink gets its link committed as a 120000 entry pointing at an absolute
+# local path. The slashless form matches the link too.
+node_modules
 dist/
 dist-electron/
 npm/autovpn-cli/*.tgz

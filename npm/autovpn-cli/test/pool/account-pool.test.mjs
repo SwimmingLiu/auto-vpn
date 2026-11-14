@@ -493,3 +493,90 @@ test('Hong Kong, Taiwan and Macau routes survive the mainland filter', async () 
     assert.equal(isChinaRoute({ name, region }), true, `${name} must be dropped`);
   }
 });
+
+test('accounts purge reports, previews, and erases retired rows', async () => {
+  const { runAccountsCommand } = await import('../../dist/cli/accounts-commands.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-pool-purge-'));
+  const dbPath = path.join(dir, 'accounts.db');
+  const seed = new AccountStore({ dbPath, now: () => new Date('2026-06-01T00:00:00Z') });
+  seed.importRecords([
+    record({ account: 'lapsed', expires_at: '2026-05-01' }),
+    record({ account: 'fresh', expires_at: '2030-01-01' })
+  ]);
+  seed.close();
+
+  const later = () => new Date('2026-08-01T00:00:00Z');
+  const env = { VPN_AUTOMATION_ACCOUNTS_DB: dbPath };
+  const run = async (argv) => {
+    const out = [];
+    const code = await runAccountsCommand(argv, { cwd: dir, env, io: { writeStdout: (text) => out.push(text), writeStderr: () => {} }, now: later });
+    return { code, payload: JSON.parse(out.join('')) };
+  };
+
+  // An insert does not evaluate the date, so at this point the row is still
+  // `active` and no read has retired it. The preview says so instead of
+  // promising an erase the window cannot support: retiring it now would stamp
+  // `deleted_at` with today, and the 30-day clock starts there.
+  const dry = await run(['accounts', 'purge', '--dry-run']);
+  assert.equal(dry.code, 0);
+  assert.equal(dry.payload.dry_run, true);
+  assert.equal(dry.payload.would_erase, 0);
+  assert.equal(dry.payload.pending_lapse, 1);
+  assert.equal(dry.payload.erased, 0);
+  // A preview writes nothing at all: not a purge, not even the lapse sweep.
+  const afterDry = new AccountStore({ dbPath, readOnly: true, now: later });
+  assert.deepEqual(afterDry.list({ status: 'all', includeDeleted: true }).map((row) => row.status), ['active', 'active']);
+  afterDry.close();
+
+  // The real run retires the lapse first (reporting it), and the row it just
+  // retired is inside the window, so nothing is erased this time either.
+  const first = await run(['accounts', 'purge']);
+  assert.equal(first.code, 0);
+  assert.equal(first.payload.lapsed, 1);
+  assert.equal(first.payload.erased, 0);
+  assert.equal(first.payload.retired_retention_days, 30);
+
+  // A month later the same command erases it.
+  const monthLater = async (argv) => {
+    const out = [];
+    const code = await runAccountsCommand(argv, {
+      cwd: dir, env, io: { writeStdout: (text) => out.push(text), writeStderr: () => {} },
+      now: () => new Date('2026-09-15T00:00:00Z')
+    });
+    return { code, payload: JSON.parse(out.join('')) };
+  };
+  const real = await monthLater(['accounts', 'purge']);
+  assert.equal(real.code, 0);
+  assert.equal(real.payload.erased, 1);
+  assert.equal(real.payload.stats.total, 1, 'only the live row remains');
+
+  const afterReal = new AccountStore({ dbPath, readOnly: true, now: later });
+  const rows = afterReal.list({ status: 'all', includeDeleted: true });
+  assert.deepEqual(rows.map((row) => row.status), ['active']);
+  afterReal.close();
+});
+
+test('accounts purge refuses a window that is negative or not a whole day', async () => {
+  const { runAccountsCommand } = await import('../../dist/cli/accounts-commands.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-pool-purge-bad-'));
+  const run = (value) => runAccountsCommand(['accounts', 'purge', '--days', value], {
+    cwd: dir,
+    env: { VPN_AUTOMATION_ACCOUNTS_DB: path.join(dir, 'accounts.db') },
+    io: { writeStdout: () => {}, writeStderr: () => {} }
+  });
+  // A bare `--days` (no value at all) would otherwise silently use the
+  // environment default instead of the window the operator meant to type.
+  await assert.rejects(
+    () => runAccountsCommand(['accounts', 'purge', '--days'], {
+      cwd: dir,
+      env: { VPN_AUTOMATION_ACCOUNTS_DB: path.join(dir, 'accounts.db') },
+      io: { writeStdout: () => {}, writeStderr: () => {} }
+    }),
+    /--days/
+  );
+  for (const value of ['-1', '1.5', 'soon', '', '2d']) {
+    // A fractional window would have to be rounded somewhere anyway, and the
+    // answer would not be the one the operator typed.
+    await assert.rejects(() => run(value), /--days/, `--days ${JSON.stringify(value)} must be refused`);
+  }
+});

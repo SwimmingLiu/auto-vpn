@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
+import { AccountStore } from '../../dist/pool/account-store.js';
 import { createServerRuntime, sanitizeProfileForServer } from '../../dist/server/runtime.js';
 import { RunStore } from '../../dist/pipeline/run-store.js';
 
@@ -225,6 +226,57 @@ test('server runtime reconciles failed job status when log following ends withou
 
   assert.equal((await runtime.loadState()).runState, 'failed');
   assert.deepEqual(states, ['failed']);
+});
+
+test('a run killed by a restart does not latch the server on 运行中', async () => {
+  // The real sequence, observed on the host: a service restart kills a run
+  // mid-extraction. Its artifact log has no summary and is still fresh, so the
+  // first page load adopts it as the live run. Nothing will ever write that
+  // run's summary — the log simply goes stale — yet the server kept following
+  // it, and `watchForNewRun` refuses to adopt anything while it is 运行中. The
+  // next real run then never reaches the page, and 开始运行 answers
+  // `run_already_active` until the service is restarted again.
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-server-runtime-latch-'));
+  const runtimeRoot = path.join(projectRoot, 'state');
+  const artifactDir = path.join(runtimeRoot, 'artifacts', '20260709-000000');
+  fs.mkdirSync(artifactDir, { recursive: true });
+  const staleLog = path.join(artifactDir, 'events.jsonl');
+  fs.writeFileSync(staleLog, [
+    JSON.stringify({ type: 'run_started', artifact_dir: artifactDir }),
+    JSON.stringify({ type: 'stage', stage: 'extract', status: 'running' })
+  ].join('\n') + '\n', 'utf8');
+  const killedJob = writeJobFixture(runtimeRoot, 'killed-run', {
+    project_root: projectRoot,
+    status: 'stopped',
+    pid: 0,
+    artifact_dir: artifactDir,
+    finished_at: '2026-07-09T00:01:00+00:00',
+    stop_requested_at: '2026-07-09T00:01:00+00:00'
+  });
+  writeJson(path.join(runtimeRoot, 'jobs', 'index.json'), {
+    schema_version: 1,
+    latest_job_id: 'killed-run',
+    jobs: [{ job_id: 'killed-run', status: 'stopped', kind: 'run', created_at: killedJob.created_at, job_file: killedJob.job_file }]
+  });
+
+  const runtime = createServerRuntime({
+    projectRoot,
+    env: { VPN_AUTOMATION_RUNTIME_ROOT: runtimeRoot },
+    followLog: async function* () {}
+  });
+  try {
+    // First load: the artifact is seconds old, so it looks like a live run the
+    // server should follow — which is correct at that moment.
+    assert.equal((await runtime.loadState()).runState, 'running');
+
+    // Two minutes pass with no further writes: the run is dead. The job record
+    // has said `stopped` all along, so the page must fall back to it.
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    fs.utimesSync(staleLog, old, old);
+    assert.notEqual((await runtime.loadState()).runState, 'running', 'a dead run must not stay 运行中');
+  } finally {
+    await runtime.close?.();
+  }
 });
 
 test('server runtime returns recent latest job events for page refresh hydration', async () => {
@@ -1247,4 +1299,48 @@ test('the membership sweep guard resets after the sweep settles', async (t) => {
   assert.equal(first.checked, 0);
   const second = await runtime.refreshAccountExpiry({ brand: 'leiting', limit: 1 });
   assert.equal(second.ok, true);
+});
+
+test('loading the pool from serve erases retired rows past the retention window', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-serve-pool-retention-'));
+  const dbPath = path.join(root, 'accounts.db');
+  const seed = new AccountStore({ dbPath, now: () => new Date('2026-06-01T00:00:00Z') });
+  seed.importRecords([
+    { brand: 'leiting', account: 'lapsed', password: 'p', official_site: 'https://www.68123836.com', expires_at: '2026-05-01', status: 'active', note: '' },
+    { brand: 'leiting', account: 'live', password: 'p', official_site: 'https://www.68123836.com', expires_at: '2030-01-01', status: 'active', note: '' }
+  ]);
+  seed.close();
+
+  // The first read (the one that opens the page) retires the lapse; the row it
+  // just retired starts its own window then, so nothing is erased yet.
+  const early = createServerRuntime({
+    projectRoot: root,
+    env: { VPN_AUTOMATION_ACCOUNTS_DB: dbPath, VPN_AUTOMATION_RUNTIME_ROOT: root },
+    now: () => new Date('2026-06-02T00:00:00Z'),
+    followLog: async function* () {}
+  });
+  try {
+    const snapshot = await early.loadAccounts();
+    assert.equal(snapshot.stats.total, 2, 'a lapse retired today is not purged today');
+    assert.equal(snapshot.stats.expired, 1);
+  } finally {
+    await early.close?.();
+  }
+
+  // A month later the next page load clears it, with no cron and no timer.
+  const later = createServerRuntime({
+    projectRoot: root,
+    env: { VPN_AUTOMATION_ACCOUNTS_DB: dbPath, VPN_AUTOMATION_RUNTIME_ROOT: root },
+    now: () => new Date('2026-08-02T00:00:00Z'),
+    followLog: async function* () {}
+  });
+  try {
+    const snapshot = await later.loadAccounts();
+    assert.equal(snapshot.stats.total, 1, 'the retired row is gone');
+    assert.equal(snapshot.stats.expired, 0);
+    assert.equal(snapshot.accounts.length, 1);
+    assert.equal(snapshot.accounts[0].status, 'active');
+  } finally {
+    await later.close?.();
+  }
 });

@@ -28,12 +28,22 @@ async function fixture() {
           artifact_dir: '/repo/artifacts/20261109-120000',
           counts: { raw_links: 60, deduped_links: 42, speedtest_links: 36, availability_links: 30 },
           stage_status: { extract: 'success', dedupe: 'success', speedtest: 'success' },
-          source_counts: { leiting: { raw_links: 60, deduped_links: 42 } },
+          source_counts: {
+            leiting: { raw_links: 60, deduped_links: 42 },
+            mifeng: { raw_links: 20, deduped_links: 14 },
+            xuanfeng: { raw_links: 8, deduped_links: 6 }
+          },
           outputFiles: [],
-          nodeRows: Array.from({ length: 30 }, (_, index) => ({
-            name: (index < 20 ? 'US' : 'JP') + ' · Node ' + (index + 1), address: '203.0.113.' + (index + 1),
-            protocol: 'vmess', path: '/edge/long-path/' + 'segment/'.repeat(8), link: 'vmess://fixture-' + index
-          }))
+          // Nine regions so the ring's five-slice cap and its folded "其他"
+          // tail are exercised, not just the named slice.
+          nodeRows: Array.from({ length: 30 }, (_, index) => {
+            const region = index < 12 ? 'US' : index < 18 ? 'JP' : index < 21 ? 'TW' : index < 23 ? 'DE'
+              : index < 25 ? 'FR' : index < 27 ? 'SG' : index < 28 ? 'KR' : index < 29 ? 'NL' : 'IE';
+            return {
+              name: region + ' · Node ' + (index + 1), address: '203.0.113.' + (index + 1),
+              protocol: 'vmess', path: '/edge/long-path/' + 'segment/'.repeat(8), link: 'vmess://fixture-' + index
+            };
+          })
         }, logEvents: [{ type: 'log', message: '[extract] 采集完成' },
           { type: 'extract_substage', source_name: 'leiting', platform: 'android', substage: 'apk_download', status: 'cached' },
           { type: 'extract_substage', source_name: 'leiting', platform: 'android', substage: 'apk_analysis', status: 'cached' },
@@ -279,7 +289,9 @@ test('beUI charts expose the real node distributions and keyboard heatmap detail
   const page = await launch(t, { reducedMotion: 'reduce' });
   await page.waitForSelector('[data-component-source="beui"]');
   assert.equal(await page.getByRole('img', { name: '国家分布' }).count(), 1);
-  assert.equal(await page.getByRole('img', { name: '加速器贡献' }).count(), 1);
+  // The accelerator card is a meter list, not a plot: its rows are real text,
+  // so the card is named by its heading instead of exposing a single image.
+  assert.equal(await page.getByRole('article', { name: '加速器贡献' }).count(), 1);
   // The legend is a horizontal chip flow, not a stacked column: the card must
   // stay near the ring's height instead of stretching to the country count.
   const chartGeometry = await page.locator('.analytics-distribution').first().evaluate((node) => {
@@ -303,7 +315,54 @@ test('beUI charts expose the real node distributions and keyboard heatmap detail
   assert.ok(chartGeometry.cardHeight < chartGeometry.plotHeight * 2.2, `card stretched by the legend: ${JSON.stringify(chartGeometry)}`);
   assert.equal(await page.locator('.calendar-scroll').evaluate((node) => getComputedStyle(node, '::-webkit-scrollbar').height), '4px');
 
+  // Nine regions in the fixture: the ring names the five largest and folds the
+  // rest into one neutral slice, whose footnote still lists every code.
+  const ring = await page.locator('.analytics-distribution').first().evaluate((node) => ({
+    chips: [...node.querySelectorAll('[data-donut-legend]')].map((chip) => chip.textContent.trim()),
+    heading: node.querySelector('.analytics-count').textContent.trim(),
+    footnote: node.querySelector('.distribution-footnote')?.textContent ?? '',
+    colors: [...node.querySelectorAll('[data-donut-legend] .distribution-dot')].map((dot) => getComputedStyle(dot).backgroundColor)
+  }));
+  assert.equal(ring.chips.length, 6, `five named countries plus the folded tail: ${JSON.stringify(ring)}`);
+  assert.match(ring.chips.at(-1), /其他/, `the tail closes the ring: ${JSON.stringify(ring)}`);
+  assert.match(ring.heading, /9 个/, `the heading reports every country, not the slice count: ${JSON.stringify(ring)}`);
+  for (const [code, count] of [['SG', 2], ['KR', 1], ['NL', 1], ['IE', 1]]) {
+    assert.match(ring.footnote, new RegExp(`${code} ${count}`), `folded ${code} must stay listed: ${JSON.stringify(ring)}`);
+  }
+  assert.equal(new Set(ring.colors).size, 6, `every slice keeps its own hue: ${JSON.stringify(ring.colors)}`);
+  // The tail's hue is the neutral token, distinct from every country slot.
+  const neutral = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--chart-other').trim());
+  const [nr, ng, nb] = [1, 3, 5].map((i) => parseInt(neutral.slice(i, i + 2), 16));
+  assert.equal(ring.colors.at(-1), `rgb(${nr}, ${ng}, ${nb})`, `the tail uses the neutral, not a country hue: ${JSON.stringify(ring.colors)}`);
+
   assert.match(await page.locator('.analytics-distribution').nth(1).innerText(), /雷霆[\s\S]*42/);
+  // Names, tracks, counts and shares share one column grid per row, so the
+  // sources read as one measurement rather than three loose chips; each bar's
+  // length is its share of the total, not its size relative to the leader.
+  const meterGeometry = await page.locator('.analytics-distribution').nth(1).evaluate((node) => {
+    const rows = [...node.querySelectorAll('.source-row')].map((row) => {
+      const cells = [...row.children].map((cell) => Math.round(cell.getBoundingClientRect().left));
+      return { cells, label: row.querySelector('.source-name').textContent, trackWidth: row.querySelector('.source-track').getBoundingClientRect().width, fillWidth: row.querySelector('.source-fill').getBoundingClientRect().width };
+    });
+    return { rows, cardWidth: node.getBoundingClientRect().width };
+  });
+  assert.ok(meterGeometry.rows.length >= 3, `several accelerators must render: ${JSON.stringify(meterGeometry)}`);
+  assert.equal(new Set(meterGeometry.rows.map((row) => JSON.stringify(row.cells.slice(0, 3)))).size, 1,
+    `meter columns must align across rows: ${JSON.stringify(meterGeometry)}`);
+  const byLabel = Object.fromEntries(meterGeometry.rows.map((row) => [row.label, row]));
+  const shareOfTrack = byLabel['雷霆'].fillWidth / byLabel['雷霆'].trackWidth;
+  assert.ok(Math.abs(shareOfTrack - 42 / 62) < 0.01,
+    `the bar length is the share of the total, got ${shareOfTrack} vs ${42 / 62}`);
+  assert.ok(byLabel['雷霆'].fillWidth > byLabel['蜜蜂'].fillWidth, `a larger source draws a longer bar: ${JSON.stringify(meterGeometry)}`);
+  assert.ok(byLabel['雷霆'].trackWidth > meterGeometry.cardWidth * 0.4,
+    `the meter must use the card's width: ${JSON.stringify(meterGeometry)}`);
+  // Percentages are rounded as a column, so they close at exactly 100.
+  const shares = await page.locator('.analytics-distribution').nth(1).locator('.source-share').allTextContents();
+  assert.equal(shares.reduce((sum, text) => sum + parseInt(text, 10), 0), 100,
+    `the share column must sum to 100: ${JSON.stringify(shares)}`);
+  const ringShares = await page.locator('.analytics-distribution').first().locator('.distribution-share').allTextContents();
+  assert.equal(ringShares.reduce((sum, text) => sum + parseInt(text, 10), 0), 100,
+    `the ring's share column must sum to 100: ${JSON.stringify(ringShares)}`);
   assert.match(await page.locator('.analytics-calendar .analytics-heading').innerText(), /30 个节点/);
   const cell = page.locator('[data-heat-cell]').last();
   await cell.focus();

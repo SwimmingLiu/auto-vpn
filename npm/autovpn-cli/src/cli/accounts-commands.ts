@@ -9,20 +9,20 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { AccountStore, type PublicAccount } from '../pool/account-store.js';
+import { AccountStore, retiredRetentionDays, type PublicAccount } from '../pool/account-store.js';
 import { BRANDS, brandLabel, normalizeBrand } from '../pool/brands.js';
 import { CSV_COLUMNS, RETIRED_STATUSES, parseAccountFile, stringifyCsv, type AccountStatus } from '../pool/csv.js';
 import { CliUsageError } from './errors.js';
 import { readOptionValue } from './global-options.js';
 import type { CliIo } from './output.js';
 
-export const ACCOUNTS_SUBCOMMANDS = ['import', 'list', 'stats', 'snapshot', 'disable', 'enable', 'expire', 'export', 'template', 'refresh-expiry'] as const;
+export const ACCOUNTS_SUBCOMMANDS = ['import', 'list', 'stats', 'snapshot', 'disable', 'enable', 'expire', 'export', 'template', 'refresh-expiry', 'purge'] as const;
 export type AccountsSubcommand = (typeof ACCOUNTS_SUBCOMMANDS)[number];
 
 /** Options that consume the next argv slot, so positionals can be found. */
 const VALUE_OPTIONS = new Set([
   '--project-root', '--format', '--output', '--brand', '--status', '--reason', '--date', '--file', '--limit', '--query', '--id',
-  '--concurrency'
+  '--concurrency', '--days'
 ]);
 
 /**
@@ -137,6 +137,22 @@ export function validateAccountsCommand(argv: string[]): void {
     }
     if (Number(readOptionValue(argv, '--concurrency') ?? 3) < 1) {
       throw new CliUsageError('accounts refresh-expiry --concurrency must be a positive integer');
+    }
+  }
+  if (subcommand === 'purge') {
+    // A trailing `--days` with nothing after it must not silently fall back to
+    // the environment default: the operator typed a window and would get a
+    // different one than the one on screen.
+    if (argv.includes('--days') && readOptionValue(argv, '--days') === undefined) {
+      throw new CliUsageError('accounts purge --days requires a value');
+    }
+    const days = readOptionValue(argv, '--days');
+    // Whole days only. The cutoff is built from `days * 86_400_000` and rows
+    // are compared as strings, so a fraction would have to be rounded one way
+    // or the other anyway; refuse it rather than quietly giving a different
+    // window than the operator typed. 0 is legal and means "keep everything".
+    if (days !== undefined && !/^\d+$/.test(days)) {
+      throw new CliUsageError('accounts purge --days must be a non-negative whole number of days');
     }
   }
   if (['disable', 'enable', 'expire'].includes(subcommand)) {
@@ -289,7 +305,7 @@ export async function runAccountsCommand(argv: string[], context: AccountsContex
   if (subcommand === 'refresh-expiry') {
     return await runRefreshExpiry(argv, context);
   }
-  const dryRun = subcommand === 'import' && argv.includes('--dry-run');
+  const dryRun = (subcommand === 'import' || subcommand === 'purge') && argv.includes('--dry-run');
   // A preview must not write: the store's getters sweep expired rows, so even
   // opening it read-write would mutate the pool before showing the plan.
   const store = context.store ?? new AccountStore({ env: context.env, now: context.now, readOnly: dryRun });
@@ -305,6 +321,52 @@ export async function runAccountsCommand(argv: string[], context: AccountsContex
       const accounts = store.list({ status: 'all', includeDeleted: true });
       const payload = { ok: true, stats: store.stats(), accounts };
       context.io.writeStdout(jsonLine(payload));
+      return 0;
+    }
+
+    if (subcommand === 'purge') {
+      // An explicit, unconditional sweep: the operator asked for it now, so it
+      // ignores the once-per-window stamp that read paths use. `--dry-run`
+      // reports what would go without erasing anything, and opens the store
+      // read-only so not even the lapse sweep writes.
+      //
+      // The count has two parts because they are two different answers. Retired
+      // rows past the window go on this run. Unrecorded lapses are retired by
+      // the sweep first, and their own window starts at that moment - so they
+      // are reported as a separate number rather than promised as erased.
+      const daysRaw = readOptionValue(argv, '--days');
+      // Checked here as well as in `validateAccountsCommand`, because this
+      // function is also the entry point for callers that skip validation; a
+      // fractional value would otherwise be silently truncated to whole days,
+      // and a bare `--days` would fall back to the environment default.
+      if (argv.includes('--days') && daysRaw === undefined) {
+        throw new CliUsageError('accounts purge --days requires a value');
+      }
+      if (daysRaw !== undefined && !/^\d+$/.test(daysRaw)) {
+        throw new CliUsageError('accounts purge --days must be a non-negative whole number of days');
+      }
+      const days = daysRaw === undefined ? retiredRetentionDays(context.env) : Number.parseInt(daysRaw, 10);
+      const dryRun = argv.includes('--dry-run');
+      if (dryRun) {
+        const counted = store.countRetired(days);
+        context.io.writeStdout(wantsHuman(argv)
+          ? `would purge ${counted.purgeable} retired account(s); retention ${days} day(s)` +
+            `${counted.pendingLapse ? `; ${counted.pendingLapse} lapsed account(s) will be retired now and counted next window` : ''}\n`
+          : jsonLine({ ok: true, retired_retention_days: days, erased: 0, would_erase: counted.purgeable, pending_lapse: counted.pendingLapse, dry_run: true }));
+        return 0;
+      }
+      // Retire first, so a row whose date lapsed before anyone read the pool is
+      // reported as expired rather than left invisible to both numbers.
+      const lapsed = store.expireDue();
+      const erased = store.sweepRetired(days, true);
+      // `--days 0` means "keep everything", so the report itself must not
+      // sweep with the default window on the way out.
+      const after = store.stats({ maintain: days > 0 });
+      const payload = { ok: true, retired_retention_days: days, erased, lapsed, dry_run: false, stats: after };
+      context.io.writeStdout(wantsHuman(argv)
+        ? `purged ${erased} retired account(s); retention ${days} day(s); ${after.total} row(s) remain` +
+          `${lapsed ? `; ${lapsed} expired account(s) newly retired` : ''}\n`
+        : jsonLine(payload));
       return 0;
     }
 
