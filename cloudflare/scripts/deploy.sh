@@ -55,21 +55,25 @@ if [ ! -f "$CONTAINER_PROFILE" ]; then
 fi
 PROFILE_PROJECT="$(grep -E '^[[:space:]]*project_name[[:space:]]*=' "$CONTAINER_PROFILE" \
   | head -n1 | sed -E 's/^[^=]*=[[:space:]]*"(.*)"/\1/')"
+echo "deploy target: $PROFILE_PROJECT"
+# The one project this deploy must never touch is the VPS's. That is a
+# different thing from "only a scratch name is allowed": the Cloudflare
+# deployment has its own production project now, and refusing it would mean the
+# real service could only ever be deployed by weakening this guard.
 case "$PROFILE_PROJECT" in
-  autovpn-cf-*)
-    echo "deploy target: $PROFILE_PROJECT (scratch project)"
-    ;;
-  *)
-    # Not a hard stop: publishing to a real project is the eventual goal. It
-    # just must be a deliberate edit, not a default.
-    echo "deploy target: $PROFILE_PROJECT"
-    echo "  NOT a scratch project — this run will replace that project's production deployment."
-    if [ "${AUTOVPN_ALLOW_LIVE_PROJECT:-}" != "1" ]; then
-      echo "  set AUTOVPN_ALLOW_LIVE_PROJECT=1 to proceed" >&2
-      exit 1
-    fi
+  "" | "sub-nodes-04" | "sub-links-auto")
+    echo "  $PROFILE_PROJECT is the project the VPS publishes to" >&2
+    echo "  the two deployments must stay separate; refusing" >&2
+    exit 1
     ;;
 esac
+# `wrangler pages deploy` replaces the whole production deployment of the named
+# project, so any name here is a real blast radius — say so before the build.
+echo "  this replaces that project's production deployment."
+if [ "${AUTOVPN_ALLOW_LIVE_PROJECT:-}" != "1" ] && [ "${DRY_RUN:-0}" != "1" ]; then
+  echo "  set AUTOVPN_ALLOW_LIVE_PROJECT=1 to proceed" >&2
+  exit 1
+fi
 
 # The deploy stage inside the container publishes to this project. Wrangler
 # refuses a missing project in a non-interactive shell and there is no recovery

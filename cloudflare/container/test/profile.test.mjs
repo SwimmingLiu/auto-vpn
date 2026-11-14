@@ -62,13 +62,16 @@ test('the claude availability target is the trace endpoint', () => {
   assert.match(block, /url\s*=\s*"https:\/\/claude\.ai\/cdn-cgi\/trace"/);
 });
 
-test('the deploy target is a scratch project', () => {
+test('the deploy target is not the project the VPS publishes to', () => {
   // `wrangler pages deploy` replaces the whole production deployment of the
-  // project it names. A first run against the live project would overwrite the
-  // subscription people are using, so the default must stay a scratch name.
-  // deploy.sh also refuses a non-scratch name without an explicit opt-in.
+  // project it names. The two installations must stay separate: this one has
+  // its own project (`sub-nodes-cf`), and the VPS keeps `sub-nodes-04`.
+  // deploy.sh enforces the same pair, so a profile edit cannot quietly merge
+  // them into one blast radius.
   const project = /^project_name\s*=\s*"([^"]+)"/m.exec(raw)?.[1] ?? '';
-  assert.match(project, /^autovpn-cf-/);
+  assert.ok(project, 'the profile names no project');
+  assert.notEqual(project, 'sub-nodes-04', 'this would replace the VPS subscription');
+  assert.notEqual(project, 'sub-links-auto', 'this names the retired VPS project');
 });
 
 test('the account file is small enough to survive the route body limit', () => {

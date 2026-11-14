@@ -1,23 +1,18 @@
 # Cloudflare deployment profile for AutoVPN. Rationale: cloudflare/README.md.
 #
-# This is the profile the *container* reads. Four deliberate differences from
-# the VPS profile:
+# Four deliberate differences from the VPS profile:
 #
-#   1. `project_name` is a scratch project. The deploy stage replaces the whole
-#      production deployment of whatever project it names, so the first runs
-#      must not touch the subscription already in service.
-#   2. `min_final_links` agrees with the Durable Object gate (the VPS carried
-#      three thresholds, two of them dead).
+#   1. `project_name` is this deployment's own project, never the VPS's: the
+#      deploy stage replaces that project's whole production deployment.
+#   2. `min_final_links` agrees with the Durable Object gate.
 #   3. `min_iterations` is 24, not 10000: `max_runtime_seconds` and
 #      `plateau_limit` are only consulted at or past it, so a 10,000 floor makes
 #      both decorative. 24 = one sweep of the default area list at 8/round.
-#   4. Writes only to the scratch project; credentials arrive as Worker secrets
-#      and are written to the volume at boot by `installProfile()`.
+#   4. Credentials arrive as Worker secrets, never in this file.
 #
 # `credential` sources need only a location and lease an account from the pool
 # at extract time, so no `url`/`key` appears: a hardcoded evmess URL would
 # bypass the pool and go stale when the vendor rotates a domain, weekly.
-# `test/profile.test.mjs` asserts the budget floor and the claude URL below.
 
 [sources.leiting]
 mode = "credential"
@@ -113,14 +108,14 @@ proxy_mode = "proxy"
 proxy_url = "http://127.0.0.1:7897"
 
 [deploy]
-# A scratch project on purpose. `wrangler pages deploy` replaces the whole
-# production deployment of whatever project is named here, so a first run
-# against the live project would overwrite the subscription people are using.
-# Point this at the real project only after a run here has been verified.
-project_name = "autovpn-cf-deploytest"
-subscription_url = "https://autovpn-cf-deploytest.pages.dev/?serect_key=swimmingliu"
-verify_subscription_url = "https://autovpn-cf-deploytest.pages.dev/?serect_key=swimmingliu"
-pages_project_url = "https://autovpn-cf-deploytest.pages.dev"
+# This deployment's own project, never the VPS's (`sub-nodes-04`). The deploy
+# stage replaces the whole production deployment of the named project, and this
+# one has been verified end to end: 49 links measured, deployed, served body
+# decoded back to the artifact.
+project_name = "sub-nodes-cf"
+subscription_url = "https://sub-nodes-cf.pages.dev/?serect_key=swimmingliu"
+verify_subscription_url = "https://sub-nodes-cf.pages.dev/?serect_key=swimmingliu"
+pages_project_url = "https://sub-nodes-cf.pages.dev"
 custom_domain = ""
 secret_query = "serect_key=swimmingliu"
 cloudflare_auth_mode = "api_token"
@@ -131,7 +126,12 @@ account_id = "e743286b4304e96ee8795d62917052aa"
 use_wrangler = true
 auto_create_project_on_blocked = true
 fallback_project_prefix = "autovpn-cf"
-min_final_links = 50
+# 40, not 50: the floor stops a broken night from replacing a working
+# subscription, it is not a demand for a record night. Measured yields are
+# 49-54 normally and 0-30 when something fails, and a floor of 50 held five
+# nights straight on the VPS (48, 30, 50, 44, 43) — publishing nothing while
+# the served subscription aged. 40 clears every normal night.
+min_final_links = 40
 
 [worker_build]
 environment_name = "production"
