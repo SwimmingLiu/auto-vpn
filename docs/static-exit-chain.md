@@ -120,6 +120,36 @@ const MODE = 'chain';  // 'chain' | 'all' | 'direct'
 
 脚本是幂等的：重复执行不会叠加，检测到 `🛡️ 静态IP出口` 已经存在就直接返回。
 
+#### 4.1.1 真实出口地址怎么写进去
+
+扩展脚本运行在 Verge 的沙箱里，**没有文件系统权限**，所以出口地址只能以字面量形式存在于 `profiles/<uid>.js`。既然要写字面量，就把这一步交给脚本，让地址只经过磁盘、不经过终端输出：
+
+1. 建一个只给自己看的文件，一行一个地址，`#` 后面是显示名：
+
+   ```text
+   socks5://USER:PASS@203.0.113.7:1080#🇭🇰 香港静态IP
+   ```
+
+   路径默认是 `~/.auto-vpn/verge-exit.txt`。**用编辑器写**，别写成 `echo`/`printf` 命令——那样会留在 `~/.zsh_history` 里。写完 `chmod 600` 这个文件。
+
+2. 先校验，不写任何东西：
+
+   ```bash
+   npm --prefix npm/autovpn-cli run verge:exit -- --check
+   ```
+
+   输出里只有 `✓ 🇭🇰 香港静态IP  socks5://***@203.0.113.7:1080` 这种脱敏行，带不出用户名和密码；解析失败时只报行号，不回声那一行的内容。
+
+3. 写进 Verge。脚本会自己找到 `profiles/` 下那份扩展脚本（按文件头的标记认，找到多份会要求用 `--out` 指定），先备份成 `.bak`，写完后把权限设成 600，再让 Verge 重新激活一次订阅：
+
+   ```bash
+   npm --prefix npm/autovpn-cli run verge:exit
+   ```
+
+4. 想确认这个出口真的能用，加 `--test`：它会通过这个 SOCKS5 拉一次 `https://api.ipify.org`，只打印返回的出口 IP。
+
+仓库里的 `docs/clash-verge-extension.js` 始终是占位地址，所以凭证不会进 git，也不会出现在任何对话记录里。如果出口地址要跟云端订阅共用，也可以写进 `~/.auto-vpn/profile.toml` 的 `[static_exit]`，但那条路会在部署时把凭证同步到 Cloudflare 项目的环境变量里（见第 2 节），只想留本机就别混用。
+
 `MODE` 三种取值：
 
 - `chain`：一条 `香港静态IP（链式）` + 一个 `🛬 静态IP入口` 分组，节点数只多 2 个。
@@ -182,6 +212,7 @@ const RULES_TO_EXIT = [
 node --test npm/autovpn-cli/test/pipeline/static-exit.test.mjs
 node --test npm/autovpn-cli/test/pipeline/share-worker-static-exit.test.mjs
 node --test npm/autovpn-cli/test/pipeline/verge-extension.test.mjs
+node --test npm/autovpn-cli/test/pipeline/verge-exit-apply.test.mjs
 ```
 
 `static-exit.test.mjs` 覆盖转义名、流式 proxies/分组、带冒号顶层键、出口名撞分组名、无 `proxy-groups` 段这些畸形输入，最后统一交给 `mihomo -t` 复核。`share-worker-static-exit.test.mjs` 会把模板 Worker 真跑起来（SUBAPI 用本地桩），验证订阅输出与管理接口，再交 `mihomo -t` 校验。`verge-extension.test.mjs` 按 Verge 的方式 eval 扩展脚本，检查幂等、重名避让，三种模式都过 `mihomo -t`。没装 mihomo 时最后一步自动跳过。
