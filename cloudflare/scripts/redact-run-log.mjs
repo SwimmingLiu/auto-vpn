@@ -30,12 +30,19 @@ if (!input || !output) {
 // vendor that starts returning vless or trojan must not silently stop matching.
 // The label is derived from the match itself, so `hysteria2://` does not get
 // relabelled as `hysteria://` (which would invent a scheme that was not there).
+//
+// The body is "everything up to the next delimiter", not just the base64 run.
+// A vmess link encodes its host inside the base64, but the other schemes carry
+// it in the clear (`vless://<uuid>@host:port`); matching only the base64-shaped
+// prefix would redact the credential and upload the vendor's host and port.
+// The delimiters are what a JSON string, a log line or a shell word ends at:
+// whitespace, quotes, angle brackets and a literal backslash.
 const LINK_PATTERNS = [
-  [/vmess:\/\/[A-Za-z0-9_\-+/=]+/g, 'vmess'],
-  [/vless:\/\/[A-Za-z0-9_\-+/=]+/g, 'vless'],
-  [/trojan:\/\/[A-Za-z0-9_\-+/=]+/g, 'trojan'],
-  [/ss:\/\/[A-Za-z0-9_\-+/=]+/g, 'ss'],
-  [/(hysteria2?):\/\/[A-Za-z0-9_\-+/=]+/g, null]
+  [/vmess:\/\/[^\s"'<>\\]+/g, 'vmess'],
+  [/vless:\/\/[^\s"'<>\\]+/g, 'vless'],
+  [/trojan:\/\/[^\s"'<>\\]+/g, 'trojan'],
+  [/ss:\/\/[^\s"'<>\\]+/g, 'ss'],
+  [/(hysteria2?):\/\/[^\s"'<>\\]+/g, null]
 ];
 
 /** A short, stable stand-in: same node => same id, and it cannot be dialled. */

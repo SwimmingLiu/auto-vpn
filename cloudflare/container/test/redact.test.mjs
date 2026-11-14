@@ -72,6 +72,29 @@ test('every scheme the pipeline can emit is covered, not just vmess', () => {
   }
 });
 
+test('a scheme that carries the host in the clear does not leave it behind', () => {
+  const links = [
+    'vless://8f0d1c4e-2b1a-4c3d-9e8f-0123456789ab@edge.vendor-a.example:443?encryption=none&type=ws#hk',
+    'trojan://p%40ss@node.vendor-b.example:8443?sni=node.vendor-b.example',
+    'ss://YWVzLTI1Ni1nY206c2VjcmV0@node.vendor-c.example:8388#jp',
+    'hysteria2://secret@node.vendor-d.example:8443/?insecure=1'
+  ];
+  const lines = links.map((link) => JSON.stringify({ type: 'speedtest_result', link }));
+  const out = run(lines).trim().split('\n');
+  const hosts = ['edge.vendor-a.example', 'node.vendor-b.example', 'node.vendor-c.example', 'node.vendor-d.example'];
+  for (const host of hosts) {
+    assert.doesNotMatch(out.join('\n'), new RegExp(host.replaceAll('.', '\\.')), `${host} survived`);
+  }
+  for (const secret of ['8f0d1c4e-2b1a-4c3d-9e8f-0123456789ab', 'p%40ss', '{{SECRET_bqsrkuqa}}', 'secret@']) {
+    assert.doesNotMatch(out.join('\n'), new RegExp(secret), `${secret} survived`);
+  }
+  // The line is still JSON: the closing quote of the link field was not eaten.
+  for (const line of out) {
+    const parsed = JSON.parse(line);
+    assert.match(parsed.link, /^(vless|trojan|ss|hysteria2):\/\/<redacted:[0-9a-f]{12}>$/);
+  }
+});
+
 test('a line with no link is passed through byte-for-byte', () => {
   const line = JSON.stringify({ type: 'summary', counts: { final_links: 36, raw_links: 272 } });
   assert.equal(run([line]).trim(), line);
