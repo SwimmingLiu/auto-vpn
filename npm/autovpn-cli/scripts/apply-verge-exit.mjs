@@ -26,7 +26,7 @@
 
 import { readFileSync, writeFileSync, copyFileSync, existsSync, chmodSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
@@ -41,7 +41,7 @@ const 类型映射 = {
   'http+tls': 'http',
 };
 
-const 默认端口 = { socks5: 1080, http: 80, https: 443 };
+const 默认端口 = { socks5: 1080, http: 80, https: 443, 'http+tls': 443 };
 
 const 扩展脚本标记 = 'Clash Verge Rev「扩展脚本」';
 
@@ -64,7 +64,12 @@ export function 解析出口URI(原始行) {
   const 协议位 = 主体.indexOf('://');
   if (协议位 <= 0) throw new Error('缺少 协议:// 前缀');
   const 协议 = 主体.slice(0, 协议位).toLowerCase();
-  if (!(协议 in 类型映射)) throw new Error(`不支持的协议 ${协议}（支持 socks5 / socks5h / socks / http / https）`);
+  // 协议位之前的内容一律不回显：`alice:pw@host://1080` 这种少写一个 `socks5`
+  // 的输入会把用户名和密码带进错误信息，而错误信息要进终端。
+  // `Object.hasOwn` 而不是 `in`：`constructor://…` 能穿过原型链。
+  if (!/^[a-z][a-z0-9+.-]*$/.test(协议) || !Object.hasOwn(类型映射, 协议)) {
+    throw new Error('协议不是 socks5 / socks5h / socks / http / https / http+tls');
+  }
 
   let 剩余 = 主体.slice(协议位 + 3);
   const 斜杠 = 剩余.indexOf('/');
@@ -108,6 +113,8 @@ export function 解析出口URI(原始行) {
   }
 
   if (!主机) throw new Error('缺少主机地址');
+  // 只认十进制：`Number('1e3')` / `Number('0x10')` 都会悄悄变成合法端口。
+  if (端口文本 !== '' && !/^\d+$/.test(端口文本)) throw new Error('端口不是 1-65535 的整数');
   const 端口 = 端口文本 === '' ? 默认端口[协议] : Number(端口文本);
   if (!Number.isInteger(端口) || 端口 <= 0 || 端口 > 65535) {
     throw new Error('端口不是 1-65535 的整数');
@@ -154,9 +161,17 @@ export function 读取出口文件(文本) {
   return 结果;
 }
 
-// 单引号字符串字面量。反斜杠和单引号必须转义，否则密码里的 `'` 会把脚本打断。
+// 单引号字符串字面量。反斜杠和单引号必须转义，否则密码里的 `'` 会把脚本打断；
+// 换行同样要转义——`%0A` 解码后是真正的 LF，直接写进字面量会让整段脚本语法错误。
 function 单引号(值) {
-  return `'${String(值).replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+  const 转义 = String(值)
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/\r/g, '\\r')
+    .replace(/\n/g, '\\n')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+  return `'${转义}'`;
 }
 
 export function 生成配置块(出口列表) {
@@ -176,13 +191,36 @@ export function 生成配置块(出口列表) {
   return `const STATIC_EXITS = [\n${条目.join('\n')}\n];`;
 }
 
-const 配置块正则 = /^const STATIC_EXITS = \[[\s\S]*?^\];$/m;
+const 配置块开头 = /^const STATIC_EXITS = \[/gm;
 
-export function 替换配置块(模板文本, 新块) {
-  if (!配置块正则.test(模板文本)) {
+// 只替换真正的那一处声明。脚本里如果还留着被注释掉的旧块，按「第一个匹配」替换
+// 会改错地方：假出口写进注释，真凭证留在原地，脚本却打印「已写入」。
+export function 替换配置块(脚本文本, 新块) {
+  const 候选 = [...脚本文本.matchAll(配置块开头)];
+  if (候选.length === 0) {
     throw new Error('脚本里找不到 `const STATIC_EXITS = [` … `];` 这一段（旧版扩展脚本？把模板重新贴一次再跑）');
   }
-  return 模板文本.replace(配置块正则, () => 新块);
+  if (候选.length > 1) {
+    throw new Error(`脚本里有 ${候选.length} 处 \`const STATIC_EXITS = [\`，先手工删掉多余的那几处`);
+  }
+  const 起 = 候选[0].index;
+  const 前文 = 脚本文本.slice(0, 起);
+  if ((前文.match(/\/\*/g) || []).length > (前文.match(/\*\//g) || []).length) {
+    throw new Error('找到的 `const STATIC_EXITS = [` 在块注释里，脚本状态不对，先手工检查');
+  }
+
+  const 换行 = 脚本文本.indexOf('\n', 起);
+  const 首行尾 = 换行 < 0 ? 脚本文本.length : 换行;
+  const 首行 = 脚本文本.slice(起, 首行尾);
+  let 止;
+  if (/\]\s*;\s*(?:\/\/.*)?$/.test(首行)) {
+    止 = 首行尾;
+  } else {
+    const 余下 = /^[ \t]*\];[ \t]*$/m.exec(脚本文本.slice(首行尾));
+    if (!余下) throw new Error('`const STATIC_EXITS = [` 之后找不到收尾的 `];`');
+    止 = 首行尾 + 余下.index + 余下[0].length;
+  }
+  return 脚本文本.slice(0, 起) + 新块 + 脚本文本.slice(止);
 }
 
 // 日志里唯一允许出现的出口形态。
@@ -251,6 +289,7 @@ function 主函数(参数) {
   const 检查 = 参数.includes('--check');
   const 测试 = 参数.includes('--test');
 
+  const 模板路径 = resolve(import.meta.dirname, '../../..', 'docs/clash-verge-extension.js');
   const 来源路径 = 取值('--from', join(homedir(), '.auto-vpn/verge-exit.txt'));
 
   if (!existsSync(来源路径)) {
@@ -290,6 +329,10 @@ function 主函数(参数) {
     );
   }
   if (!existsSync(目标)) throw new Error(`目标脚本不存在：${目标}`);
+  // 仓库里的模板必须保持占位值；`--out` 指到它上面就等于把凭证提交进 git。
+  if (resolve(目标) === 模板路径) {
+    throw new Error(`拒绝写入仓库里的模板 ${模板路径}；这里的出口地址必须是占位值`);
+  }
 
   const 原内容 = readFileSync(目标, 'utf8');
   if (!原内容.includes(扩展脚本标记)) {
@@ -298,13 +341,21 @@ function 主函数(参数) {
   const 新脚本 = 替换配置块(原内容, 配置块);
   new Function(新脚本);
 
-  copyFileSync(目标, `${目标}.bak`);
+  // `.bak` 只留第一次动手前的那份：它才是「恢复原状」的备份，反复覆盖就成了
+  // 上一轮的副本。之后每次写都另存一份带时间戳的，谁都不会被悄悄顶掉。
+  let 备份 = `${目标}.bak`;
+  if (existsSync(备份)) {
+    const 时间 = new Date().toISOString().replace(/[:.]/g, '-');
+    备份 = `${目标}.bak-${时间}`;
+  }
+  copyFileSync(目标, 备份);
   // 备份里可能是上一轮的凭证，权限跟着一起收紧。
-  chmodSync(`${目标}.bak`, 0o600);
+  chmodSync(备份, 0o600);
   writeFileSync(目标, 新脚本, { mode: 0o600 });
   chmodSync(目标, 0o600);
 
-  console.log(`已写入 ${目标}（备份在 ${目标}.bak）`);
+  console.log(`已写入 ${目标}`);
+  console.log(`备份：${备份}`);
   console.log('到 Verge 里重新激活一次订阅即可生效。');
 }
 

@@ -54,6 +54,11 @@ test('normalizes scheme names the way mihomo needs them', () => {
   const tls = 解析出口URI('https://u:p@h.example');
   assert.equal(tls.type, 'http');
   assert.equal(tls.tls, true);
+
+  const 显式 = 解析出口URI('http+tls://u:p@h.example');
+  assert.equal(显式.type, 'http');
+  assert.equal(显式.tls, true);
+  assert.equal(显式.port, 443);
 });
 
 test('parses bracketed IPv6 hosts', () => {
@@ -70,15 +75,66 @@ test('omits credentials when the URI has none', () => {
 });
 
 test('rejects ports that mihomo would refuse', () => {
-  for (const 端口 of ['0', '65536', 'abc', '-1', '1080.5']) {
+  for (const 端口 of ['0', '65536', 'abc', '-1', '1080.5', '1e3', '0x10', '+1080']) {
     assert.throws(() => 解析出口URI(`socks5://u:p@h.example:${端口}`), /端口/);
   }
 });
 
 test('rejects an unknown scheme and a missing host', () => {
-  assert.throws(() => 解析出口URI('vless://u:p@h.example:443'), /不支持的协议/);
+  assert.throws(() => 解析出口URI('vless://u:p@h.example:443'), /socks5/);
   assert.throws(() => 解析出口URI('203.0.113.7:1080'), /协议/);
   assert.throws(() => 解析出口URI('socks5://u:p@:1080'), /缺少主机/);
+});
+
+test('the scheme error never echoes what sits before ://', () => {
+  // 少写一个 `socks5` 时，冒号前面的整段用户名密码会落到「协议」位置上。
+  let 报错 = '';
+  try {
+    解析出口URI('alice:pw@proxy.example.com://1080');
+  } catch (错) {
+    报错 = 错.message;
+  }
+  assert.match(报错, /协议/);
+  assert.doesNotMatch(报错, /alice/);
+  assert.doesNotMatch(报错, /pw/);
+  assert.doesNotMatch(报错, /proxy\.example\.com/);
+});
+
+test('prototype keys are not proxy schemes', () => {
+  for (const 协议 of ['constructor', '__proto__', 'toString', 'hasOwnProperty']) {
+    assert.throws(() => 解析出口URI(`${协议}://u:p@h.example:1080`), /socks5/);
+  }
+});
+
+test('a percent-encoded line break cannot break out of the literal', () => {
+  const 期望 = { '%0A': '\n', '%0D': '\r', '%0D%0A': '\r\n' };
+  for (const [换行, 真换行] of Object.entries(期望)) {
+    const 密码 = 'a' + 换行 + 'b';
+    const 出口 = 解析出口URI('socks5://alice:' + 密码 + '@203.0.113.7:1080#line' + 换行 + 'break');
+    assert.equal(出口.password, `a${真换行}b`);
+    assert.equal(出口.name, `line${真换行}break`);
+    const 块 = 生成配置块([出口]);
+    new Function(块);
+    const 模块 = { exports: {} };
+    new Function('module', 'exports', `${块}\nmodule.exports = STATIC_EXITS;`)(模块, 模块.exports);
+    assert.equal(模块.exports[0].password, 出口.password);
+    assert.equal(模块.exports[0].name, 出口.name);
+  }
+});
+
+test('a one-line STATIC_EXITS literal is still replaced', () => {
+  const 源 = 'const STATIC_EXITS = [];\nconst MODE = \'chain\';\n';
+  const 结果 = 替换配置块(源, 生成配置块([解析出口URI(假地址)]));
+  assert.ok(结果.startsWith('const STATIC_EXITS = [\n'));
+  assert.ok(结果.includes("const MODE = 'chain';"));
+});
+
+test('a second STATIC_EXITS declaration stops the write', () => {
+  const 模板 = 'const STATIC_EXITS = [];\n/*\nconst STATIC_EXITS = [\n  { name: "OLD", type: "socks5", server: "192.0.2.9", port: 1 },\n];\n*/\n';
+  assert.throws(() => 替换配置块(模板, 'const STATIC_EXITS = [];'), /2 处/);
+
+  const 注释里 = '/*\nconst STATIC_EXITS = [\n];\n*/\n';
+  assert.throws(() => 替换配置块(注释里, 'const STATIC_EXITS = [];'), /注释/);
 });
 
 test('a bad line reports its number, not its contents', () => {

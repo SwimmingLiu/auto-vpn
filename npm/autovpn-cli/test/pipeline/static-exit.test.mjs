@@ -491,6 +491,22 @@ test('an unparseable exit address is logged without its credentials', async () =
   assert.ok(!全文.includes('alice'), 'the username must not appear');
 });
 
+// 流式分组的名字里也可能出现 `, type: select` 字样。按整行正则找类型会把这种名字
+// 当成真的 select，给一个 url-test 分组塞进出口组。
+test('a quoted name that mentions type: select is not a select group', async () => {
+  const { 应用静态出口 } = await loadStaticExit();
+  const 源 = flowBase.replace(
+    'proxy-groups:\n  - name: "G1"\n    type: select\n    proxies: ["A"]',
+    "proxy-groups:\n  - {name: \"G1, { type: 'select'}\", type: url-test, url: \"http://www.gstatic.com/generate_204\", interval: 300, proxies: [\"A\"]}",
+  );
+  assert.notEqual(源, flowBase, 'fixture 必须真的替换成功');
+
+  const 输出 = 应用静态出口(源, { STATIC_EXIT: 'socks5://u:p@198.51.100.10:1080#exit' });
+  const 分组行 = 输出.split('\n').find((行) => 行.includes('G1, {'));
+  assert.ok(分组行, 'url-test 分组必须原样保留');
+  assert.equal(分组行.includes('静态IP出口'), false, 'url-test 分组不该拿到出口组');
+});
+
 // `type: "select"` 是合法 YAML，引号只是定界符。旧实现把引号一起存进 `段.类型`，
 // 于是这个分组永远匹配不上 select：出口节点、出口组、入口组都注入了，只有
 // 「🚀 节点选择」里没有它，用户看不到任何出口。
