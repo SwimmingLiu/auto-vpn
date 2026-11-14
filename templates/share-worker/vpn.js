@@ -798,7 +798,9 @@ function 应用静态出口(clash_yaml, 配置 = {}) {
 		`${分组缩进}- name: ${JSON.stringify(入口组名)}`,
 		`${键缩进}type: select`,
 		`${键缩进}proxies:`,
-		...(入口候选.length > 0 ? 入口候选 : 原始节点).map(名称 => `${列表缩进}- ${JSON.stringify(名称)}`),
+		// 只能写入口候选。全被过滤掉时入口组只留 DIRECT——宁可没得选，也不能把
+		// 会成环的节点放回去：那正是让内核栈溢出崩溃的配置。
+		...入口候选.map(名称 => `${列表缩进}- ${JSON.stringify(名称)}`),
 		`${列表缩进}- DIRECT`
 	] : [];
 

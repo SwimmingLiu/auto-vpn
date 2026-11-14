@@ -442,6 +442,36 @@ test('a pre-parsed exit list is validated like a text one', async () => {
   }
 });
 
+test('an entrance group with no safe member keeps only DIRECT', async () => {
+  const { 应用静态出口 } = await loadStaticExit();
+  // Every upstream node dials through the entrance group, so none of them may be
+  // a member of it. Falling back to "use them anyway" would rebuild exactly the
+  // self-reference that crashes the kernel; DIRECT is the safe degenerate case.
+  const yaml = `mixed-port: 1
+proxies:
+  - {name: "X", type: ss, server: 5.6.7.8, port: 8388, cipher: aes-128-gcm, password: pw, dialer-proxy: "🛬 静态IP入口"}
+proxy-groups:
+  - name: "G"
+    type: select
+    proxies:
+      - X
+rules:
+  - MATCH,G
+`;
+  const out = 应用静态出口(yaml, { STATIC_EXIT: 'socks5://u:p@198.51.100.11:1080#HK' });
+  const 行 = out.split('\n');
+  const 入口行 = 行.findIndex((l) => l.trim() === '- name: "🛬 静态IP入口"');
+  assert.ok(入口行 >= 0);
+  const 成员 = [];
+  for (let i = 入口行 + 1; i < 行.length; i += 1) {
+    if (/^\s*-\s+name:/.test(行[i])) break;
+    if (/^[A-Za-z-]+:/.test(行[i])) break; // next top-level section
+    const m = /^\s*-\s+(.+)$/.exec(行[i]);
+    if (m) 成员.push(m[1].replace(/^"|"$/g, ''));
+  }
+  assert.deepEqual(成员, ['DIRECT']);
+});
+
 test('every defect fixture stays loadable by mihomo', async (t) => {
   let mihomoBin = '';
   try {
