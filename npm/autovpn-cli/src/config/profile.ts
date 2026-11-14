@@ -195,6 +195,54 @@ export function networkEnv(section: unknown, base: NodeJS.ProcessEnv = {}): Node
   };
 }
 
+/**
+ * Fill in the fixed-IP egress defaults the Clash renderer reads.
+ *
+ * A profile written before this section existed has none of these keys, so
+ * only the twin mode gets a default: an absent address list must stay absent,
+ * otherwise the share Worker would build an empty egress group.
+ */
+export function normalizeStaticExitSection(value: unknown): Record<string, any> {
+  const raw = (value && typeof value === 'object' ? value : {}) as Record<string, any>;
+  const twins = String(raw.twins ?? 'entrance').trim().toLowerCase();
+  return {
+    ...raw,
+    exit: String(raw.exit ?? '').trim(),
+    exit_json: String(raw.exit_json ?? '').trim(),
+    group: String(raw.group ?? '').trim(),
+    entrance: String(raw.entrance ?? '').trim(),
+    twins: ['entrance', 'all', 'off'].includes(twins) ? twins : 'entrance'
+  };
+}
+
+/**
+ * Hide egress credentials before a profile leaves the server.
+ *
+ * The address list carries `user:pass@host`, so `/api/state` must not echo it
+ * back; the reverse mapping restores the stored value when the client saves.
+ */
+export const STATIC_EXIT_REDACTED = '<redacted>';
+
+export function redactStaticExitForClient(section: unknown): Record<string, any> {
+  const normalized = normalizeStaticExitSection(section);
+  return {
+    ...normalized,
+    exit: normalized.exit ? STATIC_EXIT_REDACTED : '',
+    exit_json: normalized.exit_json ? STATIC_EXIT_REDACTED : ''
+  };
+}
+
+export function preserveRedactedStaticExit(incoming: unknown, current: unknown): Record<string, any> {
+  const merged = normalizeStaticExitSection(incoming);
+  const stored = normalizeStaticExitSection(current);
+  for (const key of ['exit', 'exit_json'] as const) {
+    if (merged[key] === STATIC_EXIT_REDACTED) {
+      merged[key] = stored[key];
+    }
+  }
+  return merged;
+}
+
 function readProfile(profilePath: string): Record<string, any> {
   if (!fs.existsSync(profilePath)) {
     return {};
@@ -245,6 +293,14 @@ export function profileSummary(projectRoot: string, env: NodeJS.ProcessEnv = pro
       verify_subscription_url: state(deploy.verify_subscription_url),
       secret_query: state(deploy.secret_query)
     },
+    static_exit: (() => {
+      const section = normalizeStaticExitSection((payload.static_exit ?? {}) as Record<string, any>);
+      return {
+        exit: state(section.exit),
+        exit_json: state(section.exit_json),
+        twins: section.twins
+      };
+    })(),
     paths: {
       project_root: projectRoot,
       artifacts_root: resolveArtifactsRoot(projectRoot, env),
@@ -267,6 +323,7 @@ export function profilePayload(projectRoot: string, env: NodeJS.ProcessEnv = pro
     ...raw,
     sources: normalizeOfficialSources((raw.sources ?? {}) as Record<string, any>),
     network: normalizeNetworkSection(raw.network),
+    static_exit: normalizeStaticExitSection(raw.static_exit),
     paths,
     workspace: paths
   };
@@ -280,6 +337,7 @@ export function saveProfilePayload(projectRoot: string, payload: Record<string, 
   delete (persisted as Record<string, unknown>).workspace;
   persisted.sources = normalizeOfficialSources((persisted.sources ?? {}) as Record<string, any>);
   persisted.network = normalizeNetworkSection((persisted as Record<string, any>).network);
+  persisted.static_exit = normalizeStaticExitSection((persisted as Record<string, any>).static_exit);
   fs.writeFileSync(profilePath, stringify(persisted as any), 'utf8');
   return profilePayload(projectRoot, env);
 }

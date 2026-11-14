@@ -186,6 +186,736 @@ function pruneEmptyClashGroups(content) {
 	return rebuiltLines.join('\n');
 }
 
+// ======================================================================
+// 静态出口（STATIC_EXIT）：把固定 IP 的 SOCKS5/HTTP 出口注入 Clash 订阅，
+// 并生成可链式选择的代理（mihomo / Clash Verge Rev 的 dialer-proxy）。
+// 本段自带全部依赖（仅用全局 atob / decodeURIComponent），可整体搬移。
+// <静态出口 begin>
+// ======================================================================
+const 静态出口默认入口组 = '🛬 静态IP入口';
+const 静态出口默认分组 = '🛡️ 静态IP出口';
+const 静态出口链式分隔符 = ' ➜ ';
+const 静态出口链式后缀 = '（链式）';
+const 静态出口链式上限 = 300;
+
+function 规范化静态出口名(值) {
+	return String(值 ?? '').replace(/[\r\n\t]+/g, ' ').replace(/^\s+|\s+$/g, '');
+}
+
+// 按 URI 规则解码：%40 -> @，中文备注原样保留；非法转义回退原文。
+function 解码静态出口片段(值) {
+	const 文本 = String(值 ?? '');
+	try { return decodeURIComponent(文本); } catch (e) { return 文本; }
+}
+
+function 转YAML键(键) {
+	const 文本 = String(键);
+	return /^[A-Za-z_][A-Za-z0-9_-]*$/.test(文本) ? 文本 : JSON.stringify(文本);
+}
+
+function 转YAML标量(值) {
+	if (值 === null || 值 === undefined) return 'null';
+	if (typeof 值 === 'boolean' || typeof 值 === 'number') return String(值);
+	return JSON.stringify(String(值).replace(/[\r\n\t]+/g, ' '));
+}
+
+function 转YAML流式值(值) {
+	if (Array.isArray(值)) return `[${值.map(转YAML流式值).join(', ')}]`;
+	if (值 && typeof 值 === 'object') {
+		return `{${Object.entries(值).map(([键, 项]) => `${转YAML键(键)}: ${转YAML流式值(项)}`).join(', ')}}`;
+	}
+	return 转YAML标量(值);
+}
+
+// 按 YAML 规则还原引号标量：单引号里只有 '' 是转义，双引号里才是反斜杠转义。
+function 还原YAML标量(文本) {
+	const 原样 = String(文本 ?? '').trim();
+	const 双引号 = /^"((?:[^"\\]|\\.)*)"/.exec(原样);
+	if (双引号) {
+		return 双引号[1].replace(/\\(u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|.)/g, (_, 转义) => {
+			if (转义[0] === 'u' && 转义.length === 5) return String.fromCharCode(parseInt(转义.slice(1), 16));
+			if (转义[0] === 'x' && 转义.length === 3) return String.fromCharCode(parseInt(转义.slice(1), 16));
+			const 映射 = { n: '\n', t: '\t', r: '\r', '0': '\0', '"': '"', '\\': '\\', '/': '/', b: '\b', f: '\f' };
+			return Object.prototype.hasOwnProperty.call(映射, 转义) ? 映射[转义] : 转义;
+		});
+	}
+	const 单引号 = /^'((?:[^']|'')*)'/.exec(原样);
+	if (单引号) return 单引号[1].replace(/''/g, "'");
+	return 原样.replace(/\s+#.*$/, '').trim();
+}
+
+function 解析YAML节点名(原始文本) {
+	return 还原YAML标量(原始文本);
+}
+
+function 提取流式节点名(文本) {
+	const 匹配 = /(?:^|[,{])\s*name:\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^']|'')*)'|([^,}]+))/.exec(文本);
+	if (!匹配) return '';
+	if (匹配[1] !== undefined) return 还原YAML标量(`"${匹配[1]}"`);
+	if (匹配[2] !== undefined) return 还原YAML标量(`'${匹配[2]}'`);
+	return String(匹配[3] ?? '').trim();
+}
+
+function 解析静态出口地址(原始值) {
+	const 文本 = 规范化静态出口名(原始值);
+	if (!文本) return null;
+	const 井号位置 = 文本.indexOf('#');
+	const 名称 = 井号位置 >= 0 ? 解码静态出口片段(文本.slice(井号位置 + 1).trim()) : '';
+	const 主体 = (井号位置 >= 0 ? 文本.slice(0, 井号位置) : 文本).trim();
+	const 协议匹配 = /^([A-Za-z][A-Za-z0-9+.-]*):\/\/([^/?#]+)/.exec(主体);
+	if (!协议匹配) return null;
+	const 协议 = 协议匹配[1].toLowerCase();
+	const 类型映射 = { socks5: 'socks5', socks5h: 'socks5', socks: 'socks5', http: 'http', https: 'http', 'http+tls': 'http' };
+	const 类型 = 类型映射[协议];
+	if (!类型) return null;
+	const 权限 = 协议匹配[2];
+	const 账号结束 = 权限.lastIndexOf('@');
+	const 认证 = 账号结束 >= 0 ? 权限.slice(0, 账号结束) : '';
+	const 主机端口 = 账号结束 >= 0 ? 权限.slice(账号结束 + 1) : 权限;
+	let 主机 = 主机端口;
+	let 端口文本 = '';
+	if (主机端口.startsWith('[')) {
+		const 方括号结束 = 主机端口.indexOf(']');
+		if (方括号结束 < 0) return null;
+		主机 = 主机端口.slice(0, 方括号结束 + 1);
+		const 剩余 = 主机端口.slice(方括号结束 + 1);
+		if (剩余.startsWith(':')) 端口文本 = 剩余.slice(1);
+	} else {
+		const 冒号位置 = 主机端口.lastIndexOf(':');
+		if (冒号位置 >= 0) {
+			主机 = 主机端口.slice(0, 冒号位置);
+			端口文本 = 主机端口.slice(冒号位置 + 1);
+		}
+	}
+	if (!主机) return null;
+	const 默认端口 = 类型 === 'http' ? (协议 === 'https' ? 443 : 80) : 1080;
+	// 区分「没写端口」和「写了但不是数字」：前者用协议默认值，后者是笔误，
+	// 静默改成默认端口会让人以为流量走了出口，实际连的是别的端口。
+	const 清洗端口 = String(端口文本).trim();
+	if (清洗端口 && !/^\d+$/.test(清洗端口)) return null;
+	const 端口 = 清洗端口 ? Number(清洗端口) : 默认端口;
+	if (!Number.isFinite(端口) || 端口 <= 0 || 端口 > 65535) return null;
+	const 出口 = { name: 规范化静态出口名(名称) || `${主机}:${端口}`, type: 类型, server: 主机, port: 端口 };
+	if (认证) {
+		const 冒号位置 = 认证.indexOf(':');
+		出口.username = 解码静态出口片段(冒号位置 >= 0 ? 认证.slice(0, 冒号位置) : 认证);
+		出口.password = 解码静态出口片段(冒号位置 >= 0 ? 认证.slice(冒号位置 + 1) : '');
+	}
+	if (类型 === 'socks5') 出口.udp = true;
+	if (协议 === 'https' || 协议 === 'http+tls') 出口.tls = true;
+	return 出口;
+}
+
+// 只留协议与主机，丢掉 userinfo 和路径——日志里不能出现出口账号。
+function 脱敏静态出口地址(值) {
+	const 文本 = 规范化静态出口名(值);
+	const 匹配 = /^([A-Za-z][A-Za-z0-9+.-]*):\/\/([^/?#]*)/.exec(文本);
+	if (!匹配) return 文本.replace(/:[^:@/\s]*@/, ':***@');
+	const 协议 = 匹配[1].toLowerCase();
+	const 权限 = 匹配[2];
+	const 账号结束 = 权限.lastIndexOf('@');
+	const 主机 = 账号结束 >= 0 ? 权限.slice(账号结束 + 1) : 权限;
+	return `${协议}://${账号结束 >= 0 ? '***@' : ''}${主机}`;
+}
+
+function 解析静态出口清单(配置 = {}) {
+	const 结果 = [];
+	const 已见 = new Set();
+	const 收录 = (条目, 来源) => {
+		if (!条目 || typeof 条目 !== 'object') return;
+		const 名称 = 规范化静态出口名(条目.name);
+		const 端口 = Number(条目.port);
+		// mihomo rejects a proxy without a port, and one bad row would fail the
+		// whole subscription — drop it here instead.
+		if (!名称 || !条目.type || !条目.server || !Number.isFinite(端口) || 端口 <= 0 || 端口 > 65535) return;
+		// 同名条目只能留一条（mihomo 会因重名拒掉整份配置），但静默丢弃会让人
+		// 以为两个出口都在，所以留一条的同时把后来的那条报出来。
+		if (已见.has(名称)) {
+			console.warn(`[静态出口] ${来源} 里的同名出口被忽略: ${名称}`);
+			return;
+		}
+		已见.add(名称);
+		结果.push({ ...条目, name: 名称, port: 端口 });
+	};
+	const 原始JSON = 配置.STATIC_EXIT_JSON ?? 配置.静态出口JSON;
+	if (原始JSON) {
+		try {
+			const 解析结果 = typeof 原始JSON === 'string' ? JSON.parse(原始JSON) : 原始JSON;
+			for (const 条目 of Array.isArray(解析结果) ? 解析结果 : [解析结果]) 收录(条目, 'STATIC_EXIT_JSON');
+		} catch (错误) {
+			// 同样不能把原始文本带进日志：STATIC_EXIT_JSON 里有出口账号密码。
+			// V8 的 JSON 报错只给位置，但这不是可以依赖的约定，所以只留位置。
+			const 位置 = /at position (\d+)/.exec(String(错误 && 错误.message));
+			console.warn(`[静态出口] STATIC_EXIT_JSON 解析失败${位置 ? `（位置 ${位置[1]}）` : ''}`);
+		}
+	}
+	const 原始地址 = 配置.STATIC_EXIT ?? 配置.静态出口;
+	if (原始地址) {
+		for (const 片段 of String(原始地址).split(/[\r\n,]+/)) {
+			const 条目 = 解析静态出口地址(片段);
+			if (条目) 收录(条目, 'STATIC_EXIT');
+			// 报错时不能打整条地址：里面带 user:pass。Worker 的 console 会进
+			// wrangler tail / Logpush，而且分享 Worker 服务的每个订阅者都会触发，
+			// 等于把出口凭证写进可读日志。只报协议和主机。
+			else if (规范化静态出口名(片段)) console.warn(`[静态出口] 已忽略无法解析的地址: ${脱敏静态出口地址(片段)}`);
+		}
+	}
+	return 结果;
+}
+
+// YAML 顶层键判定：忽略行尾注释与引号键，否则 `"my:provider":`、`proxy-groups:  # x` 会被当成区块内容。
+//
+// 值可以是任何东西——空、标量、带空格的标量、内联映射/序列（`tun: {enable: true}`、
+// `secret: "abc def"`）。早期版本只认「空值或不含空格的值」，于是 `tun:` 这类顶层键
+// 不算边界，注入行会被插进它的中间，整份配置作废。判定标准改成：不缩进、非注释、
+// 冒号前是一个像样的键名，就算顶层键，值的形态不再参与判断。
+function 是顶层键(行) {
+	if (!行.trim() || /^\s/.test(行) || /^\s*#/.test(行)) return false;
+	// 顶格的 `- ` 是无缩进块序列的条目，不是键；否则 PyYAML 风格的上游会把
+	// proxies 的每个节点都当成新区块边界，区块直接塌掉。
+	if (/^-(\s|$)/.test(行)) return false;
+	// 冒号必须出现在引号之外，否则 `"a: b": v` 这种引号键会被误切。
+	const 冒号 = 找键分隔冒号(行);
+	if (冒号 < 0) return false;
+	const 键 = 行.slice(0, 冒号).trim();
+	if (!键) return false;
+	if (键.startsWith('"') || 键.startsWith("'")) return 是闭合引号键(键);
+	// 裸键里可以有空格（`Proxy Group:`、`external-ui-name: ...` 都是合法顶层键），
+	// 但不能有 `{`、`}`、`,`、`#`，也不能以 `-`/`?` 开头——那些是流式片段或序列项。
+	return !/[#{},]/.test(键) && !/^[-?]/.test(键) && !/\s$/.test(键);
+}
+
+// 找到「键: 值」里的那个冒号：跳过引号内容，只认第一个引号外的冒号。
+function 找键分隔冒号(文本) {
+	let 引号 = '';
+	for (let 索引 = 0; 索引 < 文本.length; 索引 += 1) {
+		const 字符 = 文本[索引];
+		if (引号) {
+			if (字符 === '\\' && 引号 === '"') { 索引 += 1; continue; }
+			if (字符 === 引号) 引号 = '';
+			continue;
+		}
+		if (字符 === '"' || 字符 === "'") {
+			// 只有出现在行首（忽略空格）的引号才是键的引号。
+			if (文本.slice(0, 索引).trim()) return -1;
+			引号 = 字符;
+			continue;
+		}
+		if (字符 === ':') return 索引;
+	}
+	return -1;
+}
+
+function 是闭合引号键(键) {
+	const 引号 = 键[0];
+	if (键.length < 2 || !键.endsWith(引号) || 键[键.length - 1] === '\\') return false;
+	return 引号 === "'" || 键.length > 1;
+}
+
+// 顶层键名（去掉引号），用于把区块头与其它键区分开。
+function 顶层键名(行) {
+	const 匹配 = /^("(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^\s#][^:]*?):\s*(?:#.*)?$/.exec(行);
+	if (!匹配) return '';
+	const 键 = 匹配[1].trim();
+	if (键.startsWith('"') && 键.endsWith('"')) return 键.slice(1, -1).replace(/\\(.)/g, '$1');
+	if (键.startsWith("'") && 键.endsWith("'")) return 键.slice(1, -1).replace(/''/g, "'");
+	return 键;
+}
+
+// Clash 的老写法里区块头是大写的（`Proxy:` / `Proxy Group:`），pruneEmptyClashGroups
+// 早就同时认这两种；注入这边不认，就会把 `Proxy Group:` 当成普通顶层键，
+// 把出口节点追加进去，整段分组结构被撑坏。
+const 区块别名 = {
+	'proxies': ['proxies', 'Proxy'],
+	'proxy-groups': ['proxy-groups', 'Proxy Group']
+};
+
+function 是区块键(键, 区块名) {
+	return (区块别名[区块名] ?? [区块名]).includes(键);
+}
+
+function 读取Clash区块(行列表, 区块名) {
+	const 名字集 = 区块别名[区块名] ?? [区块名];
+	const 起始 = 行列表.findIndex(行 => 名字集.includes(顶层键名(行)));
+	if (起始 < 0) return null;
+	let 结束 = 行列表.length;
+	for (let 索引 = 起始 + 1; 索引 < 行列表.length; 索引 += 1) {
+		const 行 = 行列表[索引];
+		if (!行.trim() || /^\s+/.test(行)) continue;
+		if (是顶层键(行)) { 结束 = 索引; break; }
+	}
+	return { 起始, 结束 };
+}
+
+// 流式区块（`proxies: [{...}]`）也能改成逐行注入，返回改写后的行列表；无法改写时返回 null。
+function 展开流式区块(行列表, 区块名) {
+	const 名字集 = 区块别名[区块名] ?? [区块名];
+	// 必须连冒号一起比：只比 `^Proxy:` 会把 `Proxy Group:` 当成 proxies 段。
+	const 起始 = 行列表.findIndex(行 => 名字集.some(名 => new RegExp(`^${名}:\\s*\\[`).test(行)));
+	if (起始 < 0) return null;
+	// 展开时沿用上游写的区块名（`Proxy:` 展开后还是 `Proxy:`），不擅自改成小写。
+	const 原名 = /^([^:]+):/.exec(行列表[起始])[1];
+	// 括号扫描必须跳过引号内容与注释：节点名里的 `[01]`、行尾注释里的 `]`
+	// 都会让 lastIndexOf 找到错误的收尾括号，展开后是半截节点。
+	const 跨行 = 找流式区块结尾(行列表, 起始);
+	if (!跨行) return null;
+	const { 结束行, 右括号位置 } = 跨行;
+	const 起始行 = 行列表[起始];
+	const 起始左括号 = 起始行.indexOf('[');
+	// 单行流式区块：内部就是两个括号之间。跨行：首行左括号之后 + 中间整行 + 收尾行
+	// 右括号之前，用换行拼回去，分隔符扫描才认得清边界。
+	const 中间行 = 行列表.slice(起始 + 1, 结束行);
+	const 收尾行文本 = 行列表[结束行];
+	const 内部 = 结束行 === 起始
+		? 起始行.slice(起始左括号 + 1, 右括号位置)
+		: [
+			起始行.slice(起始左括号 + 1),
+			...中间行,
+			收尾行文本.slice(0, 右括号位置)
+		].join('\n');
+	const 条目 = [];
+	let 深度 = 0;
+	let 引号 = '';
+	let 当前 = '';
+	for (const 字符 of 内部) {
+		if (引号) {
+			当前 += 字符;
+			if (字符 === 引号) 引号 = '';
+			continue;
+		}
+		if (字符 === '"' || 字符 === "'") { 引号 = 字符; 当前 += 字符; continue; }
+		if (字符 === '{' || 字符 === '[') 深度 += 1;
+		if (字符 === '}' || 字符 === ']') 深度 -= 1;
+		if (字符 === ',' && 深度 === 0) { 条目.push(当前); 当前 = ''; continue; }
+		当前 += 字符;
+	}
+	条目.push(当前);
+	const 展开 = 条目
+		.map(项 => 项.trim())
+		.filter(Boolean)
+		.map(项 => `  - ${项}`);
+	if (展开.length === 0) return null;
+	return [...行列表.slice(0, 起始), `${原名}:`, ...展开, ...行列表.slice(结束行 + 1)];
+}
+
+// 从 `区块名: [` 那一行开始，按 YAML 的引号/注释规则找出配平的 `]`。
+// 返回它所在行与列；括号不配平（数据损坏）时返回 null，让调用方放弃改写。
+function 找流式区块结尾(行列表, 起始行) {
+	let 深度 = 0;
+	let 引号 = '';
+	for (let 索引 = 起始行; 索引 < 行列表.length; 索引 += 1) {
+		const 行 = 行列表[索引];
+		for (let 列 = 0; 列 < 行.length; 列 += 1) {
+			const 字符 = 行[列];
+			if (引号) {
+				if (字符 === '\\' && 引号 === '"') { 列 += 1; continue; }
+				if (字符 === 引号) 引号 = '';
+				continue;
+			}
+			// 行尾注释：`#` 前面必须是行首或空白，才算注释开始。
+			if (字符 === '#' && (列 === 0 || /\s/.test(行[列 - 1]))) break;
+			if (字符 === '"' || 字符 === "'") { 引号 = 字符; continue; }
+			if (字符 === '[') 深度 += 1;
+			else if (字符 === ']') {
+				深度 -= 1;
+				if (深度 === 0) return { 结束行: 索引, 右括号位置: 列 };
+			}
+		}
+	}
+	return null;
+}
+
+function 收集区块内名称(行列表, 区块) {
+	const 名称列表 = [];
+	let 块缩进 = null;
+	// 一个条目可能从任意键开始（`- type: vmess` 后面才写 `name:`），所以先记下
+	// 条目的起止范围，再在范围里找 `name:`。只看连字符那行会漏掉所有把 type
+	// 写在 name 前面的订阅——那种写法很常见，漏掉的结果是入口组一个成员都没有。
+	let 条目起 = -1;
+	const 收尾 = (止) => {
+		if (条目起 < 0) return;
+		for (let i = 条目起; i < 止; i += 1) {
+			const 匹配 = /^[\s-]*name:\s*(.*)$/.exec(行列表[i]);
+			if (匹配) {
+				const 名称 = 解析YAML节点名(匹配[1]);
+				if (名称) 名称列表.push(名称);
+				break;
+			}
+		}
+		条目起 = -1;
+	};
+	for (let 索引 = 区块.起始 + 1; 索引 < 区块.结束; 索引 += 1) {
+		const 行 = 行列表[索引];
+		if (!行.trim() || /^\s*#/.test(行)) continue;
+		const 连字符 = /^(\s*)-\s+/.exec(行);
+		if (!连字符) continue;
+		if (块缩进 === null) 块缩进 = 连字符[1];
+		if (连字符[1].length !== 块缩进.length) continue;
+		收尾(索引);
+		const 余下 = 行.slice(连字符[0].length);
+		if (余下.startsWith('{')) {
+			const 名称 = 提取流式节点名(余下);
+			if (名称) 名称列表.push(名称);
+			continue;
+		}
+		条目起 = 索引;
+	}
+	收尾(区块.结束);
+	return 名称列表;
+}
+
+// 收集区块里每个节点的 `dialer-proxy` 指向。用来判断某个节点是否已经在经
+// 某个分组转发——把它再放进那个分组就是自引用，内核会在第一次连接时栈溢出。
+function 收集区块内转发目标(行列表, 区块) {
+	const 映射 = new Map();
+	// 与 收集区块内名称 同样的道理：条目可能以任意键开头，`name:` 不一定在连字符
+	// 那一行。先把条目范围切出来，再在范围内找 name 和 dialer-proxy。
+	const 条目列表 = [];
+	let 条目起 = -1;
+	let 条目止 = 区块.结束;
+	const 收尾 = (止) => {
+		if (条目起 < 0) return;
+		条目列表.push([条目起, 止]);
+		条目起 = -1;
+	};
+	for (let 索引 = 区块.起始 + 1; 索引 < 区块.结束; 索引 += 1) {
+		const 行 = 行列表[索引];
+		if (!行.trim() || /^\s*#/.test(行)) continue;
+		const 连字符 = /^(\s*)-\s+/.exec(行);
+		if (!连字符) continue;
+		收尾(索引);
+		条目起 = 索引;
+	}
+	收尾(条目止);
+
+	for (const [起, 止] of 条目列表) {
+		const 首行余下 = 行列表[起].slice(/^(\s*)-\s+/.exec(行列表[起])[0].length);
+		if (首行余下.startsWith('{')) {
+			const 名称 = 提取流式节点名(首行余下);
+			if (!名称) continue;
+			const 流式 = /[,{]\s*['"]?dialer-proxy['"]?\s*:\s*(?:"((?:[^"\\]|\\.)*)"|'((?:[^']|'')*)'|([^,}]+))/.exec(首行余下);
+			if (流式 && !映射.has(名称)) {
+				映射.set(名称, 还原YAML标量(流式[1] !== undefined ? `"${流式[1]}"` : 流式[2] !== undefined ? `'${流式[2]}'` : 流式[3]));
+			}
+			continue;
+		}
+		let 名称 = '';
+		let 目标 = '';
+		for (let i = 起; i < 止; i += 1) {
+			if (!名称) {
+				const 名称匹配 = /^[\s-]*name:\s*(.*)$/.exec(行列表[i]);
+				if (名称匹配) 名称 = 解析YAML节点名(名称匹配[1]);
+			}
+			if (!目标) {
+				const 目标匹配 = /^\s*dialer-proxy:\s*(.*)$/.exec(行列表[i]);
+				if (目标匹配) 目标 = 解析YAML节点名(目标匹配[1]);
+			}
+			if (名称 && 目标) break;
+		}
+		if (名称 && 目标 && !映射.has(名称)) 映射.set(名称, 目标);
+	}
+	return 映射;
+}
+
+function 读取区块条目缩进(行列表, 区块, 样例模式) {
+	for (let 索引 = 区块.起始 + 1; 索引 < 区块.结束; 索引 += 1) {
+		const 行 = 行列表[索引];
+		if (样例模式.test(行)) {
+			const 匹配 = /^(\s*)/.exec(行);
+			// 命中却取到空串是合法的：无缩进块序列的条目就与键同列。
+			return 匹配 ? 匹配[1] : '  ';
+		}
+	}
+	return '  ';
+}
+
+// 分组内部的列表成员缩进。无缩进块序列里 `proxies:` 写在 `- name:` 之下两格，
+// 成员却与 `proxies:` 同列；不能一律按「成员缩进 = 键缩进 + 2」推算，否则插进去的
+// 成员会多缩一层，YAML 把它读成上一个标量的续行，分组里就多出一个假节点名。
+function 分区成员缩进(列表键行, 默认) {
+	const 匹配 = /^(\s*)proxies:/.exec(列表键行 ?? '');
+	return 匹配 ? 匹配[1] : 默认;
+}
+
+// 把静态出口分组追加到每个 select 分组的末尾，让任意分流入口都能选到固定出口。
+function 挂载静态出口分组(行列表, 分组区块, 分组名, 入口组名) {
+	const 段落 = [];
+	let 当前 = null;
+	for (let 索引 = 分组区块.起始 + 1; 索引 < 分组区块.结束; 索引 += 1) {
+		const 行 = 行列表[索引];
+		const 名称匹配 = /^(\s*)-\s+name:\s*(.*)$/.exec(行);
+		if (名称匹配) {
+			if (当前) { 当前.结束 = 索引; 段落.push(当前); }
+			当前 = { 名称: 解析YAML节点名(名称匹配[2]), 类型: '', 列表缩进: '', 列表末行: -1, 流式行: -1, 在Proxies列表: true, 起始: 索引, 结束: 分组区块.结束 };
+			continue;
+		}
+		// 整条流式分组（`- {name: "G2", type: select, proxies: ["A"]}`）
+		const 流式分组 = /^(\s*)-\s*\{/.exec(行);
+		if (流式分组) {
+			if (当前) { 当前.结束 = 索引; 段落.push(当前); }
+			const 类型 = /[,{]\s*type:\s*([^,}]+)/.exec(行);
+			当前 = {
+				名称: 提取流式节点名(行.slice(流式分组[0].length - 1)),
+				类型: 类型 ? 类型[1].trim() : '',
+				列表缩进: '',
+				列表末行: -1,
+				流式行: /[,{]\s*proxies:\s*\[/.test(行) ? 索引 : -1,
+				在Proxies列表: true,
+				起始: 索引,
+				结束: 分组区块.结束
+			};
+			continue;
+		}
+		if (!当前) continue;
+		const 类型匹配 = /^\s*type:\s*(\S+)/.exec(行);
+		if (类型匹配) { 当前.类型 = 类型匹配[1].trim(); continue; }
+		// 分组里除了 `proxies:` 还有 `use:` 这类同样是列表的键（proxy-providers）。
+		// 一旦离开 proxies 列表，后面的成员行就不属于它了——记下当前所在的列表键，
+		// 只有还在 proxies 里时才更新插入位置。否则出口组会被插到 `use:` 下面，
+		// mihomo 报 `'🛡️ 静态IP出口' not found`，整份订阅作废。
+		const 其他列表键 = /^(\s*)([A-Za-z][A-Za-z0-9_-]*):\s*(?:#.*)?$/.exec(行);
+		if (其他列表键 && 其他列表键[2] !== 'proxies') {
+			当前.在Proxies列表 = false;
+			continue;
+		}
+		// `proxies:` 后面允许跟注释——上游生成器常写 `proxies:  # members`。
+		const 列表匹配 = /^(\s*)proxies:\s*(?:#.*)?$/.exec(行);
+		if (列表匹配) {
+			当前.列表缩进 = 列表匹配[1];
+			当前.列表末行 = 索引;
+			当前.在Proxies列表 = true;
+			continue;
+		}
+		// 流式写法的分组（`proxies: ["A"]`）没有可插行的块，只能整行改写。
+		if (当前.列表末行 < 0 && /^\s*proxies:\s*\[/.test(行)) { 当前.流式行 = 索引; continue; }
+		// 成员行：块式写法的成员缩进由它自己决定，这样无缩进块序列也能照原样续写。
+		if (当前.列表末行 >= 0 && 当前.在Proxies列表 !== false) {
+			const 成员匹配 = /^(\s*)-\s+/.exec(行);
+			if (成员匹配) {
+				当前.列表缩进 = 成员匹配[1];
+				当前.列表末行 = 索引;
+			}
+		}
+	}
+	if (当前) { 当前.结束 = 分组区块.结束; 段落.push(当前); }
+
+	const 可挂载 = 段落.filter(段 =>
+		段.类型 === 'select'
+		&& 段.名称
+		&& 段.名称 !== 分组名
+		&& 段.名称 !== 入口组名
+		&& (段.列表末行 >= 0 || 段.流式行 >= 0)
+	);
+	for (const 段 of 可挂载.sort((甲, 乙) => Math.max(乙.列表末行, 乙.流式行) - Math.max(甲.列表末行, 甲.流式行))) {
+		const 成员名 = JSON.stringify(分组名);
+		const 已有成员 = 行列表
+			.slice(段.起始, 段.结束)
+			.some(行 => 行.trim() === `- ${成员名}` || 行.includes(`[${成员名}`) || 行.includes(`, ${成员名}`) || 行.includes(`,${成员名}`));
+		if (已有成员) continue;
+		if (段.列表末行 >= 0) {
+			行列表.splice(段.列表末行 + 1, 0, `${段.列表缩进}- ${成员名}`);
+			continue;
+		}
+		const 行 = 行列表[段.流式行];
+		const 右括号 = 行.lastIndexOf(']');
+		if (右括号 < 0) continue;
+		const 内部 = 行.slice(0, 右括号).trimEnd();
+		行列表[段.流式行] = `${内部}${内部.endsWith('[') ? '' : ', '}${成员名}${行.slice(右括号)}`;
+	}
+}
+
+function 应用静态出口(clash_yaml, 配置 = {}) {
+	// 预解析清单（Worker 走的就是这条：`config_JSON.静态出口清单`）同样要过校验。
+	// 之前它被直接采用，`port: "abc"` / 0 / 99999 会原样写进配置，mihomo 拒掉整份订阅。
+	const 出口清单 = Array.isArray(配置.静态出口清单)
+		? 解析静态出口清单({ STATIC_EXIT_JSON: JSON.stringify(配置.静态出口清单) })
+		: 解析静态出口清单(配置);
+	if (出口清单.length === 0) return clash_yaml;
+	if (typeof clash_yaml !== 'string' || !clash_yaml) return clash_yaml;
+
+	// 注入的行一律用 LF；上游若来自 CRLF 源，混排会让后面的行尾判断分裂。
+	// 注入的行一律用 LF；上游若来自 CRLF 源，混排会让后面的行尾判断分裂。
+	// 开头的 BOM 也要去掉：它会让首行的 `proxies:` 认不出来，整段注入被跳过。
+	let 行列表 = clash_yaml.replace(/^﻿/, '').replace(/\r\n/g, '\n').split('\n');
+	// 流式写法（`proxies: [{...}]`）先展开成逐行，否则整段注入会被静默跳过。
+	const 展开代理 = 展开流式区块(行列表, 'proxies');
+	if (展开代理) 行列表 = 展开代理;
+	const 展开分组 = 展开流式区块(行列表, 'proxy-groups');
+	if (展开分组) 行列表 = 展开分组;
+	const 代理区块 = 读取Clash区块(行列表, 'proxies');
+	if (!代理区块) return clash_yaml;
+	const 原始节点名 = 收集区块内名称(行列表, 代理区块);
+	const 已有分组 = 读取Clash区块(行列表, 'proxy-groups');
+	const 已有分组名 = 已有分组 ? 收集区块内名称(行列表, 已有分组) : [];
+	const 期望分组名 = 规范化静态出口名(配置.STATIC_EXIT_GROUP);
+	const 期望入口组名 = 规范化静态出口名(配置.STATIC_EXIT_ENTRANCE);
+	// 上游分组里已经有同名分组，说明这份订阅已经注入过，原样返回。
+	if (已有分组名.includes(期望分组名 || 静态出口默认分组)) return clash_yaml;
+
+	// A group name must not collide with a proxy name — mihomo rejects the whole
+	// config with "the duplicate name". Rename our two groups instead.
+	const 已占名称 = new Set([...原始节点名, ...已有分组名]);
+	const 组名去重 = (候选, 兜底) => {
+		let 名称 = 候选 || 兜底;
+		let 序号 = 2;
+		while (已占名称.has(名称)) {
+			名称 = `${候选 || 兜底} ${序号}`;
+			序号 += 1;
+		}
+		已占名称.add(名称);
+		return 名称;
+	};
+	const 分组名 = 组名去重(期望分组名, 静态出口默认分组);
+	const 入口组名 = 组名去重(期望入口组名, 静态出口默认入口组);
+	const 链式模式 = String(配置.STATIC_EXIT_TWINS ?? 'entrance').trim().toLowerCase();
+
+	const 代理缩进 = 读取区块条目缩进(行列表, 代理区块, /^\s*-\s/);
+	// 出口节点名同样不能撞上任何已有节点或分组：撞上分组会让 mihomo 判成分组环。
+	// 这里必须把刚注入的两个分组名一起算进去——用户把出口叫成「🛡️ 静态IP出口」
+	// 时，节点和分组同名会让 mihomo 直接拒绝整份配置。
+	const 已用名称 = new Set([...已占名称]);
+	const 唯一名称 = (候选) => {
+		let 名称 = 候选;
+		let 序号 = 2;
+		while (已用名称.has(名称)) {
+			名称 = `${候选} ${序号}`;
+			序号 += 1;
+		}
+		已用名称.add(名称);
+		return 名称;
+	};
+
+	const 新增代理行 = [];
+	const 独立出口名 = [];
+	const 出口别名 = new Map();
+	for (const 条目 of 出口清单) {
+		const 名称 = 唯一名称(条目.name);
+		独立出口名.push(名称);
+		// Twins must be named after the node actually injected, not the raw list
+		// name — a colliding list entry gets a suffix, and the chain has to follow it.
+		出口别名.set(条目, 名称);
+		新增代理行.push(`${代理缩进}- ${转YAML流式值({ ...条目, name: 名称 })}`);
+	}
+
+	const 原始节点 = 原始节点名.filter(名称 =>
+		名称
+		&& !独立出口名.includes(名称)
+		&& !名称.includes(静态出口链式分隔符)
+		&& !名称.endsWith(静态出口链式后缀)
+	);
+
+	// 入口组里不能放「自己已经要经入口组转发」的节点：那是一个自引用，
+	// mihomo -t 会放过它，但第一次真实连接就让内核栈溢出退出。同理，节点若经
+	// **出口组** 转发，而出口组里的链式节点又要经入口组回来，整条路径同样成环，
+	// 所以指向出口组的节点也不能进 入口组。
+	const 上游链向 = 收集区块内转发目标(行列表, 代理区块);
+	const 会自引用 = (名称) => {
+		const 目标 = 上游链向.get(名称);
+		if (目标 === undefined) return false;
+		return 目标 === 入口组名
+			|| 目标 === 静态出口默认入口组
+			|| 目标 === 分组名
+			|| 目标 === 静态出口默认分组;
+	};
+	const 入口候选 = 原始节点.filter(名称 => !会自引用(名称));
+	if (入口候选.length !== 原始节点.length) {
+		const 摘掉 = 原始节点.filter(名称 => 会自引用(名称));
+		console.warn(`[静态出口] 这些节点已经在经静态出口的某个分组转发，放进入口组会成环，已跳过: ${摘掉.join(', ')}`);
+	}
+
+	const 链式出口名 = [];
+	if (链式模式 !== 'off' && 原始节点.length > 0) {
+		if (链式模式 === 'all') {
+			// `all` 模式把链式节点挂在**入口节点本身**后面。若某个入口节点自己
+			// 就在经出口组转发，然后出口组又装着挂在它后面的链式节点，就成环。
+			for (const 出口 of 出口清单) {
+				const 出口名 = 出口别名.get(出口) ?? 出口.name;
+				for (const 入口 of 入口候选) {
+					if (链式出口名.length >= 静态出口链式上限) break;
+					const 名称 = 唯一名称(`${入口}${静态出口链式分隔符}${出口名}`);
+					新增代理行.push(`${代理缩进}- ${转YAML流式值({ ...出口, name: 名称, 'dialer-proxy': 入口 })}`);
+					链式出口名.push(名称);
+				}
+			}
+		} else {
+			for (const 出口 of 出口清单) {
+				const 名称 = 唯一名称(`${出口别名.get(出口) ?? 出口.name}${静态出口链式后缀}`);
+				新增代理行.push(`${代理缩进}- ${转YAML流式值({ ...出口, name: 名称, 'dialer-proxy': 入口组名 })}`);
+				链式出口名.push(名称);
+			}
+		}
+	}
+
+	const 分组缩进 = 已有分组 ? 读取区块条目缩进(行列表, 已有分组, /^\s*-\s+name:/) : '  ';
+	const 键缩进 = `${分组缩进}  `;
+	const 列表缩进 = `${键缩进}  `;
+	const 出口分组文本 = [
+		`${分组缩进}- name: ${JSON.stringify(分组名)}`,
+		`${键缩进}type: select`,
+		`${键缩进}proxies:`,
+		...[...链式出口名, ...独立出口名].map(名称 => `${列表缩进}- ${JSON.stringify(名称)}`)
+	];
+	const 入口分组文本 = (链式出口名.length > 0 && 链式模式 !== 'all') ? [
+		`${分组缩进}- name: ${JSON.stringify(入口组名)}`,
+		`${键缩进}type: select`,
+		`${键缩进}proxies:`,
+		// 只能写入口候选。全被过滤掉时入口组只留 DIRECT——宁可没得选，也不能把
+		// 会成环的节点放回去：那正是让内核栈溢出崩溃的配置。
+		...入口候选.map(名称 => `${列表缩进}- ${JSON.stringify(名称)}`),
+		`${列表缩进}- DIRECT`
+	] : [];
+
+	if (新增代理行.length === 0) return clash_yaml;
+	const 代理后行 = [
+		...行列表.slice(0, 代理区块.结束),
+		...新增代理行,
+		...行列表.slice(代理区块.结束)
+	];
+	// `proxy-groups: []` / `proxy-groups: {}` 是内联空值：`读取Clash区块` 的键名判定
+	// 只认冒号后为空的行，所以这里单独找一次。若不替换，追加会留下第二个
+	// proxy-groups 键，YAML 解析报 duplicated mapping key，整份订阅作废。
+	const 内联空段 = 代理后行.findIndex(行 => /^(proxy-groups|Proxy Group):\s*(\[\s*\]|\{\s*\})\s*(?:#.*)?$/.test(行));
+	const 分组区块 = 内联空段 >= 0 ? null : 读取Clash区块(代理后行, 'proxy-groups');
+	// 上游写的是哪个键名，新建时就沿用哪个：大写写法（`Proxy Group:`）与小写
+	// 混在一份配置里，mihomo 会把它们当成两个独立的段，分组结构就散了。
+	const 分组键名 = 分组区块
+		? (/^([^:]+):/.exec(代理后行[分组区块.起始])?.[1] ?? 'proxy-groups')
+		: (内联空段 >= 0 ? (/^([^:]+):/.exec(代理后行[内联空段])?.[1] ?? 'proxy-groups') : 'proxy-groups');
+	// `proxy-groups:` 后面只有空行与注释，同样是"有区块头但没有条目"。
+	const 分组为空 = 分组区块 && 代理后行
+		.slice(分组区块.起始 + 1, 分组区块.结束)
+		.every(行 => !行.trim() || /^\s*#/.test(行));
+	if (!分组区块 || 分组为空) {
+		// 上游没有分组段：新建一个，否则 dialer-proxy 指向的入口组不存在，
+		// mihomo 会直接拒掉整份配置（proxy [x] dialer-proxy [y] not found）。
+		const 去空段 = 内联空段 >= 0
+			? [...代理后行.slice(0, 内联空段), ...代理后行.slice(内联空段 + 1)]
+			: 分组区块
+				? [...代理后行.slice(0, 分组区块.起始), ...代理后行.slice(分组区块.结束)]
+				: 代理后行;
+		return [...去空段, '', `${分组键名}:`, ...出口分组文本, ...入口分组文本].join('\n');
+	}
+	行列表 = [
+		...代理后行.slice(0, 分组区块.结束),
+		...出口分组文本,
+		...(入口分组文本.length ? 入口分组文本 : []),
+		...代理后行.slice(分组区块.结束)
+	];
+
+	const 挂载区块 = 读取Clash区块(行列表, 'proxy-groups');
+	if (挂载区块) 挂载静态出口分组(行列表, 挂载区块, 分组名, 入口组名);
+	return 行列表.join('\n');
+}
+
+// <静态出口 end>
+// ======================================================================
+
+// Clash 订阅的统一收尾：先按 STATIC_EXIT 注入固定出口，再清掉只剩 DIRECT 的空分组。
+function 收尾Clash配置(clash_yaml, 配置 = {}) {
+	return pruneEmptyClashGroups(应用静态出口(clash_yaml, 配置));
+}
+
+
 export default {
 	async fetch(request, env, ctx) {
 		// Request-scoped runtime state is derived fresh on every fetch to avoid leaking config between isolates.
@@ -425,7 +1155,18 @@ export default {
 								console.error('保存自定义IP失败:', error);
 								return new Response(JSON.stringify({ error: '保存自定义IP失败: ' + error.message }), { status: 500, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
 							}
+						} else if (访问路径 === 'admin/static-exit.json') {// 静态出口清单，POST 覆盖（写入 KV）
+							const 提交内容 = await request.text();
+							let 待存清单;
+							try { 待存清单 = JSON.parse(提交内容); } catch (错误) { return new Response(JSON.stringify({ error: 'JSON 解析失败: ' + 错误.message }), { status: 400, headers: { 'Content-Type': 'application/json;charset=utf-8' } }); }
+							const 规范化清单 = (Array.isArray(待存清单) ? 待存清单 : [待存清单]).filter(条目 => 条目 && 条目.name && 条目.type && 条目.server && 条目.port);
+							if (规范化清单.length === 0) return new Response(JSON.stringify({ error: '静态出口清单为空，或缺少 name/type/server/port' }), { status: 400, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
+							await env.KV.put('static-exit.json', JSON.stringify(规范化清单, null, 2));
+							return new Response(JSON.stringify({ success: true, count: 规范化清单.length }), { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
 						} else return new Response(JSON.stringify({ error: '不支持的POST请求路径' }), { status: 404, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
+					} else if (访问路径 === 'admin/static-exit.json') {// 静态出口清单，GET 读取 KV
+						const 已存清单 = await env.KV.get('static-exit.json');
+						return new Response(已存清单 || '[]', { status: 200, headers: { 'Content-Type': 'application/json;charset=utf-8' } });
 					} else if (访问路径 === 'admin/config.json') {// 处理 admin/config.json 请求，返回JSON
 						return new Response(JSON.stringify(config_JSON, null, 2), { status: 200, headers: { 'Content-Type': 'application/json' } });
 					} else if (区分大小写访问路径 === 'admin/ADD.txt') {// 处理 admin/ADD.txt 请求，返回本地优选IP
@@ -594,7 +1335,7 @@ export default {
 							订阅内容 = await Singbox订阅配置文件热补丁(订阅内容, config_JSON);
 							responseHeaders["content-type"] = 'application/json; charset=utf-8';
 						} else if (订阅类型 === 'clash') {
-							订阅内容 = Clash订阅配置文件热补丁(订阅内容, config_JSON);
+							订阅内容 = 收尾Clash配置(Clash订阅配置文件热补丁(订阅内容, config_JSON), config_JSON);
 							responseHeaders["content-type"] = 'application/x-yaml; charset=utf-8';
 						}
 						return new Response(订阅内容, { status: 200, headers: responseHeaders });
@@ -3313,7 +4054,7 @@ function Clash订阅配置文件热补丁(Clash_原始订阅内容, config_JSON 
 		clash_yaml = 插入NameserverPolicy(clash_yaml, hostsEntries);
 	}
 
-	if (!需要处理ECH && !需要处理gRPC) return pruneEmptyClashGroups(clash_yaml);
+	if (!需要处理ECH && !需要处理gRPC) return clash_yaml;
 
 	const lines = clash_yaml.split('\n');
 	const processedLines = [];
@@ -3374,7 +4115,6 @@ function Clash订阅配置文件热补丁(Clash_原始订阅内容, config_JSON 
 	}
 
 	clash_yaml = processedLines.join('\n');
-	clash_yaml = pruneEmptyClashGroups(clash_yaml);
 	return clash_yaml;
 }
 
@@ -3873,6 +4613,11 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
 			TLS: true,
 		},
 		Fingerprint: "chrome",
+		STATIC_EXIT: "",
+		STATIC_EXIT_JSON: "",
+		STATIC_EXIT_GROUP: "",
+		STATIC_EXIT_ENTRANCE: "",
+		STATIC_EXIT_TWINS: "entrance",
 		优选订阅生成: {
 			local: false, // true: 基于本地的优选地址  false: 优选订阅生成器
 			本地IP库: {
@@ -3976,6 +4721,16 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
 		config_JSON.订阅转换配置.SUBEMOJI = ["1", "true"].includes(String(env.SUBEMOJI).toLowerCase());
 	}
 	if (env.SUBNAME) config_JSON.优选订阅生成.SUBNAME = env.SUBNAME;
+	for (const 键 of ["STATIC_EXIT", "STATIC_EXIT_JSON", "STATIC_EXIT_GROUP", "STATIC_EXIT_ENTRANCE", "STATIC_EXIT_TWINS"]) {
+		if (env[键] !== undefined && env[键] !== null && env[键] !== "") config_JSON[键] = env[键];
+	}
+	// KV 清单：`admin/static-exit.json` 写入的出口只能从这里读到，所以只要有 KV
+	// 且没有用环境变量直接给清单，就查一次；订阅请求频率低，这一次读可接受。
+	if (env.KV && typeof env.KV.get === 'function' && !config_JSON.STATIC_EXIT_JSON) {
+		const 已存清单文本 = await env.KV.get('static-exit.json');
+		if (已存清单文本) config_JSON.STATIC_EXIT_JSON = 已存清单文本;
+	}
+	config_JSON.静态出口清单 = 解析静态出口清单(config_JSON);
 
 	if (env.PATH) config_JSON.PATH = env.PATH.startsWith('/') ? env.PATH : '/' + env.PATH;
 	else if (!config_JSON.PATH) config_JSON.PATH = '/';

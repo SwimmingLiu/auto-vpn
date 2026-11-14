@@ -100,6 +100,7 @@ interface PipelineProfile {
   speed_test?: Record<string, unknown>;
   availability_targets?: unknown;
   deploy?: Record<string, unknown>;
+  static_exit?: Record<string, unknown>;
   worker_build?: Record<string, unknown>;
   filters?: Record<string, unknown>;
 }
@@ -139,6 +140,26 @@ async function readProfile(projectRoot: string, env: NodeJS.ProcessEnv): Promise
   const text = await readFile(profilePath, 'utf8');
   const profile = asProfile(parse(text));
   return { ...profile, sources: normalizeOfficialSources(profile.sources ?? {}) as Record<string, SourceConfigInput> };
+}
+
+/**
+ * The fixed-IP egress keys live in their own [static_exit] section; the deploy
+ * backend reads them from the deploy payload, so fold them in at the boundary.
+ *
+ * Every key is emitted, empty ones included, whenever the profile has the
+ * section at all. Emitting only the non-empty ones left a removed egress alive:
+ * the share project kept the previous run's `USER:PASS@host` variable and went on
+ * injecting it into every subscriber's config. An absent section emits nothing,
+ * so a profile that predates the feature leaves the project untouched.
+ */
+function deployStaticExitFields(profile: PipelineProfile): Record<string, string> {
+  const section = (profile.static_exit ?? {}) as Record<string, unknown>;
+  if (Object.keys(section).length === 0) return {};
+  const fields: Record<string, string> = {};
+  for (const key of ['exit', 'exit_json', 'group', 'entrance', 'twins']) {
+    fields[`static_${key}`] = String(section[key] ?? '').trim();
+  }
+  return fields;
 }
 
 function enabledSources(profile: PipelineProfile): Array<[string, SourceConfigInput]> {
@@ -947,7 +968,7 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
       assertDeployMinimumFinalLinks(profile, postprocessed.links);
       const deployment = context.stages?.deploy
         ? await context.stages.deploy({ projectRoot, bundleDir, profile })
-        : await deployPagesWithBackend({ projectRoot, bundleDir, deploy: profile.deploy ?? {} }, { cwd: projectRoot, env });
+        : await deployPagesWithBackend({ projectRoot, bundleDir, deploy: { ...(profile.deploy ?? {}), ...deployStaticExitFields(profile) } }, { cwd: projectRoot, env });
       if (Number(deployment.returncode ?? 1) !== 0) {
         summary.deployment = safeDeployment(deployment);
         throw new Error(`Cloudflare deployment failed: ${JSON.stringify(summary.deployment)}`);
@@ -1206,7 +1227,7 @@ export async function retryNodePipelineStage(options: NodeRetryStageOptions, con
       assertDeployMinimumFinalLinks(profile, finalLinks);
       const deployment = context.stages?.deploy
         ? await context.stages.deploy({ projectRoot, bundleDir, profile })
-        : await deployPagesWithBackend({ projectRoot, bundleDir, deploy: profile.deploy ?? {} }, { cwd: projectRoot, env });
+        : await deployPagesWithBackend({ projectRoot, bundleDir, deploy: { ...(profile.deploy ?? {}), ...deployStaticExitFields(profile) } }, { cwd: projectRoot, env });
       if (Number(deployment.returncode ?? 1) !== 0) {
         summary.deployment = safeDeployment(deployment);
         throw new Error(`Cloudflare deployment failed: ${JSON.stringify(summary.deployment)}`);
@@ -1725,7 +1746,7 @@ export async function resumeNodePipeline(options: NodeResumeOptions, context: Ru
       assertDeployMinimumFinalLinks(profile, postprocessed.links);
       const deployment = context.stages?.deploy
         ? await context.stages.deploy({ projectRoot, bundleDir, profile })
-        : await deployPagesWithBackend({ projectRoot, bundleDir, deploy: profile.deploy ?? {} }, { cwd: projectRoot, env });
+        : await deployPagesWithBackend({ projectRoot, bundleDir, deploy: { ...(profile.deploy ?? {}), ...deployStaticExitFields(profile) } }, { cwd: projectRoot, env });
       if (Number(deployment.returncode ?? 1) !== 0) {
         summary.deployment = safeDeployment(deployment);
         throw new Error(`Cloudflare deployment failed: ${JSON.stringify(summary.deployment)}`);

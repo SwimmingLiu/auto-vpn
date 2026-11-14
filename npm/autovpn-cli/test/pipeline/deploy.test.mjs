@@ -748,6 +748,116 @@ test('Node deploy backend syncs share project SUB to final Pages URL', async () 
   assert.ok(String(result.share_project_worker_entry).endsWith('/share_pages_bundle/_worker.js'));
 });
 
+test('Node deploy backend forwards the static-exit profile section to the share project', async () => {
+  const projectRoot = await makeShareProjectRoot();
+  const calls = [];
+  const client = {
+    async getPagesProject(projectName) {
+      return {
+        name: projectName,
+        deployment_configs: {
+          preview: { env_vars: { SUB: { type: 'plain_text', value: 'https://old.pages.dev' } } },
+          production: { env_vars: { SUB: { type: 'plain_text', value: 'https://old.pages.dev' } } }
+        }
+      };
+    },
+    async updatePagesProject(projectName, payload) {
+      calls.push(['updatePagesProject', projectName, payload]);
+      return { name: projectName };
+    },
+    async listPagesProjects() { return [{ name: 'sub-links-share-03' }]; },
+    async createPagesProject() { throw new Error('unexpected create'); },
+    async copyPagesProjectConfig() { throw new Error('unexpected copy'); },
+    async verifyUrl() { return true; },
+    async verifySubdomainCname() { return true; },
+    async deletePagesProject() { return {}; }
+  };
+
+  await deployPagesWithBackend({
+    projectRoot,
+    bundleDir: path.join(projectRoot, 'artifacts/pages_bundle'),
+    deploy: {
+      project_name: 'sub-nodes',
+      pages_project_url: 'https://sub-nodes.pages.dev',
+      subscription_url: 'https://origin.example/sub',
+      share_project_name: 'sub-links-share-03',
+      static_exit: 'socks5://user:p%40ss@198.51.100.10:1080#香港静态IP',
+      static_exit_twins: 'all',
+      cloudflare_api_token: 'token-1'
+    }
+  }, {
+    env: {},
+    resolveManagedNpmTool: resolveTestManagedWrangler,
+    cloudflareDeployClient: client,
+    runCommand: async () => ({ returncode: 0, stdout: 'ok', stderr: '' })
+  });
+
+  const update = calls.find((call) => call[0] === 'updatePagesProject');
+  for (const environment of ['preview', 'production']) {
+    const envVars = update[2].deployment_configs[environment].env_vars;
+    assert.equal(envVars.STATIC_EXIT.value, 'socks5://user:p%40ss@198.51.100.10:1080#香港静态IP');
+    assert.equal(envVars.STATIC_EXIT_TWINS.value, 'all');
+    // Empty keys ARE pushed once the profile carries the section: they clear a
+    // previously configured egress instead of leaving its credentials on the
+    // project, where they would keep being injected into every subscription.
+    assert.equal(envVars.STATIC_EXIT_GROUP.value, '');
+    assert.equal(envVars.STATIC_EXIT_ENTRANCE.value, '');
+  }
+});
+
+test('Node deploy backend clears an egress the profile no longer configures', async () => {
+  // The project still carries the previous run's STATIC_EXIT. Deploying a
+  // profile whose [static_exit] is present but empty must overwrite it with an
+  // empty value — leaving it in place keeps injecting the old credentials.
+  const projectRoot = await makeShareProjectRoot();
+  const calls = [];
+  const client = {
+    async getPagesProject(projectName) {
+      return {
+        name: projectName,
+        deployment_configs: {
+          preview: { env_vars: { SUB: { type: 'plain_text', value: 'https://old.pages.dev' }, STATIC_EXIT: { type: 'plain_text', value: 'socks5://user:p%40ss@198.51.100.9:1080#old' } } },
+          production: { env_vars: { SUB: { type: 'plain_text', value: 'https://old.pages.dev' }, STATIC_EXIT: { type: 'plain_text', value: 'socks5://user:p%40ss@198.51.100.9:1080#old' } } }
+        }
+      };
+    },
+    async updatePagesProject(projectName, payload) {
+      calls.push(['updatePagesProject', projectName, payload]);
+      return { name: projectName };
+    },
+    async listPagesProjects() { return []; },
+    async createPagesProject(name) { return { name }; }
+  };
+
+  await deployPagesWithBackend({
+    projectRoot,
+    bundleDir: path.join(projectRoot, 'artifacts/pages_bundle'),
+    deploy: {
+      project_name: 'sub-nodes',
+      pages_project_url: 'https://sub-nodes.pages.dev',
+      subscription_url: 'https://origin.example/sub',
+      share_project_name: 'sub-links-share-03',
+      static_exit: '',
+      static_exit_json: '',
+      static_exit_group: '',
+      static_exit_entrance: '',
+      static_exit_twins: 'entrance',
+      cloudflare_api_token: 'token-1'
+    }
+  }, {
+    env: {},
+    resolveManagedNpmTool: resolveTestManagedWrangler,
+    cloudflareDeployClient: client,
+    runCommand: async () => ({ returncode: 0, stdout: 'ok', stderr: '' })
+  });
+
+  const update = calls.find((call) => call[0] === 'updatePagesProject');
+  assert.ok(update, 'the share project must be updated');
+  for (const environment of ['preview', 'production']) {
+    assert.equal(update[2].deployment_configs[environment].env_vars.STATIC_EXIT.value, '');
+  }
+});
+
 test('Node deploy backend falls back when share project update is blocked', async () => {
   const projectRoot = await makeShareProjectRoot();
   const calls = [];

@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { profileSummary } from '../dist/config/profile.js';
+import { profilePayload, profileSummary, saveProfilePayload } from '../dist/config/profile.js';
 
 function summaryFor(toml) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-profile-'));
@@ -162,4 +162,41 @@ test('lap keys survive normalization and a save, and the legacy keys stay beside
   saveProfilePayload(root, { sources: { heidong: { mode: 'credential', official_site: 'https://h.example', max_iterations: 200 } } }, env);
   const legacyWritten = fs.readFileSync(profilePath, 'utf8');
   assert.doesNotMatch(legacyWritten, /max_laps|dry_laps|min_laps/);
+});
+
+test('the static-exit section defaults the twin mode and keeps addresses verbatim', () => {
+  // A profile written before [static_exit] existed must not gain an empty
+  // egress list: an absent address is what keeps the share Worker untouched.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-static-exit-'));
+  const profilePath = path.join(root, 'profile.toml');
+  const env = { VPN_AUTOMATION_PROFILE_PATH: profilePath };
+  fs.writeFileSync(profilePath, '[deploy]\nproject_name = "sub-nodes"\n', 'utf8');
+
+  saveProfilePayload(root, { deploy: { project_name: 'sub-nodes' } }, env);
+  const written = fs.readFileSync(profilePath, 'utf8');
+  assert.match(written, /\[static_exit\]/);
+  assert.match(written, /twins = "entrance"/);
+  assert.match(written, /exit = ""/);
+
+  const summary = profileSummary(root, env);
+  assert.equal(summary.static_exit.exit, 'missing');
+  assert.equal(summary.static_exit.twins, 'entrance');
+
+  const payload = profilePayload(root, env);
+  assert.equal(payload.static_exit.exit, '');
+});
+
+test('the static-exit section keeps a configured address and rejects an unknown twin mode', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'autovpn-static-exit-set-'));
+  const profilePath = path.join(root, 'profile.toml');
+  const env = { VPN_AUTOMATION_PROFILE_PATH: profilePath };
+
+  saveProfilePayload(root, {
+    static_exit: { exit: 'socks5://user:p%40ss@198.51.100.10:1080#香港静态IP', twins: 'nonsense' }
+  }, env);
+
+  const written = fs.readFileSync(profilePath, 'utf8');
+  assert.match(written, /香港静态IP/);
+  assert.match(written, /twins = "entrance"/);
+  assert.equal(profileSummary(root, env).static_exit.exit, 'set');
 });

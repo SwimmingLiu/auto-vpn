@@ -85,6 +85,18 @@ account_id = ""
 use_wrangler = true
 min_final_links = 10
 
+[static_exit]
+# 固定 IP 出口，写进 Clash 订阅后可用于链式代理（Clash Verge Rev / mihomo dialer-proxy）。
+# exit 支持 socks5:// / http:// / https:// URI，多个用换行或逗号分隔，可带 #备注。
+exit = ""
+# 需要完整字段时改用 JSON 数组：[{name,type,server,port,username,password}]
+exit_json = ""
+# 留空使用默认分组名。
+group = ""
+entrance = ""
+# entrance | all | off
+twins = "entrance"
+
 [worker_build]
 environment_name = "production"
 entry_filename = "_worker.js"
