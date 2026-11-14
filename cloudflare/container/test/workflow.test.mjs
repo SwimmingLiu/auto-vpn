@@ -67,3 +67,18 @@ test('the pool is assembled from pinned bytes, not from an unverified split', ()
     assert.match(assemble.body, new RegExp(name), `the assembler step does not read ${name}`);
   }
 });
+
+test('the CLI is built from this checkout, not installed by version number', () => {
+  // A published version cannot contain a fix that is still a branch commit, so
+  // installing by number silently runs code the workflow was never tested
+  // against. The first runner night did exactly that and failed on a bug the
+  // branch had already fixed.
+  const install = steps(raw).find((step) => /npm\/autovpn-cli run build/.test(step.body));
+  assert.ok(install, 'no step builds the CLI from this checkout');
+  assert.doesNotMatch(
+    install.body,
+    /npm install -g[^\n]*@swimmingliu\/autovpn@/,
+    'the CLI is installed from npm by version; build it from the checkout instead'
+  );
+  assert.match(install.body, /npm install -g[^\n]*\.\/npm\/autovpn-cli/, 'the built CLI is not installed');
+});

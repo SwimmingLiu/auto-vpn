@@ -84,9 +84,23 @@ jobs:
           ACCOUNTS_PART_2: ${{ secrets.ACCOUNTS_PART_2 }}
         run: node cloudflare/scripts/assemble-account-pool.mjs "$RUNNER_TEMP/account-info.txt"
 
-      - name: Install the CLI and mihomo
+      # Built from this checkout, not installed from npm.
+      #
+      # The workflow and the CLI live in the same repository, and a night now
+      # depends on CLI behaviour (MIHOMO_BIN, max_probe_candidates) that is not
+      # in any published version. Installing by version number means the branch
+      # under test runs someone else's code, and a fix only takes effect after a
+      # separate publish — the first real runner night ran 2.2.4 and died on
+      # `spawn mihomo ENOENT` for exactly that reason.
+      - name: Build the CLI from this checkout
         run: |
-          npm install -g --no-audit --no-fund --ignore-scripts "@swimmingliu/autovpn@${{ vars.AUTOVPN_CLI_VERSION || '2.2.4' }}"
+          npm --prefix npm/autovpn-cli ci --no-audit --no-fund --ignore-scripts
+          npm --prefix npm/autovpn-cli run build
+          npm install -g --no-audit --no-fund --ignore-scripts ./npm/autovpn-cli
+          autovpn --version
+
+      - name: Install mihomo
+        run: |
           cloudflare/scripts/fetch-mihomo.sh "$MIHOMO_VERSION"
           install -m 0755 cloudflare/container/vendor/mihomo-linux-amd64 "$RUNNER_TEMP/mihomo"
           "$RUNNER_TEMP/mihomo" -v
