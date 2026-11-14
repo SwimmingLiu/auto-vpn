@@ -154,6 +154,11 @@ jobs:
           VPN_AUTOMATION_PROXY_MODE: proxy
           VPN_AUTOMATION_UPSTREAM_PROXY: http://127.0.0.1:7897
           MIHOMO_BIN: ${{ runner.temp }}/mihomo
+          # The profile defers its key to this variable, and the obfuscate stage
+          # runs *inside* this step (after render), not only at publish. Without
+          # it here the run measured 54 links, cleared the floor, and then died
+          # in obfuscate with the sentinel still unresolved.
+          VPN_AUTOMATION_SUBSCRIPTION_KEY: ${{ secrets.AUTOVPN_SUBSCRIPTION_KEY }}
         run: |
           set -o pipefail
           autovpn run --project-root "$RUNNER_TEMP/autovpn" \

@@ -99,3 +99,23 @@ test('the uploaded log is the redacted one, and nothing uploads the raw log', ()
   assert.ok(redact, 'nothing redacts the log before upload');
   assert.match(redact.body, /grep -qE/, 'the redaction step does not verify its own output');
 });
+
+test('every step that can reach the obfuscate stage has the subscription key', () => {
+  // The obfuscate stage resolves the key from the environment, and it runs
+  // inside `autovpn run` (Measure), not only at publish. A run that cleared the
+  // floor at 54 links then died in obfuscate because only the Publish step had
+  // the variable.
+  const steps = raw.split(/^\s{6}- name:/m).slice(1).map((body) => {
+    const [nameLine, ...rest] = body.split('\n');
+    return { name: nameLine.trim(), body: rest.join('\n') };
+  });
+  const reachable = steps.filter((step) => /\bautovpn run\b/.test(step.body) || /retry-stage/.test(step.body));
+  assert.ok(reachable.length >= 2, `expected Measure and Publish, found ${reachable.length}`);
+  for (const step of reachable) {
+    assert.match(
+      step.body,
+      /VPN_AUTOMATION_SUBSCRIPTION_KEY:/,
+      `"${step.name}" can reach the obfuscate stage but does not set VPN_AUTOMATION_SUBSCRIPTION_KEY`
+    );
+  }
+});
