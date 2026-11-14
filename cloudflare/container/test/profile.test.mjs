@@ -39,9 +39,10 @@ test('every source can act on its runtime budget', () => {
   assert.equal(blocks.length, 4, `expected 4 sources, found ${blocks.length}`);
   for (const block of blocks) {
     const name = block.slice(0, block.indexOf(']'));
-    // `max_runtime_seconds` and `plateau_limit` are only consulted at or past
-    // `min_iterations`. A floor above the ceiling means the crawl runs until
-    // the platform kills it and nothing is published.
+    // `max_runtime_seconds` and the plateau stop are only consulted at or past
+    // `min_iterations` (legacy rounds) or `dry_laps` (lap mode). A floor above
+    // the ceiling means the crawl runs until the platform kills it and nothing
+    // is published.
     const floor = Number(/^min_iterations\s*=\s*(\d+)/m.exec(block)?.[1]);
     const ceiling = Number(/^max_iterations\s*=\s*(\d+)/m.exec(block)?.[1]);
     const budget = Number(/^max_runtime_seconds\s*=\s*(\d+)/m.exec(block)?.[1]);
@@ -49,6 +50,21 @@ test('every source can act on its runtime budget', () => {
     assert.ok(floor < ceiling, `${name}: min_iterations ${floor} >= max_iterations ${ceiling}`);
     assert.ok(floor > 0 && floor <= 200, `${name}: min_iterations ${floor} is not reachable in a nightly run`);
     assert.ok(budget > 0 && budget <= 1800, `${name}: max_runtime_seconds ${budget} does not bound the run`);
+
+    // Lap mode changes what "enough" means: one round is a full sweep of the
+    // area list, so a nightly run is bounded by laps and by dry laps, not by
+    // the legacy round count. Leaving these out silently runs the legacy
+    // policy, which measured 266 raw links against the VPS's 566 on the same
+    // subscription.
+    const laps = Number(/^max_laps\s*=\s*(\d+)/m.exec(block)?.[1]);
+    const dryLaps = Number(/^dry_laps\s*=\s*(\d+)/m.exec(block)?.[1]);
+    assert.ok(Number.isFinite(laps) && laps > 0, `${name}: no max_laps, so it runs the legacy round policy`);
+    assert.ok(Number.isFinite(dryLaps) && dryLaps > 0, `${name}: no dry_laps`);
+    assert.ok(dryLaps <= laps, `${name}: dry_laps ${dryLaps} > max_laps ${laps}`);
+    // A dry-lap count of 1 stops after the first empty sweep, which throws away
+    // the tail of the pool; the VPS uses 20 and that is what the numbers above
+    // are measured against.
+    assert.ok(dryLaps >= 10, `${name}: dry_laps ${dryLaps} stops too early to fill the pool`);
   }
 });
 
