@@ -343,7 +343,10 @@ function 解析静态出口清单(配置 = {}) {
 			const 解析结果 = typeof 原始JSON === 'string' ? JSON.parse(原始JSON) : 原始JSON;
 			for (const 条目 of Array.isArray(解析结果) ? 解析结果 : [解析结果]) 收录(条目, 'STATIC_EXIT_JSON');
 		} catch (错误) {
-			console.warn(`[静态出口] STATIC_EXIT_JSON 解析失败: ${错误.message}`);
+			// 同样不能把原始文本带进日志：STATIC_EXIT_JSON 里有出口账号密码。
+			// V8 的 JSON 报错只给位置，但这不是可以依赖的约定，所以只留位置。
+			const 位置 = /at position (\d+)/.exec(String(错误 && 错误.message));
+			console.warn(`[静态出口] STATIC_EXIT_JSON 解析失败${位置 ? `（位置 ${位置[1]}）` : ''}`);
 		}
 	}
 	const 原始地址 = 配置.STATIC_EXIT ?? 配置.静态出口;
