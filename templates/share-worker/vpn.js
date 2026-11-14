@@ -289,7 +289,12 @@ function 解析静态出口地址(原始值) {
 	}
 	if (!主机) return null;
 	const 默认端口 = 类型 === 'http' ? (协议 === 'https' ? 443 : 80) : 1080;
-	const 端口 = Number(String(端口文本).replace(/[^\d]/g, '')) || 默认端口;
+	// 区分「没写端口」和「写了但不是数字」：前者用协议默认值，后者是笔误，
+	// 静默改成默认端口会让人以为流量走了出口，实际连的是别的端口。
+	const 清洗端口 = String(端口文本).trim();
+	if (清洗端口 && !/^\d+$/.test(清洗端口)) return null;
+	const 端口 = 清洗端口 ? Number(清洗端口) : 默认端口;
+	if (!Number.isFinite(端口) || 端口 <= 0 || 端口 > 65535) return null;
 	const 出口 = { name: 规范化静态出口名(名称) || `${主机}:${端口}`, type: 类型, server: 主机, port: 端口 };
 	if (认证) {
 		const 冒号位置 = 认证.indexOf(':');
@@ -304,13 +309,19 @@ function 解析静态出口地址(原始值) {
 function 解析静态出口清单(配置 = {}) {
 	const 结果 = [];
 	const 已见 = new Set();
-	const 收录 = (条目) => {
+	const 收录 = (条目, 来源) => {
 		if (!条目 || typeof 条目 !== 'object') return;
 		const 名称 = 规范化静态出口名(条目.name);
 		const 端口 = Number(条目.port);
 		// mihomo rejects a proxy without a port, and one bad row would fail the
 		// whole subscription — drop it here instead.
-		if (!名称 || !条目.type || !条目.server || !Number.isFinite(端口) || 端口 <= 0 || 已见.has(名称)) return;
+		if (!名称 || !条目.type || !条目.server || !Number.isFinite(端口) || 端口 <= 0) return;
+		// 同名条目只能留一条（mihomo 会因重名拒掉整份配置），但静默丢弃会让人
+		// 以为两个出口都在，所以留一条的同时把后来的那条报出来。
+		if (已见.has(名称)) {
+			console.warn(`[静态出口] ${来源} 里的同名出口被忽略: ${名称}`);
+			return;
+		}
 		已见.add(名称);
 		结果.push({ ...条目, name: 名称, port: 端口 });
 	};
@@ -318,7 +329,7 @@ function 解析静态出口清单(配置 = {}) {
 	if (原始JSON) {
 		try {
 			const 解析结果 = typeof 原始JSON === 'string' ? JSON.parse(原始JSON) : 原始JSON;
-			for (const 条目 of Array.isArray(解析结果) ? 解析结果 : [解析结果]) 收录(条目);
+			for (const 条目 of Array.isArray(解析结果) ? 解析结果 : [解析结果]) 收录(条目, 'STATIC_EXIT_JSON');
 		} catch (错误) {
 			console.warn(`[静态出口] STATIC_EXIT_JSON 解析失败: ${错误.message}`);
 		}
@@ -327,7 +338,7 @@ function 解析静态出口清单(配置 = {}) {
 	if (原始地址) {
 		for (const 片段 of String(原始地址).split(/[\r\n,]+/)) {
 			const 条目 = 解析静态出口地址(片段);
-			if (条目) 收录(条目);
+			if (条目) 收录(条目, 'STATIC_EXIT');
 			else if (规范化静态出口名(片段)) console.warn(`[静态出口] 已忽略无法解析的地址: ${规范化静态出口名(片段)}`);
 		}
 	}
@@ -335,11 +346,52 @@ function 解析静态出口清单(配置 = {}) {
 }
 
 // YAML 顶层键判定：忽略行尾注释与引号键，否则 `"my:provider":`、`proxy-groups:  # x` 会被当成区块内容。
+//
+// 值可以是任何东西——空、标量、带空格的标量、内联映射/序列（`tun: {enable: true}`、
+// `secret: "abc def"`）。早期版本只认「空值或不含空格的值」，于是 `tun:` 这类顶层键
+// 不算边界，注入行会被插进它的中间，整份配置作废。判定标准改成：不缩进、非注释、
+// 冒号前是一个像样的键名，就算顶层键，值的形态不再参与判断。
 function 是顶层键(行) {
 	if (!行.trim() || /^\s/.test(行) || /^\s*#/.test(行)) return false;
-	const 去注释 = 行.replace(/\s+#.*$/, '').replace(/\s+$/, '');
-	return /^(?:"(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^\s#][^:{},]*?):\s*(\[\s*\]|\{\s*\}|[^\s#]*)$/.test(去注释)
-		|| /^(?:"(?:[^"\\]|\\.)*"|'(?:[^']|'')*'|[^\s#][^:{},]*?):\s*$/.test(去注释);
+	// 顶格的 `- ` 是无缩进块序列的条目，不是键；否则 PyYAML 风格的上游会把
+	// proxies 的每个节点都当成新区块边界，区块直接塌掉。
+	if (/^-(\s|$)/.test(行)) return false;
+	// 冒号必须出现在引号之外，否则 `"a: b": v` 这种引号键会被误切。
+	const 冒号 = 找键分隔冒号(行);
+	if (冒号 < 0) return false;
+	const 键 = 行.slice(0, 冒号).trim();
+	if (!键) return false;
+	if (键.startsWith('"') || 键.startsWith("'")) return 是闭合引号键(键);
+	// 裸键里可以有空格（`Proxy Group:`、`external-ui-name: ...` 都是合法顶层键），
+	// 但不能有 `{`、`}`、`,`、`#`，也不能以 `-`/`?` 开头——那些是流式片段或序列项。
+	return !/[#{},]/.test(键) && !/^[-?]/.test(键) && !/\s$/.test(键);
+}
+
+// 找到「键: 值」里的那个冒号：跳过引号内容，只认第一个引号外的冒号。
+function 找键分隔冒号(文本) {
+	let 引号 = '';
+	for (let 索引 = 0; 索引 < 文本.length; 索引 += 1) {
+		const 字符 = 文本[索引];
+		if (引号) {
+			if (字符 === '\\' && 引号 === '"') { 索引 += 1; continue; }
+			if (字符 === 引号) 引号 = '';
+			continue;
+		}
+		if (字符 === '"' || 字符 === "'") {
+			// 只有出现在行首（忽略空格）的引号才是键的引号。
+			if (文本.slice(0, 索引).trim()) return -1;
+			引号 = 字符;
+			continue;
+		}
+		if (字符 === ':') return 索引;
+	}
+	return -1;
+}
+
+function 是闭合引号键(键) {
+	const 引号 = 键[0];
+	if (键.length < 2 || !键.endsWith(引号) || 键[键.length - 1] === '\\') return false;
+	return 引号 === "'" || 键.length > 1;
 }
 
 // 顶层键名（去掉引号），用于把区块头与其它键区分开。
@@ -352,8 +404,21 @@ function 顶层键名(行) {
 	return 键;
 }
 
+// Clash 的老写法里区块头是大写的（`Proxy:` / `Proxy Group:`），pruneEmptyClashGroups
+// 早就同时认这两种；注入这边不认，就会把 `Proxy Group:` 当成普通顶层键，
+// 把出口节点追加进去，整段分组结构被撑坏。
+const 区块别名 = {
+	'proxies': ['proxies', 'Proxy'],
+	'proxy-groups': ['proxy-groups', 'Proxy Group']
+};
+
+function 是区块键(键, 区块名) {
+	return (区块别名[区块名] ?? [区块名]).includes(键);
+}
+
 function 读取Clash区块(行列表, 区块名) {
-	const 起始 = 行列表.findIndex(行 => 顶层键名(行) === 区块名);
+	const 名字集 = 区块别名[区块名] ?? [区块名];
+	const 起始 = 行列表.findIndex(行 => 名字集.includes(顶层键名(行)));
 	if (起始 < 0) return null;
 	let 结束 = 行列表.length;
 	for (let 索引 = 起始 + 1; 索引 < 行列表.length; 索引 += 1) {
@@ -366,29 +431,30 @@ function 读取Clash区块(行列表, 区块名) {
 
 // 流式区块（`proxies: [{...}]`）也能改成逐行注入，返回改写后的行列表；无法改写时返回 null。
 function 展开流式区块(行列表, 区块名) {
-	const 起始 = 行列表.findIndex(行 => new RegExp(`^${区块名}:\\s*\\[`).test(行));
+	const 名字集 = 区块别名[区块名] ?? [区块名];
+	// 必须连冒号一起比：只比 `^Proxy:` 会把 `Proxy Group:` 当成 proxies 段。
+	const 起始 = 行列表.findIndex(行 => 名字集.some(名 => new RegExp(`^${名}:\\s*\\[`).test(行)));
 	if (起始 < 0) return null;
-	const 行 = 行列表[起始];
-	const 左括号 = 行.indexOf('[');
-	let 右括号 = 行.lastIndexOf(']');
-	let 结束行 = 起始;
-	if (右括号 < 左括号) {
-		// 跨行流式区块：一直找到配平为止
-		let 深度 = 0;
-		for (let 索引 = 起始; 索引 < 行列表.length; 索引 += 1) {
-			for (const 字符 of 行列表[索引]) {
-				if (字符 === '[') 深度 += 1;
-				else if (字符 === ']') 深度 -= 1;
-			}
-			if (深度 <= 0) { 结束行 = 索引; break; }
-		}
-		右括号 = 行列表[结束行].lastIndexOf(']');
-		if (右括号 < 0) return null;
-	}
-	const 原文 = 行列表.slice(起始, 结束行 + 1).join('\n');
-	const 左 = 原文.indexOf('[');
-	const 右 = 原文.lastIndexOf(']');
-	const 内部 = 原文.slice(左 + 1, 右);
+	// 展开时沿用上游写的区块名（`Proxy:` 展开后还是 `Proxy:`），不擅自改成小写。
+	const 原名 = /^([^:]+):/.exec(行列表[起始])[1];
+	// 括号扫描必须跳过引号内容与注释：节点名里的 `[01]`、行尾注释里的 `]`
+	// 都会让 lastIndexOf 找到错误的收尾括号，展开后是半截节点。
+	const 跨行 = 找流式区块结尾(行列表, 起始);
+	if (!跨行) return null;
+	const { 结束行, 右括号位置 } = 跨行;
+	const 起始行 = 行列表[起始];
+	const 起始左括号 = 起始行.indexOf('[');
+	// 单行流式区块：内部就是两个括号之间。跨行：首行左括号之后 + 中间整行 + 收尾行
+	// 右括号之前，用换行拼回去，分隔符扫描才认得清边界。
+	const 中间行 = 行列表.slice(起始 + 1, 结束行);
+	const 收尾行文本 = 行列表[结束行];
+	const 内部 = 结束行 === 起始
+		? 起始行.slice(起始左括号 + 1, 右括号位置)
+		: [
+			起始行.slice(起始左括号 + 1),
+			...中间行,
+			收尾行文本.slice(0, 右括号位置)
+		].join('\n');
 	const 条目 = [];
 	let 深度 = 0;
 	let 引号 = '';
@@ -411,7 +477,34 @@ function 展开流式区块(行列表, 区块名) {
 		.filter(Boolean)
 		.map(项 => `  - ${项}`);
 	if (展开.length === 0) return null;
-	return [...行列表.slice(0, 起始), `${区块名}:`, ...展开, ...行列表.slice(结束行 + 1)];
+	return [...行列表.slice(0, 起始), `${原名}:`, ...展开, ...行列表.slice(结束行 + 1)];
+}
+
+// 从 `区块名: [` 那一行开始，按 YAML 的引号/注释规则找出配平的 `]`。
+// 返回它所在行与列；括号不配平（数据损坏）时返回 null，让调用方放弃改写。
+function 找流式区块结尾(行列表, 起始行) {
+	let 深度 = 0;
+	let 引号 = '';
+	for (let 索引 = 起始行; 索引 < 行列表.length; 索引 += 1) {
+		const 行 = 行列表[索引];
+		for (let 列 = 0; 列 < 行.length; 列 += 1) {
+			const 字符 = 行[列];
+			if (引号) {
+				if (字符 === '\\' && 引号 === '"') { 列 += 1; continue; }
+				if (字符 === 引号) 引号 = '';
+				continue;
+			}
+			// 行尾注释：`#` 前面必须是行首或空白，才算注释开始。
+			if (字符 === '#' && (列 === 0 || /\s/.test(行[列 - 1]))) break;
+			if (字符 === '"' || 字符 === "'") { 引号 = 字符; continue; }
+			if (字符 === '[') 深度 += 1;
+			else if (字符 === ']') {
+				深度 -= 1;
+				if (深度 === 0) return { 结束行: 索引, 右括号位置: 列 };
+			}
+		}
+	}
+	return null;
 }
 
 function 收集区块内名称(行列表, 区块) {
@@ -448,10 +541,19 @@ function 读取区块条目缩进(行列表, 区块, 样例模式) {
 		const 行 = 行列表[索引];
 		if (样例模式.test(行)) {
 			const 匹配 = /^(\s*)/.exec(行);
+			// 命中却取到空串是合法的：无缩进块序列的条目就与键同列。
 			return 匹配 ? 匹配[1] : '  ';
 		}
 	}
 	return '  ';
+}
+
+// 分组内部的列表成员缩进。无缩进块序列里 `proxies:` 写在 `- name:` 之下两格，
+// 成员却与 `proxies:` 同列；不能一律按「成员缩进 = 键缩进 + 2」推算，否则插进去的
+// 成员会多缩一层，YAML 把它读成上一个标量的续行，分组里就多出一个假节点名。
+function 分区成员缩进(列表键行, 默认) {
+	const 匹配 = /^(\s*)proxies:/.exec(列表键行 ?? '');
+	return 匹配 ? 匹配[1] : 默认;
 }
 
 // 把静态出口分组追加到每个 select 分组的末尾，让任意分流入口都能选到固定出口。
@@ -485,15 +587,23 @@ function 挂载静态出口分组(行列表, 分组区块, 分组名, 入口组�
 		if (!当前) continue;
 		const 类型匹配 = /^\s*type:\s*(\S+)/.exec(行);
 		if (类型匹配) { 当前.类型 = 类型匹配[1].trim(); continue; }
-		const 列表匹配 = /^(\s*)proxies:\s*$/.exec(行);
+		// `proxies:` 后面允许跟注释——上游生成器常写 `proxies:  # members`。
+		const 列表匹配 = /^(\s*)proxies:\s*(?:#.*)?$/.exec(行);
 		if (列表匹配) {
-			当前.列表缩进 = `${列表匹配[1]}  `;
+			当前.列表缩进 = 列表匹配[1];
 			当前.列表末行 = 索引;
 			continue;
 		}
 		// 流式写法的分组（`proxies: ["A"]`）没有可插行的块，只能整行改写。
 		if (当前.列表末行 < 0 && /^\s*proxies:\s*\[/.test(行)) { 当前.流式行 = 索引; continue; }
-		if (当前.列表末行 >= 0 && /^\s*-\s+/.test(行)) 当前.列表末行 = 索引;
+		// 成员行：块式写法的成员缩进由它自己决定，这样无缩进块序列也能照原样续写。
+		if (当前.列表末行 >= 0) {
+			const 成员匹配 = /^(\s*)-\s+/.exec(行);
+			if (成员匹配) {
+				当前.列表缩进 = 成员匹配[1];
+				当前.列表末行 = 索引;
+			}
+		}
 	}
 	if (当前) { 当前.结束 = 分组区块.结束; 段落.push(当前); }
 
@@ -528,7 +638,9 @@ function 应用静态出口(clash_yaml, 配置 = {}) {
 	if (typeof clash_yaml !== 'string' || !clash_yaml) return clash_yaml;
 
 	// 注入的行一律用 LF；上游若来自 CRLF 源，混排会让后面的行尾判断分裂。
-	let 行列表 = clash_yaml.replace(/\r\n/g, '\n').split('\n');
+	// 注入的行一律用 LF；上游若来自 CRLF 源，混排会让后面的行尾判断分裂。
+	// 开头的 BOM 也要去掉：它会让首行的 `proxies:` 认不出来，整段注入被跳过。
+	let 行列表 = clash_yaml.replace(/^﻿/, '').replace(/\r\n/g, '\n').split('\n');
 	// 流式写法（`proxies: [{...}]`）先展开成逐行，否则整段注入会被静默跳过。
 	const 展开代理 = 展开流式区块(行列表, 'proxies');
 	if (展开代理) 行列表 = 展开代理;
@@ -643,8 +755,13 @@ function 应用静态出口(clash_yaml, 配置 = {}) {
 	// `proxy-groups: []` / `proxy-groups: {}` 是内联空值：`读取Clash区块` 的键名判定
 	// 只认冒号后为空的行，所以这里单独找一次。若不替换，追加会留下第二个
 	// proxy-groups 键，YAML 解析报 duplicated mapping key，整份订阅作废。
-	const 内联空段 = 代理后行.findIndex(行 => /^proxy-groups:\s*(\[\s*\]|\{\s*\})\s*(?:#.*)?$/.test(行));
+	const 内联空段 = 代理后行.findIndex(行 => /^(proxy-groups|Proxy Group):\s*(\[\s*\]|\{\s*\})\s*(?:#.*)?$/.test(行));
 	const 分组区块 = 内联空段 >= 0 ? null : 读取Clash区块(代理后行, 'proxy-groups');
+	// 上游写的是哪个键名，新建时就沿用哪个：大写写法（`Proxy Group:`）与小写
+	// 混在一份配置里，mihomo 会把它们当成两个独立的段，分组结构就散了。
+	const 分组键名 = 分组区块
+		? (/^([^:]+):/.exec(代理后行[分组区块.起始])?.[1] ?? 'proxy-groups')
+		: (内联空段 >= 0 ? (/^([^:]+):/.exec(代理后行[内联空段])?.[1] ?? 'proxy-groups') : 'proxy-groups');
 	// `proxy-groups:` 后面只有空行与注释，同样是"有区块头但没有条目"。
 	const 分组为空 = 分组区块 && 代理后行
 		.slice(分组区块.起始 + 1, 分组区块.结束)
@@ -657,7 +774,7 @@ function 应用静态出口(clash_yaml, 配置 = {}) {
 			: 分组区块
 				? [...代理后行.slice(0, 分组区块.起始), ...代理后行.slice(分组区块.结束)]
 				: 代理后行;
-		return [...去空段, '', 'proxy-groups:', ...出口分组文本, ...入口分组文本].join('\n');
+		return [...去空段, '', `${分组键名}:`, ...出口分组文本, ...入口分组文本].join('\n');
 	}
 	行列表 = [
 		...代理后行.slice(0, 分组区块.结束),

@@ -407,6 +407,50 @@ rules:
     emptyGroups: flowBase
       .replace('proxy-groups:\n  - name: "G1"\n    type: select\n    proxies: ["A"]', 'proxy-groups: []')
       .replace('MATCH,G1', 'MATCH,DIRECT'),
+    // A top-level key whose value is an inline mapping or a spaced scalar sits
+    // between proxies and proxy-groups in almost every real Clash config. The
+    // rewriter used to walk straight through it and splice the exit nodes into
+    // its middle.
+    inlineMappingKey: flowBase.replace('proxy-groups:', 'tun: {enable: false, stack: gvisor}\nproxy-groups:'),
+    spacedScalarKey: flowBase.replace('proxy-groups:', 'external-ui-name: My Dashboard\nproxy-groups:'),
+    // A `]` inside a node name or inside a trailing comment is not the end of
+    // the flow list; the bracket scan has to honour quotes and comments.
+    bracketInFlowName: `mixed-port: 1
+proxies: [{name: "HK [01] 1x", type: vmess, server: 1.2.3.4, port: 443, uuid: 11111111-2222-4333-8444-555555555555, alterId: 0, cipher: auto}]
+proxy-groups:
+  - name: "G1"
+    type: select
+    proxies: ["HK [01] 1x"]
+rules:
+  - MATCH,G1
+`,
+    trailingCommentBracket: `mixed-port: 1
+proxies: [{name: "A", type: vmess, server: 1.2.3.4, port: 443, uuid: 11111111-2222-4333-8444-555555555555, alterId: 0, cipher: auto}] # [pool]
+proxy-groups:
+  - name: "G1"
+    type: select
+    proxies:
+      - A
+rules:
+  - MATCH,G1
+`,
+    // A comment after the `proxies:` key of a group used to hide the member
+    // list, so the exit group was injected but never reachable from that group.
+    groupListComment: flowBase.replace('    proxies: ["A"]', '    proxies:  # members\n      - A'),
+    // A UTF-8 BOM makes the first line unrecognisable unless it is stripped.
+    withBom: `﻿${flowBase}`,
+    // PyYAML's default output style: sequence items sit in the key's column.
+    indentless: `mixed-port: 1
+proxies:
+- {name: "A", type: vmess, server: 1.2.3.4, port: 443, uuid: 11111111-2222-4333-8444-555555555555, alterId: 0, cipher: auto}
+proxy-groups:
+- name: "G1"
+  type: select
+  proxies:
+  - A
+rules:
+- MATCH,G1
+`,
     noGroups: `mixed-port: 1
 proxies:
   - {name: "A", type: vmess, server: 1.2.3.4, port: 443, uuid: 11111111-2222-4333-8444-555555555555, alterId: 0, cipher: auto}
