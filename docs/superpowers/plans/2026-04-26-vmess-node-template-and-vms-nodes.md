@@ -227,9 +227,9 @@ def test_build_secret_url_uses_pages_project_url_and_query() -> None:
         project_name="vms-nodes",
         subscription_url="https://swimmingliu.online/179ba8dd-3854-4747-b853-fc1868ef3937",
         pages_project_url="https://vms-nodes.pages.dev",
-        secret_query="serect_key=swimmingliu",
+        secret_query="{{SUBSCRIPTION_KEY}}",
     )
-    assert build_secret_url(deploy) == "https://vms-nodes.pages.dev/?serect_key=swimmingliu"
+    assert build_secret_url(deploy) == "https://vms-nodes.pages.dev/?{{SUBSCRIPTION_KEY}}"
 ```
 
 - [ ] **Step 2: Run red tests**

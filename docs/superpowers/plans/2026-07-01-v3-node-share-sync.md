@@ -33,7 +33,7 @@
 Add a test that deploys the primary project successfully, injects a fake Cloudflare deploy client, and asserts:
 - `share_project_sync_ok === true`
 - `share_project_name` remains requested name
-- both preview and production `SUB` values are rewritten to `https://sub-nodes.pages.dev/?serect_key=swimmingliu`
+- both preview and production `SUB` values are rewritten to `https://sub-nodes.pages.dev/?{{SUBSCRIPTION_KEY}}`
 - a second Wrangler deploy runs against the share bundle and requested share project.
 
 - [ ] **Step 2: Add blocked update fallback test**

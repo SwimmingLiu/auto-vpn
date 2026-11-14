@@ -1,21 +1,17 @@
 # Cloudflare deployment profile for AutoVPN. Rationale: cloudflare/README.md.
 #
-# Deliberate differences from the VPS profile:
-#   1. `project_name` is this deployment's own project, never the VPS's.
-#   2. `min_final_links` agrees with the Durable Object gate.
-#   3. Credentials arrive as Worker secrets, never in this file.
+# Differences from the VPS profile: `project_name` is this deployment's own (never
+# the VPS's), `min_final_links` agrees with the Durable Object gate, and every
+# credential arrives as a secret, never in this file.
 #
 # Sources are in LAP mode: `max_laps` switches the unit to "one lap of every
-# area" and the round-policy keys stop being read. Only these decide runtime:
-#   min_laps  laps that always run; `max_runtime_seconds` is ignored until they
-#             are done. Omitting it let 900 s cut every source at 3-6 laps.
-#   max_laps  hard ceiling.
-#   dry_laps  consecutive laps with no new node identity => early stop.
-#   max_runtime_seconds  budget, enforced only past `min_laps`.
+# area", and only `min_laps`/`max_laps`/`dry_laps`/`max_runtime_seconds` then
+# decide runtime. `min_laps` is the floor the budget cannot cut; omitting it let
+# 900 s stop every source at 3-6 laps. README § speed test has the numbers.
 #
-# `credential` sources need only a location and lease an account from the pool
-# at extract time: a hardcoded evmess URL would bypass the pool and go stale
-# when the vendor rotates a domain, weekly.
+# `credential` sources need only a location and lease an account from the pool at
+# extract time: a hardcoded evmess URL would bypass the pool and go stale when
+# the vendor rotates a domain, weekly.
 
 [sources.leiting]
 mode = "credential"
@@ -108,14 +104,17 @@ proxy_mode = "proxy"
 proxy_url = "http://127.0.0.1:7897"
 
 [deploy]
-# This deployment's own project, never the VPS's (`sub-nodes-04`): the deploy
-# stage replaces the whole production deployment of the named project.
+# This deployment's own project, never the VPS's (`sub-nodes-04`).
 project_name = "sub-nodes-cf"
-subscription_url = "https://sub-nodes-cf.pages.dev/?serect_key=swimmingliu"
-verify_subscription_url = "https://sub-nodes-cf.pages.dev/?serect_key=swimmingliu"
+# No key here: the profile is committed and also uploaded as a Worker secret, so
+# a literal publishes the subscription. The deploy composes `<url>/?<secret_query>`.
+subscription_url = "https://sub-nodes-cf.pages.dev"
+verify_subscription_url = "https://sub-nodes-cf.pages.dev"
 pages_project_url = "https://sub-nodes-cf.pages.dev"
 custom_domain = ""
-secret_query = "serect_key=swimmingliu"
+# Sentinel: resolves from VPN_AUTOMATION_SUBSCRIPTION_KEY at build time. A
+# literal works; sentinel-without-variable throws, not a `{{...}}` key.
+secret_query = "{{SUBSCRIPTION_KEY}}"
 cloudflare_auth_mode = "api_token"
 cloudflare_api_token = ""
 cloudflare_global_key = ""

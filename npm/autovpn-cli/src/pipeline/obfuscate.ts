@@ -116,6 +116,19 @@ function formatComment(template: string, environmentName: string): string {
     .replaceAll('\u0000CLOSE_BRACE\u0000', '}');
 }
 
+/**
+ * The template's stand-in for the subscription key.
+ *
+ * The template has to be committed, so it cannot hold the key; and the key is
+ * resolved at build time from the environment, so the template cannot hold a
+ * literal that matches it either. The template therefore holds this sentinel,
+ * and the stage replaces the sentinel shape with the resolved value — the same
+ * rewrite it already performs on a literal comparison, just keyed on the
+ * sentinel instead of on the value.
+ */
+export const SECRET_VALUE_SENTINEL = '__SUBSCRIPTION_KEY__';
+export const SECRET_KEY_SENTINEL = '__SUBSCRIPTION_PARAM__';
+
 function buildTransformedSource(renderedSource: string, config: WorkerBuildConfigResolved, secretKey: string, secretValue: string): string {
   let source = renderedSource;
   if (config.enable_identifier_randomization) {
@@ -129,6 +142,21 @@ function buildTransformedSource(renderedSource: string, config: WorkerBuildConfi
     for (const [oldName, newName] of Object.entries(replacements)) {
       source = source.replace(new RegExp(`\\b${escapeRegExp(oldName)}\\b`, 'g'), newName);
     }
+  }
+
+  // Sentinel first: a template written for this stage has no knowledge of the
+  // real key or its parameter name.
+  if (source.includes(SECRET_KEY_SENTINEL) || source.includes(SECRET_VALUE_SENTINEL)) {
+    source = source
+      .split(`searchParams.get("${SECRET_KEY_SENTINEL}")`).join(`searchParams.get(${fragmentLiteral(secretKey, config.enable_keyword_fragmentation)})`)
+      .split(`=== "${SECRET_VALUE_SENTINEL}"`).join(`=== ${fragmentLiteral(secretValue, config.enable_keyword_fragmentation)}`);
+    if (source.includes(SECRET_KEY_SENTINEL) || source.includes(SECRET_VALUE_SENTINEL)) {
+      throw new Error(
+        'the template carries a subscription-key sentinel in a shape this stage cannot rewrite; ' +
+          `it must appear exactly as searchParams.get("${SECRET_KEY_SENTINEL}") and === "${SECRET_VALUE_SENTINEL}"`
+      );
+    }
+    return `// ${formatComment(config.comment_template, config.environment_name)}\n${source}`;
   }
 
   source = source.replace(

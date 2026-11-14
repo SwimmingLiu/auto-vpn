@@ -196,6 +196,14 @@ jobs:
           # deploy would fail at `readProfile` after the whole measurement.
           VPN_AUTOMATION_RUNTIME_ROOT: ${{ runner.temp }}/autovpn
           VPN_AUTOMATION_PROFILE_PATH: ${{ github.workspace }}/cloudflare/container/profile.cloudflare.toml
+          # The profile defers its key to this variable rather than committing
+          # it. `resolveSecretQuery` throws when the sentinel is set and this is
+          # empty, so a missing secret fails the publish instead of serving a
+          # subscription keyed by the sentinel.
+          VPN_AUTOMATION_SUBSCRIPTION_KEY: ${{ secrets.AUTOVPN_SUBSCRIPTION_KEY }}
+          # The share worker's ADMIN password, same reasoning: no hardcoded
+          # fallback remains in the CLI.
+          VPN_AUTOMATION_PAGES_SECRET_ADMIN: ${{ secrets.AUTOVPN_PAGES_ADMIN }}
         run: |
           ARTIFACT="$(ls -dt "$RUNNER_TEMP"/autovpn/artifacts/* | head -1)"
           echo "ARTIFACT=$ARTIFACT" >> "$GITHUB_ENV"
@@ -229,12 +237,24 @@ jobs:
       # Decode the body and require this run's own links to be in it.
       - name: Verify what is actually served
         if: ${{ inputs.dry_run != true && steps.measure.outputs.held != 'true' }}
+        env:
+          # The profile holds the sentinel, not the key; the value the deploy
+          # actually used comes from the same secret the publish step read.
+          VPN_AUTOMATION_SUBSCRIPTION_KEY: ${{ secrets.AUTOVPN_SUBSCRIPTION_KEY }}
         run: |
-          # The key is taken from the profile the deploy used, not from a
-          # separate variable that can drift away from it.
-          SECRET_QUERY="$(sed -nE 's/^[[:space:]]*secret_query[[:space:]]*=[[:space:]]*"([^"]*)".*/\1/p' \
+          PROFILE_QUERY="$(sed -nE 's/^[[:space:]]*secret_query[[:space:]]*=[[:space:]]*"([^"]*)".*/\1/p' \
             cloudflare/container/profile.cloudflare.toml | head -1)"
-          if [ -z "$SECRET_QUERY" ]; then echo "the profile has no secret_query" >&2; exit 1; fi
+          # Mirror `resolveSecretQuery`: the environment wins when the profile
+          # defers, and the sentinel must never be used as a key.
+          if [ "$PROFILE_QUERY" = '{{SUBSCRIPTION_KEY}}' ] || [ -z "$PROFILE_QUERY" ]; then
+            SECRET_QUERY="$VPN_AUTOMATION_SUBSCRIPTION_KEY"
+          else
+            SECRET_QUERY="$PROFILE_QUERY"
+          fi
+          if [ -z "$SECRET_QUERY" ] || [ "$SECRET_QUERY" = '{{SUBSCRIPTION_KEY}}' ]; then
+            echo "no subscription key: set the AUTOVPN_SUBSCRIPTION_KEY secret" >&2
+            exit 1
+          fi
           if [ -z "$DEPLOY_URL" ]; then echo "the deploy reported no pages_project_url" >&2; exit 1; fi
           node cloudflare/scripts/verify-published.mjs "${DEPLOY_URL}/?${SECRET_QUERY}" "$ARTIFACT"
 

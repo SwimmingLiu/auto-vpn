@@ -24,7 +24,7 @@ import { checkLinkAvailabilityBatchWithBackend, AvailabilityResultDict } from '.
 import { decorateLinkWithCountry, postprocessLinksWithBackend } from './postprocess.js';
 import { renderMainDataWithBackend } from './render.js';
 import { buildWorkerArtifactsWithBackend, WorkerBuildArtifacts } from './obfuscate.js';
-import { deployPagesWithBackend, isVerifySuccess, verifyDeploymentWithBackend } from './deploy.js';
+import { deployPagesWithBackend, isVerifySuccess, resolveSecretQuery, verifyDeploymentWithBackend } from './deploy.js';
 import { safeDeployment } from '../runtime/redaction.js';
 import { RunStore, readLatestStageStatuses } from './run-store.js';
 import { AsyncPermitPool, BoundedWorkerPool } from './streaming-coordinator.js';
@@ -929,7 +929,7 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
     await setStage('render', 'success');
 
     await setStage('obfuscate', 'running');
-    const secretQuery = String(profile.deploy?.secret_query ?? '');
+    const secretQuery = resolveSecretQuery(profile.deploy ?? {}, env);
     const workerArtifacts = context.stages?.obfuscate
       ? await context.stages.obfuscate({ transformedSource: rendered.rendered_source, config: profile.worker_build ?? {}, secretQuery })
       : await buildWorkerArtifactsWithBackend({
@@ -1186,7 +1186,7 @@ export async function retryNodePipelineStage(options: NodeRetryStageOptions, con
       }
       await setStage('obfuscate', 'running');
       const renderedSource = await readFile(renderedPath, 'utf8');
-      const secretQuery = String(profile.deploy?.secret_query ?? '');
+      const secretQuery = resolveSecretQuery(profile.deploy ?? {}, env);
       const workerArtifacts = context.stages?.obfuscate
         ? await context.stages.obfuscate({ transformedSource: renderedSource, config: profile.worker_build ?? {}, secretQuery })
         : await buildWorkerArtifactsWithBackend({
@@ -1706,7 +1706,7 @@ export async function resumeNodePipeline(options: NodeResumeOptions, context: Ru
     await setStage('render', 'success');
 
     await setStage('obfuscate', 'running');
-    const secretQuery = String(profile.deploy?.secret_query ?? '');
+    const secretQuery = resolveSecretQuery(profile.deploy ?? {}, env);
     const workerArtifacts = context.stages?.obfuscate
       ? await context.stages.obfuscate({ transformedSource: rendered.rendered_source, config: profile.worker_build ?? {}, secretQuery })
       : await buildWorkerArtifactsWithBackend({
