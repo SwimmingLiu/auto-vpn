@@ -42,13 +42,29 @@ whatever local proxy the operator runs. Here the container's `EgressSupervisor`
 builds one from the subscription on every run:
 
 1. fetch the published subscription, decode the base64 payload into vmess links;
-2. start mihomo with every candidate in one `fallback` group;
+2. start mihomo with every candidate, in a group with **its own health check
+   off** (see below);
 3. health-check each candidate against a real vendor host (`/proxies/<name>/delay`);
-4. restart with only the survivors, fastest first.
+4. restart with only the survivors, fastest first, in a `fallback` group.
 
-The group is `fallback`, deliberately not `url-test`: `url-test` re-ranks on
-latency every interval, which would change the exit IP mid-crawl. That is the
+The final group is `fallback`, deliberately not `url-test`: `url-test` re-ranks
+on latency every interval, which would change the exit IP mid-crawl. That is the
 single most suspicious thing an account can do in front of a vendor.
+
+Step 2's group has no `url`/`interval`/`lazy` because of a measured trap worth
+keeping: with `lazy: false`, mihomo probes every member the moment the config
+loads, and the supervisor then probes the same nodes immediately after. Two
+sweeps landing together read as a burst and get refused —
+
+| probing- phase group | result |
+|---|---|
+| `fallback` + `lazy: false` | **0/37 healthy**, 15 s (all failed fast) |
+| `select`, no health check | **36/37 healthy**, 23 s |
+
+Same subscription, same image, same probe concurrency. When this happened the
+crawl silently degraded to `direct` and left from the platform's own address,
+which is exactly what this deployment exists to avoid — so the regression is
+covered by a test rather than a comment (`container/test/egress.test.mjs`).
 
 If no node survives, the supervisor degrades to `direct` **and says so** —
 `/egress/status`, the `egress_ready` event and the run row all record the mode,
@@ -284,25 +300,23 @@ A run moves through `measuring → gating → deploying → verifying → done`.
 gate mirrors `daily-run.sh`: publish only when `final_links > min_final_nodes`,
 so a thin sweep never replaces a working subscription.
 
-### Before the first real run: point at a scratch project
+### The deploy target is this deployment's own project
 
-`profile.cloudflare.toml` names a Pages project, and **the deploy stage writes
-to whatever project that is**. Until the Cloudflare deployment has been proven
-against your account, use a throwaway project so a bad artifact cannot replace
-the subscription people are already using:
-
-```toml
-[deploy]
-project_name = "autovpn-cf-deploytest"
-```
-
-Then watch `https://autovpn-cf-deploytest.pages.dev/?serect_key=...` for one
-run. Only after that is green, change `project_name` to the project that should
-serve the subscription.
+`profile.cloudflare.toml` names `sub-nodes-cf`, and **the deploy stage writes to
+whatever project that is**. It is a separate project from the VPS's
+`sub-nodes-04` on purpose: the two installations serve two subscriptions, and
+neither can replace the other's artifact.
 
 `wrangler pages deploy` replaces the whole production deployment of the named
-project. There is no per-branch isolation for a Direct Upload project and no
-dry run, so the project name in the profile **is** the blast radius.
+project. There is no per-branch isolation for a Direct Upload project and no dry
+run, so the project name in the profile **is** the blast radius. `deploy.sh`
+refuses the two names that belong to the VPS (`sub-nodes-04`, the retired
+`sub-links-auto`), and `container/test/profile.test.mjs` asserts the same pair,
+so a profile edit cannot quietly merge the two into one blast radius.
+
+To try a change without touching the live subscription, point `project_name` at
+a throwaway project for that run. The publish workflow's verify step reads the
+URL back from the deploy, so a scratch run is still verified honestly.
 
 If a run does publish something wrong, roll back to the previous deployment —
 this restores the exact bundle that was serving before:
