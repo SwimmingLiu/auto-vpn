@@ -140,7 +140,7 @@ const MODE = 'chain';  // 'chain' | 'all' | 'direct'
 
    输出里只有 `✓ 🇭🇰 香港静态IP  socks5://***@203.0.113.7:1080` 这种脱敏行，带不出用户名和密码；解析失败时只报行号，不回声那一行的内容。
 
-3. 写进 Verge。脚本会自己找到 `profiles/` 下那份扩展脚本（按文件头的标记认，找到多份会要求用 `--out` 指定），先备份成 `.bak`，写完后把权限设成 600，再让 Verge 重新激活一次订阅：
+3. 写进 Verge。脚本会自己找到 `profiles/` 下那份扩展脚本（按文件头的标记认，找到多份会要求用 `--out` 指定），只替换 `STATIC_EXITS` 这一段——你在 Verge 里调过的 `MODE`、`RULES_TO_EXIT` 原样保留——然后备份成 `.bak`、写入、把权限设成 600。之后让 Verge 重新激活一次订阅：
 
    ```bash
    npm --prefix npm/autovpn-cli run verge:exit

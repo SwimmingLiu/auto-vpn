@@ -5,8 +5,11 @@
 // 必须以字面量的形式出现在 `profiles/<uid>.js` 里。这个脚本负责那一步搬运：
 //
 //   你写 → ~/.auto-vpn/verge-exit.txt   （600 权限，一行一个 URI）
-//   它读 → docs/clash-verge-extension.js（仓库里的模板，只有占位地址）
-//   它写 → ~/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev/profiles/<uid>.js
+//   它改 → ~/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev/profiles/<uid>.js
+//          只替换 `const STATIC_EXITS = [ … ];` 这一段
+//
+// 改的是已经装好的脚本，不是拿仓库模板整个覆盖过去：`MODE`、`RULES_TO_EXIT`
+// 这些你在 Verge 里调过的值必须留着。
 //
 // 全程不打印用户名和密码，只打印脱敏后的 `类型://***@host:port`。仓库里的模板
 // 保持占位值不变，所以凭证不会进入 git，也不会进入任何对话记录。
@@ -23,7 +26,7 @@
 
 import { readFileSync, writeFileSync, copyFileSync, existsSync, chmodSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
@@ -177,7 +180,7 @@ const 配置块正则 = /^const STATIC_EXITS = \[[\s\S]*?^\];$/m;
 
 export function 替换配置块(模板文本, 新块) {
   if (!配置块正则.test(模板文本)) {
-    throw new Error('模板里找不到 `const STATIC_EXITS = [` … `];` 这一段');
+    throw new Error('脚本里找不到 `const STATIC_EXITS = [` … `];` 这一段（旧版扩展脚本？把模板重新贴一次再跑）');
   }
   return 模板文本.replace(配置块正则, () => 新块);
 }
@@ -248,8 +251,6 @@ function 主函数(参数) {
   const 检查 = 参数.includes('--check');
   const 测试 = 参数.includes('--test');
 
-  const 仓库根 = resolve(import.meta.dirname, '../../..');
-  const 模板路径 = resolve(仓库根, 'docs/clash-verge-extension.js');
   const 来源路径 = 取值('--from', join(homedir(), '.auto-vpn/verge-exit.txt'));
 
   if (!existsSync(来源路径)) {
@@ -266,10 +267,9 @@ function 主函数(参数) {
   console.log(`出口文件：${来源路径}`);
   for (const 出口 of 出口列表) console.log(`  ✓ ${出口.name}  ${脱敏(出口)}`);
 
-  const 模板 = readFileSync(模板路径, 'utf8');
-  const 新脚本 = 替换配置块(模板, 生成配置块(出口列表));
+  const 配置块 = 生成配置块(出口列表);
   // 编译但不执行：语法错误在这里就拦住，不会等到 Verge 里静默失败。
-  new Function(新脚本);
+  new Function(配置块);
 
   if (测试) {
     const 结果 = 测出口(出口列表[0]);
@@ -295,7 +295,12 @@ function 主函数(参数) {
   if (!原内容.includes(扩展脚本标记)) {
     throw new Error(`目标脚本不是这个扩展（缺少标记「${扩展脚本标记}」）：${目标}`);
   }
+  const 新脚本 = 替换配置块(原内容, 配置块);
+  new Function(新脚本);
+
   copyFileSync(目标, `${目标}.bak`);
+  // 备份里可能是上一轮的凭证，权限跟着一起收紧。
+  chmodSync(`${目标}.bak`, 0o600);
   writeFileSync(目标, 新脚本, { mode: 0o600 });
   chmodSync(目标, 0o600);
 

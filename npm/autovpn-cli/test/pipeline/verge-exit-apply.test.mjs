@@ -136,6 +136,10 @@ test('block replacement touches only the STATIC_EXITS literal', async () => {
   // 再替换一次结果不变，且仍是合法 JS。
   assert.equal(替换配置块(结果, 新块), 结果);
   new Function(结果);
+
+  // 装好的脚本里用户调过的值必须留着：写出口不应该顺带把 MODE / 规则重置。
+  const 定制 = 模板.replace("const MODE = 'chain';", "const MODE = 'all';");
+  assert.ok(替换配置块(定制, 新块).includes("const MODE = 'all';"));
 });
 
 test('replacement fails loudly when the template lost its config block', () => {
