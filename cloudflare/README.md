@@ -361,6 +361,17 @@ API not answering, which is saturation, not the vendor. The candidates have all
 answered a probe by this point, so a narrower sweep costs wall-clock, not
 coverage.
 
+> **Read this before trusting any throughput number in this file.** Every
+> measurement taken on a workstation was taken inside a local container, and a
+> local container egresses from its host. The "Cloudflare container" reaching
+> 0.31 MB/s median was this machine's broadband: its egress IP and the host's
+> were identical (`23.225.57.218`, `net=bridge`). A GitHub runner, measured the
+> same way, reaches Cloudflare at **83.79 MB/s** and GitHub at **42.18 MB/s**,
+> and pushes 10 concurrent 10 MB downloads in about a second — against 0.55
+> MB/s from the workstation. The 30× gap that motivated the `concurrency` and
+> URL changes was the measurement host, not Cloudflare. Only numbers taken on
+> the host being judged count; check `cdn-cgi/trace` first.
+
 The same class of mistake appeared once already, in the egress supervisor: two
 health sweeps of the same nodes landing together made every node look dead (see
 § How the IP problem is solved). The lesson both times: a stage that reports
