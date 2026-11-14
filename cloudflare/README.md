@@ -300,6 +300,15 @@ A run moves through `measuring → gating → deploying → verifying → done`.
 gate mirrors `daily-run.sh`: publish only when `final_links > min_final_nodes`,
 so a thin sweep never replaces a working subscription.
 
+`min_final_links = 40` here, against the VPS profile's 50. The floor exists to
+stop a broken night from replacing a working subscription, not to demand a
+record night. Measured yields are 49–54 normally and 0–30 when something fails,
+so a floor of 50 held **five nights straight** on the VPS (48, 30, 50, 44, 43),
+publishing nothing while the served subscription aged — it was serving 37 nodes
+from an 11–12-day-old artifact. 40 clears every normal night. If yields drop
+below that, the honest response is to find the yield problem, not to lower the
+floor again.
+
 ### The deploy target is this deployment's own project
 
 `profile.cloudflare.toml` names `sub-nodes-cf`, and **the deploy stage writes to
