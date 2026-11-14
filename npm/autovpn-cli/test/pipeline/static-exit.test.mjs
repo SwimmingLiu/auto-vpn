@@ -377,6 +377,56 @@ rules:
   assert.match(out, /- name: "🛡️ 静态IP出口"/);
 });
 
+test('static exit keeps a self-chaining node out of the groups it depends on', async () => {
+  const { 应用静态出口 } = await loadStaticExit();
+  // A node whose dialer-proxy points at the entrance or exit group must never be
+  // listed as a member of that group: it becomes a self-reference, which
+  // `mihomo -t` accepts and the running kernel then dies on with a stack
+  // overflow. Asserted on the emitted text because that is what ships.
+  const 上游 = `mixed-port: 1
+proxies:
+  - {name: "A", type: vmess, server: 1.2.3.4, port: 443, uuid: 11111111-2222-4333-8444-555555555555, alterId: 0, cipher: auto}
+  - {name: "X", type: ss, server: 5.6.7.8, port: 8388, cipher: aes-128-gcm, password: pw, dialer-proxy: "TARGET"}
+proxy-groups:
+  - name: "G"
+    type: select
+    proxies:
+      - A
+      - X
+rules:
+  - MATCH,G
+`;
+
+  const 分组成员 = (out, 组名) => {
+    const 行 = out.split('\n');
+    const 头 = 行.findIndex((l) => l.trim() === `- name: ${JSON.stringify(组名)}`);
+    if (头 < 0) return null; // `all` mode builds no entrance group.
+    const 成员 = [];
+    for (let i = 头 + 1; i < 行.length && !/^\s*-\s+name:/.test(行[i]); i += 1) {
+      const m = /^\s*-\s+(.+)$/.exec(行[i]);
+      if (m) 成员.push(m[1].replace(/^"|"$/g, ''));
+    }
+    return 成员;
+  };
+
+  for (const 目标 of ['🛬 静态IP入口', '🛡️ 静态IP出口']) {
+    for (const twins of ['entrance', 'all', 'off']) {
+      const out = 应用静态出口(上游.replace('TARGET', 目标), {
+        STATIC_EXIT: 'socks5://u:p@198.51.100.11:1080#HK',
+        STATIC_EXIT_TWINS: twins
+      });
+      // X is the self-chaining node; it must not be reachable as a member of the
+      // group it forwards through, or of any group that leads back to it.
+      for (const 组名 of ['🛬 静态IP入口', '🛡️ 静态IP出口']) {
+        if (目标 === 组名 && twins !== 'all') continue;
+        const 成员 = 分组成员(out, 组名);
+        if (成员 === null) continue;
+        assert.ok(!成员.includes('X'), `${组名} must not contain X when X dials ${目标} (${twins})`);
+      }
+    }
+  }
+});
+
 test('every defect fixture stays loadable by mihomo', async (t) => {
   let mihomoBin = '';
   try {
