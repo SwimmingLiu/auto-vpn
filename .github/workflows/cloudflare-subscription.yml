@@ -119,6 +119,7 @@ jobs:
           grep -q "mihomo is listening" "$RUNNER_TEMP/egress.log"
 
       - name: Measure
+        id: measure
         env:
           VPN_AUTOMATION_RUNTIME_ROOT: ${{ runner.temp }}/autovpn
           VPN_AUTOMATION_PROFILE_PATH: ${{ github.workspace }}/cloudflare/container/profile.cloudflare.toml
@@ -137,18 +138,36 @@ jobs:
             let summary = null;
             for (const line of lines) { try { const e = JSON.parse(line); if (e.type === "summary") summary = e; } catch {} }
             if (!summary) { console.error("no summary event"); process.exit(1); }
-            const count = Number(summary.counts?.final_links ?? 0);
-            console.log(`final_links=${count}`);
-            fs.writeFileSync(process.env.GITHUB_OUTPUT ?? "/dev/null", "");
             if (summary.run_status !== "success") { console.error(summary.error ?? "run failed"); process.exit(1); }
-            if (count <= 0) { console.error("no links survived; nothing to publish"); process.exit(1); }
-          ' "$RUNNER_TEMP/run.jsonl"
+            const count = Number(summary.counts?.final_links ?? 0);
+            const profile = fs.readFileSync(process.argv[2], "utf8");
+            const floor = Number(/^\s*min_final_links\s*=\s*(\d+)/m.exec(profile)?.[1] ?? 0);
+            // The gate is the same one `daily-run.sh` and the Durable Object
+            // apply: publish only above it. `--skip-deploy` here means the CLI
+            // never checks it, so the workflow does, and a held night is a
+            // successful night — not a failed run. Without this split, a thin
+            // sweep (which happens most nights) would turn the schedule red and
+            // the real failures would hide in that noise.
+            console.log(`final_links=${count} floor=${floor}`);
+            fs.appendFileSync(process.env.GITHUB_OUTPUT ?? "/dev/null", `held=${count <= floor}\nfinal_links=${count}\n`);
+          ' "$RUNNER_TEMP/run.jsonl" cloudflare/container/profile.cloudflare.toml
+
+      - name: Report a held night
+        if: ${{ steps.measure.outputs.held == 'true' }}
+        run: |
+          echo "::notice::final_links=${{ steps.measure.outputs.final_links }} did not clear the floor; nothing was published and the previous subscription stays in service"
 
       - name: Publish
-        if: ${{ inputs.dry_run != true }}
+        if: ${{ inputs.dry_run != true && steps.measure.outputs.held != 'true' }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          # `retry-stage` reads the profile again for `min_final_links`,
+          # `[deploy]` and `[worker_build]`. Without this it resolves to
+          # `$RUNNER_TEMP/autovpn/profile.toml`, which does not exist — the
+          # deploy would fail at `readProfile` after the whole measurement.
+          VPN_AUTOMATION_RUNTIME_ROOT: ${{ runner.temp }}/autovpn
+          VPN_AUTOMATION_PROFILE_PATH: ${{ github.workspace }}/cloudflare/container/profile.cloudflare.toml
         run: |
           ARTIFACT="$(ls -dt "$RUNNER_TEMP"/autovpn/artifacts/* | head -1)"
           echo "ARTIFACT=$ARTIFACT" >> "$GITHUB_ENV"
@@ -181,7 +200,7 @@ jobs:
       # A 200 is not success: a wrong key and a stale deployment answer 200 too.
       # Decode the body and require this run's own links to be in it.
       - name: Verify what is actually served
-        if: ${{ inputs.dry_run != true }}
+        if: ${{ inputs.dry_run != true && steps.measure.outputs.held != 'true' }}
         run: |
           # The key is taken from the profile the deploy used, not from a
           # separate variable that can drift away from it.
