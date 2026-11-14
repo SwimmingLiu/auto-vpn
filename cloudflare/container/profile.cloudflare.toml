@@ -3,9 +3,15 @@
 # Deliberate differences from the VPS profile:
 #   1. `project_name` is this deployment's own project, never the VPS's.
 #   2. `min_final_links` agrees with the Durable Object gate.
-#   3. `min_iterations` is 24, not 10000: below it the budget and plateau are
-#      never consulted, so a 10,000 floor makes both decorative.
-#   4. Credentials arrive as Worker secrets, never in this file.
+#   3. Credentials arrive as Worker secrets, never in this file.
+#
+# Sources are in LAP mode: `max_laps` switches the unit to "one lap of every
+# area" and the round-policy keys stop being read. Only these decide runtime:
+#   min_laps  laps that always run; `max_runtime_seconds` is ignored until they
+#             are done. Omitting it let 900 s cut every source at 3-6 laps.
+#   max_laps  hard ceiling.
+#   dry_laps  consecutive laps with no new node identity => early stop.
+#   max_runtime_seconds  budget, enforced only past `min_laps`.
 #
 # `credential` sources need only a location and lease an account from the pool
 # at extract time: a hardcoded evmess URL would bypass the pool and go stale
@@ -16,13 +22,10 @@ mode = "credential"
 official_site = "https://www.leitingku.com"
 enabled = true
 platforms = ["android", "ios"]
-max_iterations = 1000
-min_iterations = 24
-plateau_limit = 50
-areas_per_round = 8
 area_concurrency = 4
 max_laps = 1000
 dry_laps = 20
+min_laps = 24
 max_runtime_seconds = 900
 
 [sources.heidong]
@@ -30,13 +33,10 @@ mode = "credential"
 official_site = "https://www.heidongm.com"
 enabled = true
 platforms = ["android", "ios"]
-max_iterations = 1000
-min_iterations = 24
-plateau_limit = 50
-areas_per_round = 8
 area_concurrency = 4
 max_laps = 1000
 dry_laps = 20
+min_laps = 24
 max_runtime_seconds = 900
 
 [sources.mifeng]
@@ -44,13 +44,10 @@ mode = "credential"
 official_site = "https://www.mifengbuzz.com"
 enabled = true
 platforms = ["android", "ios"]
-max_iterations = 1000
-min_iterations = 24
-plateau_limit = 50
-areas_per_round = 8
 area_concurrency = 4
 max_laps = 1000
 dry_laps = 20
+min_laps = 24
 max_runtime_seconds = 900
 
 [sources.xuanfeng]
@@ -58,13 +55,10 @@ mode = "credential"
 official_site = "https://www.16863988.com"
 enabled = true
 platforms = ["android", "ios"]
-max_iterations = 1000
-min_iterations = 24
-plateau_limit = 50
-areas_per_round = 8
 area_concurrency = 4
 max_laps = 1000
 dry_laps = 20
+min_laps = 24
 max_runtime_seconds = 900
 
 [speed_test]
