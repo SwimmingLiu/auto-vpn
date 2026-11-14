@@ -491,6 +491,58 @@ test('an unparseable exit address is logged without its credentials', async () =
   assert.ok(!全文.includes('alice'), 'the username must not appear');
 });
 
+// 流式分组的名字里也可能出现 `, type: select` 字样。按整行正则找类型会把这种名字
+// 当成真的 select，给一个 url-test 分组塞进出口组。
+test('a quoted name that mentions type: select is not a select group', async () => {
+  const { 应用静态出口 } = await loadStaticExit();
+  const 源 = flowBase.replace(
+    'proxy-groups:\n  - name: "G1"\n    type: select\n    proxies: ["A"]',
+    "proxy-groups:\n  - {name: \"G1, { type: 'select'}\", type: url-test, url: \"http://www.gstatic.com/generate_204\", interval: 300, proxies: [\"A\"]}",
+  );
+  assert.notEqual(源, flowBase, 'fixture 必须真的替换成功');
+
+  const 输出 = 应用静态出口(源, { STATIC_EXIT: 'socks5://u:p@198.51.100.10:1080#exit' });
+  const 分组行 = 输出.split('\n').find((行) => 行.includes('G1, {'));
+  assert.ok(分组行, 'url-test 分组必须原样保留');
+  assert.equal(分组行.includes('静态IP出口'), false, 'url-test 分组不该拿到出口组');
+});
+
+// `type: "select"` 是合法 YAML，引号只是定界符。旧实现把引号一起存进 `段.类型`，
+// 于是这个分组永远匹配不上 select：出口节点、出口组、入口组都注入了，只有
+// 「🚀 节点选择」里没有它，用户看不到任何出口。
+test('a quoted group type still receives the exit group', async () => {
+  const { 应用静态出口 } = await loadStaticExit();
+  // 块式成员写成 `- "🛡️ 静态IP出口"`，流式分组直接续在原列表里，
+  // 两种情况都contains这个名字；只有出口组自身的 `name:` 定义行不算。
+  const 已挂载 = (输出) => 输出.split('\n').some((行) => {
+    const 修剪 = 行.trim();
+    if (!修剪.includes('"🛡️ 静态IP出口"')) return false;
+    return !/^-?\s*name:/.test(修剪);
+  });
+  const 出口 = { STATIC_EXIT: 'socks5://u:p@198.51.100.10:1080#exit' };
+
+  const 变体 = {
+    '双引号块式': flowBase.replace('    type: select', '    type: "select"'),
+    '单引号块式': flowBase.replace('    type: select', "    type: 'select'"),
+    '双引号流式': flowBase.replace(
+      '  - name: "G1"\n    type: select\n    proxies: ["A"]',
+      '  - {name: "G1", type: "select", proxies: ["A"]}',
+    ),
+    '流式数组': flowBase.replace(
+      'proxy-groups:\n  - name: "G1"\n    type: select\n    proxies: ["A"]',
+      'proxy-groups: [{name: "G1", type: "select", proxies: ["A"]}]',
+    ),
+  };
+  for (const [名称, 源] of Object.entries(变体)) {
+    const 输出 = 应用静态出口(源, 出口);
+    assert.ok(已挂载(输出), `${名称}：select 分组必须挂上出口组`);
+  }
+
+  // 反过来：带引号的测速分组仍然不挂，引号处理不能顺手把所有类型都放行。
+  const 测速 = 应用静态出口(flowBase.replace('    type: select', '    type: "url-test"'), 出口);
+  assert.equal(已挂载(测速), false);
+});
+
 test('every defect fixture stays loadable by mihomo', async (t) => {
   let mihomoBin = '';
   try {
@@ -565,6 +617,12 @@ proxy-groups:
 rules:
 - MATCH,G1
 `,
+    // 带引号的 type：引号不脱掉就匹配不上 select，出口组不会挂进任何分组。
+    quotedTypeBlock: flowBase.replace('    type: select', '    type: "select"'),
+    quotedTypeFlow: flowBase.replace(
+      '  - name: "G1"\n    type: select\n    proxies: ["A"]',
+      '  - {name: "G1", type: "select", proxies: ["A"]}',
+    ),
     noGroups: `mixed-port: 1
 proxies:
   - {name: "A", type: vmess, server: 1.2.3.4, port: 443, uuid: 11111111-2222-4333-8444-555555555555, alterId: 0, cipher: auto}
