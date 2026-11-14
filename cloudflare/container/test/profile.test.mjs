@@ -95,3 +95,16 @@ test('the account file is small enough to survive the route body limit', () => {
   // against a profile edit that copies a pool in, not against the real file.
   assert.ok(statSync(PROFILE_PATH).size < 5120);
 });
+
+test('probing is bounded, so a large sweep cannot run past the job timeout', () => {
+  // Probing runs before the download test, so `max_download_candidates` cannot
+  // bound it. A runner night extracted 10,790 links; at 8 concurrent and up to
+  // 60 s each that is hours, and the job is killed before it publishes.
+  const block = /\[speed_test\]([\s\S]*?)(?=\n\[)/.exec(raw)?.[1] ?? '';
+  const cap = Number(/^max_probe_candidates\s*=\s*(\d+)/m.exec(block)?.[1]);
+  assert.ok(Number.isFinite(cap), 'no max_probe_candidates: the probe stage runs unbounded');
+  assert.ok(cap > 0, 'max_probe_candidates = 0 means probe everything');
+  // The floor is 40 and good nights land at 49-60, so a cap below a few
+  // hundred would start discarding links that would have passed.
+  assert.ok(cap >= 400, `max_probe_candidates = ${cap} is closer to the floor than a night's yield`);
+});

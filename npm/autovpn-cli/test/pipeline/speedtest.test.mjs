@@ -942,3 +942,67 @@ test('speedtest backend API preserves Node dependency injection', async () => {
     testLink: async (link) => ({ link, reachable: true, average_download_mb_s: 0, latency_ms: 10, error: '' })
   }), [{ link: 'vmess://node', reachable: true, average_download_mb_s: 0, latency_ms: 10, error: '' }]);
 });
+
+test('max_probe_candidates bounds probing, not only the download test', async () => {
+  // A real runner extracted 10,790 links and paid for 10,790 probes before a
+  // single download was measured — hours of wall-clock, killed by the job
+  // timeout. `max_download_candidates` could not help: probing runs first.
+  const links = Array.from({ length: 50 }, (_, index) => `vmess://n${index}`);
+  let probed = null;
+
+  const results = await speedtestLinksWithBackend({
+    links,
+    config: {
+      min_download_mb_s: 1,
+      timeout_seconds: 5,
+      concurrency: 4,
+      max_probe_candidates: 10,
+      max_download_candidates: 0
+    }
+  }, {
+    env: { AUTOVPN_SPEEDTEST_RUNTIME: 'direct' },
+    probeLinks: async (input) => {
+      probed = [...input];
+      return input.map((link) => ({ link, reachable: true, latency_ms: 5, error: '' }));
+    },
+    testLink: async (link) => ({ link, reachable: true, average_download_mb_s: 2, latency_ms: 5, error: '' })
+  });
+
+  assert.equal(probed.length, 10, 'the probe stage still saw every link');
+  assert.deepEqual(probed, links.slice(0, 10), 'the cap did not keep the earliest links');
+  // The cut links are absent from the result, not reported as unreachable: they
+  // were never tested, and inventing a failure for them would change the yield
+  // statistics.
+  assert.equal(results.length, 10);
+  assert.ok(results.every((result) => probed.includes(result.link)));
+});
+
+test('probeSpeedtestLinksInNode applies the same cap', async () => {
+  const links = Array.from({ length: 30 }, (_, index) => `vmess://p${index}`);
+  const results = await probeSpeedtestLinksInNode({
+    links,
+    config: { min_download_mb_s: 1, timeout_seconds: 5, concurrency: 2, max_probe_candidates: 5 }
+  }, {
+    env: { AUTOVPN_SPEEDTEST_RUNTIME: 'direct' },
+    probeLinks: async (input) => input.map((link) => ({ link, reachable: true, latency_ms: 1, error: '' }))
+  });
+  assert.equal(results.length, 5);
+  assert.deepEqual(results.map((r) => r.link), links.slice(0, 5));
+});
+
+test('an unset or zero max_probe_candidates probes every link', async () => {
+  const links = Array.from({ length: 12 }, (_, index) => `vmess://a${index}`);
+  let probed = null;
+  await speedtestLinksWithBackend({
+    links,
+    config: { min_download_mb_s: 1, timeout_seconds: 5, concurrency: 2, max_download_candidates: 0 }
+  }, {
+    env: { AUTOVPN_SPEEDTEST_RUNTIME: 'direct' },
+    probeLinks: async (input) => {
+      probed = [...input];
+      return input.map((link) => ({ link, reachable: false, latency_ms: 0, error: 'timeout' }));
+    },
+    testLink: async (link) => ({ link, reachable: false, average_download_mb_s: 0, latency_ms: 0, error: 'timeout' })
+  });
+  assert.equal(probed.length, links.length);
+});

@@ -224,6 +224,86 @@ test('Node proxy runtime discovers Mihomo installed under the user clashctl dire
   await runtime.close();
 });
 
+test('Node proxy runtime prefers an explicit MIHOMO_BIN over the install candidates', async () => {
+  const link = vmessLink({
+    add: 'edge.example.com',
+    port: '443',
+    id: '11111111-2222-3333-4444-555555555555'
+  });
+  // A host that provisions the binary itself — a CI runner, an image — puts it
+  // somewhere of its own choosing. The fixed candidates would miss it, and the
+  // symptom is every link failing in 0 ms with `spawn mihomo ENOENT` rather
+  // than a missing-binary error.
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'autovpn-mihomo-bin-'));
+  const binPath = path.join(dir, 'mihomo');
+  await writeFile(binPath, '#!/bin/sh\n', 'utf8');
+  await chmod(binPath, 0o755);
+  const spawns = [];
+
+  const runtime = await openMihomoRuntime(link, {
+    env: { HOME: '/nonexistent-home', PATH: '/usr/bin', MIHOMO_BIN: binPath },
+    mixedPort: 10011,
+    controllerPort: 10012,
+    spawn: (command, args) => {
+      const child = new EventEmitter();
+      child.exitCode = null;
+      child.kill = (signal) => {
+        child.exitCode = 0;
+        child.emit('close', 0, signal);
+        return true;
+      };
+      spawns.push({ command, args });
+      return child;
+    },
+    waitForPort: async () => {},
+    selectProxy: async () => {}
+  });
+
+  assert.equal(spawns[0].command, binPath);
+  await runtime.close();
+});
+
+test('an explicit MIHOMO_BIN outranks the artifact runtime directory', async () => {
+  const link = vmessLink({
+    add: 'edge.example.com',
+    port: '443',
+    id: '11111111-2222-3333-4444-555555555555'
+  });
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'autovpn-mihomo-bin-'));
+  const binPath = path.join(dir, 'mihomo');
+  await writeFile(binPath, '#!/bin/sh\n', 'utf8');
+  await chmod(binPath, 0o755);
+  // The orchestrator always passes `<artifact>/runtime`, which exists as a
+  // directory but holds no binary. Returning that directory's fallback list is
+  // right for a workstation and wrong for a host that named its own binary.
+  const runtimeDir = path.join(dir, 'runtime');
+  await mkdir(runtimeDir, { recursive: true });
+  const spawns = [];
+
+  const runtime = await openMihomoRuntime(link, {
+    runtimePath: runtimeDir,
+    env: { HOME: '/nonexistent-home', PATH: '/usr/bin', MIHOMO_BIN: binPath },
+    mixedPort: 10013,
+    controllerPort: 10014,
+    spawn: (command, args) => {
+      const child = new EventEmitter();
+      child.exitCode = null;
+      child.kill = (signal) => {
+        child.exitCode = 0;
+        child.emit('close', 0, signal);
+        return true;
+      };
+      spawns.push({ command, args });
+      return child;
+    },
+    waitForPort: async () => {},
+    selectProxy: async () => {}
+  });
+
+  assert.equal(spawns[0].command, binPath);
+  await runtime.close();
+});
+
 test('Node proxy runtime rejects spawn errors instead of leaving them unhandled', async () => {
   const link = vmessLink({
     add: 'edge.example.com',

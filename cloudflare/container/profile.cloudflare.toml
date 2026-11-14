@@ -3,13 +3,13 @@
 # Deliberate differences from the VPS profile:
 #   1. `project_name` is this deployment's own project, never the VPS's.
 #   2. `min_final_links` agrees with the Durable Object gate.
-#   3. `min_iterations` is 24, not 10000: the budget and plateau are only
-#      consulted at or past it, so a 10,000 floor makes both decorative.
+#   3. `min_iterations` is 24, not 10000: below it the budget and plateau are
+#      never consulted, so a 10,000 floor makes both decorative.
 #   4. Credentials arrive as Worker secrets, never in this file.
 #
 # `credential` sources need only a location and lease an account from the pool
-# at extract time, so no `url`/`key` appears: a hardcoded evmess URL would
-# bypass the pool and go stale when the vendor rotates a domain, weekly.
+# at extract time: a hardcoded evmess URL would bypass the pool and go stale
+# when the vendor rotates a domain, weekly.
 
 [sources.leiting]
 mode = "credential"
@@ -69,17 +69,21 @@ max_runtime_seconds = 900
 
 [speed_test]
 min_download_mb_s = 1
-# 60, as on the VPS: 20 s fails healthy nodes (README § speed test).
+# 60: at 20 s, 82 links passed where the VPS passed 134.
 timeout_seconds = 60
-# 8: one mihomo child per measured link (README § speed test).
+# 8: one mihomo child per measured link.
 concurrency = 8
-# Anycast and close to the container: the old GitHub URL was the slowest hop
-# (1.44 MB/s vs 2.7 MB/s here), and a node cannot measure faster than that.
+# Anycast, near the runner: a node cannot measure faster than the hop to the
+# file it downloads.
 urls = ["https://speed.cloudflare.com/__down?bytes=10000000"]
 probe_url = "http://www.gstatic.com/generate_204"
 max_download_bytes = 10000000
 startup_wait_seconds = 1
 max_download_candidates = 0
+# 600, not 0: probing runs before any download, so an unbounded value makes a
+# 10,790-link sweep pay 10,790 probes at 8 concurrent and the job is killed
+# before it publishes. 600 is ~12x the best night's final count.
+max_probe_candidates = 600
 
 [availability_targets.gemini]
 url = "https://gemini.google.com/"
@@ -103,16 +107,14 @@ allowed_hosts = ["claude.ai", "support.anthropic.com"]
 negative_phrases = ["unavailable in your region", "supported regions", "physically located in one of our supported regions", "outside of our supported locations"]
 
 [network]
-# The crawl's upstream proxy is the container's own mihomo instance, which the
-# EgressSupervisor builds from the published subscription on every run.
+# The crawl's upstream proxy is this host's own mihomo, built from the
+# published subscription on every run.
 proxy_mode = "proxy"
 proxy_url = "http://127.0.0.1:7897"
 
 [deploy]
-# This deployment's own project, never the VPS's (`sub-nodes-04`). The deploy
-# stage replaces the whole production deployment of the named project, and this
-# one has been verified end to end: 49 links measured, deployed, served body
-# decoded back to the artifact.
+# This deployment's own project, never the VPS's (`sub-nodes-04`): the deploy
+# stage replaces the whole production deployment of the named project.
 project_name = "sub-nodes-cf"
 subscription_url = "https://sub-nodes-cf.pages.dev/?serect_key=swimmingliu"
 verify_subscription_url = "https://sub-nodes-cf.pages.dev/?serect_key=swimmingliu"
@@ -128,10 +130,9 @@ use_wrangler = true
 auto_create_project_on_blocked = true
 fallback_project_prefix = "autovpn-cf"
 # 40, not 50: the floor stops a broken night from replacing a working
-# subscription, it is not a demand for a record night. Measured yields are
-# 49-54 normally and 0-30 when something fails, and a floor of 50 held five
-# nights straight on the VPS (48, 30, 50, 44, 43) — publishing nothing while
-# the served subscription aged. 40 clears every normal night.
+# subscription; it is not a demand for a record night. A floor of 50 held five
+# nights straight on the VPS (48, 30, 50, 44, 43), publishing nothing while the
+# served subscription aged. 40 clears every normal night.
 min_final_links = 40
 
 [worker_build]

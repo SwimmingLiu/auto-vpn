@@ -71,7 +71,12 @@ function firstExistingPath(candidates: string[]): string {
 
 function mihomoInstallCandidates(env: NodeJS.ProcessEnv): string[] {
   const homeDir = String(env.HOME ?? env.USERPROFILE ?? '').trim();
+  // Same order as `proxy-runtime.ts`: an explicit `MIHOMO_BIN` is the host
+  // saying where the binary is. Keeping the two lists identical is what makes
+  // `doctor` a real preflight instead of a second, disagreeing opinion.
+  const configured = String(env.MIHOMO_BIN ?? '').trim();
   return [
+    configured,
     homeDir ? path.join(homeDir, 'clashctl', 'bin', 'mihomo') : '',
     '/opt/homebrew/bin/mihomo',
     '/usr/local/bin/mihomo',
