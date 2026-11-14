@@ -56,6 +56,29 @@ function 解析出口(条目) {
   return 出口;
 }
 
+// 已经注入过就原样返回，避免脚本重复执行时叠加。
+//
+// 判据不能是「分组名精确等于 EXIT_GROUP」：订阅里若本来就有个节点叫
+// 「🛡️ 静态IP出口」，注入时分组会被改名成「🛡️ 静态IP出口 2」，下一轮就
+// 认不出来，于是每次订阅更新都再注入一遍，节点和分组越滚越多。
+// 所以既接受 EXIT_GROUP 本身，也接受它加后缀的形态。
+function 已注入(分组列表, 候选名) {
+  return 分组列表.some((g) => {
+    if (!g || typeof g.name !== 'string') return false;
+    if (g.name === 候选名) return true;
+    return g.name.startsWith(`${候选名} `) && /^\d+$/.test(g.name.slice(候选名.length + 1));
+  });
+}
+
+// 出口节点是否已经在配置里。按「同一个 server:port」判断，而不是按名字：
+// 名字会因避让改后缀，server:port 是这条出口的身份。
+function 出口节点已存在(代理列表) {
+  return 代理列表.some((p) => {
+    if (!p || typeof p !== 'object') return false;
+    return STATIC_EXITS.some((e) => e && e.server === p.server && Number(e.port) === Number(p.port));
+  });
+}
+
 function main(config) {
   if (!config || typeof config !== 'object') return config;
   if (!Array.isArray(config.proxies) || config.proxies.length === 0) return config;
@@ -64,7 +87,10 @@ function main(config) {
   const 现有分组 = Array.isArray(config['proxy-groups']) ? config['proxy-groups'] : [];
 
   // 已经注入过就原样返回，避免脚本重复执行时叠加。
-  if (现有分组.some((g) => g && g.name === EXIT_GROUP)) return config;
+  //
+  // 主判据是出口组存在，旁证是至少一个出口节点已在 proxies 里——用户可能在
+  // 界面上删掉了分组但节点还在，只看分组会重复注入一遍。
+  if (已注入(现有分组, EXIT_GROUP) || 出口节点已存在(config.proxies)) return config;
 
   const 出口清单 = STATIC_EXITS.map(解析出口).filter((e) => e.server && e.port > 0);
   if (出口清单.length === 0) return config;

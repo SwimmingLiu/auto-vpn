@@ -145,13 +145,19 @@ async function readProfile(projectRoot: string, env: NodeJS.ProcessEnv): Promise
 /**
  * The fixed-IP egress keys live in their own [static_exit] section; the deploy
  * backend reads them from the deploy payload, so fold them in at the boundary.
+ *
+ * Every key is emitted, empty ones included, whenever the profile has the
+ * section at all. Emitting only the non-empty ones left a removed egress alive:
+ * the share project kept the previous run's `USER:PASS@host` variable and went on
+ * injecting it into every subscriber's config. An absent section emits nothing,
+ * so a profile that predates the feature leaves the project untouched.
  */
 function deployStaticExitFields(profile: PipelineProfile): Record<string, string> {
   const section = (profile.static_exit ?? {}) as Record<string, unknown>;
+  if (Object.keys(section).length === 0) return {};
   const fields: Record<string, string> = {};
   for (const key of ['exit', 'exit_json', 'group', 'entrance', 'twins']) {
-    const value = String(section[key] ?? '').trim();
-    if (value) fields[`static_${key}`] = value;
+    fields[`static_${key}`] = String(section[key] ?? '').trim();
   }
   return fields;
 }

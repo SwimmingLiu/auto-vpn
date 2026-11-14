@@ -398,7 +398,7 @@ function rewriteShareProjectSubValue(
     rewritten[environmentName] = { ...(config as Record<string, unknown>) };
   }
   const staticExitEnv = Object.fromEntries(
-    Object.entries(options.staticExitEnv ?? {}).filter(([, value]) => String(value ?? '').trim())
+    Object.entries(options.staticExitEnv ?? {}).filter(([, value]) => value !== undefined && value !== null)
   );
   for (const environmentName of ['preview', 'production']) {
     const envConfig = { ...((rewritten[environmentName] as Record<string, unknown> | undefined) ?? {}) };
@@ -416,8 +416,12 @@ function rewriteShareProjectSubValue(
 /**
  * The fixed-IP egress list the share Worker injects into its Clash output.
  *
- * Only non-empty values are forwarded, so an unset profile leaves the share
- * project's existing variables untouched instead of blanking them.
+ * The profile always carries the `[static_exit]` section (it is in the default
+ * profile), so "section present but empty" means the operator removed the egress
+ * and the project's variables must be cleared — otherwise the previous run's
+ * `USER:PASS@host` stays on the share project and keeps being injected into
+ * every subscriber's config. Absent keys (no profile section at all) are left
+ * alone, so a caller that does not know about this feature cannot blank it.
  */
 export function buildShareStaticExitEnv(deploy: DeployLike): Record<string, string> {
   const pairs: Array<[string, string]> = [
@@ -427,7 +431,10 @@ export function buildShareStaticExitEnv(deploy: DeployLike): Record<string, stri
     ['STATIC_EXIT_ENTRANCE', getString(deploy, 'static_exit_entrance')],
     ['STATIC_EXIT_TWINS', getString(deploy, 'static_exit_twins')]
   ];
-  return Object.fromEntries(pairs.filter(([, value]) => value.trim()));
+  // The caller (`deployStaticExitFields`) only emits these keys when the profile
+  // actually has a [static_exit] section, so reaching here means every one of
+  // them is authoritative — including the empty ones that clear a removed egress.
+  return Object.fromEntries(pairs.map(([key, value]) => [key, String(value ?? '').trim()]));
 }
 
 function buildShareProjectUpdatePayload(

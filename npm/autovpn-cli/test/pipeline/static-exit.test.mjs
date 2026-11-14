@@ -472,6 +472,25 @@ rules:
   assert.deepEqual(成员, ['DIRECT']);
 });
 
+test('an unparseable exit address is logged without its credentials', async () => {
+  const { 解析静态出口清单 } = await loadStaticExit();
+  const 日志 = [];
+  const 原warn = console.warn;
+  console.warn = (...args) => 日志.push(args.join(' '));
+  try {
+    // A typo'd scheme and a bad port both reach the warning path. The Worker's
+    // console goes to `wrangler tail` / Logpush and fires on every subscription
+    // fetch, so the password must not be in the message.
+    解析静态出口清单({ STATIC_EXIT: 'socks4://alice:swimmingliu@198.51.100.10:1080\nsocks5://bob:swimmingliu@198.51.100.11:10x80' });
+  } finally {
+    console.warn = 原warn;
+  }
+  const 全文 = 日志.join('\n');
+  assert.match(全文, /socks4:\/\/\*\*\*@198\.51\.100\.10:1080/);
+  assert.ok(!全文.includes('swimmingliu'), 'the password must not appear');
+  assert.ok(!全文.includes('alice'), 'the username must not appear');
+});
+
 test('every defect fixture stays loadable by mihomo', async (t) => {
   let mihomoBin = '';
   try {
