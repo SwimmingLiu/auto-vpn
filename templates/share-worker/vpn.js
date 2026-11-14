@@ -315,7 +315,7 @@ function 解析静态出口清单(配置 = {}) {
 		const 端口 = Number(条目.port);
 		// mihomo rejects a proxy without a port, and one bad row would fail the
 		// whole subscription — drop it here instead.
-		if (!名称 || !条目.type || !条目.server || !Number.isFinite(端口) || 端口 <= 0) return;
+		if (!名称 || !条目.type || !条目.server || !Number.isFinite(端口) || 端口 <= 0 || 端口 > 65535) return;
 		// 同名条目只能留一条（mihomo 会因重名拒掉整份配置），但静默丢弃会让人
 		// 以为两个出口都在，所以留一条的同时把后来的那条报出来。
 		if (已见.has(名称)) {
@@ -664,7 +664,11 @@ function 挂载静态出口分组(行列表, 分组区块, 分组名, 入口组�
 }
 
 function 应用静态出口(clash_yaml, 配置 = {}) {
-	const 出口清单 = Array.isArray(配置.静态出口清单) ? 配置.静态出口清单 : 解析静态出口清单(配置);
+	// 预解析清单（Worker 走的就是这条：`config_JSON.静态出口清单`）同样要过校验。
+	// 之前它被直接采用，`port: "abc"` / 0 / 99999 会原样写进配置，mihomo 拒掉整份订阅。
+	const 出口清单 = Array.isArray(配置.静态出口清单)
+		? 解析静态出口清单({ STATIC_EXIT_JSON: JSON.stringify(配置.静态出口清单) })
+		: 解析静态出口清单(配置);
 	if (出口清单.length === 0) return clash_yaml;
 	if (typeof clash_yaml !== 'string' || !clash_yaml) return clash_yaml;
 

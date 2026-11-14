@@ -427,6 +427,21 @@ rules:
   }
 });
 
+test('a pre-parsed exit list is validated like a text one', async () => {
+  const { 应用静态出口 } = await loadStaticExit();
+  // The Worker resolves the list itself and passes `静态出口清单`; that path used
+  // to skip every check the text parser performs, so a bad port went straight
+  // into the config and mihomo rejected the whole subscription.
+  const 基线 = (port) => 应用静态出口(baseClash, {
+    静态出口清单: [{ name: 'E', type: 'socks5', server: '198.51.100.10', port, username: 'u', password: 'p' }]
+  });
+  assert.match(基线('1080'), /- \{name: "E", type: "socks5"/);
+  assert.match(基线(1080), /- \{name: "E", type: "socks5"/);
+  for (const bad of ['abc', 0, -1, 99999, null]) {
+    assert.ok(!基线(bad).includes('name: "E"'), `port ${JSON.stringify(bad)} must be dropped`);
+  }
+});
+
 test('every defect fixture stays loadable by mihomo', async (t) => {
   let mihomoBin = '';
   try {
