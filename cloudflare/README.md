@@ -370,6 +370,13 @@ API not answering, which is saturation, not the vendor. The candidates have all
 answered a probe by this point, so a narrower sweep costs wall-clock, not
 coverage.
 
+> The 503/504 family is **not** fully explained by concurrency. A runner night at
+> `concurrency = 8` still lost 188 of 271 candidates to `504 Gateway Timeout`
+> (127) and `503 Service Unavailable` (61), while the 79 that answered reached
+> 9.65 MB/s at the top and 5.04 median. So the survivors are fast and the losses
+> are local to mihomo's own controller. Treat the counter as a load signal, not
+> as "the vendor is down", and do not raise `concurrency` to buy back coverage.
+
 **`max_probe_candidates = 600`** (new). `max_download_candidates` bounds the
 download test only; probing runs first and covers every link. That never showed
 on the VPS, which extracts ~566 candidates. The runner extracted **10,790** in
@@ -382,6 +389,24 @@ xuanfeng, so the first 600 would have been three whole sources plus **1.9% of
 the fourth** — and the starved vendor would simply look like it performed badly.
 `sampleAcrossArtifact` strides evenly over the list instead, keeping every
 source in proportion, deterministically.
+
+### Lap mode: which keys actually run the clock
+
+`max_laps` switches a source from "a round of 8 areas" to "one lap of every
+area", and `resolveLapRoundPolicy` then builds the policy from `max_laps`,
+`dry_laps`, `min_laps` and `max_runtime_seconds` **only**. `min_iterations`,
+`max_iterations`, `plateau_limit` and `areas_per_round` are not read at all.
+
+That matters because `shouldStartRound` ignores the runtime budget only while
+`round <= min_iterations`, and in lap mode that floor comes from `min_laps`. A
+profile with `min_laps` left out has a floor of 0, so `max_runtime_seconds`
+applies from the first lap. Measured: the same four vendors produced **272**
+links in a 20-minute night with the budget cutting at 3-6 laps, and **10,790**
+with no budget at all. The floor was there the whole time, in a key the run was
+not reading.
+
+`container/test/profile.test.mjs` now asserts `min_laps` exists and that none of
+the four dead keys appear in a source block.
 
 > **Read this before trusting any throughput number in this file.** Every
 > measurement taken on a workstation was taken inside a local container, and a
