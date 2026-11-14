@@ -80,9 +80,10 @@ probe_url = "http://www.gstatic.com/generate_204"
 max_download_bytes = 10000000
 startup_wait_seconds = 1
 max_download_candidates = 0
-# 600, not 0: probing runs before any download, so an unbounded value makes a
-# 10,790-link sweep pay 10,790 probes at 8 concurrent and the job is killed
-# before it publishes. 600 is ~12x the best night's final count.
+# 600, not 0: probing runs before any download, so unbounded makes a
+# 10,790-link night pay 10,790 probes at 8 concurrent and the job is killed
+# before it publishes. The sample is taken evenly across the artifact, so no
+# vendor is cut for being later in the file.
 max_probe_candidates = 600
 
 [availability_targets.gemini]

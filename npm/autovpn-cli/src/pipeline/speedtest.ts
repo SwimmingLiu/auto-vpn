@@ -109,6 +109,33 @@ export function normalizeSpeedTestConfig(config: SpeedTestConfigInput): Required
   };
 }
 
+/**
+ * Take `limit` links spread evenly across the artifact rather than the first
+ * `limit` of it.
+ *
+ * The artifact is written source by source, so a prefix is not a sample: one
+ * night produced 9 heidong, 230 mifeng, 164 leiting and 10,387 xuanfeng links,
+ * and the first 600 were three whole sources plus **1.9% of the fourth**. The
+ * vendor whose links were cut is the one the operator may most want, and the
+ * cut is invisible in the yield — it looks like that vendor performed badly.
+ *
+ * An even stride over the whole list keeps every source in proportion. Ties go
+ * to the earlier index, so the result is a deterministic function of the input
+ * and the same artifact always probes the same links.
+ */
+export function sampleAcrossArtifact(links: string[], limit: number): string[] {
+  if (limit <= 0 || links.length <= limit) {
+    return links;
+  }
+  const picked: string[] = [];
+  // Position of the i-th pick in a list of `total` taking `limit` evenly.
+  for (let index = 0; index < limit; index += 1) {
+    const position = Math.floor((index * links.length) / limit);
+    picked.push(links[position]);
+  }
+  return picked;
+}
+
 export function selectSpeedtestCandidates(probes: ProbeResult[], limit: number): string[] {
   const reachable = probes
     .filter((probe) => probe.reachable)
@@ -681,7 +708,7 @@ async function speedtestInNode(input: SpeedTestInput, options: SpeedTestBackendO
   // that extracts 10,790 links pays for 10,790 probes before a single download
   // is measured, and the job is killed long before it publishes.
   const probeInput = config.max_probe_candidates > 0
-    ? input.links.slice(0, config.max_probe_candidates)
+    ? sampleAcrossArtifact(input.links, config.max_probe_candidates)
     : input.links;
   if (probeInput.length < input.links.length) {
     options.progressCallback?.(
@@ -756,7 +783,7 @@ export async function probeSpeedtestLinksInNode(input: SpeedTestInput, options: 
   // Same cap as the full speed test: a caller that bounds probing must not pay
   // for a sweep the run would have cut anyway.
   const links = config.max_probe_candidates > 0
-    ? input.links.slice(0, config.max_probe_candidates)
+    ? sampleAcrossArtifact(input.links, config.max_probe_candidates)
     : input.links;
   const emitProbe = (result: ProbeResult, completed: number): void => {
     options.progressCallback?.(`[speedtest:probe] ${completed}/${links.length} reachable=${result.reachable} latency=${result.latency_ms}ms`);

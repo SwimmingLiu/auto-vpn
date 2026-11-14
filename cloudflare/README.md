@@ -370,6 +370,19 @@ API not answering, which is saturation, not the vendor. The candidates have all
 answered a probe by this point, so a narrower sweep costs wall-clock, not
 coverage.
 
+**`max_probe_candidates = 600`** (new). `max_download_candidates` bounds the
+download test only; probing runs first and covers every link. That never showed
+on the VPS, which extracts ~566 candidates. The runner extracted **10,790** in
+one night, and at 8 concurrent with a 60 s ceiling that is hours — the job is
+killed long before it publishes.
+
+The 600 is a *sample*, not a prefix. Sources are written to the artifact in
+order, and that night's split was 9 heidong / 230 mifeng / 164 leiting / 10,387
+xuanfeng, so the first 600 would have been three whole sources plus **1.9% of
+the fourth** — and the starved vendor would simply look like it performed badly.
+`sampleAcrossArtifact` strides evenly over the list instead, keeping every
+source in proportion, deterministically.
+
 > **Read this before trusting any throughput number in this file.** Every
 > measurement taken on a workstation was taken inside a local container, and a
 > local container egresses from its host. The "Cloudflare container" reaching

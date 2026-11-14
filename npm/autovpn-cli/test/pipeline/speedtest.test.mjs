@@ -9,6 +9,7 @@ import {
   aggregateSpeedMeasurements,
   downloadUrlViaHttpProxy,
   probeSpeedtestLinksInNode,
+  sampleAcrossArtifact,
   selectSpeedtestCandidates,
   speedtestLinksWithBackend
 } from '../../dist/pipeline/speedtest.js';
@@ -969,7 +970,13 @@ test('max_probe_candidates bounds probing, not only the download test', async ()
   });
 
   assert.equal(probed.length, 10, 'the probe stage still saw every link');
-  assert.deepEqual(probed, links.slice(0, 10), 'the cap did not keep the earliest links');
+  // Spread across the artifact, not a prefix: a prefix would be whole sources
+  // plus a sliver of the one that produced the most links.
+  assert.deepEqual(probed, sampleAcrossArtifact(links, 10));
+  // The stride reaches the end of the artifact without taking the last index:
+  // it must cover the range, not include both endpoints literally.
+  const lastPosition = links.indexOf(probed[probed.length - 1]);
+  assert.ok(lastPosition >= links.length - links.length / 10, 'the sample stopped short of the artifact end');
   // The cut links are absent from the result, not reported as unreachable: they
   // were never tested, and inventing a failure for them would change the yield
   // statistics.
@@ -987,7 +994,7 @@ test('probeSpeedtestLinksInNode applies the same cap', async () => {
     probeLinks: async (input) => input.map((link) => ({ link, reachable: true, latency_ms: 1, error: '' }))
   });
   assert.equal(results.length, 5);
-  assert.deepEqual(results.map((r) => r.link), links.slice(0, 5));
+  assert.deepEqual(results.map((r) => r.link), sampleAcrossArtifact(links, 5));
 });
 
 test('an unset or zero max_probe_candidates probes every link', async () => {
@@ -1005,4 +1012,45 @@ test('an unset or zero max_probe_candidates probes every link', async () => {
     testLink: async (link) => ({ link, reachable: false, average_download_mb_s: 0, latency_ms: 0, error: 'timeout' })
   });
   assert.equal(probed.length, links.length);
+});
+
+test('sampleAcrossArtifact keeps every source in proportion, not just the first ones', () => {
+  // The real artifact from the runner night: source by source, in this order.
+  const perSource = [['heidong', 9], ['mifeng', 230], ['leiting', 164], ['xuanfeng', 10387]];
+  const links = [];
+  for (const [, count] of perSource) {
+    for (let i = 0; i < count; i += 1) links.push(`vmess://${links.length}`);
+  }
+
+  const sample = sampleAcrossArtifact(links, 600);
+  assert.equal(sample.length, 600);
+  assert.equal(new Set(sample).size, 600, 'the sample repeated a link');
+
+  // A prefix takes all of three sources and 1.9% of the fourth. Even sampling
+  // should reach every source, and reach the large one in proportion.
+  const picked = new Set(sample);
+  let offset = 0;
+  const share = {};
+  for (const [name, count] of perSource) {
+    const hits = links.slice(offset, offset + count).filter((link) => picked.has(link)).length;
+    share[name] = hits / count;
+    offset += count;
+  }
+  for (const [name, ratio] of Object.entries(share)) {
+    assert.ok(ratio > 0, `${name} contributed no links to the sample`);
+  }
+  // The three small sources are fully covered; xuanfeng is sampled at the rate
+  // the budget allows. Neither should be starved.
+  assert.ok(share.xuanfeng > 0.015, `xuanfeng sampled at ${(share.xuanfeng * 100).toFixed(1)}%, a prefix's rate`);
+  assert.ok(share.xuanfeng < 0.15, 'xuanfeng was over-sampled for its size');
+});
+
+test('sampleAcrossArtifact is deterministic and order-preserving', () => {
+  const links = Array.from({ length: 100 }, (_, i) => `vmess://${i}`);
+  const a = sampleAcrossArtifact(links, 17);
+  const b = sampleAcrossArtifact(links, 17);
+  assert.deepEqual(a, b, 'the same input produced different samples');
+  const positions = a.map((link) => links.indexOf(link));
+  assert.deepEqual(positions, [...positions].sort((x, y) => x - y), 'the sample reordered the artifact');
+  assert.equal(a[0], links[0]);
 });
