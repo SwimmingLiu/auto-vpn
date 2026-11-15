@@ -107,7 +107,8 @@ a plan question, not a design one.
 
 Both use `container/profile.cloudflare.toml`, both crawl through
 `127.0.0.1:7897`, and both publish the artifact that run measured. The runner
-path is `.github/workflows/cloudflare-subscription.yml`; the container path is
+path is `.github/workflows/manual-subscription-publish.yml` (manual dispatch;
+the nightly run is Scheduled Subscription Publish in `auto-vpn-runner`); the container path is
 `.github/workflows/deploy-cloudflare.yml` plus the Worker.
 
 The runner path exists because **Cloudflare Containers require the Workers Paid
