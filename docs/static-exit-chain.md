@@ -61,7 +61,7 @@ profile 里只要有 `[static_exit]` 段，这五个键就会整组写入，空�
 | GitHub Secrets | 只在 CI 负责部署时需要 | 本机 runner 直接读 `profile.toml`，没有 workflow 需要这个值；存了也不会被用到 |
 | KV `static-exit.json` | 不推荐 | 同一个 namespace 被多个项目共用，写进去等于让所有项目的 Worker 都能读到，旧 Worker 还会把它注入 `/sub` |
 
-仓库、测试和文档里只出现 `USER`/`PASS`/`198.51.100.x` 这类文档地址；真实 `socks5://…@…` 链接只存在 `~/.auto-vpn/profile.toml`（600）和 Cloudflare 项目配置里。
+仓库、测试和文档里只出现 `USER`/`PASS`/`198.51.100.x` 这类文档地址；真实 `socks5://…@…` 链接只存在 `~/.auto-vpn/verge-exit.txt`、`~/.auto-vpn/profile.toml`（都是 600）和 Cloudflare 项目配置里。
 
 `exit_json` 里的每条记录就是一条 mihomo 代理，字段原样透传：
 
