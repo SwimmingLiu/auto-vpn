@@ -25,6 +25,56 @@ autovpn run --project-root . --skip-deploy --skip-verify --output jsonl
 autovpn artifacts latest --project-root .
 ```
 
+## Clash Verge static exit
+
+`autovpn verge` installs a socks/http exit into the Clash Verge Rev extension
+script and then proves from mihomo's own API that the chain is loaded.
+
+```bash
+autovpn verge exit                                  # hidden prompt, write, restart Verge
+autovpn verge exit < ~/.auto-vpn/verge-exit.txt     # same, from a pipe
+autovpn verge exit --from ~/.auto-vpn/verge-exit.txt --check
+autovpn verge status --test
+```
+
+The link is never taken on the command line: it comes from a `0600` file, a
+pipe, or a prompt that does not echo, so it stays out of argv and shell history.
+Every line the command prints is masked to `scheme://***@host:port`.
+
+Restarting Verge resets group selections to the profile's own defaults, so a
+`🚀 节点选择` that pointed at the exit group would come back on a plain airport
+node. The command remembers which selectors pointed at the exit group before
+the restart and puts them back once activation settles; `--use` selects it
+unconditionally.
+
+mihomo's `/proxies` API carries no address or credential, so a rotated link
+under the same name would look live. The command also reads the generated
+`clash-verge.yaml`: if it still holds exactly the entry it held before the
+restart, the profile was not rebuilt and the command exits `6` instead of
+reporting success.
+
+Only the `const STATIC_EXITS = [ … ];` literal inside `profiles/<uid>.js` is
+replaced. `MODE`, the group names, and `RULES_TO_EXIT` edited in Verge survive a
+write, and the write itself is a temp file in the same directory, fsynced and
+renamed, so a failed write never leaves half a script.
+
+| Flag | Meaning |
+| --- | --- |
+| `--from FILE` | Read the links from `FILE` (must be `0600`, owned by you) |
+| `--stdin` | Read the links from stdin |
+| `--check` | Parse, build, and compile; write nothing |
+| `--test` | Probe each link with curl before writing |
+| `--no-apply` | Write only; reactivate the profile in Verge yourself |
+| `--wait SECONDS` | How long to wait for the core to load the new nodes (default 25) |
+| `--use` | After the chain is live, select the exit group in `EXIT_GROUP_TARGETS` |
+| `--backup` | Keep one `profiles/<uid>.js.bak` before the first write |
+| `--script PATH` | Target a specific script instead of the attached one |
+| `--output json` | Machine-readable report; `credential` is `set`/`none`, `identity` is `verified`/`unverified` |
+
+Exit codes: `0` done, `2` usage, `3` no Verge install or script, `4` the source
+file is readable by others, `5` a link did not answer, `6` the core never
+loaded the new nodes, or the generated config still carries the old entry.
+
 ## Server Web UI
 
 `autovpn serve` starts a single-user HTTP service that serves the AutoVPN Web UI

@@ -12,6 +12,7 @@ import { latestJobId, listJobs, loadJob, publicJobPayload, singleActiveJobId, ta
 import { readOptionValue, resolveProjectRoot } from '../runtime/paths.js';
 import { runAccountsCommand } from './accounts-commands.js';
 import { CliIo } from './output.js';
+import { runVergeCommand } from './verge-commands.js';
 
 export interface JobRuntimeOptions {
   spawn?: (command: string, args: string[], options?: Record<string, unknown>) => ChildProcess;
@@ -132,6 +133,17 @@ export async function runNativeCommand(argv: string[], context: NativeContext): 
       io: context.io,
       readStdin: context.readStdin,
       now: context.now ? () => new Date(context.now!()) : undefined
+    });
+  }
+
+  if (command === 'verge') {
+    return await runVergeCommand(argv, {
+      cwd: context.cwd,
+      env: context.env,
+      io: context.io,
+      readStdin: context.readStdin,
+      spawn: context.spawn,
+      sleep: context.sleep
     });
   }
 

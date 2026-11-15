@@ -126,31 +126,40 @@ const EXIT_GROUP_TARGETS = ['🚀 节点选择'];
 
 #### 4.1.1 真实出口地址怎么写进去
 
-扩展脚本运行在 Verge 的沙箱里，**没有文件系统权限**，所以出口地址只能以字面量形式存在于 `profiles/<uid>.js`。既然要写字面量，就把这一步交给脚本，让地址只经过磁盘、不经过终端输出：
+扩展脚本运行在 Verge 的沙箱里，**没有文件系统权限**，所以出口地址只能以字面量形式存在于 `profiles/<uid>.js`。把这一步交给 CLI，地址只经过磁盘和进程内存，不经过终端回显：
 
-1. 建一个只给自己看的文件，一行一个地址，`#` 后面是显示名：
+```bash
+# 直接粘贴：提示符不回显，回车结束
+autovpn verge exit
 
-   ```text
-   socks5://USER:PASS@203.0.113.7:1080#🇭🇰 香港静态IP
-   ```
+# 或者从文件读，一行一个地址
+autovpn verge exit --from ~/.auto-vpn/verge-exit.txt
+```
 
-   路径默认是 `~/.auto-vpn/verge-exit.txt`。**用编辑器写**，别写成 `echo`/`printf` 命令——那样会留在 `~/.zsh_history` 里。写完 `chmod 600` 这个文件。
+文件格式（`#` 后面是显示名）：
 
-2. 先校验，不写任何东西：
+```text
+socks5://USER:PASS@203.0.113.7:1080#🇭🇰 香港静态IP
+```
 
-   ```bash
-   npm --prefix npm/autovpn-cli run verge:exit -- --check
-   ```
+路径默认是 `~/.auto-vpn/verge-exit.txt`。**用编辑器写**，别写成 `echo`/`printf` 命令——那样会留在 `~/.zsh_history` 里。CLI 会拒绝 group/other 可读的源文件，写完 `chmod 600` 它。
 
-   输出里只有 `✓ 🇭🇰 香港静态IP  socks5://***@203.0.113.7:1080` 这种脱敏行，带不出用户名和密码；解析失败时只报行号，不回声那一行的内容。
+`autovpn verge exit` 做四件事：
 
-3. 写进 Verge。脚本会自己找到 `profiles/` 下那份扩展脚本（按文件头的标记认，找到多份会要求用 `--out` 指定），只替换 `STATIC_EXITS` 这一段——你在 Verge 里调过的 `MODE`、`RULES_TO_EXIT` 原样保留——然后备份成 `.bak`、写入、把权限设成 600。之后让 Verge 重新激活一次订阅：
+1. 解析链接（`socks5` / `socks5h` / `socks` / `http` / `https` / `http+tls`），输出里只有 `socks5://***@203.0.113.7:1080` 这种脱敏行；解析失败只报行号，不回声那一行的内容。
+2. 只替换 `STATIC_EXITS` 这一段——你在 Verge 里调过的 `MODE`、`EXIT_GROUP_TARGETS`、`RULES_TO_EXIT` 原样保留——写入走「临时文件 + fsync + rename」，权限 600，半截脚本不会留在原地。
+3. 重启 Clash Verge，让扩展脚本重新跑；先等核心的 socket 重新出现，再在 mihomo 的 unix socket 上轮询，确认新的链式节点真的加载了，打印出口分组和成员。等待时长用 `--wait` 调（默认 25 秒）。
+4. 重启会让 Verge 把分组选择恢复成订阅自己的默认值，原本选着出口分组的 `🚀 节点选择` 会悄悄切回某个机场节点。写入前记下哪些分组正指向出口分组，激活稳定后自动放回去（输出里的 `restored`）；`--use` 则是无条件选中。
+5. 另一件重启会掩盖的事是「同名换凭证」：mihomo 的 `/proxies` 不带地址和凭证，新链接和旧链接看起来一样。所以还会读一遍 Verge 生成的 `clash-verge.yaml`：如果里面那条节点跟重启前一模一样，说明配置根本没重建，命令按失败退出（`6`），不会报成功。
 
-   ```bash
-   npm --prefix npm/autovpn-cli run verge:exit
-   ```
+- `--check`：只解析、只编译，不写任何东西。
+- `--test`：写之前先用 curl 通过每个出口拉一次 `https://api.ipify.org`，只打印返回的出口 IP；连不上就不写。
+- `--no-apply`：只写不重启，之后自己在 Verge 里重新激活订阅。
+- `autovpn verge status --test`：随时看当前状态——脚本里的出口、运行时是否已加载、当前选中的出口、链式节点的延迟。
 
-4. 想确认这个出口真的能用，加 `--test`：它会通过这个 SOCKS5 拉一次 `https://api.ipify.org`，只打印返回的出口 IP。
+退出码：`0` 成功，`2` 用法错误，`3` 没找到 Verge 或扩展脚本，`4` 源文件权限不对，`5` 出口连不上，`6` 核心没有加载新节点，或生成的配置里还是旧的那条。
+
+`npm --prefix npm/autovpn-cli run verge:exit` 是同一套解析逻辑的独立脚本，仍然可用（它的 `--out` 对应 CLI 的 `--script`）。
 
 仓库里的 `docs/clash-verge-extension.js` 始终是占位地址，所以凭证不会进 git，也不会出现在任何对话记录里。如果出口地址要跟云端订阅共用，也可以写进 `~/.auto-vpn/profile.toml` 的 `[static_exit]`，但那条路会在部署时把凭证同步到 Cloudflare 项目的环境变量里（见第 2 节），只想留本机就别混用。
 
@@ -209,6 +218,11 @@ const RULES_TO_EXIT = [
   - `// <静态出口 begin>` 到 `// <静态出口 end>` 之间是独立的注入块，自带解析和 YAML 改写。
   - `收尾Clash配置()` 是 Clash 输出的统一入口：先 `应用静态出口()`，再 `pruneEmptyClashGroups()`。
   - `admin/static-exit.json`：POST 写入 KV（`static-exit.json`），GET 读取；订阅请求只要有 KV 且没有用 `STATIC_EXIT_JSON` 直接给清单，就会把这个 KV 清单读进来。
+- `npm/autovpn-cli/src/verge/`
+  - `exit-uri.ts`：链接解析、脱敏、curl 代理地址。
+  - `script.ts`：`STATIC_EXITS` 的生成与替换、按 `profiles.yaml` 找扩展脚本、把脚本跑在探针配置上得到「这一轮会注入什么」。
+  - `runtime.ts`：mihomo unix socket 上的 `/proxies`、选择、延迟探测。
+- `npm/autovpn-cli/src/cli/verge-commands.ts`：`verge exit|status|test` 的解析、写入、重启、验证。
 - `npm/autovpn-cli/src/pipeline/deploy.ts`：`buildShareStaticExitEnv()` 把 `[static_exit]` 同步成分享项目的环境变量。
 - `npm/autovpn-cli/src/config/profile.ts`：`normalizeStaticExitSection()` 负责默认值与 twin 模式校验；`redactStaticExitForClient()` 让 `/api/state` 不吐出口账号密码。
 - `npm/autovpn-cli/src/pipeline/orchestrator.ts`：`deployStaticExitFields()` 把 `[static_exit]` 折进 deploy 入参。
@@ -220,6 +234,9 @@ node --test npm/autovpn-cli/test/pipeline/static-exit.test.mjs
 node --test npm/autovpn-cli/test/pipeline/share-worker-static-exit.test.mjs
 node --test npm/autovpn-cli/test/pipeline/verge-extension.test.mjs
 node --test npm/autovpn-cli/test/pipeline/verge-exit-apply.test.mjs
+node --test npm/autovpn-cli/test/verge-exit-uri.test.mjs
+node --test npm/autovpn-cli/test/verge-script.test.mjs
+node --test npm/autovpn-cli/test/verge-commands.test.mjs
 ```
 
 `static-exit.test.mjs` 覆盖转义名、流式 proxies/分组、带冒号顶层键、出口名撞分组名、无 `proxy-groups` 段这些畸形输入，最后统一交给 `mihomo -t` 复核。`share-worker-static-exit.test.mjs` 会把模板 Worker 真跑起来（SUBAPI 用本地桩），验证订阅输出与管理接口，再交 `mihomo -t` 校验。`verge-extension.test.mjs` 按 Verge 的方式 eval 扩展脚本，检查幂等、重名避让，三种模式都过 `mihomo -t`。没装 mihomo 时最后一步自动跳过。
