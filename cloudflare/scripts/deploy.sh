@@ -56,13 +56,19 @@ fi
 PROFILE_PROJECT="$(grep -E '^[[:space:]]*project_name[[:space:]]*=' "$CONTAINER_PROFILE" \
   | head -n1 | sed -E 's/^[^=]*=[[:space:]]*"(.*)"/\1/')"
 echo "deploy target: $PROFILE_PROJECT"
-# The one project this deploy must never touch is the VPS's. That is a
-# different thing from "only a scratch name is allowed": the Cloudflare
-# deployment has its own production project now, and refusing it would mean the
-# real service could only ever be deployed by weakening this guard.
+# The projects this deploy must never touch are the VPS's. They rotate
+# (`sub-nodes-04` → `sub-nodes-05`, `sub-links-share-06` → … → `-21`), so the
+# guard matches the families rather than one snapshot. That is different from
+# "only a scratch name is allowed": the Cloudflare deployment has its own
+# production project, and refusing it would mean the real service could only
+# ever be deployed by weakening this guard.
 case "$PROFILE_PROJECT" in
-  "" | "sub-nodes-04" | "sub-links-auto")
-    echo "  $PROFILE_PROJECT is the project the VPS publishes to" >&2
+  "")
+    echo "  the profile names no project; refusing" >&2
+    exit 1
+    ;;
+  sub-nodes-[0-9]* | sub-links-*)
+    echo "  $PROFILE_PROJECT is in the project family the VPS publishes to" >&2
     echo "  the two deployments must stay separate; refusing" >&2
     exit 1
     ;;

@@ -90,7 +90,7 @@ cloudflare/
     └── deploy.sh               build, push, deploy, seed secrets
 ```
 
-## Two ways to run the measure half
+## Running the measure half
 
 The publishing half is always the same: `wrangler pages deploy` from the
 artifact the run measured. The measuring half had two hosts; the runner one is
@@ -106,8 +106,8 @@ not a design one.
 | Orchestration | DO phases: measuring → gating → deploying → verifying | the workflow's steps |
 | Failure visibility | `/api/status`, `/api/events` | the Actions run page |
 
-Both use `container/profile.cloudflare.toml`, both crawl through
-`127.0.0.1:7897`, and both publish the artifact that run measured. The runner
+Both paths used `container/profile.cloudflare.toml` and crawled through
+`127.0.0.1:7897`, and each published the artifact its run measured. The runner
 path lived in `auto-vpn-runner` (`.github/workflows/scheduled-subscription.yml`,
 nightly and manual dispatch); the container path is
 `.github/workflows/deploy-cloudflare.yml` plus the Worker.
@@ -327,15 +327,15 @@ floor again.
 whatever project that is**. That project was deleted on 2026-11-15 with the
 runner retirement; `deploy.sh` creates it again on the next container deploy, so
 the name is still live rather than historical. It is a separate project from
-the VPS's `sub-nodes-04` on purpose: the two installations serve two
-subscriptions, and neither can replace the other's artifact.
+the VPS's `sub-nodes-<number>` projects on purpose: the two installations serve
+two subscriptions, and neither can replace the other's artifact.
 
 `wrangler pages deploy` replaces the whole production deployment of the named
 project. There is no per-branch isolation for a Direct Upload project and no dry
 run, so the project name in the profile **is** the blast radius. `deploy.sh`
-refuses the two names that belong to the VPS (`sub-nodes-04`, the retired
-`sub-links-auto`), and `container/test/profile.test.mjs` asserts the same pair,
-so a profile edit cannot quietly merge the two into one blast radius.
+refuses the families the VPS publishes to (`sub-nodes-<number>`, `sub-links-*`),
+and `container/test/profile.test.mjs` asserts the same rule, so a profile edit
+cannot quietly merge the two into one blast radius.
 
 To try a change without touching the live subscription, point `project_name` at
 a throwaway project for that run. The publish workflow's verify step reads the

@@ -89,16 +89,17 @@ test('the claude availability target is the trace endpoint', () => {
   assert.match(block, /url\s*=\s*"https:\/\/claude\.ai\/cdn-cgi\/trace"/);
 });
 
-test('the deploy target is not the project the VPS publishes to', () => {
+test('the deploy target is not a project the VPS publishes to', () => {
   // `wrangler pages deploy` replaces the whole production deployment of the
   // project it names. The two installations must stay separate: this one has
-  // its own project (`sub-nodes-cf`), and the VPS keeps `sub-nodes-04`.
-  // deploy.sh enforces the same pair, so a profile edit cannot quietly merge
-  // them into one blast radius.
+  // its own project (`sub-nodes-cf`), and the VPS publishes to the
+  // `sub-nodes-<number>` and `sub-links-*` families. deploy.sh enforces the
+  // same rule, so a profile edit cannot quietly merge the two into one blast
+  // radius.
   const project = /^project_name\s*=\s*"([^"]+)"/m.exec(raw)?.[1] ?? '';
   assert.ok(project, 'the profile names no project');
-  assert.notEqual(project, 'sub-nodes-04', 'this would replace the VPS subscription');
-  assert.notEqual(project, 'sub-links-auto', 'this names the retired VPS project');
+  assert.doesNotMatch(project, /^sub-nodes-[0-9]/, 'this would replace a VPS subscription');
+  assert.doesNotMatch(project, /^sub-links-/, 'this names a VPS share project');
 });
 
 test('the account file is small enough to survive the route body limit', () => {
