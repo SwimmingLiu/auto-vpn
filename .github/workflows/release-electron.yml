@@ -1,8 +1,9 @@
 name: Release Electron App
 
+# Tags are the trigger. `release: published` was removed: a release created
+# from the UI fires that event and the tag push, and nothing deduplicated the
+# two full release runs. `workflow_dispatch` rebuilds a tag.
 on:
-  release:
-    types: [published]
   push:
     tags:
       - 'v*.*'
@@ -18,7 +19,7 @@ permissions:
   id-token: write
 
 env:
-  RELEASE_TAG_NAME: ${{ github.event.inputs.tag_name || github.event.release.tag_name || github.ref_name }}
+  RELEASE_TAG_NAME: ${{ github.event.inputs.tag_name || github.ref_name }}
   # Older release tags pin public mirrors that can return 503 on hosted runners.
   # The pinned normalizer also removes Tencent's /npm/ prefix before installation.
   NPM_CONFIG_REGISTRY: "https://registry.npmjs.org/"
@@ -51,21 +52,6 @@ jobs:
           cache-dependency-path: |
             package-lock.json
             npm/autovpn-cli/package-lock.json
-
-      - name: Cache browser runtime downloads
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/electron
-            ~/Library/Caches/electron
-            ~/AppData/Local/electron/Cache
-            ~/.cache/electron-builder
-            ~/Library/Caches/electron-builder
-            ~/AppData/Local/electron-builder/Cache
-            ~/.cache/ms-playwright
-          key: ${{ runner.os }}-${{ runner.arch }}-browser-runtime-${{ hashFiles('package-lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-browser-runtime-
 
       - name: Check release tag and package version
         env:
@@ -112,23 +98,9 @@ jobs:
       - name: Build npm CLI web server
         run: npm run build --prefix npm/autovpn-cli
 
-      - name: Install pinned Playwright Chromium and WebKit runtimes
-        run: npx playwright install --with-deps chromium-headless-shell webkit
-
-      - name: Run H5 mobile Chromium and WebKit gate
-        run: npm run test:h5
-
-      - name: Run Electron native and desktop gate
-        run: npm run test:electron-native
-
-      - name: Upload renderer visual diffs
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-renderer-visual-diffs
-          path: electron/tests/visual-artifacts/**
-          if-no-files-found: ignore
-
+      # The H5 and Electron gates ran on the pull request that produced this
+      # commit; the release gate keeps the checks that are specific to the
+      # artifact: tag/version agreement and the npm wrapper itself.
       - name: Run npm CLI wrapper tests
         run: |
           npm test --prefix npm/autovpn-cli
