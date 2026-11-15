@@ -80,7 +80,6 @@ test('share Worker emits a chained static exit into the Clash subscription', asy
 
   const response = await withSubconverterStub(async (subapi) => {
     const env = {
-      SUB: 'https://sub-nodes.example/?serect_key=unused',
       SUBAPI: subapi,
       UUID: '179ba8dd-3854-4747-b853-fc1868ef3937',
       PASSWORD: 'harness-password',
@@ -119,8 +118,19 @@ test('share Worker emits a chained static exit into the Clash subscription', asy
   const dir = await mkdtemp(path.join(os.tmpdir(), 'share-worker-mihomo-'));
   const configPath = path.join(dir, 'config.yaml');
   await writeFile(configPath, yaml, 'utf8');
-  const { stdout, stderr } = await run(mihomoBin, ['-t', '-f', configPath, '-d', dir], { timeout: 120_000 });
-  assert.match(`${stdout}${stderr}`, /test is successful/);
+  try {
+    const { stdout, stderr } = await run(mihomoBin, ['-t', '-f', configPath, '-d', dir], { timeout: 120_000 });
+    assert.match(`${stdout}${stderr}`, /test is successful/);
+  } catch (error) {
+    const output = `${error?.stdout ?? ''}${error?.stderr ?? ''}`;
+    // mihomo downloads GeoIP on first run; an offline CI can only fail here for
+    // that reason, not because the generated subscription is malformed.
+    if (/can't download MMDB|can't initial GeoIP/i.test(output)) {
+      t.diagnostic('mihomo could not fetch its GeoIP database; skipping the config check');
+      return;
+    }
+    throw error;
+  }
 });
 
 test('the plain subscription stays clean even when the project holds an exit', async () => {
@@ -191,7 +201,7 @@ test('share Worker reads the KV static-exit list and serves it over the admin ro
     async get(key) { return store.has(key) ? store.get(key) : null; },
     async put(key, value) { store.set(key, value); }
   };
-  const base = { UUID: '179ba8dd-3854-4747-b853-fc1868ef3937', PASSWORD: 'pw', KV, HOST: 'sub-links.example' };
+  const base = { SUB: 'https://sub-nodes.example/?serect_key=unused', UUID: '179ba8dd-3854-4747-b853-fc1868ef3937', PASSWORD: 'pw', KV, HOST: 'sub-links.example' };
   const withCf = (request) => {
     Object.defineProperty(request, 'cf', { value: { asn: 1, asOrganization: 'harness', country: 'HK', city: 'HK' } });
     return request;
@@ -212,13 +222,59 @@ test('share Worker reads the KV static-exit list and serves it over the admin ro
   assert.equal(get.status, 200);
   assert.match(await get.text(), /KV出口/);
 
+  // 分享 Worker 的 SUB 是主 Worker 的真实订阅：配置里必须关掉本地优选生成，
+  // 否则订阅会变成指向分享 Worker 自己的 16 个 CF 占位节点。
+  const adminConfig = await worker.default.fetch(withCf(new Request('https://sub-links.example/admin/config.json', {
+    headers: { Cookie: cookie, 'User-Agent': 'clash-verge/v2.0.0 mihomo' }
+  })), base, { waitUntil() {} });
+  assert.equal(adminConfig.status, 200);
+  const config = await adminConfig.json();
+  assert.equal(config.优选订阅生成.local, false);
+  assert.equal(config.优选订阅生成.SUB, base.SUB);
+
   const yaml = await withSubconverterStub(async (subapi) => {
     const response = await worker.default.fetch(withCf(new Request('https://sub-links.example/static?token=harness-token', {
       headers: { 'User-Agent': 'clash-verge/v2.0.0 mihomo' }
-    })), { ...base, SUBAPI: subapi }, { waitUntil() {} });
+    })), { ...base, SUB: undefined, SUBAPI: subapi }, { waitUntil() {} });
     return response.text();
   });
 
   assert.match(yaml, /name: "KV出口"/, 'a list stored only in KV must still reach the subscription');
   assert.match(yaml, /- name: "🛡️ 静态IP出口"/);
+});
+
+test('share Worker follows the configured SUB verbatim instead of local placeholders', async () => {
+  const worker = await loadWorker();
+  const sourceLinks = [
+    'vless://11111111-2222-4333-8444-555555555555@192.0.2.10:443?security=tls&type=ws&host=source.example&path=%2F#SourceNode'
+  ];
+  let seenPath = '';
+  const server = createServer((req, res) => {
+    seenPath = req.url;
+    res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' });
+    res.end(Buffer.from(sourceLinks.join('\n'), 'utf8').toString('base64'));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  try {
+    const env = {
+      SUB: `http://127.0.0.1:${port}/?serect_key=source`,
+      UUID: '179ba8dd-3854-4747-b853-fc1868ef3937',
+      PASSWORD: 'pw',
+      KV: mockKV(),
+      HOST: 'sub-links.example'
+    };
+    const request = new Request('https://sub-links.example/sub?target=mixed&token=harness-token', {
+      headers: { 'User-Agent': 'v2rayN/6.0' }
+    });
+    Object.defineProperty(request, 'cf', { value: { asn: 1, asOrganization: 'harness', country: 'HK', city: 'HK' } });
+    const response = await worker.default.fetch(request, env, { waitUntil() {} });
+    assert.equal(response.status, 200);
+    assert.equal(seenPath, '/?serect_key=source', 'the configured SUB path and query must reach the source');
+    const decoded = Buffer.from(await response.text(), 'base64').toString('utf8');
+    assert.match(decoded, /SourceNode/);
+    assert.ok(!decoded.includes('CF官方优选'), 'the share Worker must not generate its own placeholder nodes');
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 });

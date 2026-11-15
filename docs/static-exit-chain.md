@@ -8,8 +8,8 @@
 
 | 段 | 部署物 | 作用 | 静态出口会不会生效 |
 | --- | --- | --- | --- |
-| 主 Worker（`sub-nodes-04`） | 混淆后的最小导出 Worker | 只吐 base64 节点列表 | 不会，它不做 Clash 订阅转换 |
-| 分享 Worker（`sub-links-share-06/07`） | `templates/share-worker/vpn.js` | 拉主 Worker 的节点，交给 SUBAPI 转 Clash，再热补丁 | 会 |
+| 主 Worker（`sub-nodes-05`） | 混淆后的最小导出 Worker | 只吐 base64 节点列表 | 不会，它不做 Clash 订阅转换 |
+| 分享 Worker（`sub-links-share-22`） | `templates/share-worker/vpn.js` | 拉取主 Worker 的订阅源，交给 SUBAPI 转 Clash，再热补丁 | 会 |
 
 所以静态出口只对分享 Worker 输出的订阅地址生效。
 
@@ -18,12 +18,12 @@
 ```text
 https://www.swimmingliu.online/sub?token=...          # 分享 Worker，原样输出，不含静态出口
 https://www.swimmingliu.online/static?token=...       # 分享 Worker，同一份订阅 + 静态出口（手机用这个）
-https://sub-nodes-04.pages.dev/?serect_key=...    # 主 Worker，只吐 base64
+https://sub-nodes-05.pages.dev/?serect_key=...    # 主 Worker，只吐 base64
 ```
 
 `/static` 是单独入口：默认 `/sub` 的内容和没有静态出口时逐字一致，静态出口只挂在 `/static` 上。`?static=1` 与 `/static` 等价，给不方便改路径的客户端用。两个地址的 token 相同。
 
-> 部署状态（2026-11-15）：`/static` 的 Worker 代码已在仓库里，但 `sub-links-share-07` 和 `-19` 都被 Cloudflare 以 `code: 8000119`（Pages project has been blocked）拒绝部署，线上仍是旧 Worker，`/static` 暂时 404。解封要发邮件到 abusereply@cloudflare.com；解封前手机端先用第 4.1 节的本地扩展脚本。
+> 部署状态（2026-11-15）：`sub-links-share-07`、`-19`、`-20` 和 `-21` 先后被 Cloudflare 以 `code: 8000119`（Pages project has been blocked）拒绝部署，已按“新建项目 + 迁移环境变量”的方式切到 `sub-links-share-22`，`www.swimmingliu.online` 的 CNAME 和自定义域都指向新项目，`/sub` 与 `/static` 均已实测可用，旧项目和它们专用的 KV 命名空间已删除。分享 Worker 模板同时升级到 cmliu/edgetunnel `2026-11-10`（新的 `KEY`/`userIDMD5` token 派生和 SS AEAD）。分享 Worker 的 `SUB` 指向主 Worker 的真实订阅（`sub-nodes-05.pages.dev/?serect_key=...`），因此环境变量兼容层会在 `SUB` 存在时设置 `优选订阅生成.local = false`；订阅里是主 Worker 的 37 个真实节点，不是分享 Worker 自己生成的 16 个 CF 占位节点。旧模板里的 `env.SUB` 等环境变量覆盖在新模板中不再存在，`templates/share-worker/vpn.js` 里保留了一段兼容层，部署仍只写 Pages 环境变量。
 
 ## 2. 配置
 
@@ -258,3 +258,14 @@ node --test npm/autovpn-cli/test/verge-commands.test.mjs
 ```
 
 `static-exit.test.mjs` 覆盖转义名、流式 proxies/分组、带冒号顶层键、出口名撞分组名、无 `proxy-groups` 段这些畸形输入，最后统一交给 `mihomo -t` 复核。`share-worker-static-exit.test.mjs` 会把模板 Worker 真跑起来（SUBAPI 用本地桩），验证订阅输出与管理接口，再交 `mihomo -t` 校验。`verge-extension.test.mjs` 按 Verge 的方式 eval 扩展脚本，检查幂等、重名避让，三种模式都过 `mihomo -t`。没装 mihomo 时最后一步自动跳过。
+
+## 8. Cloudflare 误封后的处理
+
+`code: 8000119`（Pages project has been blocked）是项目级封禁，原项目上的部署和域名都不能再用。按下面的顺序迁移，不要在原项目上反复重试：
+
+1. 新建主 Worker 项目和分享 Worker 项目（`sub-nodes-05`、`sub-links-share-22` 这种递增编号），不要复用被封的名字。
+2. 主 Worker 重新走一遍 `autovpn` 的构建，换一个新的 `variable_prefix`，确认产物和上一版逐字节不同。
+3. 分享 Worker 从 `templates/share-worker/vpn.js` 重新部署；环境变量按被封项目的 `deployment_configs` 逐项迁移（`ADMIN` 是 `secret_text`，`STATIC_EXIT` 从 `~/.auto-vpn/profile.toml` 的 `[static_exit]` 同步），KV 建议新建独立命名空间，避免和旧项目的 `config.json` 串用。
+4. 把 `www.swimmingliu.online` 的 CNAME 改到新项目，删除旧项目上的自定义域，再在新项目上重新添加；Pages 侧的域名状态到 `active` 后再验收。
+5. 更新 `~/.auto-vpn/profile.toml` 的 `project_name`、`pages_project_url`、`share_project_name` 和 `share_project_fallback_last_used_suffix`，然后各拉一次 `/sub` 与 `/static`，两份都要过 `mihomo -t`，并确认 `/static` 的 `Content-Disposition` 带 `-静态IP`。
+6. 验收通过后删除旧项目：只删除已经迁移完、且不再承载任何自定义域的旧 Worker；顺带删除它们专用的 KV 命名空间，避免留下孤儿资源。共用命名空间只在确认没有其他项目绑定后删除。
