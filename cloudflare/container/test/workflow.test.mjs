@@ -19,7 +19,7 @@ import test from 'node:test';
  * a shared Postgres table, the same database.
  */
 
-const WORKFLOW_PATH = new URL('../../../.github/workflows/cloudflare-subscription.yml', import.meta.url);
+const WORKFLOW_PATH = new URL('../../../.github/workflows/manual-subscription-publish.yml', import.meta.url);
 const raw = readFileSync(WORKFLOW_PATH, 'utf8');
 
 /** Split into `- name:` blocks, keeping each step's body. */

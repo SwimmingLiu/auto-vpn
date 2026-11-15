@@ -1,4 +1,4 @@
-name: Cloudflare Subscription
+name: Manual Subscription Publish
 
 # Measure, build and publish the subscription from a GitHub runner.
 #
@@ -31,7 +31,7 @@ permissions:
 # A publish replaces the whole Pages production deployment, so two runs must
 # never overlap.
 concurrency:
-  group: cloudflare-subscription
+  group: subscription-publish
   cancel-in-progress: false
 
 env:
@@ -292,7 +292,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: cloudflare-subscription-run
+          name: subscription-publish-run
           path: |
             ${{ runner.temp }}/run.redacted.jsonl
             ${{ runner.temp }}/deploy.redacted.jsonl
