@@ -86,7 +86,6 @@ cloudflare/
 └── scripts/
     ├── fetch-mihomo.sh         vendor the linux binary for the image build
     ├── egress-on-runner.mjs    the same supervisor, for the runner-based path
-    ├── assemble-account-pool.mjs  join split pool secrets, pinned by sha256
     ├── verify-published.mjs    decode what is served; a 200 alone is not success
     └── deploy.sh               build, push, deploy, seed secrets
 ```
@@ -101,8 +100,8 @@ a plan question, not a design one.
 |---|---|---|
 | Where the crawl runs | Cloudflare Container (full Linux VM) | GitHub Actions `ubuntu-24.04` |
 | What it needs | Workers Paid (~$6.5/mo measured) | nothing beyond the repo |
-| Schedule | Worker Cron + Durable Object alarm | the workflow's own `cron` |
-| Where the pool lives | Durable Object SQLite | repository secrets, split + sha256-pinned |
+| Schedule | Worker Cron + Durable Object alarm | the nightly trigger in `auto-vpn-runner` |
+| Where the pool lives | Durable Object SQLite | the shared Postgres pool (`autovpn.accounts`) |
 | Orchestration | DO phases: measuring → gating → deploying → verifying | the workflow's steps |
 | Failure visibility | `/api/status`, `/api/events` | the Actions run page |
 
@@ -138,6 +137,7 @@ Repository settings it reads:
 | secret | `CLOUDFLARE_API_TOKEN` | yes | deploy the Worker and push the image |
 | secret | `AUTOVPN_API_TOKEN` | yes | the Worker's own bearer token |
 | secret | `AUTOVPN_SUBSCRIPTION_URL` | recommended | the egress pool's source |
+| secret | `AUTOVPN_ACCOUNTS_DB_URL` | yes | the shared account pool (`autovpn.accounts`) |
 | variable | `CLOUDFLARE_ACCOUNT_ID` | yes | target account |
 | variable | `AUTOVPN_BASE_URL` | no | smoke-test URL, e.g. `https://autovpn-cloud.<subdomain>.workers.dev` |
 | variable | `AUTOVPN_ALLOW_LIVE_PROJECT` | no | `1` lets the deploy target a real Pages project |
@@ -157,6 +157,7 @@ gh secret set CLOUDFLARE_API_TOKEN
 # paste the value from ~/.autovpn-api-token when prompted, or:
 gh secret set AUTOVPN_API_TOKEN < ~/.autovpn-api-token
 gh secret set AUTOVPN_SUBSCRIPTION_URL
+gh secret set AUTOVPN_ACCOUNTS_DB_URL
 gh variable set CLOUDFLARE_ACCOUNT_ID --body '<account id>'
 gh variable set AUTOVPN_BASE_URL --body 'https://autovpn-cloud.<subdomain>.workers.dev'
 ```

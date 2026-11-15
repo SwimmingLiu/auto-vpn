@@ -85,8 +85,45 @@ fi
 
 run_env=(VPN_AUTOMATION_PROFILE_PATH="$PROFILE_PATH")
 
+# The account pool lives in a shared Postgres table, not in this host's sqlite
+# file. The URL embeds the database password, so it sits in a 600 file beside the
+# profile rather than in the crontab or this script — and it is never logged: the
+# line below names the file, never what it contains. The CLI pulls the pool
+# before each mutating command and before `run`, and pushes back after, so a
+# retirement recorded on the runner reaches this host on its next tick.
+POOL_ENV_PATH="${AUTOVPN_POOL_ENV:-$RUNTIME_ROOT/pool-db.env}"
+pool_env=()
+if [ -f "$POOL_ENV_PATH" ]; then
+  pool_url=""
+  # `read` returns false on a final line with no trailing newline after still
+  # assigning it, so a hand-written file would silently look empty. The
+  # `|| [ -n ... ]` keeps that last line.
+  while IFS= read -r pool_line || [ -n "$pool_line" ]; do
+    case "$pool_line" in
+      AUTOVPN_ACCOUNTS_DB_URL=*) pool_url="${pool_line#AUTOVPN_ACCOUNTS_DB_URL=}" ;;
+    esac
+  done < "$POOL_ENV_PATH"
+  # Tolerate the quoting a human or `env` writer may add; the CLI takes the
+  # bare URL.
+  pool_url="${pool_url#\"}"; pool_url="${pool_url%\"}"
+  pool_url="${pool_url#\'}"; pool_url="${pool_url%\'}"
+  if [ -n "$pool_url" ]; then
+    pool_env+=("AUTOVPN_ACCOUNTS_DB_URL=$pool_url")
+    log "account pool: shared database configured from $POOL_ENV_PATH"
+  else
+    log "account pool: $POOL_ENV_PATH has no AUTOVPN_ACCOUNTS_DB_URL; this host uses its local copy only"
+  fi
+  pool_mode="$(stat -c '%a' "$POOL_ENV_PATH" 2>/dev/null || true)"
+  if [ -n "$pool_mode" ] && [ "$pool_mode" != "600" ]; then
+    log "account pool: $POOL_ENV_PATH is mode $pool_mode; it holds a password and should be 600"
+  fi
+  unset pool_url pool_mode
+else
+  log "account pool: $POOL_ENV_PATH not found; this host uses its local copy only"
+fi
+
 cli() {
-  env "${run_env[@]}" "$NODE_BIN" "$CLI_ENTRY" "$@" --project-root "$PROJECT_ROOT"
+  env "${run_env[@]}" ${pool_env[@]+"${pool_env[@]}"} "$NODE_BIN" "$CLI_ENTRY" "$@" --project-root "$PROJECT_ROOT"
 }
 
 # Retire accounts whose membership date has passed and erase the ones retired

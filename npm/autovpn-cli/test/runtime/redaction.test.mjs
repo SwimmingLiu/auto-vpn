@@ -12,6 +12,19 @@ test('redactText covers query params and vmess links', () => {
   assert.doesNotMatch(redacted, /SECRET|QUERY|vmess:\/\/abcdef/);
 });
 
+test('redactText covers the database password in a Postgres URL', () => {
+  const redacted = redactText(
+    'connect failed: postgresql://autonet:s3cret@db.example:5432/autonet?sslmode=prefer'
+  );
+  assert.match(redacted, /postgresql:\/\/<redacted>@db\.example:5432\/autonet/);
+  assert.doesNotMatch(redacted, /s3cret/);
+  // A URL without userinfo is left alone.
+  assert.equal(
+    redactText('postgresql://db.example/autonet'),
+    'postgresql://db.example/autonet'
+  );
+});
+
 test('redactText covers colon JSON and TOML-shaped secret fields', () => {
   const raw = [
     '"cloudflare_api_token":"CF_TOKEN"',

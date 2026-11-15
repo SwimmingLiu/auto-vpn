@@ -12,7 +12,7 @@ ARG MIHOMO_VERSION=v1.19.34
 # from the published package, so this version has to be released (npm publish
 # runs on GitHub release) before the container path is deployed. Pinning an
 # older CLI silently shipped a pipeline without the probe budget.
-ARG AUTOVPN_VERSION=2.3.3
+ARG AUTOVPN_VERSION=2.4.0
 # Build-time only. Cloudflare's builder has no route to GitHub from every
 # region; pass the operator's proxy here when building locally for a push.
 ARG HTTPS_PROXY
