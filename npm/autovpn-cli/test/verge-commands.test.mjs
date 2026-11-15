@@ -212,6 +212,7 @@ test('the whole chain goes live and the selector can be pointed at it', async ()
       home: install.home,
       io,
       readStdin: async () => LINK,
+      platform: 'darwin',
       spawn: fakeSpawn(calls),
       sleep: async () => {}
     });
@@ -252,6 +253,7 @@ test('a same-name rotation the core never received is reported as not applied', 
       home: install.home,
       io,
       readStdin: async () => rotated,
+      platform: 'darwin',
       spawn: fakeSpawn([]),
       sleep: async () => {}
     });
@@ -280,6 +282,7 @@ test('a selection the restart reset is put back on the exit group', async () => 
       home: install.home,
       io,
       readStdin: async () => LINK,
+      platform: 'darwin',
       // The relaunched app comes back with the profile's own default selection.
       spawn: fakeSpawn([], (command) => {
         if (command !== 'open') return;
@@ -309,6 +312,7 @@ test('a core that never loads the new nodes is reported as not live', async () =
       home: install.home,
       io,
       readStdin: async () => LINK,
+      platform: 'darwin',
       spawn: fakeSpawn([]),
       sleep: async () => {}
     });
@@ -317,6 +321,22 @@ test('a core that never loads the new nodes is reported as not live', async () =
   } finally {
     await mihomo.close();
   }
+});
+
+test('a host that is not macOS refuses to pretend it restarted Verge', async () => {
+  const install = createInstall();
+  const io = createIo();
+  const code = await runVergeCommand(['verge', 'exit', '--wait', '0'], {
+    env: {}, cwd: packageRoot, home: install.home, io,
+    readStdin: async () => LINK,
+    platform: 'linux',
+    spawn: fakeSpawn([]),
+    sleep: async () => {}
+  });
+  assert.equal(code, 3);
+  assert.match(io.stderr, /only implemented on macOS/);
+  // The script is still written; only the restart is refused.
+  assert.equal(loadScript(fs.readFileSync(install.script, 'utf8')).exits[0].server, '203.0.113.7');
 });
 
 test('the socket a restart recreates is waited for, not assumed', async () => {

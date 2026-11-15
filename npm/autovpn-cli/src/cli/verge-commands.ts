@@ -85,6 +85,8 @@ export interface VergeContext {
   sleep?: (ms: number) => Promise<void>;
   now?: () => string;
   home?: string;
+  /** Overridable so the apply path is testable on runners that are not macOS. */
+  platform?: NodeJS.Platform;
 }
 
 function flagValue(argv: string[], name: string): string | undefined {
@@ -261,7 +263,7 @@ function runCommand(spawn: SpawnLike, command: string, args: string[]): Promise<
  */
 async function restartVerge(context: VergeContext): Promise<void> {
   const spawn = context.spawn ?? nodeSpawn;
-  if (process.platform !== 'darwin') {
+  if ((context.platform ?? process.platform) !== 'darwin') {
     throw new Error('restarting Clash Verge is only implemented on macOS; write with --no-apply and reactivate the profile in the app');
   }
   context.io.writeStderr('restarting Clash Verge (connections drop for a few seconds)…\n');
