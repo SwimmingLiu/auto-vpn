@@ -203,6 +203,96 @@ test('a string EXIT_GROUP_TARGETS is one target, not "all groups"', async () => 
   assert.equal(nodeSelect.proxies.includes('🛡️ 静态IP出口'), false);
 });
 
+test('the Verge extension keeps a neighbour node on the exit address and leaves no dangling member', async () => {
+  const main = await loadExtension(await readFile(scriptPath, 'utf8'));
+  const profile = structuredClone(baseProfile);
+  // 同一台机器、名字带出口名，但不是本脚本生成的：不能删，更不能留下悬空成员。
+  profile.proxies.push({ name: '🇭🇰 香港静态IP 备用', type: 'vmess', server: '198.51.100.10', port: 1080, uuid: 'x' });
+  profile['proxy-groups'][0].proxies.push('🇭🇰 香港静态IP 备用');
+  profile['proxy-groups'][1].proxies.push('🇭🇰 香港静态IP 备用');
+
+  const out = main(profile, 'p');
+  assert.ok(out.proxies.some((p) => p.name === '🇭🇰 香港静态IP 备用'));
+  for (const g of out['proxy-groups']) {
+    for (const 成员 of g.proxies ?? []) {
+      const 能解析 = out.proxies.some((p) => p.name === 成员)
+        || out['proxy-groups'].some((x) => x.name === 成员)
+        || ['DIRECT', 'REJECT'].includes(成员);
+      assert.ok(能解析, `${g.name} 的成员 ${成员} 必须能解析`);
+    }
+  }
+});
+
+test('the Verge extension does not accumulate RULES_TO_EXIT rules across runs', async () => {
+  const source = (await readFile(scriptPath, 'utf8'))
+    .replace('const RULES_TO_EXIT = [];', "const RULES_TO_EXIT = ['DOMAIN-SUFFIX,openai.com,🛡️ 静态IP出口'];");
+  const main = await loadExtension(source);
+
+  const once = main(structuredClone(baseProfile), 'p');
+  const twice = main(structuredClone(once), 'p');
+  assert.equal(twice.rules.filter((规则) => String(规则).includes('openai.com')).length, 1);
+  assert.deepEqual(twice, once);
+});
+
+test('the Verge extension retargets rules when the exit group gets its name back', async () => {
+  const source = (await readFile(scriptPath, 'utf8'))
+    .replace('const RULES_TO_EXIT = [];', "const RULES_TO_EXIT = ['DOMAIN-SUFFIX,openai.com,🛡️ 静态IP出口'];");
+  const main = await loadExtension(source);
+
+  const profile = structuredClone(baseProfile);
+  // 影子节点把出口组挤成了 `… 2`，规则跟着改名。
+  profile.proxies.push({ name: '🛡️ 静态IP出口', type: 'vmess', server: '9.9.9.9', port: 443, uuid: 'x' });
+  const once = main(profile, 'p');
+  const 旧组名 = once['proxy-groups'].find((g) => g.name.startsWith('🛡️')).name;
+  assert.equal(旧组名, '🛡️ 静态IP出口 2');
+  assert.equal(once.rules[0], `DOMAIN-SUFFIX,openai.com,${旧组名}`);
+
+  // 影子节点消失后分组回到原名，旧规则必须跟着改，不能留着指向 `… 2`。
+  const held = structuredClone(once);
+  held.proxies = held.proxies.filter((p) => p.name !== '🛡️ 静态IP出口');
+  const again = main(held, 'p');
+  assert.equal(again['proxy-groups'].find((g) => g.name.startsWith('🛡️')).name, '🛡️ 静态IP出口');
+  assert.equal(again.rules[0], 'DOMAIN-SUFFIX,openai.com,🛡️ 静态IP出口');
+  assert.equal(again.rules.filter((规则) => String(规则).includes('openai.com')).length, 1);
+});
+
+test('the Verge extension removes its rules when the chain disappears', async () => {
+  const source = (await readFile(scriptPath, 'utf8'))
+    .replace('const RULES_TO_EXIT = [];', "const RULES_TO_EXIT = ['DOMAIN-SUFFIX,openai.com,🛡️ 静态IP出口'];");
+  const main = await loadExtension(source);
+
+  const once = main(structuredClone(baseProfile), 'p');
+  const held = structuredClone(once);
+  held.proxies = held.proxies.filter((p) => String(p.name).endsWith('（链式）'));
+  const out = main(held, 'p');
+  assert.equal(out.rules.some((规则) => String(规则).includes('openai.com')), false);
+});
+
+test('the Verge extension removes its nodes when the exit list is emptied', async () => {
+  const withExit = await loadExtension(await readFile(scriptPath, 'utf8'));
+  const once = withExit(structuredClone(baseProfile), 'p');
+
+  const source = (await readFile(scriptPath, 'utf8'))
+    .replace(/const STATIC_EXITS = \[[\s\S]*?\n\];/, 'const STATIC_EXITS = [];');
+  const main = await loadExtension(source);
+  const out = main(once, 'p');
+
+  assert.equal(out.proxies.some((p) => String(p.name).includes('静态IP')), false);
+  assert.equal(out['proxy-groups'].some((g) => String(g.name).includes('静态IP')), false);
+  assert.equal(out.rules.some((规则) => String(规则).includes('静态IP')), false);
+});
+
+test('an exit name containing the chain separator still rebuilds cleanly', async () => {
+  const source = (await readFile(scriptPath, 'utf8'))
+    .replace("name: '🇭🇰 香港静态IP'", "name: '🇭🇰 香港 ➜ 静态IP'");
+  const main = await loadExtension(source);
+
+  const once = main(structuredClone(baseProfile), 'p');
+  const twice = main(structuredClone(once), 'p');
+  assert.equal(twice.proxies.filter((p) => String(p.name).endsWith('（链式）')).length, 1);
+  assert.deepEqual(twice, once);
+});
+
 test('the Verge extension still injects when a node shares the exit address', async () => {
   const source = await readFile(scriptPath, 'utf8');
   const main = await loadExtension(source);
@@ -280,6 +370,7 @@ test('the Verge extension rebuilds a deleted exit group without duplicating the 
   held['proxy-groups'] = held['proxy-groups'].filter((g) => !g.name.startsWith('🛡️'));
   const again = main(held, 'p');
 
+  assert.ok(again['proxy-groups'].some((g) => g.name === '🛡️ 静态IP出口'), 'the exit group must come back');
   const entrances = again['proxy-groups'].filter((g) => g.name.startsWith('🛬'));
   assert.equal(entrances.length, 1, 'one entrance group, not a renamed duplicate');
   // 入口组 → 出口组 → 链式节点 → 入口组 会形成 dialer 环，选错一次就解析回自身。
@@ -326,7 +417,8 @@ test('the Verge extension recovers every deleted-group shape into a loadable con
   }
 
   const source = (await readFile(scriptPath, 'utf8'))
-    .replace("const EXIT_GROUP_TARGETS = ['🚀 节点选择'];", 'const EXIT_GROUP_TARGETS = [];');
+    .replace("const EXIT_GROUP_TARGETS = ['🚀 节点选择'];", 'const EXIT_GROUP_TARGETS = [];')
+    .replace('const RULES_TO_EXIT = [];', "const RULES_TO_EXIT = ['DOMAIN-SUFFIX,openai.com,🛡️ 静态IP出口'];");
   const main = await loadExtension(source);
   const once = main(structuredClone(baseProfile), 'p');
   const dir = await mkdtemp(path.join(os.tmpdir(), 'verge-recovery-'));

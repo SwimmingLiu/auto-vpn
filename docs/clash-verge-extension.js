@@ -83,16 +83,26 @@ function 家族内(名, 基础名) {
   return 名.startsWith(`${基础名} `) && /^\d+$/.test(名.slice(基础名.length + 1));
 }
 
-// 节点是不是上一轮注入的出口（直连或链式）。地址和名字都要对上：只看名字会
-// 误删订阅里同名但不同地址的节点，只看地址会误删用户自己加的同一台机器。
+// 注入的节点和分组都带上这个标记。mihomo 不认的字段会被忽略（`mihomo -t` 可过），
+// 但下一轮能凭它精确认出「这是我们上一轮加的东西」，不必靠名字猜。
+// 旧版本注入的没带标记，所以名字形态还要留一套兜底。
+const 标记 = '__static_exit';
+
+function 转义(文本) {
+  return String(文本).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// 节点是不是上一轮注入的出口。优先看标记；没有标记时按名字形态认：
+// `出口名`、`出口名 2`、`出口名（链式）`、`入口 ➜ 出口名`，以及它们的数字后缀。
+// 地址也必须对上，避免误删订阅里同名但指向别处的节点。
 function 是我们注入的节点(节点, 出口) {
   if (!节点 || typeof 节点 !== 'object' || typeof 节点.name !== 'string') return false;
+  if (节点[标记] === true) return true;
   if (节点.server !== 出口.server || Number(节点.port) !== Number(出口.port)) return false;
-  const 段 = 节点.name.split(SEP).pop();
-  return 段 === 出口.name
-    || 段.startsWith(`${出口.name} `)
-    || 段 === `${出口.name}${TWIN_SUFFIX}`
-    || 段.startsWith(`${出口.name}${TWIN_SUFFIX} `);
+  const 形态 = new RegExp(
+    `^(?:.+${转义(SEP)})?${转义(出口.name)}(?: \\d+)?(?:${转义(TWIN_SUFFIX)})?(?: \\d+)?$`,
+  );
+  return 形态.test(节点.name);
 }
 
 // 摘掉上一轮注入的所有东西，让 main() 每一轮都从订阅原样重建。
@@ -103,16 +113,36 @@ function 是我们注入的节点(节点, 出口) {
 // 收敛掉，重复执行的结果也完全一致。
 function 摘掉上一轮(config, 出口清单) {
   const 分组 = Array.isArray(config['proxy-groups']) ? config['proxy-groups'] : [];
+  const 节点 = (Array.isArray(config.proxies) ? config.proxies : [])
+    .filter((p) => !(p && typeof p === 'object'
+      && (p[标记] === true || 出口清单.some((出口) => 是我们注入的节点(p, 出口)))));
+  // 被删掉的节点名要从分组成员里一起摘掉，否则分组指向不存在的节点，
+  // mihomo 同样拒收整份配置。
+  const 删掉的 = new Set(
+    (Array.isArray(config.proxies) ? config.proxies : [])
+      .map((p) => (p && typeof p === 'object' ? p.name : undefined))
+      .filter((名) => typeof 名 === 'string' && !节点.some((p) => p && p.name === 名)),
+  );
   const 保留 = 分组
-    .filter((g) => !(g && typeof g === 'object' && (家族内(g.name, EXIT_GROUP) || 家族内(g.name, ENTRANCE_GROUP))))
+    .filter((g) => !(g && typeof g === 'object' && (g[标记] === true
+      || 家族内(g.name, EXIT_GROUP) || 家族内(g.name, ENTRANCE_GROUP))))
     .map((g) => {
       if (!g || typeof g !== 'object' || !Array.isArray(g.proxies)) return g;
-      const 成员 = g.proxies.filter((m) => !(家族内(m, EXIT_GROUP) || 家族内(m, ENTRANCE_GROUP)));
+      const 成员 = g.proxies.filter((m) => !删掉的.has(m)
+        && !家族内(m, EXIT_GROUP) && !家族内(m, ENTRANCE_GROUP));
       return 成员.length === g.proxies.length ? g : { ...g, proxies: 成员 };
     });
-  const 节点 = (Array.isArray(config.proxies) ? config.proxies : [])
-    .filter((p) => !出口清单.some((出口) => 是我们注入的节点(p, 出口)));
-  return { ...config, proxies: 节点, 'proxy-groups': 保留 };
+  // RULES_TO_EXIT 每一轮都会重新加，先把上一轮的摘掉，否则规则越叠越多；
+  // 分组改名后旧规则还会指向不存在的名字（或更糟：指向同名的别的节点）。
+  const 规则 = Array.isArray(config.rules) ? config.rules.filter((行) => {
+    const 文本 = String(行);
+    const 位 = 文本.lastIndexOf(',');
+    if (位 < 0) return true;
+    return !家族内(文本.slice(位 + 1), EXIT_GROUP);
+  }) : config.rules;
+  const 结果 = { ...config, proxies: 节点, 'proxy-groups': 保留 };
+  if (Array.isArray(config.rules)) 结果.rules = 规则;
+  return 结果;
 }
 
 
@@ -121,7 +151,9 @@ function main(config) {
   if (!Array.isArray(config.proxies) || config.proxies.length === 0) return config;
 
   const 出口清单 = STATIC_EXITS.map(解析出口).filter((e) => e.server && e.port > 0);
-  if (出口清单.length === 0) return config;
+  // 出口被清空：把上一轮注入的节点、分组、规则一并摘掉，别让一个已经不用的
+  // 出口继续留在配置里。
+  if (出口清单.length === 0) return 摘掉上一轮(config, 出口清单);
 
   // 每一轮都摘掉上一轮注入的东西，再从订阅原样重建。
   config = 摘掉上一轮(config, 出口清单);
@@ -162,17 +194,17 @@ function main(config) {
   const 新节点 = [];
   const 链式名 = [];
   if (MODE === 'direct') {
-    for (const 出口 of 出口清单) 新节点.push({ ...出口, name: 出口名.get(出口) });
+    for (const 出口 of 出口清单) 新节点.push({ ...出口, name: 出口名.get(出口), [标记]: true });
   } else if (机场节点.length > 0) {
     if (MODE === 'all') {
       for (const 出口 of 出口清单) {
         for (const 入口 of 机场节点) {
-          新节点.push({ ...出口, name: 唯一(`${入口}${SEP}${出口名.get(出口)}`), 'dialer-proxy': 入口 });
+          新节点.push({ ...出口, name: 唯一(`${入口}${SEP}${出口名.get(出口)}`), 'dialer-proxy': 入口, [标记]: true });
         }
       }
     } else {
       for (const 出口 of 出口清单) {
-        新节点.push({ ...出口, name: 唯一(`${出口名.get(出口)}${TWIN_SUFFIX}`), 'dialer-proxy': 入口组名 });
+        新节点.push({ ...出口, name: 唯一(`${出口名.get(出口)}${TWIN_SUFFIX}`), 'dialer-proxy': 入口组名, [标记]: true });
       }
     }
     for (const 节点 of 新节点) 链式名.push(节点.name);
@@ -188,12 +220,13 @@ function main(config) {
     name: 出口组名,
     type: 'select',
     proxies: MODE === 'direct' ? [...全部出口名, 'DIRECT'] : [...链式名],
+    [标记]: true,
   };
   const 新分组 = [出口分组];
   if (MODE !== 'direct' && MODE !== 'all') {
     // 入口组同样不给 DIRECT：入口选 DIRECT 等于把本机 IP 当作上一跳，
     // 和直连出口是一回事。
-    新分组.push({ name: 入口组名, type: 'select', proxies: [...机场节点] });
+    新分组.push({ name: 入口组名, type: 'select', proxies: [...机场节点], [标记]: true });
   }
 
   // 让 select 分组能直接选到出口分组，不改变原有顺序与默认项。
