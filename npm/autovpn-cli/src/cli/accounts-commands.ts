@@ -9,20 +9,29 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { AccountStore, retiredRetentionDays, type PublicAccount } from '../pool/account-store.js';
+import { AccountStore, retiredRetentionDays, type MergeOutcome, type PublicAccount } from '../pool/account-store.js';
 import { BRANDS, brandLabel, normalizeBrand } from '../pool/brands.js';
 import { CSV_COLUMNS, RETIRED_STATUSES, parseAccountFile, stringifyCsv, type AccountStatus } from '../pool/csv.js';
+import {
+  describeSharedPoolUrl,
+  pruneSharedPool,
+  pullSharedPool,
+  pushSharedPool,
+  resolveSharedPoolUrl,
+  sharedPoolStatus,
+  type PushCounts
+} from '../pool/pg-pool.js';
 import { CliUsageError } from './errors.js';
 import { readOptionValue } from './global-options.js';
 import type { CliIo } from './output.js';
 
-export const ACCOUNTS_SUBCOMMANDS = ['import', 'list', 'stats', 'snapshot', 'disable', 'enable', 'expire', 'export', 'template', 'refresh-expiry', 'purge'] as const;
+export const ACCOUNTS_SUBCOMMANDS = ['import', 'list', 'stats', 'snapshot', 'disable', 'enable', 'expire', 'export', 'template', 'refresh-expiry', 'purge', 'sync'] as const;
 export type AccountsSubcommand = (typeof ACCOUNTS_SUBCOMMANDS)[number];
 
 /** Options that consume the next argv slot, so positionals can be found. */
 const VALUE_OPTIONS = new Set([
   '--project-root', '--format', '--output', '--brand', '--status', '--reason', '--date', '--file', '--limit', '--query', '--id',
-  '--concurrency', '--days'
+  '--concurrency', '--days', '--url'
 ]);
 
 /**
@@ -155,6 +164,17 @@ export function validateAccountsCommand(argv: string[]): void {
       throw new CliUsageError('accounts purge --days must be a non-negative whole number of days');
     }
   }
+  if (subcommand === 'sync') {
+    // `--prune-retired` takes the same whole-day window `purge` does; a bare
+    // `--days` must not silently fall back to the environment default.
+    if (argv.includes('--days') && readOptionValue(argv, '--days') === undefined) {
+      throw new CliUsageError('accounts sync --days requires a value');
+    }
+    const days = readOptionValue(argv, '--days');
+    if (days !== undefined && !/^\d+$/.test(days)) {
+      throw new CliUsageError('accounts sync --days must be a non-negative whole number of days');
+    }
+  }
   if (['disable', 'enable', 'expire'].includes(subcommand)) {
     const id = readOptionValue(argv, '--id');
     if (id !== undefined) {
@@ -218,6 +238,71 @@ function renderRefreshHuman(rows: readonly RefreshExpiryEvent[], result: Refresh
   return `${lines.join('\n')}\n`;
 }
 
+function renderMergeHuman(outcome: MergeOutcome): string {
+  return `new=${outcome.inserted} updated=${outcome.updated} unchanged=${outcome.unchanged}` +
+    ` local_newer=${outcome.local_newer} skipped=${outcome.skipped}`;
+}
+
+function renderPushHuman(counts: PushCounts): string {
+  return `sent=${counts.sent} new=${counts.inserted} updated=${counts.updated} stale=${counts.stale}`;
+}
+
+/**
+ * `accounts sync` — move rows between the shared Postgres pool and the local
+ * working copy.
+ *
+ * With no direction flag it pulls and then pushes: the two hosts that run the
+ * pipeline each do this around a run, and the operator runs it by hand after
+ * editing an account. `--status` reports the table itself without touching the
+ * local copy. Only counts are printed; the URL carries the database password,
+ * so it is reduced to `host:port/database` before it reaches any output.
+ */
+async function runSync(argv: string[], context: AccountsContext): Promise<number> {
+  const url = readOptionValue(argv, '--url') ?? resolveSharedPoolUrl(context.env);
+  if (!url) {
+    context.io.writeStderr(
+      'accounts sync: no shared pool configured; set AUTOVPN_ACCOUNTS_DB_URL to the postgresql:// URL\n'
+    );
+    return 1;
+  }
+  const store = context.store ?? new AccountStore({ env: context.env, now: context.now });
+  const ownsStore = !context.store;
+  try {
+    if (argv.includes('--check')) {
+      const status = await sharedPoolStatus({ url, env: context.env, now: context.now });
+      context.io.writeStdout(wantsHuman(argv)
+        ? `shared pool ${status.pool}\n  rows: ${status.total} total, ${status.active} active, ${status.retired} retired` +
+          `${status.last_push_at ? `\n  last push: ${status.last_push_at}` : ''}\n`
+        : jsonLine({ ok: true, ...status }));
+      return 0;
+    }
+    const doPull = argv.includes('--pull') || !argv.includes('--push');
+    const doPush = argv.includes('--push') || !argv.includes('--pull');
+    const pulled = doPull ? await pullSharedPool(store, { url, env: context.env, now: context.now }) : null;
+    const pushed = doPush ? await pushSharedPool(store, { url, env: context.env, now: context.now }) : null;
+    let pruned = 0;
+    if (argv.includes('--prune-retired')) {
+      const daysRaw = readOptionValue(argv, '--days');
+      const days = daysRaw === undefined ? retiredRetentionDays(context.env) : Number.parseInt(daysRaw, 10);
+      pruned = await pruneSharedPool(store, days, { url, env: context.env, now: context.now });
+    }
+    const pool = describeSharedPoolUrl(url);
+    const stats = store.stats();
+    context.io.writeStdout(wantsHuman(argv)
+      ? `shared pool ${pool}\n  pulled: ${pulled ? renderMergeHuman(pulled) : '-'}\n  pushed: ${pushed ? renderPushHuman(pushed) : '-'}` +
+        `${pruned ? `\n  pruned: ${pruned} retired row(s)` : ''}\n  local: ${stats.total} total, ${stats.active} active\n`
+      : jsonLine({ ok: true, pool, pulled, pushed, pruned, stats }));
+    return 0;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    context.io.writeStdout(jsonLine({ ok: false, pool: describeSharedPoolUrl(url), error: message }));
+    context.io.writeStderr(`accounts sync: ${message}\n`);
+    return 1;
+  } finally {
+    if (ownsStore) store.close();
+  }
+}
+
 export function accountsTemplate(): string {
   const example = BRANDS.map((brand) => ({
     brand: brand.key,
@@ -265,7 +350,15 @@ async function runRefreshExpiry(argv: string[], context: AccountsContext): Promi
   const concurrency = Number(readOptionValue(argv, '--concurrency') ?? 3);
   const store = context.store ?? new AccountStore({ env: context.env, now: context.now });
   const ownsStore = !context.store;
+  // A refresh logs in to every account and writes the dates it learns. On a
+  // shared pool that must start from the shared rows and end there, or the
+  // sweep would spend a night relearning dates another host already stored.
+  const sharedUrl = context.store ? '' : resolveSharedPoolUrl(context.env);
   try {
+    if (sharedUrl) {
+      const pulled = await pullSharedPool(store, { url: sharedUrl, env: context.env, now: context.now });
+      context.io.writeStderr(`accounts refresh-expiry: pulled the shared pool (${renderMergeHuman(pulled)})\n`);
+    }
     let streamed = 0;
     const result = await worker({
       brand: readOptionValue(argv, '--brand'),
@@ -290,7 +383,17 @@ async function runRefreshExpiry(argv: string[], context: AccountsContext): Promi
     context.io.writeStdout(wantsHuman(argv) ? renderRefreshHuman(remaining, result) : jsonLine(result));
     return result.failed > 0 ? 1 : 0;
   } finally {
-    if (ownsStore) store.close();
+    if (ownsStore) {
+      if (sharedUrl) {
+        try {
+          const pushed = await pushSharedPool(store, { url: sharedUrl, env: context.env, now: context.now });
+          context.io.writeStderr(`accounts refresh-expiry: pushed the shared pool (${renderPushHuman(pushed)})\n`);
+        } catch (error) {
+          context.io.writeStderr(`accounts refresh-expiry: shared pool push failed: ${error instanceof Error ? error.message : String(error)}\n`);
+        }
+      }
+      store.close();
+    }
   }
 }
 
@@ -305,12 +408,48 @@ export async function runAccountsCommand(argv: string[], context: AccountsContex
   if (subcommand === 'refresh-expiry') {
     return await runRefreshExpiry(argv, context);
   }
+  if (subcommand === 'sync') {
+    return await runSync(argv, context);
+  }
   const dryRun = (subcommand === 'import' || subcommand === 'purge') && argv.includes('--dry-run');
   // A preview must not write: the store's getters sweep expired rows, so even
   // opening it read-write would mutate the pool before showing the plan.
   const store = context.store ?? new AccountStore({ env: context.env, now: context.now, readOnly: dryRun });
   const ownsStore = !context.store;
+  // Commands that change the pool are two-phase on a shared pool: pull first so
+  // the change is made against the shared rows, push after so every other host
+  // sees it. Reads stay local (the UI polls `snapshot`); `--refresh` pulls on
+  // demand. A test-injected store never talks to the network.
+  const sharedUrl = context.store ? '' : resolveSharedPoolUrl(context.env);
+  const mutating = ['import', 'disable', 'enable', 'expire', 'purge'].includes(subcommand);
+  // The retention window the purge branch used, so the remote prune applies the
+  // same one. Null until that branch runs.
+  let purgeDays: number | null = null;
+  const pushAfterMutation = async (): Promise<boolean> => {
+    if (!sharedUrl || dryRun) return true;
+    try {
+      const pushed = await pushSharedPool(store, { url: sharedUrl, env: context.env, now: context.now });
+      context.io.writeStderr(`accounts: shared pool pushed (${renderPushHuman(pushed)})\n`);
+      if (subcommand === 'purge' && purgeDays !== null) {
+        const pruned = await pruneSharedPool(store, purgeDays, { url: sharedUrl, env: context.env, now: context.now });
+        if (pruned > 0) context.io.writeStderr(`accounts: shared pool pruned ${pruned} retired row(s)\n`);
+      }
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      context.io.writeStderr(`accounts: shared pool push failed: ${message}\n`);
+      return false;
+    }
+  };
   try {
+    if (sharedUrl && mutating && !dryRun) {
+      const pulled = await pullSharedPool(store, { url: sharedUrl, env: context.env, now: context.now });
+      context.io.writeStderr(`accounts: shared pool pulled (${renderMergeHuman(pulled)})\n`);
+    }
+    if (sharedUrl && !mutating && argv.includes('--refresh')) {
+      const pulled = await pullSharedPool(store, { url: sharedUrl, env: context.env, now: context.now });
+      context.io.writeStderr(`accounts: shared pool pulled (${renderMergeHuman(pulled)})\n`);
+    }
     if (subcommand === 'stats') {
       const stats = store.stats();
       context.io.writeStdout(wantsHuman(argv) ? renderStatsHuman(stats) : jsonLine(stats));
@@ -346,6 +485,7 @@ export async function runAccountsCommand(argv: string[], context: AccountsContex
         throw new CliUsageError('accounts purge --days must be a non-negative whole number of days');
       }
       const days = daysRaw === undefined ? retiredRetentionDays(context.env) : Number.parseInt(daysRaw, 10);
+      purgeDays = days;
       const dryRun = argv.includes('--dry-run');
       if (dryRun) {
         const counted = store.countRetired(days);
@@ -367,7 +507,7 @@ export async function runAccountsCommand(argv: string[], context: AccountsContex
         ? `purged ${erased} retired account(s); retention ${days} day(s); ${after.total} row(s) remain` +
           `${lapsed ? `; ${lapsed} expired account(s) newly retired` : ''}\n`
         : jsonLine(payload));
-      return 0;
+      return (await pushAfterMutation()) ? 0 : 1;
     }
 
     if (subcommand === 'list') {
@@ -460,6 +600,7 @@ export async function runAccountsCommand(argv: string[], context: AccountsContex
       } else {
         context.io.writeStdout(jsonLine(payload));
       }
+      if (!(await pushAfterMutation())) return 1;
       return parsed.issues.length > 0 && !argv.includes('--allow-issues') ? 1 : 0;
     }
 
@@ -498,6 +639,7 @@ export async function runAccountsCommand(argv: string[], context: AccountsContex
         ? store.disable(brandRaw, account, readOptionValue(argv, '--reason') ?? 'disabled by operator')
         : store.disableById(id, readOptionValue(argv, '--reason') ?? 'disabled by operator');
       context.io.writeStdout(jsonLine({ ok, ...(id === null ? { brand: normalizeBrand(brandRaw) } : { id }), action: 'disabled' }));
+      if (ok && !(await pushAfterMutation())) return 1;
       return ok ? 0 : 1;
     }
     if (subcommand === 'enable') {
@@ -515,6 +657,7 @@ export async function runAccountsCommand(argv: string[], context: AccountsContex
         return 1;
       }
       context.io.writeStdout(jsonLine({ ok, ...(id === null ? { brand: normalizeBrand(brandRaw) } : { id }), action: 'enabled' }));
+      if (ok && !(await pushAfterMutation())) return 1;
       return ok ? 0 : 1;
     }
     if (subcommand === 'expire') {
@@ -535,6 +678,7 @@ export async function runAccountsCommand(argv: string[], context: AccountsContex
         return 1;
       }
       context.io.writeStdout(jsonLine({ ok, ...(id === null ? { brand: normalizeBrand(brandRaw) } : { id }), expires_at: target, action: 'expiry_set' }));
+      if (ok && !(await pushAfterMutation())) return 1;
       return ok ? 0 : 1;
     }
     throw new CliUsageError(`unknown accounts subcommand: ${subcommand}`);

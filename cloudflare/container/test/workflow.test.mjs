@@ -15,7 +15,8 @@ import test from 'node:test';
  *
  * `--project-root` does not redirect the pool: `AccountStore` resolves the
  * path from the environment alone. So the assertion is that every step which
- * touches the pool names the same runtime root.
+ * touches the pool names the same runtime root — and, since the pool moved to
+ * a shared Postgres table, the same database.
  */
 
 const WORKFLOW_PATH = new URL('../../../.github/workflows/cloudflare-subscription.yml', import.meta.url);
@@ -33,9 +34,9 @@ function steps(text) {
 
 const RUNNER_ROOT = '${{ runner.temp }}/autovpn';
 
-test('the import step writes the pool where the measure step reads it', () => {
+test('the sync step writes the pool where the measure step reads it', () => {
   const poolSteps = steps(raw).filter((step) =>
-    /\bautovpn accounts import\b|\bautovpn run\b|\bretry-stage\b/.test(step.body)
+    /\bautovpn accounts sync\b|\bautovpn run\b|\bretry-stage\b/.test(step.body)
   );
   assert.ok(poolSteps.length >= 2, `expected at least two pool-touching steps, found ${poolSteps.length}`);
 
@@ -49,23 +50,37 @@ test('the import step writes the pool where the measure step reads it', () => {
   }
 });
 
-test('the import is required to leave active rows, not merely to parse them', () => {
-  const importStep = steps(raw).find((step) => /\bautovpn accounts import\b/.test(step.body));
-  assert.ok(importStep, 'no step runs `autovpn accounts import`');
+test('the sync is required to leave active rows, not merely to connect', () => {
+  const syncStep = steps(raw).find((step) => /\bautovpn accounts sync\b/.test(step.body));
+  assert.ok(syncStep, 'no step runs `autovpn accounts sync`');
   assert.match(
-    importStep.body,
-    /stats\?\.active\s*>\s*0/,
-    'the import step does not fail when the pool has no active rows; ' +
+    syncStep.body,
+    /stats\??\.active\s*>\s*0/,
+    'the sync step does not fail when the pool has no active rows; ' +
       'that state reaches the crawl as "no accounts" instead'
   );
 });
 
-test('the pool is assembled from pinned bytes, not from an unverified split', () => {
-  const assemble = steps(raw).find((step) => /assemble-account-pool\.mjs/.test(step.body));
-  assert.ok(assemble, 'no step assembles the account pool');
-  for (const name of ['ACCOUNTS_POOL_BYTES', 'ACCOUNTS_POOL_SHA256', 'ACCOUNTS_PARTS']) {
-    assert.match(assemble.body, new RegExp(name), `the assembler step does not read ${name}`);
-  }
+/**
+ * The pool used to be assembled from base64 halves of a 57 KB file in
+ * repository secrets. That mechanism is gone: the rows live in the operator's
+ * Postgres database, and a host reaches it with one URL. A step that still
+ * reads `ACCOUNTS_PART_*` would be a second source of truth, and a test that
+ * still accepted it would let that split come back.
+ */
+test('the pool comes from the shared database, not from split secrets', () => {
+  const sync = steps(raw).find((step) => /\bautovpn accounts sync\b/.test(step.body));
+  assert.ok(sync, 'no step syncs the account pool');
+  assert.match(sync.body, /AUTOVPN_ACCOUNTS_DB_URL:\s*\$\{\{\s*secrets\.AUTOVPN_ACCOUNTS_DB_URL\s*\}\}/);
+  assert.doesNotMatch(raw, /ACCOUNTS_PART_\d|assemble-account-pool/);
+
+  const measure = steps(raw).find((step) => /\bautovpn run\b/.test(step.body));
+  assert.ok(measure, 'no step runs the pipeline');
+  assert.match(
+    measure.body,
+    /AUTOVPN_ACCOUNTS_DB_URL:\s*\$\{\{\s*secrets\.AUTOVPN_ACCOUNTS_DB_URL\s*\}\}/,
+    'the measure step cannot push its retirements back to the shared pool'
+  );
 });
 
 test('the CLI is built from this checkout, not installed by version number', () => {

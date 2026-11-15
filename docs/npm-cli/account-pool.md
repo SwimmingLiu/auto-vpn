@@ -7,6 +7,43 @@
 目录以 `0700` 创建，主库和 `-wal` / `-shm` 三个文件都会收紧到 `0600` —— 打开期间明文
 凭据就在 WAL 里，只锁主库拦不住。
 
+配置了共享库时，这个文件只是本机的工作副本，权威副本在 Postgres，见下面「共享账号池」。
+
+## 共享账号池
+
+设置 `AUTOVPN_ACCOUNTS_DB_URL` 后，账号池的权威副本是 Postgres 里的
+`autovpn.accounts` 一张表。跑流水线的每台主机（GitHub runner、源服务器）连同一个库：
+一处退役、处处生效，加一个账号就是一条 INSERT，不再需要把 `account-info.txt`
+对半切成仓库 secret。
+
+变量按优先级读取 `AUTOVPN_ACCOUNTS_DB_URL` → `VPN_AUTOMATION_ACCOUNTS_DB_URL` → `PGSQL`。
+URL 里有数据库密码，所以输出只出现 `host:port/database`，从不回显完整 URL。
+
+```bash
+autovpn accounts sync --check                   # 只读：远端总数 / 可用 / 退役 / 上次推送时间
+autovpn accounts sync                           # 先 pull 再 push
+autovpn accounts sync --pull                    # 只把远端合并进本地
+autovpn accounts sync --push                    # 只把本地推到远端
+autovpn accounts sync --prune-retired --days 30 # 顺带清掉远端过期的退役行
+```
+
+`import` / `disable` / `enable` / `expire` / `purge` 这些写命令会自动先 pull、写完再
+push；`run` / `resume` 开始时 pull（失败即中止，不用过期池跑一夜），结束时 push
+（失败只记一条警告，不推翻已经测完的夜）。只读命令加 `--refresh` 时先 pull。
+
+合并规则（两端都可能各自跑过一夜）：
+
+- `updated_at` 新的一侧胜出；本地更新时计为 `local_newer`，不会被旧数据覆盖。
+- `use_count` / `success_count` 只增不减，取两边较大值；`fail_count` 跟随胜出的那行
+  （登录成功会把它清零）。
+- 普通 push 从不删除远端行；删除只发生在 `--prune-retired`，用的是和本地清理相同的
+  保留期条件。
+- 本地的 `id` 不跨主机同步，主机之间只认 `(brand, account)`。
+
+Postgres 这台机器没有编译 SSL 支持（`postgres -C ssl` 报 `SSL is not supported by
+this build`），所以 URL 用 `sslmode=prefer`：先试 TLS，服务端不支持时回落到明文。
+`require` / `verify-ca` / `verify-full` 不降级，在这台服务器上会直接连不上。
+
 ## 上传格式
 
 UTF-8 CSV，第一行必须是表头。列顺序固定，尾部可选列可以整列省略。

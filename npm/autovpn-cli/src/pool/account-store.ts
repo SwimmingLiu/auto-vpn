@@ -17,7 +17,7 @@ import path from 'node:path';
 
 import { resolveUserRuntimeRoot } from '../runtime/paths.js';
 import { brandSite, normalizeBrand, type BrandKey } from './brands.js';
-import { RETIRED_STATUSES, normalizeExpiry, type AccountRecord, type AccountStatus } from './csv.js';
+import { ACCOUNT_STATUSES, RETIRED_STATUSES, normalizeExpiry, type AccountRecord, type AccountStatus } from './csv.js';
 
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
@@ -71,6 +71,14 @@ function retentionCutoff(now: Date, days: number): string {
   return isoNow(new Date(now.getTime() - Math.min(Math.trunc(days), MAX_RETENTION_DAYS) * 86_400_000));
 }
 
+/**
+ * The same cutoff for callers outside this module (the shared-pool prune
+ * applies the identical predicate to the remote table).
+ */
+export function retentionCutoffFor(now: Date, days: number): string {
+  return retentionCutoff(now, days);
+}
+
 /** Full row, secrets included. Never returned by a list or stats call. */
 export interface StoredAccount extends AccountRecord {
   id: number;
@@ -82,6 +90,24 @@ export interface StoredAccount extends AccountRecord {
   success_count: number;
   fail_count: number;
   deleted_at: string | null;
+}
+
+/**
+ * A row as the shared pool carries it: everything but the local id.
+ *
+ * Ids are per-host (`AUTOINCREMENT`), so two hosts that merged the same account
+ * would attribute different ids to it. Sync keys on `(brand, account)` and
+ * never moves an id; events stay attached to the local row.
+ */
+export type SyncedAccount = Omit<StoredAccount, 'id'>;
+
+export interface MergeOutcome {
+  inserted: number;
+  updated: number;
+  unchanged: number;
+  /** Rows the local copy had changed more recently; the local row was kept. */
+  local_newer: number;
+  skipped: number;
 }
 
 /**
@@ -893,6 +919,163 @@ export class AccountStore {
       status: row.status,
       note: row.note
     }));
+  }
+
+  /**
+   * Every row including retired ones and the usage counters, for a sync.
+   *
+   * `exportRecords` exists for the operator: masks, no counters, only live rows
+   * unless asked. A sync needs the whole ledger, because a retirement recorded
+   * on one host is exactly what the other hosts must learn.
+   */
+  syncSnapshot(): SyncedAccount[] {
+    const rows = this.db.prepare('SELECT * FROM accounts ORDER BY brand, id').all() as unknown as StoredAccount[];
+    return rows.map((row) => {
+      const { id, ...rest } = row;
+      void id;
+      return rest;
+    });
+  }
+
+  /**
+   * Merge rows pulled from the shared pool into the local copy.
+   *
+   * The conflict rule is last-writer-wins on `updated_at`, which every mutating
+   * method stamps. That is what keeps a night on the runner from erasing a
+   * retirement the source server recorded minutes earlier: the older side is
+   * kept and reported as `local_newer` rather than overwritten.
+   *
+   * Usage counters are the exception. `use_count` and `success_count` only ever
+   * grow, so a fresher row from another host still takes the larger value:
+   * otherwise every host that runs a night would reset every other host's
+   * history to its own. `fail_count` follows the winning row, because it is
+   * reset to zero by a successful login.
+   */
+  mergeRemoteRows(rows: readonly SyncedAccount[]): MergeOutcome {
+    const outcome: MergeOutcome = { inserted: 0, updated: 0, unchanged: 0, local_newer: 0, skipped: 0 };
+    const stamp = isoNow(this.now());
+    const find = this.db.prepare('SELECT * FROM accounts WHERE brand = ? AND account = ?');
+    const insert = this.db.prepare(
+      `INSERT INTO accounts (brand, account, password, official_site, expires_at, status, status_reason, note, created_at, updated_at, last_used_at, use_count, success_count, fail_count, deleted_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    const update = this.db.prepare(
+      `UPDATE accounts SET password = ?, official_site = ?, expires_at = ?, status = ?, status_reason = ?, note = ?,
+       updated_at = ?, last_used_at = ?, use_count = ?, success_count = ?, fail_count = ?, deleted_at = ? WHERE id = ?`
+    );
+    if (!this.readOnly) this.db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const row of rows) {
+        const brand = normalizeBrand(row.brand);
+        if (!brand || !row.account || !row.password) {
+          outcome.skipped += 1;
+          continue;
+        }
+        const status = ACCOUNT_STATUSES.includes(row.status) ? row.status : 'active';
+        const updatedAt = row.updated_at || stamp;
+        const existing = find.get(brand, row.account) as StoredAccount | undefined;
+        if (!existing) {
+          outcome.inserted += 1;
+          if (this.readOnly) continue;
+          insert.run(
+            brand,
+            row.account,
+            row.password,
+            row.official_site || brandSite(brand),
+            row.expires_at,
+            status,
+            row.status_reason,
+            row.note,
+            row.created_at || stamp,
+            updatedAt,
+            row.last_used_at,
+            Math.max(0, Math.trunc(Number(row.use_count) || 0)),
+            Math.max(0, Math.trunc(Number(row.success_count) || 0)),
+            Math.max(0, Math.trunc(Number(row.fail_count) || 0)),
+            row.deleted_at
+          );
+          continue;
+        }
+        if (existing.updated_at > updatedAt) {
+          outcome.local_newer += 1;
+          continue;
+        }
+        const useCount = Math.max(existing.use_count, Math.trunc(Number(row.use_count) || 0));
+        const successCount = Math.max(existing.success_count, Math.trunc(Number(row.success_count) || 0));
+        const changed =
+          existing.password !== row.password ||
+          existing.official_site !== (row.official_site || existing.official_site) ||
+          existing.expires_at !== row.expires_at ||
+          existing.status !== status ||
+          existing.status_reason !== row.status_reason ||
+          existing.note !== row.note ||
+          existing.deleted_at !== row.deleted_at ||
+          existing.last_used_at !== row.last_used_at ||
+          existing.use_count !== useCount ||
+          existing.success_count !== successCount ||
+          existing.fail_count !== Math.max(0, Math.trunc(Number(row.fail_count) || 0));
+        if (!changed) {
+          outcome.unchanged += 1;
+          continue;
+        }
+        outcome.updated += 1;
+        if (this.readOnly) continue;
+        update.run(
+          row.password,
+          row.official_site || existing.official_site,
+          row.expires_at,
+          status,
+          row.status_reason,
+          row.note,
+          updatedAt,
+          row.last_used_at,
+          useCount,
+          successCount,
+          Math.max(0, Math.trunc(Number(row.fail_count) || 0)),
+          row.deleted_at,
+          existing.id
+        );
+      }
+      if (!this.readOnly) this.db.exec('COMMIT');
+    } catch (error) {
+      if (!this.readOnly) this.db.exec('ROLLBACK');
+      throw error;
+    }
+    return outcome;
+  }
+
+  /** Record when and how the last shared-pool sync went, for `accounts sync --status`. */
+  recordSync(kind: 'pull' | 'push' | 'prune', at: string, counts: unknown): void {
+    if (this.readOnly) return;
+    const write = this.db.prepare(
+      'INSERT INTO pool_meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
+    );
+    write.run(`shared_pool_${kind}_at`, at);
+    write.run(`shared_pool_${kind}_counts`, JSON.stringify(counts ?? {}));
+  }
+
+  syncState(): {
+    last_pull_at: string;
+    last_push_at: string;
+    last_pull_counts: Record<string, number>;
+    last_push_counts: Record<string, number>;
+  } {
+    const read = this.db.prepare('SELECT value FROM pool_meta WHERE key = ?');
+    const text = (key: string): string => String((read.get(key) as { value: string } | undefined)?.value ?? '');
+    const counts = (key: string): Record<string, number> => {
+      try {
+        const parsed = JSON.parse(text(key));
+        return parsed && typeof parsed === 'object' ? parsed as Record<string, number> : {};
+      } catch {
+        return {};
+      }
+    };
+    return {
+      last_pull_at: text('shared_pool_pull_at'),
+      last_push_at: text('shared_pool_push_at'),
+      last_pull_counts: counts('shared_pool_pull_counts'),
+      last_push_counts: counts('shared_pool_push_counts')
+    };
   }
 
   history(id: number, limit = 20): Array<{ at: string; kind: string; detail: string }> {

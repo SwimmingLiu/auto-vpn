@@ -143,6 +143,56 @@ test('the scheduled run bounds each source without editing the live profile', as
   ].join('\n'));
 });
 
+test('the nightly tick reads the shared pool URL from the runtime root and never logs it', async () => {
+  const script = await readScript();
+  assert.match(script, /POOL_ENV_PATH="\$\{AUTOVPN_POOL_ENV:-\$RUNTIME_ROOT\/pool-db\.env\}"/);
+  assert.match(script, /pool_env\+=\("AUTOVPN_ACCOUNTS_DB_URL=\$pool_url"\)/);
+  // The URL embeds the database password; a log line carrying it turns every
+  // nightly log into a credential store.
+  for (const line of script.split('\n').filter((text) => /\blog\b/.test(text))) {
+    assert.doesNotMatch(line, /\$pool_url/, `the pool URL is logged: ${line.trim()}`);
+  }
+
+  // Run the block as the server would, so a quoting or `set -u` change breaks
+  // here rather than at 20:15 on the VPS.
+  const block = script.match(/POOL_ENV_PATH=[\s\S]*?\ncli\(\) \{[\s\S]*?\n\}/);
+  assert.ok(block, 'the shared-pool block or the cli helper is missing');
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'daily-run-pool-'));
+  await fs.writeFile(
+    path.join(dir, 'pool-db.env'),
+    'AUTOVPN_ACCOUNTS_DB_URL="postgresql://u:p@db.example:5432/autonet?sslmode=prefer"\n',
+    'utf8'
+  );
+  await fs.chmod(path.join(dir, 'pool-db.env'), 0o600);
+  const runner = [
+    'set -euo pipefail',
+    'RUNTIME_ROOT="$1"',
+    'log() { printf \'%s\\n\' "$*" >> "$RUNTIME_ROOT/audit.log"; }',
+    block[0],
+    // `${arr[@]+...}` is the form that survives `set -u` on bash 3.2 as well
+    // as on the server's bash; a bare `"${arr[@]}"` is unbound there when empty.
+    'printf \'%s\\n\' ${pool_env[@]+"${pool_env[@]}"}'
+  ].join('\n');
+  const result = spawnSync('bash', ['-c', runner, 'bash', dir], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    result.stdout.trim(),
+    'AUTOVPN_ACCOUNTS_DB_URL=postgresql://u:p@db.example:5432/autonet?sslmode=prefer',
+    'the pool URL did not survive quoting intact'
+  );
+  const audit = await fs.readFile(path.join(dir, 'audit.log'), 'utf8');
+  assert.doesNotMatch(audit, /u:p@/, 'the pool URL reached the log');
+  assert.match(audit, /shared database configured from/);
+
+  // A host without the file still runs on its local copy; it must say so
+  // rather than fail the night or quietly diverge.
+  const bare = await fs.mkdtemp(path.join(os.tmpdir(), 'daily-run-pool-bare-'));
+  const missing = spawnSync('bash', ['-c', runner, 'bash', bare], { encoding: 'utf8' });
+  assert.equal(missing.status, 0, missing.stderr);
+  assert.equal(missing.stdout.trim(), '');
+  assert.match(await fs.readFile(path.join(bare, 'audit.log'), 'utf8'), /not found; this host uses its local copy only/);
+});
+
 test('the nightly tick purges retired accounts before the sweep and never fails the run', async () => {
   const script = await readScript();
   // The purge must run before the extraction, so a lapsed credential is not

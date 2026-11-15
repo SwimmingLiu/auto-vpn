@@ -14,6 +14,9 @@ name: Cloudflare Subscription
 # The egress requirement is unchanged: the crawl goes out through the nodes in
 # the already-published subscription, never through the runner's own address.
 
+# Dispatch only. The nightly schedule lives in `auto-vpn-runner`, which pins
+# this repository at a released ref and runs the same pipeline; a second cron
+# here would race it for the same Pages project and the same account pool.
 on:
   workflow_dispatch:
     inputs:
@@ -21,9 +24,6 @@ on:
         description: 'Measure only; do not publish'
         type: boolean
         default: false
-  schedule:
-    # 20:15 UTC, the same slot the Worker cron uses.
-    - cron: '15 20 * * *'
 
 permissions:
   contents: read
@@ -60,25 +60,15 @@ jobs:
           CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CF_ACCOUNT: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           SUB_URL: ${{ secrets.AUTOVPN_SUBSCRIPTION_URL }}
+          POOL_DB: ${{ secrets.AUTOVPN_ACCOUNTS_DB_URL }}
         run: |
           missing=0
           check() { if [ -z "$2" ]; then echo "missing $1" >&2; missing=1; fi; }
           check "secret CLOUDFLARE_API_TOKEN" "$CF_TOKEN"
           check "variable CLOUDFLARE_ACCOUNT_ID" "$CF_ACCOUNT"
           check "secret AUTOVPN_SUBSCRIPTION_URL" "$SUB_URL"
+          check "secret AUTOVPN_ACCOUNTS_DB_URL" "$POOL_DB"
           exit "$missing"
-
-      # The pool is credentials, so it lives in repository secrets. Split across
-      # parts because a single 57 KB secret cannot be rotated or inspected; the
-      # assembler refuses a truncated set by byte count and sha256.
-      - name: Assemble the account pool
-        env:
-          ACCOUNTS_PARTS: ${{ vars.ACCOUNTS_PARTS }}
-          ACCOUNTS_POOL_SHA256: ${{ vars.ACCOUNTS_POOL_SHA256 }}
-          ACCOUNTS_POOL_BYTES: ${{ vars.ACCOUNTS_POOL_BYTES }}
-          ACCOUNTS_PART_1: ${{ secrets.ACCOUNTS_PART_1 }}
-          ACCOUNTS_PART_2: ${{ secrets.ACCOUNTS_PART_2 }}
-        run: node cloudflare/scripts/assemble-account-pool.mjs "$RUNNER_TEMP/account-info.txt"
 
       # Built from this checkout, not installed from npm.
       #
@@ -101,27 +91,39 @@ jobs:
           install -m 0755 cloudflare/container/vendor/mihomo-linux-amd64 "$RUNNER_TEMP/mihomo"
           "$RUNNER_TEMP/mihomo" -v
 
+      # The pool is one Postgres table, not a file split across repository
+      # secrets. Every host that runs the pipeline reads the same rows: an
+      # account retired here is retired on the source server too, and adding one
+      # is an INSERT rather than re-splitting a 57 KB secret.
+      #
       # The pool lives at `<runtime-root>/accounts.db`, resolved from
-      # VPN_AUTOMATION_RUNTIME_ROOT. Without it the import writes to
+      # VPN_AUTOMATION_RUNTIME_ROOT. Without it this step writes to
       # `~/.auto-vpn` while the run reads `$RUNNER_TEMP/autovpn`, which is how a
       # pool of 631 accounts imported cleanly and every source then reported
       # "account pool has no active <brand> account".
-      - name: Import the account pool
+      - name: Sync the account pool from the shared database
         env:
           VPN_AUTOMATION_RUNTIME_ROOT: ${{ runner.temp }}/autovpn
+          AUTOVPN_ACCOUNTS_DB_URL: ${{ secrets.AUTOVPN_ACCOUNTS_DB_URL }}
         run: |
-          autovpn accounts import "$RUNNER_TEMP/account-info.txt" \
-            --project-root "$RUNNER_TEMP/autovpn" --format auto --output jsonl > "$RUNNER_TEMP/import.jsonl"
+          status=0
+          autovpn accounts sync --pull \
+            --project-root "$RUNNER_TEMP/autovpn" --output jsonl \
+            > "$RUNNER_TEMP/pool.jsonl" || status=$?
           node -e '
             const fs = require("node:fs");
             const line = fs.readFileSync(process.argv[1], "utf8").trim().split("\n").pop();
-            const result = JSON.parse(line);
-            console.log(`imported ${result.parsed}, pool ${result.stats?.total} total / ${result.stats?.active} active`);
-            if (!(result.parsed > 0)) { console.error("the pool imported zero rows"); process.exit(1); }
-            // A pool that imported but cannot lease is the same failure one step
+            let result = {};
+            try { result = JSON.parse(line); } catch {}
+            const stats = result.stats ?? {};
+            const pulled = result.pulled ?? {};
+            console.log(`pool ${result.pool ?? "(unconfigured)"}: pulled new=${pulled.inserted ?? 0} updated=${pulled.updated ?? 0}; local ${stats.total ?? 0} total / ${stats.active ?? 0} active`);
+            if (result.ok !== true) { console.error(result.error ?? "the shared pool sync failed"); process.exit(1); }
+            // A pool that synced but cannot lease is the same failure one step
             // later, and it reads as "no accounts" from inside the crawl.
-            if (!(result.stats?.active > 0)) { console.error("the pool has no active accounts after import"); process.exit(1); }
-          ' "$RUNNER_TEMP/import.jsonl"
+            if (!(stats.active > 0)) { console.error("the pool has no active accounts after the sync"); process.exit(1); }
+          ' "$RUNNER_TEMP/pool.jsonl"
+          exit "$status"
 
       # Build the crawl egress before the measurement: the crawl must leave
       # through a subscription node, not through the runner's own address. The
@@ -147,6 +149,10 @@ jobs:
         env:
           VPN_AUTOMATION_RUNTIME_ROOT: ${{ runner.temp }}/autovpn
           VPN_AUTOMATION_PROFILE_PATH: ${{ github.workspace }}/cloudflare/container/profile.cloudflare.toml
+          # The run pulls the shared pool before the first login and pushes the
+          # retirements it records back afterwards. Namespaced to the block
+          # below by position; see the sync step above for the rationale.
+          AUTOVPN_ACCOUNTS_DB_URL: ${{ secrets.AUTOVPN_ACCOUNTS_DB_URL }}
           VPN_AUTOMATION_PROXY_MODE: proxy
           VPN_AUTOMATION_UPSTREAM_PROXY: http://127.0.0.1:7897
           MIHOMO_BIN: ${{ runner.temp }}/mihomo
