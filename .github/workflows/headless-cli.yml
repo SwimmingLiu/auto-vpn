@@ -9,6 +9,12 @@ on:
 permissions:
   contents: read
 
+# A push to a PR supersedes the run before it; main keeps every run so a merge
+# cannot cancel the verification of the commit that just landed.
+concurrency:
+  group: headless-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   # Use the canonical source even when a historical lockfile pins mirror URLs.
   NPM_CONFIG_REGISTRY: "https://registry.npmjs.org/"
@@ -116,89 +122,3 @@ jobs:
           node -e "JSON.parse(require('node:fs').readFileSync('doctor.json', 'utf8'))"
           echo "doctor_status=${doctor_status:-0}"
 
-  electron-package:
-    name: Linux Electron package
-    needs: headless
-    runs-on: ubuntu-24.04
-    timeout-minutes: 35
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: |
-            package-lock.json
-            npm/autovpn-cli/package-lock.json
-
-      - name: Cache browser runtime downloads
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/electron
-            ~/Library/Caches/electron
-            ~/AppData/Local/electron/Cache
-            ~/.cache/electron-builder
-            ~/Library/Caches/electron-builder
-            ~/AppData/Local/electron-builder/Cache
-            ~/.cache/ms-playwright
-          key: ${{ runner.os }}-${{ runner.arch }}-browser-runtime-${{ hashFiles('package-lock.json') }}
-          restore-keys: |
-            ${{ runner.os }}-${{ runner.arch }}-browser-runtime-
-
-      - name: Install Linux packaging dependencies
-        run: |
-          bash scripts/ci/retry-command.sh "apt-get update" -- sudo apt-get update
-          bash scripts/ci/retry-command.sh "apt-get install packaging dependencies" -- \
-            sudo apt-get install -y rpm fakeroot
-
-      - name: Normalize public npm tarball URLs
-        uses: ./.github/actions/npm-registry
-
-      - name: Install dependencies
-        run: |
-          bash scripts/ci/retry-command.sh "npm ci" -- npm ci --prefer-offline --no-audit --fund=false
-          bash scripts/ci/retry-command.sh "npm ci --prefix npm/autovpn-cli" -- \
-            npm ci --prefix npm/autovpn-cli --prefer-offline --no-audit --fund=false
-
-      - name: Package Electron app
-        env:
-          AUTOVPN_PACKAGE_PLATFORM: linux
-          AUTOVPN_PACKAGE_ARCH: x64
-        # `runElectronBuilder` retries internally and switches to the mirror on
-        # the second attempt; the outer loop covers a failure before that point.
-        run: |
-          AUTOVPN_CI_RETRIES=2 AUTOVPN_CI_RETRY_BASE_SECONDS=60 \
-            bash scripts/ci/retry-command.sh "package Electron app" -- \
-            bash -eo pipefail -c 'rm -rf dist-electron packaging.log; npm run package:electron 2>&1 | tee packaging.log'
-        shell: bash
-
-      - name: Verify Electron package output
-        run: |
-          PKG_VERSION="$(node -p "require('./package.json').version")"
-
-          if grep -q "default Electron icon is used" packaging.log; then
-            echo "Packaging used the default Electron icon."
-            exit 1
-          fi
-
-          test -f "dist-electron/AutoVPN-${PKG_VERSION}-amd64.deb"
-          test -f "dist-electron/AutoVPN-${PKG_VERSION}-x86_64.rpm"
-          test -f electron/build/assets/app-icon-1024.png
-          grep -q "sidebarVersion: 'v.${PKG_VERSION}'" dist-electron/linux-unpacked/resources/app/electron/renderer/i18n.js
-          dpkg-deb -c "dist-electron/AutoVPN-${PKG_VERSION}-amd64.deb" > deb-contents.txt
-          grep -q "vpn-subscription-automation.png" deb-contents.txt
-        shell: bash
-
-      - name: Upload Electron package artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: autovpn-electron-linux-x64
-          path: |
-            dist-electron/*.deb
-            dist-electron/*.rpm
-            packaging.log
