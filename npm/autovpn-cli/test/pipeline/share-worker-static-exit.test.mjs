@@ -191,7 +191,7 @@ test('share Worker reads the KV static-exit list and serves it over the admin ro
     async get(key) { return store.has(key) ? store.get(key) : null; },
     async put(key, value) { store.set(key, value); }
   };
-  const base = { UUID: '179ba8dd-3854-4747-b853-fc1868ef3937', PASSWORD: 'pw', KV, HOST: 'sub-links.example' };
+  const base = { SUB: 'https://sub-nodes.example/?serect_key=unused', UUID: '179ba8dd-3854-4747-b853-fc1868ef3937', PASSWORD: 'pw', KV, HOST: 'sub-links.example' };
   const withCf = (request) => {
     Object.defineProperty(request, 'cf', { value: { asn: 1, asOrganization: 'harness', country: 'HK', city: 'HK' } });
     return request;
@@ -211,6 +211,16 @@ test('share Worker reads the KV static-exit list and serves it over the admin ro
   })), base, { waitUntil() {} });
   assert.equal(get.status, 200);
   assert.match(await get.text(), /KV出口/);
+
+  // 上游默认 `local: true`（自己生成 CF 优选 IP），分享 Worker 保持这个默认，
+  // 才有可用的节点；`SUB` 只作为显式 `?sub=` / 关闭本地生成时的上游地址。
+  const adminConfig = await worker.default.fetch(withCf(new Request('https://sub-links.example/admin/config.json', {
+    headers: { Cookie: cookie, 'User-Agent': 'clash-verge/v2.0.0 mihomo' }
+  })), base, { waitUntil() {} });
+  assert.equal(adminConfig.status, 200);
+  const config = await adminConfig.json();
+  assert.equal(config.优选订阅生成.local, true);
+  assert.equal(config.优选订阅生成.SUB, base.SUB);
 
   const yaml = await withSubconverterStub(async (subapi) => {
     const response = await worker.default.fetch(withCf(new Request('https://sub-links.example/static?token=harness-token', {
