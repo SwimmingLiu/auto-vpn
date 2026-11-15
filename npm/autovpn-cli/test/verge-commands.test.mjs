@@ -329,6 +329,191 @@ test('rotating only the second of two exits is still reported as not applied', a
   }
 });
 
+test('an exit group holding only DIRECT is not live', async () => {
+  const install = createInstall();
+  const socketPath = socketDir();
+  const mihomo = await startMihomo(socketPath, {
+    '🚀 节点选择': { type: 'Selector', all: ['PROBE', '🛡️ 静态IP出口'], now: '🛡️ 静态IP出口' },
+    '🛡️ 静态IP出口': { type: 'Selector', all: ['DIRECT'], now: 'DIRECT' },
+    DIRECT: { type: 'Direct' },
+  });
+  try {
+    const io = createIo();
+    const code = await runVergeCommand(['verge', 'exit', '--wait', '1'], {
+      env: { AUTOVPN_MIHOMO_SOCKET: socketPath },
+      cwd: packageRoot,
+      home: install.home,
+      io,
+      readStdin: async () => LINK,
+      platform: 'darwin',
+      spawn: fakeSpawn([]),
+      sleep: async () => {}
+    });
+    // The profile before the write is still in the core; a group of nothing but
+    // DIRECT is that leftover, not an applied exit.
+    assert.equal(code, 6, io.stdout);
+    assert.match(io.stdout, /not live after 1s/);
+  } finally {
+    await mihomo.close();
+  }
+});
+
+test('direct mode verifies its one node instead of reading DIRECT as a missing entry', async () => {
+  const install = createInstall();
+  fs.writeFileSync(install.script, template.replace("const MODE = 'chain'", "const MODE = 'direct'"), { mode: 0o600 });
+  writeGeneratedNamed(install, 'Hong Kong exit', '203.0.113.7', 1080, SECRET);
+  const socketPath = socketDir();
+  const mihomo = await startMihomo(socketPath, {
+    '🚀 节点选择': { type: 'Selector', all: ['PROBE', '🛡️ 静态IP出口'], now: 'PROBE' },
+    '🛡️ 静态IP出口': { type: 'Selector', all: ['Hong Kong exit', 'DIRECT'], now: 'Hong Kong exit' },
+    'Hong Kong exit': { type: 'socks5' },
+    DIRECT: { type: 'Direct' },
+  });
+  try {
+    const io = createIo();
+    const code = await runVergeCommand(['verge', 'exit', '--wait', '5'], {
+      env: { AUTOVPN_MIHOMO_SOCKET: socketPath },
+      cwd: packageRoot,
+      home: install.home,
+      io,
+      readStdin: async () => LINK,
+      platform: 'darwin',
+      spawn: fakeSpawn([]),
+      sleep: async () => {}
+    });
+    assert.equal(code, 0, io.stdout);
+    assert.match(io.stdout, /verified: .*Hong Kong exit → 203\.0\.113\.7:1080/);
+  } finally {
+    await mihomo.close();
+  }
+});
+
+test('a second exit the group never loaded fails instead of verifying on the first', async () => {
+  const install = createInstall();
+  writeGenerated(install, '203.0.113.7', 1080, SECRET);
+  const socketPath = socketDir();
+  const mihomo = await startMihomo(socketPath, {
+    '🚀 节点选择': { type: 'Selector', all: ['PROBE', '🛡️ 静态IP出口'], now: 'PROBE' },
+    '🛡️ 静态IP出口': { type: 'Selector', all: [CHAIN], now: CHAIN },
+    [CHAIN]: { type: 'socks5' },
+  });
+  try {
+    const io = createIo();
+    const links = [
+      LINK,
+      `socks5://alice:${encodeURIComponent(SECRET)}@198.51.100.9:1080#Tokyo exit`,
+    ].join('\n');
+    const code = await runVergeCommand(['verge', 'exit', '--wait', '5'], {
+      env: { AUTOVPN_MIHOMO_SOCKET: socketPath },
+      cwd: packageRoot,
+      home: install.home,
+      io,
+      readStdin: async () => links,
+      platform: 'darwin',
+      spawn: fakeSpawn([]),
+      sleep: async () => {}
+    });
+    assert.equal(code, 6, io.stdout);
+    assert.match(io.stdout, /not live: .* is missing Tokyo exit/);
+  } finally {
+    await mihomo.close();
+  }
+});
+
+test('a node that joins the group after the restart is compared against the pre-restart file', async () => {
+  const install = createInstall();
+  const second = 'Tokyo exit（链式）';
+  fs.writeFileSync(path.join(install.appDir, 'clash-verge.yaml'), [
+    'proxies:',
+    `- name: ${CHAIN}`,
+    '  type: socks5',
+    '  server: 203.0.113.7',
+    '  port: 1080',
+    '  username: alice',
+    `  ${CREDENTIAL_FIELD}: ${SECRET}`,
+    `- name: ${second}`,
+    '  type: socks5',
+    '  server: 198.51.100.7',
+    '  port: 1080',
+    '  username: alice',
+    `  ${CREDENTIAL_FIELD}: ${SECRET}`,
+    'proxy-groups:',
+    '- name: 🚀 节点选择',
+    '  type: select',
+    '  proxies:',
+    `  - ${CHAIN}`,
+  ].join('\n'));
+  const socketPath = socketDir();
+  const mihomo = await startMihomo(socketPath, {
+    '🚀 节点选择': { type: 'Selector', all: ['PROBE', '🛡️ 静态IP出口'], now: 'PROBE' },
+    '🛡️ 静态IP出口': { type: 'Selector', all: [CHAIN], now: CHAIN },
+    [CHAIN]: { type: 'socks5' },
+  });
+  try {
+    const io = createIo();
+    const links = [
+      LINK,
+      `socks5://alice:${encodeURIComponent(SECRET)}@198.51.100.9:1080#Tokyo exit`,
+    ].join('\n');
+    const code = await runVergeCommand(['verge', 'exit', '--wait', '5'], {
+      env: { AUTOVPN_MIHOMO_SOCKET: socketPath },
+      cwd: packageRoot,
+      home: install.home,
+      io,
+      readStdin: async () => links,
+      platform: 'darwin',
+      spawn: fakeSpawn([], (command) => {
+        if (command !== 'open') return;
+        // The rebuilt profile adds the second chain node and points the group at both.
+        mihomo.state.proxies['🛡️ 静态IP出口'] = { type: 'Selector', all: [CHAIN, second], now: CHAIN };
+        mihomo.state.proxies[second] = { type: 'socks5' };
+      }),
+      sleep: async () => {}
+    });
+    // The node was in the file before the restart even though the group did not
+    // list it yet; its old address is what makes this stale.
+    assert.equal(code, 6, io.stdout);
+    assert.match(io.stdout, /still carries the previous Tokyo exit（链式） → 198\.51\.100\.7:1080/);
+  } finally {
+    await mihomo.close();
+  }
+});
+
+test('an entry that changed to something else is missing, not the previous exit', async () => {
+  const install = createInstall();
+  writeGenerated(install, '203.0.113.7', 1080, SECRET);
+  const socketPath = socketDir();
+  const mihomo = await startMihomo(socketPath, {
+    '🚀 节点选择': { type: 'Selector', all: ['PROBE', '🛡️ 静态IP出口'], now: 'PROBE' },
+    '🛡️ 静态IP出口': { type: 'Selector', all: [CHAIN], now: CHAIN },
+    [CHAIN]: { type: 'socks5' },
+  });
+  try {
+    const io = createIo();
+    const code = await runVergeCommand(['verge', 'exit', '--wait', '5'], {
+      env: { AUTOVPN_MIHOMO_SOCKET: socketPath },
+      cwd: packageRoot,
+      home: install.home,
+      io,
+      readStdin: async () => LINK,
+      platform: 'darwin',
+      spawn: fakeSpawn([], (command) => {
+        // The core rebuilt the entry, but not from this link: a third address
+        // matches neither the old exit nor the new one.
+        if (command === 'open') writeGenerated(install, '198.51.100.4', 1080, SECRET);
+      }),
+      sleep: async () => {}
+    });
+    assert.equal(code, 6, io.stdout);
+    assert.match(io.stdout, /not live: .* is missing Hong Kong exit\n/);
+    // Calling this "the previous exit" would send the operator looking for a
+    // rotation that never happened; the entry is simply not the one on disk.
+    assert.equal(io.stdout.includes('still carries the previous'), false);
+  } finally {
+    await mihomo.close();
+  }
+});
+
 test('a selection the restart reset is put back on the exit group', async () => {
   const install = createInstall();
   const socketPath = socketDir();

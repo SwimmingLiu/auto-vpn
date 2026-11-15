@@ -92,13 +92,16 @@ export function replaceExitBlock(scriptText: string, block: string): string {
   const firstLineEnd = newline < 0 ? scriptText.length : newline;
   const firstLine = scriptText.slice(start, firstLineEnd);
   let end: number;
-  if (/\]\s*;\s*(?:\/\/.*)?$/.test(firstLine)) {
+  if (/\]\s*;\s*(?:\/\/.*|\/\*.*\*\/)?[ \t]*$/.test(firstLine)) {
     end = firstLineEnd;
   } else {
     // A trailing comment on the closing line (`]; // exits`) is legal JS and
     // common in hand-edited scripts; insisting on a bare `];` made the search
     // run on to the next `];` in the file and delete everything between.
-    const rest = /^[ \t]*\];[ \t]*(?:\/\/.*)?$/m.exec(scriptText.slice(firstLineEnd));
+    // Both comment forms, and a bare `];`, end the block. Accepting only `//`
+    // made a `]; /* end */` miss, and the search ran on to the next closing
+    // line in the file — deleting `MODE` and the rules in between.
+    const rest = /^[ \t]*\];[ \t]*(?:\/\/.*|\/\*.*\*\/)?[ \t]*$/m.exec(scriptText.slice(firstLineEnd));
     if (!rest) {
       throw new Error('the `const STATIC_EXITS = [` block is never closed with `];`');
     }
@@ -250,12 +253,15 @@ export function proxyMatchesExit(proxy: ConfigProxy, exit: StaticExit): boolean 
   // The credential alone is not the identity: rotating only the username, the
   // scheme or TLS under the same host:port left `verified` standing on an entry
   // the core never received.
-  if (proxy.type !== undefined && proxy.type !== exit.type) return false;
+  // Both sides are compared exactly. Skipping the credential when the new link
+  // has none made a rotation from `user:pass@host` to `user@host` match the old
+  // entry that still carried the credential, and the core kept the old secret.
+  if (proxy.type !== exit.type) return false;
   if (proxy.server !== exit.server) return false;
   if (Number(proxy.port) !== Number(exit.port)) return false;
   if ((proxy.username ?? '') !== (exit.username ?? '')) return false;
   if (Boolean(proxy.tls) !== Boolean(exit.tls)) return false;
-  if (exit.credential !== undefined && proxy.credential !== exit.credential) return false;
+  if ((proxy.credential ?? '') !== (exit.credential ?? '')) return false;
   return true;
 }
 

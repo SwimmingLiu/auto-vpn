@@ -311,6 +311,16 @@ function isSelectorType(type: unknown): boolean {
   return lowered === 'select' || lowered === 'selector';
 }
 
+/**
+ * A group member that is not a node the extension injected.
+ *
+ * `direct` mode puts `DIRECT` in the exit group on purpose; a group left with
+ * nothing but `DIRECT` is a profile that was never rebuilt, not a live exit.
+ */
+function isBuiltinTarget(name: unknown): boolean {
+  return name === 'DIRECT' || name === 'REJECT';
+}
+
 /** `name`, `name 2`, … — the suffix the extension adds when the name is taken. */
 function sameFamily(name: unknown, base: string): boolean {
   if (typeof name !== 'string') return false;
@@ -323,6 +333,14 @@ function readGeneratedProxy(file: string, name: string): ConfigProxy | null {
     return findConfigProxy(fs.readFileSync(file, 'utf8'), name);
   } catch {
     return null;
+  }
+}
+
+function readTextIfExists(file: string): string {
+  try {
+    return fs.readFileSync(file, 'utf8');
+  } catch {
+    return '';
   }
 }
 
@@ -548,11 +566,11 @@ async function runExit(context: VergeContext, argv: string[]): Promise<number> {
   // running core is the one place that knows them, so the selection memory and
   // the generated-config check key off that group, not off the probe names.
   const exitFamilyName = loaded.settings.exitGroup || injected.exitGroup;
-  const groupBefore = before ? liveExitGroup(exitFamilyName, before) : '';
-  // Every member of the previous exit group is remembered, not just the first:
-  // with two exits, rotating only the second must not read as verified.
-  const beforeNames = groupBefore ? (before?.[groupBefore]?.all ?? []) : (injected.chain.length > 0 ? injected.chain : injected.direct);
-  const entriesBefore = new Map(beforeNames.map((name) => [name, readGeneratedProxy(generatedPath, name)]));
+  // The whole generated config is snapshotted before the restart, not just the
+  // members of the old exit group: a node that was in the file but not in the
+  // group yet (`all` mode's first run, or a name that only just appeared) would
+  // otherwise compare against `null` and read as "changed" instead of "stale".
+  const generatedBefore = readTextIfExists(generatedPath);
   const wasSelectedIn = before
     ? Object.entries(before)
       .filter(([, record]) => sameFamily(record?.now, exitFamilyName))
@@ -573,8 +591,11 @@ async function runExit(context: VergeContext, argv: string[]): Promise<number> {
       const group = liveExitGroup(exitFamilyName, proxies);
       if (!group) return false;
       const members = proxies[group]?.all ?? [];
-      return members.length > 0
-        && members.every((member) => member === 'DIRECT' || member === 'REJECT' || Object.hasOwn(proxies, member));
+      // A group that holds nothing but `DIRECT` is the profile from before the
+      // write still sitting in the core; waiting for it and then calling the
+      // run live was a success report for an apply that never happened.
+      return members.some((member) => !isBuiltinTarget(member) && Object.hasOwn(proxies, member))
+        && members.every((member) => isBuiltinTarget(member) || Object.hasOwn(proxies, member));
     }, {
       timeoutMs: Math.max(1_000, deadline - Date.now()),
       sleep: context.sleep,
@@ -613,24 +634,37 @@ async function runExit(context: VergeContext, argv: string[]): Promise<number> {
   // link under the same name looks live. The generated config does carry them.
   // Every live member is checked against every exit: with two exits, a rerun
   // that rotated only the second one used to read as verified on the first.
-  const afterNames = liveChain.length > 0 ? liveChain : (injected.chain.length > 0 ? injected.chain : injected.direct);
+  // `DIRECT` is a member of the exit group in `direct` mode but has no entry in
+  // the generated config, so it must not take part in the identity rows.
+  const liveNodes = liveChain.filter((name) => !isBuiltinTarget(name));
+  const afterNames = liveNodes.length > 0 ? liveNodes : (injected.chain.length > 0 ? injected.chain : injected.direct);
   const rows = afterNames.map((name) => {
     const entry = readGeneratedProxy(generatedPath, name);
+    const entryBefore = generatedBefore === '' ? null : findConfigProxy(generatedBefore, name);
     return {
       name,
       entry,
       exit: entry ? exits.find((exit) => proxyMatchesExit(entry, exit)) : undefined,
-      unchanged: sameConfigProxy(entry, entriesBefore.get(name) ?? null),
+      unchanged: sameConfigProxy(entry, entryBefore),
     };
   });
+  // Coverage is by value, not object identity: the same link pasted twice is
+  // one node in the group and must not read as a missing exit.
+  const missingExits = rows.some((row) => row.entry)
+    ? exits.filter((exit) => !rows.some((row) => row.entry !== null && proxyMatchesExit(row.entry, exit)))
+    : [];
+  // A row whose entry still matches what the file held before is the stale
+  // case even though its exit is then "missing" too: the profile was not
+  // rebuilt, which is the actionable message, not an incomplete group. An
+  // entry that changed but matches nothing is a different problem (`unverified`).
+  const staleRow = rows.find((row) => row.entry && !row.exit && row.unchanged);
   const identity = rows.length === 0 || rows.every((row) => !row.entry)
     ? 'unverified'
-    : rows.every((row) => row.exit)
+    : rows.every((row) => row.exit) && missingExits.length === 0
       ? 'verified'
-      : rows.every((row) => row.unchanged)
+      : staleRow
         ? 'stale'
         : 'unverified';
-  const staleRow = rows.find((row) => row.entry && !row.exit);
 
   if (identity === 'stale' && staleRow?.entry) {
     lines.push(`not applied: ${generatedPath} still carries the previous ${staleRow.name} → ${staleRow.entry.server}:${staleRow.entry.port}`);
@@ -642,6 +676,22 @@ async function runExit(context: VergeContext, argv: string[]): Promise<number> {
       reason: 'stale_generated_config',
       script,
       exit_group: injected.exitGroup,
+      chain: injected.chain,
+      identity,
+    }, lines);
+    return EXIT_CODES.applyFailed;
+  }
+  if (missingExits.length > 0) {
+    // The group loaded, but not every configured exit is in it: a silent
+    // second-exit failure used to read as `verified` on the first one.
+    lines.push(`not live: ${exitGroup} is missing ${missingExits.map((exit) => exit.name).join(', ')}`);
+    emit(context, argv, {
+      ok: false,
+      wrote: true,
+      applied: false,
+      reason: 'missing_exits',
+      script,
+      exit_group: exitGroup,
       chain: injected.chain,
       identity,
     }, lines);
@@ -743,12 +793,15 @@ async function runStatus(context: VergeContext, argv: string[]): Promise<number>
         const now = live[target]?.now;
         lines.push(`selected in ${target}: ${now ?? '(unknown)'}`);
       }
-      if (hasFlag(argv, '--test') && members.length > 0) {
+      // `direct` mode lists `DIRECT` in the group; probing it measures the host
+      // link, not the exit, and fails outright on a rule-mode core.
+      const probeTarget = members.find((member) => !isBuiltinTarget(member)) ?? '';
+      if (hasFlag(argv, '--test') && probeTarget !== '') {
         try {
-          const probe = await probeDelay(socketPath, members[0]);
-          lines.push(`probe ${members[0]}: ${probe.delay} ms`);
+          const probe = await probeDelay(socketPath, probeTarget);
+          lines.push(`probe ${probeTarget}: ${probe.delay} ms`);
         } catch (error) {
-          lines.push(`probe ${members[0]}: failed (${error instanceof Error ? error.message : String(error)})`);
+          lines.push(`probe ${probeTarget}: failed (${error instanceof Error ? error.message : String(error)})`);
           exitCode = EXIT_CODES.probeFailed;
         }
       }
@@ -785,7 +838,7 @@ async function runTest(context: VergeContext, argv: string[]): Promise<number> {
   // the profile has not been rebuilt yet.
   const live = await readProxies(socketPath).catch(() => null);
   const group = live ? liveExitGroup(loaded.settings.exitGroup || injected.exitGroup, live) : '';
-  const members = group && live ? live[group]?.all ?? [] : [];
+  const members = (group && live ? live[group]?.all ?? [] : []).filter((member) => !isBuiltinTarget(member));
   const names = members.length > 0 ? members : injected.chain;
   const lines: string[] = [];
   let exitCode: number = EXIT_CODES.ok;

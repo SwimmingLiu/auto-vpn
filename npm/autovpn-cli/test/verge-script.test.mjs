@@ -93,6 +93,14 @@ test('a closing `];` with a trailing comment ends the block, not the next one in
   assert.ok(next.includes("const RULES_TO_EXIT = ['DOMAIN,x.example']; // ];"));
   assert.ok(!next.includes('203.0.113.9'));
   assert.ok(next.includes("const MODE = 'chain';"));
+
+  // A block comment on the closing line ends it too; missing it deleted every
+  // line up to the rules' own `];`.
+  const blockComment = source.replace(']; // exits', ']; /* exits */');
+  const afterBlock = replaceExitBlock(blockComment, generateExitBlock([]));
+  assert.ok(afterBlock.includes("const MODE = 'chain';"));
+  assert.ok(afterBlock.includes("const RULES_TO_EXIT = ['DOMAIN,x.example']; // ];"));
+  assert.ok(!afterBlock.includes('203.0.113.9'));
 });
 
 test('a YAML-escaped name and credential are read back as the typed value', () => {
@@ -265,4 +273,10 @@ test('the generated entry is compared field by field, not only by credential', (
   assert.equal(proxyMatchesExit(entry, { ...exit, tls: true }), false);
   assert.equal(sameConfigProxy(entry, { ...entry, username: 'bob' }), false);
   assert.equal(sameConfigProxy(entry, { ...entry }), true);
+  // Dropping the credential from the link must not match the entry that still
+  // carries the old one — the core would keep the removed password.
+  assert.equal(proxyMatchesExit(entry, { ...exit, credential: undefined }), false);
+  // A generated entry without a type is not the node the core was handed.
+  const { type: _unused, ...untyped } = entry;
+  assert.equal(proxyMatchesExit(untyped, exit), false);
 });
