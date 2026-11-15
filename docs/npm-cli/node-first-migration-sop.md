@@ -39,5 +39,15 @@ npm CLI tests, publishes the npm package, uploads the npm tarball and Electron
 platform assets, and updates GitHub Release notes. The Electron gates are not
 repeated there: they run on the pull request that produced the tagged commit.
 
+The final release job dispatches the release tag and commit to
+`auto-vpn-runner`, which opens a pull request that moves its pinned
+`PIPELINE_REF` to that commit. The runner never follows a release
+automatically: review and merge the pin PR, then run the scheduled workflow by
+hand once before the nightly schedule uses it. The dispatch needs
+`AUTOVPN_RUNNER_TOKEN`, a fine-grained token scoped to `auto-vpn-runner` with
+`Contents: read/write`, `Pull requests: read/write` and `Workflows: read/write`.
+`Workflows` is required because the pin lives in a workflow file, which the
+runner's own `GITHUB_TOKEN` cannot update.
+
 After any behavior or packaging change, rerun the affected test and package
 checks before updating the release.
