@@ -2,11 +2,12 @@ name: Deploy Cloudflare
 
 # Builds the container image, pushes it, and rolls the Worker.
 #
-# Unit tests live in `cloudflare-tests.yml`. This workflow only deploys, and a
-# push to main deploys only when `CLOUDFLARE_CONTAINERS_ENABLED` is `true`:
-# without the Workers Paid plan the permission probe fails before anything is
-# uploaded, which used to leave every cloudflare/** merge with a red run.
-# `workflow_dispatch` always runs, so the probe can still report plan status.
+# Pull requests run `cloudflare-tests.yml`; this workflow repeats those suites
+# as a gate before anything on main can deploy. A push to main deploys only
+# when `CLOUDFLARE_CONTAINERS_ENABLED` is `true`: without the Workers Paid plan
+# the permission probe fails before anything is uploaded, which used to leave
+# every cloudflare/** merge with a red run. `workflow_dispatch` always runs, so
+# the probe can still report plan status.
 #
 # The deploy needs a Cloudflare API token with **Containers → Edit**. That scope
 # is not in the stock Workers template, and `wrangler deploy` only says
@@ -41,8 +42,33 @@ env:
   NPM_CONFIG_FUND: "false"
 
 jobs:
+  # The same two suites `cloudflare-tests.yml` runs on pull requests. Repeated
+  # here because a main push can skip the pull request (direct commits, merges
+  # of stale branches) and a failing test must not reach `wrangler deploy`.
+  test:
+    name: Unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Egress supervisor tests
+        working-directory: cloudflare/container
+        run: node --test test/*.test.mjs
+
+      - name: Pipeline controller tests
+        working-directory: cloudflare/worker
+        run: node --test test/*.test.mjs
+
   deploy:
     name: Deploy Worker and Container
+    needs: test
     # A plan without Containers cannot deploy; this variable is the switch for
     # automatic deploys after the plan is upgraded.
     if: github.event_name == 'workflow_dispatch' || vars.CLOUDFLARE_CONTAINERS_ENABLED == 'true'

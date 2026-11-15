@@ -13,13 +13,9 @@ on:
   pull_request:
     paths:
       - 'cloudflare/**'
-      - '.github/workflows/cloudflare-tests.yml'
-      - '.github/workflows/deploy-cloudflare.yml'
-  push:
-    branches:
-      - main
-    paths:
-      - 'cloudflare/**'
+      # The container tests read both of these.
+      - 'npm/autovpn-cli/package.json'
+      - 'templates/vmess_node.js'
       - '.github/workflows/cloudflare-tests.yml'
       - '.github/workflows/deploy-cloudflare.yml'
 

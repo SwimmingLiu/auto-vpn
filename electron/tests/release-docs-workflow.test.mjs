@@ -164,7 +164,7 @@ test('README follows the AutoVPN desktop app structure', () => {
   assert.doesNotMatch(readme, /\/user\/swimmingliu/i);
 });
 
-test('release workflow packages AutoVPN for native OS and CPU variants after a GitHub Release is published', () => {
+test('release workflow packages AutoVPN for native OS and CPU variants from a version tag', () => {
   const workflow = readProjectFile('.github', 'workflows', 'release-electron.yml');
   const testJob = extractWorkflowSegment(workflow, '  test:', '  package-electron:');
   const packageJob = extractWorkflowSegment(workflow, '  package-electron:', '  package-cli:');
@@ -181,15 +181,13 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
   );
 
   for (const requiredText of [
-    'release:',
-    'types: [published]',
     'push:',
     'tags:',
     "'v*.*'",
     "'v*.*.*'",
     'workflow_dispatch:',
     'tag_name:',
-    'RELEASE_TAG_NAME: ${{ github.event.inputs.tag_name || github.event.release.tag_name || github.ref_name }}',
+    'RELEASE_TAG_NAME: ${{ github.event.inputs.tag_name || github.ref_name }}',
     'contents: write',
     'id-token: write',
     'fetch-depth: 0',
@@ -237,12 +235,6 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
     'scripts/ci/retry-command.sh "npm ci --prefix npm/autovpn-cli"',
     'Build npm CLI web server',
     'npm run build --prefix npm/autovpn-cli',
-    'Install pinned Playwright Chromium and WebKit runtimes',
-    'npx playwright install --with-deps chromium-headless-shell webkit',
-    'npm run test:h5',
-    'npm run test:electron-native',
-    'Upload renderer visual diffs',
-    'electron/tests/visual-artifacts/**',
     'npm run package:electron',
     'bash -eo pipefail -c',
     'AUTOVPN_PACKAGE_PLATFORM: ${{ matrix.package_platform }}',
@@ -284,6 +276,12 @@ test('release workflow packages AutoVPN for native OS and CPU variants after a G
   ]) {
     assert.ok(workflow.includes(requiredText), `workflow should contain ${requiredText}`);
   }
+
+  // A UI-created release fires `release: published` and the tag push, which ran
+  // the whole release twice until the duplicate trigger was removed.
+  assert.doesNotMatch(workflow, /^\s+release:/m);
+  assert.doesNotMatch(workflow, /types: \[published\]/);
+  assert.doesNotMatch(workflow, /github\.event\.release\.tag_name/);
 
   assert.doesNotMatch(workflow, /AutoVPN-\$\{PKG_VERSION\}-\$\{\{ matrix\.package_arch \}\}\.dmg\.blockmap/);
   assert.doesNotMatch(workflow, /AutoVPN-\$\{PKG_VERSION\}-x86_64\.AppImage/);
@@ -342,14 +340,13 @@ test('active CI and release workflows are Node-only and publish only npm and Ele
   assert.doesNotMatch(release, /find dist .*\.tar\.gz/);
 });
 
-test('headless CI packages the Linux Electron app and verifies version and icon output', () => {
-  const workflow = readProjectFile('.github', 'workflows', 'headless-cli.yml');
+test('the Electron package workflow builds the Linux app and verifies version and icon output', () => {
+  const workflow = readProjectFile('.github', 'workflows', 'electron-package.yml');
   const packageJob = workflow.slice(workflow.indexOf('  electron-package:'));
 
   for (const requiredText of [
     'electron-package:',
     'name: Linux Electron package',
-    'needs: headless',
     'NPM_CONFIG_FETCH_RETRIES: "5"',
     'NPM_CONFIG_FETCH_TIMEOUT: "600000"',
     'NPM_CONFIG_PREFER_OFFLINE: "true"',
@@ -394,7 +391,7 @@ test('release package version matches the next release tag', () => {
   assert.equal(packageLock.packages[''].version, packageJson.version);
 });
 
-test('PR and release gates run the complete mobile Chromium/WebKit and visual matrix', () => {
+test('the PR gate runs the complete mobile Chromium/WebKit and visual matrix', () => {
   const packageJson = JSON.parse(readProjectFile('package.json'));
   const h5Files = testFilesFromScript(packageJson.scripts['test:h5']);
   const nativeFiles = testFilesFromScript(packageJson.scripts['test:electron-native']);
@@ -415,22 +412,22 @@ test('PR and release gates run the complete mobile Chromium/WebKit and visual ma
   assert.equal(new Set([...h5Files, ...nativeFiles]).size, h5Files.length + nativeFiles.length, 'H5/native scripts must not overlap');
   assert.equal(packageJson.scripts['test:electron'], 'npm run test:h5 && npm run test:electron-native');
 
-  for (const workflowPath of ['headless-cli.yml', 'release-electron.yml']) {
-    const workflow = readProjectFile('.github', 'workflows', workflowPath);
-    assertWorkflowTestGates(workflow, packageJson, allFiles);
-    const h5Step = extractNamedStep(workflow, 'Run H5 mobile Chromium and WebKit gate');
-    const nativeStep = extractNamedStep(workflow, 'Run Electron native and desktop gate');
-    assert.match(workflow, /name: Install pinned Playwright Chromium and WebKit runtimes/);
-    assert.match(workflow, /npx playwright install --with-deps chromium-headless-shell webkit/);
-    assert.ok(workflow.indexOf('Run H5 mobile Chromium and WebKit gate') < workflow.indexOf('Run Electron native and desktop gate'));
-    assert.match(h5Step, /run: npm run test:h5/);
-    assert.match(nativeStep, /run: npm run test:electron-native/);
-    assert.match(workflow, /name: Upload renderer visual diffs/);
-    assert.match(workflow, /if: failure\(\)/);
-    assert.match(workflow, /uses: actions\/upload-artifact@v4/);
-    assert.match(workflow, /electron\/tests\/visual-artifacts\/\*\*/);
-    assert.doesNotMatch(`${h5Step}\n${nativeStep}`, /excluded|exclude|--test-name-pattern/i);
-  }
+  // The release gate dropped these: they already ran on the pull request that
+  // produced the tagged commit, and repeating them doubled release wall-clock.
+  const workflow = readProjectFile('.github', 'workflows', 'headless-cli.yml');
+  assertWorkflowTestGates(workflow, packageJson, allFiles);
+  const h5Step = extractNamedStep(workflow, 'Run H5 mobile Chromium and WebKit gate');
+  const nativeStep = extractNamedStep(workflow, 'Run Electron native and desktop gate');
+  assert.match(workflow, /name: Install pinned Playwright Chromium and WebKit runtimes/);
+  assert.match(workflow, /npx playwright install --with-deps chromium-headless-shell webkit/);
+  assert.ok(workflow.indexOf('Run H5 mobile Chromium and WebKit gate') < workflow.indexOf('Run Electron native and desktop gate'));
+  assert.match(h5Step, /run: npm run test:h5/);
+  assert.match(nativeStep, /run: npm run test:electron-native/);
+  assert.match(workflow, /name: Upload renderer visual diffs/);
+  assert.match(workflow, /if: failure\(\)/);
+  assert.match(workflow, /uses: actions\/upload-artifact@v4/);
+  assert.match(workflow, /electron\/tests\/visual-artifacts\/\*\*/);
+  assert.doesNotMatch(`${h5Step}\n${nativeStep}`, /excluded|exclude|--test-name-pattern/i);
 });
 
 test('gate contract rejects package-script and workflow shell bypasses', () => {
