@@ -156,7 +156,7 @@ Repository settings it reads:
 The Worker profile is **not** one of these secrets. It is committed as
 `container/profile.cloudflare.toml` and uploaded from the checkout, so editing
 it is a normal pull request rather than a secret rotate. The file sits just
-under the 5 KB cap on a Worker secret (about 5,030 bytes), and `deploy.sh`
+under the 5 KB cap on a Worker secret (about 5,110 bytes), and `deploy.sh`
 strips comments and blank lines before upload anyway: the API rejects an
 oversized secret rather than wrangler, so without the guard the failure would
 only appear after the image had been built.
