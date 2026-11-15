@@ -1,8 +1,7 @@
 # Cloudflare deployment profile for AutoVPN. Rationale: cloudflare/README.md.
 #
-# Differences from the VPS profile: `project_name` is this deployment's own (never
-# the VPS's), `min_final_links` agrees with the Durable Object gate, and every
-# credential arrives as a secret, never in this file.
+# Differences from the VPS profile: `min_final_links` agrees with the Durable
+# Object gate, and every credential arrives as a secret, never in this file.
 #
 # Sources are in LAP mode: `max_laps` switches the unit to "one lap of every
 # area", and only `min_laps`/`max_laps`/`dry_laps`/`max_runtime_seconds` then
@@ -104,13 +103,13 @@ proxy_mode = "proxy"
 proxy_url = "http://127.0.0.1:7897"
 
 [deploy]
-# Own project only; never the VPS's `sub-nodes-<number>`/`sub-links-*`.
-project_name = "sub-nodes-cf"
+# The VPS's project: this deployment replaces its artifact each night.
+project_name = "sub-nodes-05"
 # No key here: the profile is committed and also uploaded as a Worker secret, so
 # a literal publishes the subscription. The deploy composes `<url>/?<secret_query>`.
-subscription_url = "https://sub-nodes-cf.pages.dev"
-verify_subscription_url = "https://sub-nodes-cf.pages.dev"
-pages_project_url = "https://sub-nodes-cf.pages.dev"
+subscription_url = "https://sub-nodes-05.pages.dev"
+verify_subscription_url = "https://sub-nodes-05.pages.dev"
+pages_project_url = "https://sub-nodes-05.pages.dev"
 custom_domain = ""
 # Sentinel: resolves from VPN_AUTOMATION_SUBSCRIPTION_KEY at build time. A
 # literal works; sentinel-without-variable throws, not a `{{...}}` key.

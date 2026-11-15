@@ -315,19 +315,24 @@ from an 11–12-day-old artifact. 40 clears every normal night. If yields drop
 below that, the honest response is to find the yield problem, not to lower the
 floor again.
 
-### The deploy target is this deployment's own project
+### The deploy target is the subscription project, never a share project
 
-`profile.cloudflare.toml` names `sub-nodes-cf`, and **the deploy stage writes to
-whatever project that is**. It is a separate project from the VPS's
-`sub-nodes-<number>` projects on purpose: the two installations serve two
-subscriptions, and neither can replace the other's artifact.
+`profile.cloudflare.toml` names `sub-nodes-05`, the VPS's own subscription
+project, and **the deploy stage writes to whatever project that is**. That is
+deliberate: the runner and the server are two writers of one subscription, so
+whichever runs later is what `www.swimmingliu.online/sub` serves. Both gates
+keep a thin night from replacing a working artifact — the runner's
+`min_final_links = 40` and the VPS profile's 50 — so the two writers cannot
+publish below their floors.
 
 `wrangler pages deploy` replaces the whole production deployment of the named
 project. There is no per-branch isolation for a Direct Upload project and no dry
 run, so the project name in the profile **is** the blast radius. `deploy.sh`
-refuses the families the VPS publishes to (`sub-nodes-<number>`, `sub-links-*`),
-and `container/test/profile.test.mjs` asserts the same rule, so a profile edit
-cannot quietly merge the two into one blast radius.
+refuses `sub-links-*` — the share Worker the already-sent links point at, where
+a replace would swap the entry point under every subscriber — and
+`container/test/profile.test.mjs` asserts the same rule. A `sub-nodes-<number>`
+target is expected rather than refused; when the family rotates
+(`sub-nodes-05` → `sub-nodes-06`) the profile has to move with it.
 
 To try a change without touching the live subscription, point `project_name` at
 a throwaway project for that run. The publish workflow's verify step reads the
