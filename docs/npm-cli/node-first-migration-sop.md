@@ -35,8 +35,9 @@ historical design records are outside that scan.
 ## Release Gate
 
 The release workflow validates the tag against root and npm manifests, runs the
-Node CLI and Electron tests, publishes the npm package, uploads the npm tarball
-and Electron platform assets, and updates GitHub Release notes.
+npm CLI tests, publishes the npm package, uploads the npm tarball and Electron
+platform assets, and updates GitHub Release notes. The Electron gates are not
+repeated there: they run on the pull request that produced the tagged commit.
 
 After any behavior or packaging change, rerun the affected test and package
 checks before updating the release.

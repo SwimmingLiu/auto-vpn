@@ -107,8 +107,8 @@ a plan question, not a design one.
 
 Both use `container/profile.cloudflare.toml`, both crawl through
 `127.0.0.1:7897`, and both publish the artifact that run measured. The runner
-path is `.github/workflows/manual-subscription-publish.yml` (manual dispatch;
-the nightly run is Scheduled Subscription Publish in `auto-vpn-runner`); the container path is
+path lives in `auto-vpn-runner` (`.github/workflows/scheduled-subscription.yml`,
+nightly and manual dispatch); the container path is
 `.github/workflows/deploy-cloudflare.yml` plus the Worker.
 
 The runner path exists because **Cloudflare Containers require the Workers Paid
@@ -123,9 +123,12 @@ deploy without a commit.
 
 ### From GitHub Actions
 
-`.github/workflows/deploy-cloudflare.yml` runs the unit tests, then builds and
-deploys. It triggers on a push to `main` that touches `cloudflare/**`, or
-manually from the Actions tab.
+Pull requests that touch `cloudflare/**` run the unit tests in
+`.github/workflows/cloudflare-tests.yml`; that workflow needs no Cloudflare
+credentials. `.github/workflows/deploy-cloudflare.yml` repeats the same suites
+as a gate, then builds and deploys. It triggers on `workflow_dispatch`, or on a
+push to `main` that touches `cloudflare/**` when
+`CLOUDFLARE_CONTAINERS_ENABLED` is `true`.
 
 It runs on `ubuntu-24.04`, which matters for one reason: the image is
 `linux/amd64`, and a GitHub runner is that natively. Building on Apple silicon
@@ -140,6 +143,7 @@ Repository settings it reads:
 | secret | `AUTOVPN_SUBSCRIPTION_URL` | recommended | the egress pool's source |
 | secret | `AUTOVPN_ACCOUNTS_DB_URL` | yes | the shared account pool (`autovpn.accounts`) |
 | variable | `CLOUDFLARE_ACCOUNT_ID` | yes | target account |
+| variable | `CLOUDFLARE_CONTAINERS_ENABLED` | no | `true` deploys on a `main` push; unset leaves only manual dispatch |
 | variable | `AUTOVPN_BASE_URL` | no | smoke-test URL, e.g. `https://autovpn-cloud.<subdomain>.workers.dev` |
 | variable | `AUTOVPN_ALLOW_LIVE_PROJECT` | no | `1` lets the deploy target a real Pages project |
 

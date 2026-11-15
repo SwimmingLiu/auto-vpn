@@ -12,8 +12,11 @@ npm test --prefix npm/autovpn-cli
 npm run test:electron
 ```
 
-The headless workflow also packs the npm CLI, runs the packed tarball, validates
-JSON output with Node.js, and builds Linux `.deb` and `.rpm` packages.
+`.github/workflows/headless-cli.yml` also packs the npm CLI, runs the packed
+tarball, and validates its JSON output with Node.js.
+`.github/workflows/electron-package.yml` builds the Linux `.deb` and `.rpm`
+packages and checks the packaged version text and icon; it runs when an input
+to packaging changes, not on every pull request.
 
 ## Release Assets
 

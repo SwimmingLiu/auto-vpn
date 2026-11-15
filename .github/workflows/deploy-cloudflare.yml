@@ -2,6 +2,13 @@ name: Deploy Cloudflare
 
 # Builds the container image, pushes it, and rolls the Worker.
 #
+# Pull requests run `cloudflare-tests.yml`; this workflow repeats those suites
+# as a gate before anything on main can deploy. A push to main deploys only
+# when `CLOUDFLARE_CONTAINERS_ENABLED` is `true`: without the Workers Paid plan
+# the permission probe fails before anything is uploaded, which used to leave
+# every cloudflare/** merge with a red run. `workflow_dispatch` always runs, so
+# the probe can still report plan status.
+#
 # The deploy needs a Cloudflare API token with **Containers → Edit**. That scope
 # is not in the stock Workers template, and `wrangler deploy` only says
 # "Authentication error" when it is absent — so `deploy.sh` probes every
@@ -17,12 +24,10 @@ on:
       - main
     paths:
       - 'cloudflare/**'
-      - '.github/workflows/deploy-cloudflare.yml'
-  # PRs run the test job only: the deploy job needs secrets, which are not
-  # exposed to pull requests, and a fork's PR must never reach the account.
-  pull_request:
-    paths:
-      - 'cloudflare/**'
+      # The container test suite pins both of these; a version bump or template
+      # edit on main must still rebuild the image that carries them.
+      - 'npm/autovpn-cli/package.json'
+      - 'templates/vmess_node.js'
       - '.github/workflows/deploy-cloudflare.yml'
 
 permissions:
@@ -41,6 +46,9 @@ env:
   NPM_CONFIG_FUND: "false"
 
 jobs:
+  # The same two suites `cloudflare-tests.yml` runs on pull requests. Repeated
+  # here because a main push can skip the pull request (direct commits, merges
+  # of stale branches) and a failing test must not reach `wrangler deploy`.
   test:
     name: Unit tests
     runs-on: ubuntu-24.04
@@ -54,9 +62,6 @@ jobs:
         with:
           node-version: 24
 
-      # Neither suite needs the platform or the wrangler install: the worker
-      # tests load `src/index.js` through a shim and run the Durable Object
-      # logic against a real in-memory sqlite.
       - name: Egress supervisor tests
         working-directory: cloudflare/container
         run: node --test test/*.test.mjs
@@ -68,8 +73,9 @@ jobs:
   deploy:
     name: Deploy Worker and Container
     needs: test
-    # Secrets are not exposed to pull requests, so this never runs on one.
-    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    # A plan without Containers cannot deploy; this variable is the switch for
+    # automatic deploys after the plan is upgraded.
+    if: github.event_name == 'workflow_dispatch' || vars.CLOUDFLARE_CONTAINERS_ENABLED == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     # Attach required reviewers to this environment in repository settings to
