@@ -502,7 +502,7 @@ jobs:
         run: |
           if [ -z "${GH_TOKEN:-}" ]; then
             echo "::error::AUTOVPN_RUNNER_TOKEN is not set; auto-vpn-runner cannot open the pin PR."
-            echo "Create a fine-grained token for ${RUNNER_REPO} with Contents: read/write and Pull requests: read/write, then set it as AUTOVPN_RUNNER_TOKEN in this repository."
+            echo "Create a fine-grained token for ${RUNNER_REPO} with Contents: read/write, Pull requests: read/write and Workflows: read/write, then set it as AUTOVPN_RUNNER_TOKEN in this repository."
             exit 1
           fi
           RELEASE_SHA="$(git rev-list -n 1 "${TAG_NAME}")"
