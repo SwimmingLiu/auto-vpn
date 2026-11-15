@@ -1,9 +1,10 @@
 # AutoVPN on Cloudflare
 
-A second, independent deployment of the AutoVPN pipeline that runs entirely on
-Cloudflare. Your server keeps running exactly as it does today; this one is a
-parallel installation with its own account pool, its own Pages project and its
-own schedule. Nothing here reads from or writes to the VPS.
+A second deployment of the AutoVPN pipeline that runs entirely on Cloudflare.
+It keeps its own account pool and its own schedule, and it publishes to the same
+Pages project the server writes — so whichever of the two runs later is what
+`www.swimmingliu.online/sub` serves. Both keep a floor, so neither can publish a
+thin night over a working artifact.
 
 ## Why a container, not Workers
 
@@ -150,7 +151,7 @@ Repository settings it reads:
 The Worker profile is **not** one of these secrets. It is committed as
 `container/profile.cloudflare.toml` and uploaded from the checkout, so editing
 it is a normal pull request rather than a secret rotate. The file sits just
-under the 5 KB cap on a Worker secret (about 5,110 bytes), and `deploy.sh`
+under the 5 KB cap on a Worker secret (about 5,080 bytes), and `deploy.sh`
 strips comments and blank lines before upload anyway: the API rejects an
 oversized secret rather than wrangler, so without the guard the failure would
 only appear after the image had been built.
@@ -323,7 +324,15 @@ deliberate: the runner and the server are two writers of one subscription, so
 whichever runs later is what `www.swimmingliu.online/sub` serves. Both gates
 keep a thin night from replacing a working artifact — the runner's
 `min_final_links = 40` and the VPS profile's 50 — so the two writers cannot
-publish below their floors.
+publish below their floors. They are not equal, and that is deliberate: 50 held
+five VPS nights straight while the served subscription aged, so the runner keeps
+the documented 40. A 41–49 runner night can therefore replace a 50+ VPS
+artifact, and the VPS puts its own back the next time it publishes.
+
+The runner also crawls through this same project (`AUTOVPN_SUBSCRIPTION_URL`),
+so a publish that answers 200 but carries unusable nodes leaves the next night
+with nothing to build egress from — it fails its egress guard rather than
+crawling direct, and stays red until the server publishes again.
 
 `wrangler pages deploy` replaces the whole production deployment of the named
 project. There is no per-branch isolation for a Direct Upload project and no dry
@@ -335,11 +344,14 @@ target is expected rather than refused; when the family rotates
 (`sub-nodes-05` → `sub-nodes-06`) the profile has to move with it.
 
 To try a change without touching the live subscription, point `project_name` at
-a throwaway project for that run. The publish workflow's verify step reads the
-URL back from the deploy, so a scratch run is still verified honestly.
+a scratch project for that run — `sub-nodes-9` keeps the shape the profile test
+asserts — and set it back before merging. The publish workflow's verify step
+reads the URL back from the deploy, so a scratch run is still verified honestly.
 
 If a run does publish something wrong, roll back to the previous deployment —
-this restores the exact bundle that was serving before:
+this restores the exact bundle that was serving before. Two writers publish here,
+so read the deployment list before picking one: the entry you want is the last
+one from the writer whose artifact you trust, not simply the second row.
 
 ```bash
 # list recent deployments, newest first
@@ -354,7 +366,8 @@ curl -X POST -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
 ## What is deliberately not migrated
 
 - **The subscription worker itself.** It is already on Pages and has no server
-  dependency. This deployment publishes to its own Pages project.
+  dependency. This deployment publishes into the same Pages project the server
+  writes, so the two share one artifact slot rather than each keeping its own.
 - **The share worker** (`templates/share-worker/vpn.js`). It implements proxy
   forwarding over `cloudflare:sockets`, which is the part of the stack that
   Cloudflare's terms §2.2.1(j) speaks to. Keeping it out of this deployment

@@ -120,12 +120,12 @@ cloudflare_global_key = ""
 cloudflare_email = ""
 account_id = "e743286b4304e96ee8795d62917052aa"
 use_wrangler = true
-auto_create_project_on_blocked = true
-fallback_project_prefix = "autovpn-cf"
-# 40, not 50: the floor stops a broken night from replacing a working
-# subscription; it is not a demand for a record night. A floor of 50 held five
-# nights straight on the VPS (48, 30, 50, 44, 43), publishing nothing while the
-# served subscription aged. 40 clears every normal night.
+# No fallback: this target *is* the live subscription. `autovpn-cf-NN` is a
+# project `/sub` never reads, and the cleanup after a "successful" fallback
+# deletes the requested project — here the live one.
+auto_create_project_on_blocked = false
+# 40, not 50: the floor stops a broken night replacing a working subscription,
+# not a demand for a record night. 50 held five VPS nights straight.
 min_final_links = 40
 
 [worker_build]

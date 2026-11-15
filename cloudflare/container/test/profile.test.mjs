@@ -95,7 +95,9 @@ test('the deploy target is the subscription project, never a share project', () 
   // intended — the runner and the server are two writers of one subscription,
   // and the later run wins. A `sub-links-*` project is different: it is the
   // share Worker the already-sent links point at, so replacing it swaps the
-  // entry point under every subscriber. deploy.sh enforces the same rule.
+  // entry point under every subscriber. deploy.sh enforces the refusal; the
+  // positive shape is pinned here too, so a typo cannot point the night at an
+  // orphan project that `/sub` never reads.
   const project = /^project_name\s*=\s*"([^"]+)"/m.exec(raw)?.[1] ?? '';
   assert.ok(project, 'the profile names no project');
   assert.match(project, /^sub-nodes-\d+$/, 'this does not name a subscription project');

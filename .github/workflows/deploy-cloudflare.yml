@@ -123,7 +123,8 @@ jobs:
           AUTOVPN_API_TOKEN: ${{ secrets.AUTOVPN_API_TOKEN }}
           AUTOVPN_SUBSCRIPTION_URL: ${{ secrets.AUTOVPN_SUBSCRIPTION_URL }}
           AUTOVPN_BASE_URL: ${{ vars.AUTOVPN_BASE_URL }}
-          # Only set this variable once the scratch project has served one good
-          # run; until then the deploy refuses to target a real subscription.
+          # The profile targets the live subscription project, so this must be
+          # set or `deploy.sh` refuses. Point `project_name` at a scratch
+          # project for a run that should not touch it.
           AUTOVPN_ALLOW_LIVE_PROJECT: ${{ vars.AUTOVPN_ALLOW_LIVE_PROJECT }}
         run: cloudflare/scripts/deploy.sh
