@@ -280,6 +280,115 @@ test('the Verge extension removes its nodes when the exit list is emptied', asyn
   assert.equal(out.proxies.some((p) => String(p.name).includes('静态IP')), false);
   assert.equal(out['proxy-groups'].some((g) => String(g.name).includes('静态IP')), false);
   assert.equal(out.rules.some((规则) => String(规则).includes('静态IP')), false);
+  // 清空出口只删自己注入的东西：入口分组的成员是订阅自己的节点。
+  assert.ok(out.proxies.some((p) => p.name === 'US 421'));
+  assert.ok(out.proxies.some((p) => p.name === 'JP 9'));
+});
+
+/** Drop the marker the previous extension version did not write. */
+function withoutMarker(config) {
+  const out = structuredClone(config);
+  for (const proxy of out.proxies) delete proxy.__static_exit;
+  for (const group of out['proxy-groups']) delete group.__static_exit;
+  return out;
+}
+
+function assertMembersResolve(config) {
+  for (const group of config['proxy-groups']) {
+    for (const member of group.proxies ?? []) {
+      const resolves = config.proxies.some((proxy) => proxy.name === member)
+        || config['proxy-groups'].some((other) => other.name === member)
+        || ['DIRECT', 'REJECT'].includes(member);
+      assert.ok(resolves, `${group.name} 的成员 ${member} 必须能解析`);
+    }
+  }
+}
+
+test('the Verge extension clears an injection made by the previous version', async () => {
+  const source = await readFile(scriptPath, 'utf8');
+  const withExit = await loadExtension(
+    source.replace('const RULES_TO_EXIT = [];', "const RULES_TO_EXIT = ['DOMAIN-SUFFIX,openai.com,🛡️ 静态IP出口'];")
+  );
+  const once = withExit(structuredClone(baseProfile), 'p');
+  // 前置条件：这一轮确实注入了节点、分组和规则，否则下面的断言全是在空集上成立。
+  assert.ok(once.proxies.some((proxy) => String(proxy.name).endsWith('（链式）')));
+  assert.ok(once.rules.some((rule) => String(rule).includes('openai.com')));
+
+  // 上一版脚本注入的东西没有 __static_exit 标记，只能按结构认。
+  const legacy = withoutMarker(once);
+  const cleared = await loadExtension(source.replace(/const STATIC_EXITS = \[[\s\S]*?\n\];/, 'const STATIC_EXITS = [];'));
+  const out = cleared(legacy, 'p');
+
+  assert.equal(out.proxies.some((proxy) => String(proxy.name).includes('静态IP')), false);
+  assert.equal(out['proxy-groups'].some((group) => String(group.name).includes('静态IP')), false);
+  assert.equal(out.rules.some((rule) => String(rule).includes('静态IP') || String(rule).includes('openai.com')), false);
+  assert.ok(out.proxies.some((proxy) => proxy.name === 'US 421'), 'subscription nodes must survive');
+  assert.ok(out.proxies.some((proxy) => proxy.name === 'JP 9'), 'subscription nodes must survive');
+  assertMembersResolve(out);
+});
+
+test('a cleared injection from the previous version still loads in mihomo', async (t) => {
+  try {
+    await run('mihomo', ['-v']);
+  } catch {
+    t.skip('mihomo binary is not installed');
+    return;
+  }
+
+  const source = await readFile(scriptPath, 'utf8');
+  const withExit = await loadExtension(source);
+  const legacy = withoutMarker(withExit(structuredClone(baseProfile), 'p'));
+  const cleared = await loadExtension(source.replace(/const STATIC_EXITS = \[[\s\S]*?\n\];/, 'const STATIC_EXITS = [];'));
+  const out = cleared(legacy, 'p');
+
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'verge-extension-'));
+  const configPath = path.join(dir, 'cleared.yaml');
+  await writeFile(configPath, JSON.stringify(out, null, 2), 'utf8');
+  const { stdout, stderr } = await run('mihomo', ['-t', '-f', configPath, '-d', dir], { timeout: 120_000 });
+  assert.match(`${stdout}${stderr}`, /test is successful/, 'clearing a previous-version injection must still load');
+});
+
+test('renaming the exit drops the old node from the groups that listed it', async () => {
+  const source = await readFile(scriptPath, 'utf8');
+  const once = await loadExtension(source);
+  const held = once(structuredClone(baseProfile), 'p');
+  // 用户在 🚀 节点选择 里手动钉住了旧的链式节点。
+  held['proxy-groups'].find((group) => group.name === '🚀 节点选择').proxies.push('🇭🇰 香港静态IP（链式）');
+
+  const renamed = await loadExtension(source.replace("name: '🇭🇰 香港静态IP'", "name: '🇭🇰 香港家宽'"));
+  const out = renamed(held, 'p');
+  assert.ok(out.proxies.some((proxy) => proxy.name === '🇭🇰 香港家宽（链式）'));
+  assert.equal(out.proxies.some((proxy) => proxy.name === '🇭🇰 香港静态IP（链式）'), false);
+  assert.equal(
+    out['proxy-groups'].find((group) => group.name === '🚀 节点选择').proxies.includes('🇭🇰 香港静态IP（链式）'),
+    false
+  );
+  assertMembersResolve(out);
+});
+
+test('a second run recognises a previous-version chain node by name', async () => {
+  const main = await loadExtension(await readFile(scriptPath, 'utf8'));
+  const once = main(structuredClone(baseProfile), 'p');
+  const again = main(withoutMarker(once), 'p');
+
+  // 认不出来就会并排留下两条链式节点，第二条带 ` 2` 后缀。
+  assert.equal(again.proxies.filter((proxy) => String(proxy.name).endsWith('（链式）')).length, 1);
+  assert.equal(again.proxies.some((proxy) => String(proxy.name).includes('（链式） 2')), false);
+  assert.deepEqual(
+    again.proxies.map((proxy) => proxy.name).sort(),
+    once.proxies.map((proxy) => proxy.name).sort()
+  );
+});
+
+test('a previous-version chain node is recognised when the exit name has the separator', async () => {
+  const source = (await readFile(scriptPath, 'utf8'))
+    .replace("name: '🇭🇰 香港静态IP'", "name: '🇭🇰 香港 ➜ 静态IP'");
+  const main = await loadExtension(source);
+  const once = main(structuredClone(baseProfile), 'p');
+  const again = main(withoutMarker(once), 'p');
+
+  assert.equal(again.proxies.filter((proxy) => String(proxy.name).endsWith('（链式）')).length, 1);
+  assert.equal(again.proxies.some((proxy) => String(proxy.name).includes('（链式） 2')), false);
 });
 
 test('an exit name containing the chain separator still rebuilds cleanly', async () => {

@@ -113,9 +113,32 @@ function 是我们注入的节点(节点, 出口) {
 // 收敛掉，重复执行的结果也完全一致。
 function 摘掉上一轮(config, 出口清单) {
   const 分组 = Array.isArray(config['proxy-groups']) ? config['proxy-groups'] : [];
+  const 保留的分组 = 分组.filter((g) => !(g && typeof g === 'object' && (g[标记] === true
+    || 家族内(g.name, EXIT_GROUP) || 家族内(g.name, ENTRANCE_GROUP))));
+  const 摘掉的分组 = new Set(
+    分组.map((g) => (g && typeof g === 'object' ? g.name : undefined))
+      .filter((名) => typeof 名 === 'string' && !保留的分组.some((g) => g && g.name === 名)),
+  );
+  // 旧版本注入的节点没有标记。出口被清空时没有「下一轮」可以按名字重认，只能从
+  // 结构上认：出口分组的成员就是注入的出口节点，链式节点还额外用 dialer-proxy
+  // 指着入口组。两条线索都得断——分组已经删了，留下任何指着它的节点，
+  // mihomo 都会报 not found 并拒收整份配置。
+  // 只看出口分组：入口分组的成员是订阅自己的机场节点，删掉它们等于毁掉订阅。
+  const 出口组成员 = new Set();
+  for (const g of 分组) {
+    if (!g || typeof g !== 'object' || !Array.isArray(g.proxies)) continue;
+    if (!家族内(g.name, EXIT_GROUP)) continue;
+    for (const m of g.proxies) if (typeof m === 'string') 出口组成员.add(m);
+  }
   const 节点 = (Array.isArray(config.proxies) ? config.proxies : [])
-    .filter((p) => !(p && typeof p === 'object'
-      && (p[标记] === true || 出口清单.some((出口) => 是我们注入的节点(p, 出口)))));
+    .filter((p) => {
+      if (!p || typeof p !== 'object') return true;
+      if (p[标记] === true) return false;
+      if (出口清单.some((出口) => 是我们注入的节点(p, 出口))) return false;
+      if (出口清单.length > 0) return true;
+      if (出口组成员.has(p.name)) return false;
+      return !(typeof p['dialer-proxy'] === 'string' && 摘掉的分组.has(p['dialer-proxy']));
+    });
   // 被删掉的节点名要从分组成员里一起摘掉，否则分组指向不存在的节点，
   // mihomo 同样拒收整份配置。
   const 删掉的 = new Set(
@@ -123,12 +146,10 @@ function 摘掉上一轮(config, 出口清单) {
       .map((p) => (p && typeof p === 'object' ? p.name : undefined))
       .filter((名) => typeof 名 === 'string' && !节点.some((p) => p && p.name === 名)),
   );
-  const 保留 = 分组
-    .filter((g) => !(g && typeof g === 'object' && (g[标记] === true
-      || 家族内(g.name, EXIT_GROUP) || 家族内(g.name, ENTRANCE_GROUP))))
+  const 保留 = 保留的分组
     .map((g) => {
       if (!g || typeof g !== 'object' || !Array.isArray(g.proxies)) return g;
-      const 成员 = g.proxies.filter((m) => !删掉的.has(m)
+      const 成员 = g.proxies.filter((m) => !删掉的.has(m) && !摘掉的分组.has(m)
         && !家族内(m, EXIT_GROUP) && !家族内(m, ENTRANCE_GROUP));
       return 成员.length === g.proxies.length ? g : { ...g, proxies: 成员 };
     });
