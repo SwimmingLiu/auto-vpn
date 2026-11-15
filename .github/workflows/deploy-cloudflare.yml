@@ -2,6 +2,12 @@ name: Deploy Cloudflare
 
 # Builds the container image, pushes it, and rolls the Worker.
 #
+# Unit tests live in `cloudflare-tests.yml`. This workflow only deploys, and a
+# push to main deploys only when `CLOUDFLARE_CONTAINERS_ENABLED` is `true`:
+# without the Workers Paid plan the permission probe fails before anything is
+# uploaded, which used to leave every cloudflare/** merge with a red run.
+# `workflow_dispatch` always runs, so the probe can still report plan status.
+#
 # The deploy needs a Cloudflare API token with **Containers → Edit**. That scope
 # is not in the stock Workers template, and `wrangler deploy` only says
 # "Authentication error" when it is absent — so `deploy.sh` probes every
@@ -15,12 +21,6 @@ on:
   push:
     branches:
       - main
-    paths:
-      - 'cloudflare/**'
-      - '.github/workflows/deploy-cloudflare.yml'
-  # PRs run the test job only: the deploy job needs secrets, which are not
-  # exposed to pull requests, and a fork's PR must never reach the account.
-  pull_request:
     paths:
       - 'cloudflare/**'
       - '.github/workflows/deploy-cloudflare.yml'
@@ -41,35 +41,11 @@ env:
   NPM_CONFIG_FUND: "false"
 
 jobs:
-  test:
-    name: Unit tests
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-
-      # Neither suite needs the platform or the wrangler install: the worker
-      # tests load `src/index.js` through a shim and run the Durable Object
-      # logic against a real in-memory sqlite.
-      - name: Egress supervisor tests
-        working-directory: cloudflare/container
-        run: node --test test/*.test.mjs
-
-      - name: Pipeline controller tests
-        working-directory: cloudflare/worker
-        run: node --test test/*.test.mjs
-
   deploy:
     name: Deploy Worker and Container
-    needs: test
-    # Secrets are not exposed to pull requests, so this never runs on one.
-    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    # A plan without Containers cannot deploy; this variable is the switch for
+    # automatic deploys after the plan is upgraded.
+    if: github.event_name == 'workflow_dispatch' || vars.CLOUDFLARE_CONTAINERS_ENABLED == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     # Attach required reviewers to this environment in repository settings to
