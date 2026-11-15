@@ -35,6 +35,11 @@ const MODE = 'chain';
 // 命中这些规则的流量改走出口分组；留空则不改规则，只在界面里手动选。
 const RULES_TO_EXIT = [];
 
+// 出口分组挂进哪些 select 分组。写主选择器的名字就够了，比如 ['🚀 节点选择']：
+// 其它分组大多指向它，挂到每个分组上会让同一件事有好几个地方能改，看着像重复。
+// 留空 = 所有 select 分组。
+const EXIT_GROUP_TARGETS = [];
+
 // ---- 以下不用改 --------------------------------------------------------------
 
 const SEP = ' ➜ ';
@@ -175,23 +180,37 @@ function main(config) {
     }
   }
 
-  config.proxies = [...config.proxies, ...新节点];
+  // 链式建得出来就不留直连出口。出口分组的全部意义是让流量先过「🛬 静态IP入口」
+  // 选中的节点再到出口；留一个直连选项，等于留了一个把本机 IP 直接交给出口服务商
+  // 的开关，选错一次就绕过了整条链。只有 MODE = 'direct' 明确表示不要链的时候才
+  // 退回直连出口，否则分组会是空的，mihomo 会拒收整份配置。
+  const 直连名 = 出口清单.map((e) => 出口名.get(e));
+  const 只用链式 = 链式名.length > 0;
+  const 采纳节点 = 只用链式 ? 新节点.filter((p) => !直连名.includes(p.name)) : 新节点;
+  config.proxies = [...config.proxies, ...采纳节点];
 
   const 出口分组 = {
     name: 出口组名,
     type: 'select',
-    proxies: [...链式名, ...出口清单.map((e) => 出口名.get(e)), 'DIRECT'],
+    proxies: 只用链式 ? [...链式名] : [...直连名, 'DIRECT'],
   };
   const 新分组 = [出口分组];
-  if (链式名.length > 0 && MODE !== 'all') {
-    新分组.push({ name: 入口组名, type: 'select', proxies: [...机场节点, 'DIRECT'] });
+  if (只用链式 && MODE !== 'all') {
+    // 入口组同样不给 DIRECT：入口选 DIRECT 等于把本机 IP 当作上一跳，
+    // 和直连出口是一回事。
+    新分组.push({ name: 入口组名, type: 'select', proxies: [...机场节点] });
   }
 
-  // 让每个 select 分组都能直接选到出口分组，不改变原有顺序与默认项。
+  // 让 select 分组能直接选到出口分组，不改变原有顺序与默认项。
+  // EXIT_GROUP_TARGETS 非空时只挂到点名的那些分组。
+  const 目标分组 = Array.isArray(EXIT_GROUP_TARGETS) && EXIT_GROUP_TARGETS.length > 0
+    ? new Set(EXIT_GROUP_TARGETS)
+    : null;
   const 分组副本 = 现有分组.map((g) => {
     if (!g || typeof g !== 'object') return g;
     if (g.type !== 'select') return g;
     if (g.name === 出口组名 || g.name === 入口组名) return g;
+    if (目标分组 && !目标分组.has(g.name)) return g;
     const 成员 = Array.isArray(g.proxies) ? g.proxies : [];
     if (成员.includes(出口组名)) return g;
     return { ...g, proxies: [...成员, 出口组名] };

@@ -38,17 +38,18 @@ test('the Verge extension adds a chained exit and an entrance group', async () =
   const out = main(structuredClone(baseProfile), 'SwimmingLiu-VPN');
 
   const exitNames = out.proxies.map((proxy) => proxy.name);
-  assert.ok(exitNames.includes('🇭🇰 香港静态IP'));
   assert.ok(exitNames.includes('🇭🇰 香港静态IP（链式）'));
+  // 链式建得出来就不注入直连出口：留一个直连选项等于留一个绕过整条链的开关。
+  assert.equal(exitNames.includes('🇭🇰 香港静态IP'), false);
 
   const twin = out.proxies.find((proxy) => proxy.name === '🇭🇰 香港静态IP（链式）');
   assert.equal(twin['dialer-proxy'], '🛬 静态IP入口');
 
   const exitGroup = out['proxy-groups'].find((group) => group.name === '🛡️ 静态IP出口');
-  assert.deepEqual(exitGroup.proxies, ['🇭🇰 香港静态IP（链式）', '🇭🇰 香港静态IP', 'DIRECT']);
+  assert.deepEqual(exitGroup.proxies, ['🇭🇰 香港静态IP（链式）']);
 
   const entrance = out['proxy-groups'].find((group) => group.name === '🛬 静态IP入口');
-  assert.deepEqual(entrance.proxies, ['US 421', 'JP 9', 'DIRECT']);
+  assert.deepEqual(entrance.proxies, ['US 421', 'JP 9']);
 
   const nodeSelect = out['proxy-groups'].find((group) => group.name === '🚀 节点选择');
   assert.deepEqual(nodeSelect.proxies, ['US 421', 'JP 9', 'DIRECT', '🛡️ 静态IP出口']);
@@ -79,8 +80,8 @@ test('the Verge extension never shadows an existing group name', async () => {
   const out = main(structuredClone(baseProfile), 'p');
 
   assert.ok(!out.proxies.some((proxy) => proxy.name === '🚀 节点选择'));
-  assert.ok(out.proxies.some((proxy) => proxy.name === '🚀 节点选择 2'));
   assert.ok(out.proxies.some((proxy) => proxy.name === '🚀 节点选择 2（链式）'));
+  assert.equal(out.proxies.some((proxy) => proxy.name === '🚀 节点选择 2'), false);
 });
 
 test('the Verge extension output loads in mihomo', async (t) => {
@@ -123,7 +124,7 @@ test('the Verge extension normalises exit types mihomo would reject', async () =
     const patched = source.replace("type: 'socks5'", `type: '${declared}'`);
     const main = await loadExtension(patched);
     const out = main(structuredClone(baseProfile), 'p');
-    const exit = out.proxies.find((p) => p.name === '🇭🇰 香港静态IP');
+    const exit = out.proxies.find((p) => String(p.name).endsWith('（链式）'));
     assert.ok(exit, `${declared}: the exit must be injected`);
     assert.equal(exit.type, expected, `${declared} must become ${expected}`);
     if (tls) assert.equal(exit.tls, true, `${declared} must carry tls`);
@@ -138,7 +139,39 @@ test('the Verge extension tolerates a non-string proxy name', async () => {
   // A numeric name used to throw `名.includes is not a function` and abort main(),
   // so the subscription got no exit at all.
   const out = main(profile, 'p');
+  assert.ok(out.proxies.some((p) => String(p.name).endsWith('（链式）')));
+});
+
+test('the Verge extension falls back to a direct exit only when no chain is wanted', async () => {
+  const source = (await readFile(scriptPath, 'utf8'))
+    .replace("const MODE = 'chain'", "const MODE = 'direct'");
+  const main = await loadExtension(source);
+  const out = main(structuredClone(baseProfile), 'p');
+
+  // MODE = 'direct' 是唯一不建链式的状态；这时直连出口是分组里唯一能用的东西，
+  // 不注入的话出口分组会是空的，mihomo 会拒收整份配置。
   assert.ok(out.proxies.some((p) => p.name === '🇭🇰 香港静态IP'));
+  const exitGroup = out['proxy-groups'].find((g) => g.name === '🛡️ 静态IP出口');
+  assert.deepEqual(exitGroup.proxies, ['🇭🇰 香港静态IP', 'DIRECT']);
+  assert.equal(out['proxy-groups'].some((g) => g.name === '🛬 静态IP入口'), false);
+});
+
+test('the Verge extension appends the exit group only to the named select groups', async () => {
+  const source = (await readFile(scriptPath, 'utf8'))
+    .replace('const EXIT_GROUP_TARGETS = [];', "const EXIT_GROUP_TARGETS = ['🚀 节点选择'];");
+  const main = await loadExtension(source);
+
+  const profile = structuredClone(baseProfile);
+  profile['proxy-groups'].push({ name: '☑️ 手动切换', type: 'select', proxies: ['US 421'] });
+  const out = main(profile, 'p');
+
+  const nodeSelect = out['proxy-groups'].find((g) => g.name === '🚀 节点选择');
+  assert.deepEqual(nodeSelect.proxies, ['US 421', 'JP 9', 'DIRECT', '🛡️ 静态IP出口']);
+  // 没点名的 select 分组不挂，否则同一件事有两处能改，看着像重复。
+  const manual = out['proxy-groups'].find((g) => g.name === '☑️ 手动切换');
+  assert.deepEqual(manual.proxies, ['US 421']);
+  const autoSelect = out['proxy-groups'].find((g) => g.name === '♻️ 自动选择');
+  assert.deepEqual(autoSelect.proxies, ['US 421']);
 });
 
 test('the Verge extension still injects when a node shares the exit address', async () => {
@@ -191,6 +224,6 @@ test('the Verge extension recovers a deleted group without duplicating nodes', a
   held['proxy-groups'] = held['proxy-groups'].filter((g) => !g.name.startsWith('🛡️'));
   const again = main(held, 'p');
   const 出口节点 = again.proxies.filter((p) => String(p.name).includes('静态IP'));
-  assert.equal(出口节点.length, 2, 'the exit node and its chain must not be duplicated');
+  assert.equal(出口节点.length, 1, 'the chain node must not be duplicated');
   assert.ok(again['proxy-groups'].some((g) => g.name.startsWith('🛡️')));
 });
