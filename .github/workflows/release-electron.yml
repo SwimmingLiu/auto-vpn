@@ -473,3 +473,39 @@ jobs:
             --title "AutoVPN ${RELEASE_TAG_NAME}" \
             --notes-file release-notes.md
         shell: bash
+
+  # The runner pins a commit, not a version. Dispatch after every asset is
+  # published so `auto-vpn-runner` can open a PR that moves `PIPELINE_REF`;
+  # nothing reaches the nightly run until that PR is merged and the workflow
+  # is run once by hand. Opening a PR rather than pushing keeps the pin
+  # reviewable, and the runner refuses a commit that is not ahead of its pin.
+  dispatch-runner-pin:
+    name: Open runner pin PR
+    needs: publish-release-notes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout release ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG_NAME }}
+          fetch-depth: 0
+
+      - name: Dispatch pin update to auto-vpn-runner
+        env:
+          GH_TOKEN: ${{ secrets.AUTOVPN_RUNNER_TOKEN }}
+          RUNNER_REPO: ${{ github.repository_owner }}/auto-vpn-runner
+          TAG_NAME: ${{ env.RELEASE_TAG_NAME }}
+        run: |
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::AUTOVPN_RUNNER_TOKEN is not set; auto-vpn-runner cannot open the pin PR."
+            echo "Create a fine-grained token for ${RUNNER_REPO} with Contents: read/write and Pull requests: read/write, then set it as AUTOVPN_RUNNER_TOKEN in this repository."
+            exit 1
+          fi
+          RELEASE_SHA="$(git rev-list -n 1 "${TAG_NAME}")"
+          jq -n --arg tag "${TAG_NAME}" --arg sha "${RELEASE_SHA}" \
+            '{event_type: "autovpn-release", client_payload: {tag: $tag, sha: $sha}}' \
+            | gh api --method POST "repos/${RUNNER_REPO}/dispatches" --input -
+          echo "Dispatched ${TAG_NAME} (${RELEASE_SHA}) to ${RUNNER_REPO}."
+        shell: bash
