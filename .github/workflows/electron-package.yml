@@ -34,8 +34,10 @@ on:
 permissions:
   contents: read
 
+# Same rule as `headless-cli.yml`: PR pushes cancel their predecessor, while
+# every main push gets a unique group so no commit's package check is skipped.
 concurrency:
-  group: electron-package-${{ github.ref }}
+  group: electron-package-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:

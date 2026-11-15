@@ -39,4 +39,4 @@ Baseline updates require intentional UI review. Run `UPDATE_VISUAL_BASELINES=1 r
 
 ## CI and release gate
 
-Both pull-request CI and the release test job install the lockfile-pinned Playwright Chromium headless shell and WebKit runtime, run the complete CLI and Electron suites, and upload renderer visual diffs on failure. Mobile layout, Chromium/WebKit workflows, PNG comparisons, desktop renderer tests, packaging metadata, and workflow contract tests are therefore required before merge and release.
+Pull-request CI installs the lockfile-pinned Playwright Chromium headless shell and WebKit runtime, runs the complete CLI and Electron suites, and uploads renderer visual diffs on failure. The release test job keeps the tag/version check and the npm CLI tests; the H5 and native gates already ran on the pull request that produced the tag. Mobile layout, Chromium/WebKit workflows, PNG comparisons, desktop renderer tests, packaging metadata, and workflow contract tests are therefore required before merge, and `Release Electron App` rechecks tag/version agreement before it publishes.

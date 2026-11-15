@@ -313,8 +313,9 @@ test('release workflow packages AutoVPN for native OS and CPU variants from a ve
 
 test('active CI and release workflows are Node-only and publish only npm and Electron assets', () => {
   const headless = readProjectFile('.github', 'workflows', 'headless-cli.yml');
+  const electronPackage = readProjectFile('.github', 'workflows', 'electron-package.yml');
   const release = readProjectFile('.github', 'workflows', 'release-electron.yml');
-  const workflows = `${headless}\n${release}`;
+  const workflows = `${headless}\n${electronPackage}\n${release}`;
 
   for (const pattern of [
     /setup-python/i,

@@ -23,7 +23,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: cloudflare-tests-${{ github.ref }}
+  group: cloudflare-tests-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:

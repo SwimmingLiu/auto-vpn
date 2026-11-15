@@ -11,8 +11,11 @@ permissions:
 
 # A push to a PR supersedes the run before it; main keeps every run so a merge
 # cannot cancel the verification of the commit that just landed.
+# A push to a PR supersedes the run before it. Main pushes each get their own
+# group: with `cancel-in-progress: false` a shared group would still cancel the
+# older *pending* run when a third commit lands, silently skipping its checks.
 concurrency:
-  group: headless-${{ github.ref }}
+  group: headless-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:

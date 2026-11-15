@@ -24,6 +24,10 @@ on:
       - main
     paths:
       - 'cloudflare/**'
+      # The container test suite pins both of these; a version bump or template
+      # edit on main must still rebuild the image that carries them.
+      - 'npm/autovpn-cli/package.json'
+      - 'templates/vmess_node.js'
       - '.github/workflows/deploy-cloudflare.yml'
 
 permissions:

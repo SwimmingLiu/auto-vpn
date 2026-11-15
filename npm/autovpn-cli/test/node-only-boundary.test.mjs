@@ -23,6 +23,7 @@ const manifests = [
   path.join(cliRoot, 'package.json'),
   ...electronRuntimeFiles,
   path.join(repoRoot, '.github', 'workflows', 'headless-cli.yml'),
+  path.join(repoRoot, '.github', 'workflows', 'electron-package.yml'),
   path.join(repoRoot, '.github', 'workflows', 'release-electron.yml'),
   path.join(repoRoot, 'README.md'),
   path.join(cliRoot, 'README.md'),
