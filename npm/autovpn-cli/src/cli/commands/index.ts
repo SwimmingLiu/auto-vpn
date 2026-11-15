@@ -1,6 +1,7 @@
 import { validateAccountsCommand } from '../accounts-commands.js';
 import { CliUsageError } from '../errors.js';
 import { readOptionValue } from '../global-options.js';
+import { validateVergeCommand } from '../verge-commands.js';
 
 const TOP_LEVEL_COMMANDS = new Set([
   'profile',
@@ -14,7 +15,8 @@ const TOP_LEVEL_COMMANDS = new Set([
   'status',
   'logs',
   'stop',
-  'serve'
+  'serve',
+  'verge'
 ]);
 
 const JOBS_SUBCOMMANDS = new Set(['list', 'status', 'logs', 'stop', 'resume', 'retry']);
@@ -104,6 +106,11 @@ export function validateCommand(argv: string[]): void {
 
   if (command === 'accounts') {
     validateAccountsCommand(argv);
+    return;
+  }
+
+  if (command === 'verge') {
+    validateVergeCommand(argv);
     return;
   }
 

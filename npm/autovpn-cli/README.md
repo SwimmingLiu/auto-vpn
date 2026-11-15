@@ -25,6 +25,72 @@ autovpn run --project-root . --skip-deploy --skip-verify --output jsonl
 autovpn artifacts latest --project-root .
 ```
 
+## Clash Verge static exit
+
+`autovpn verge` installs a socks/http exit into the Clash Verge Rev extension
+script and then proves from mihomo's own API that the chain is loaded.
+
+```bash
+autovpn verge exit                                  # hidden prompt, write, restart Verge
+autovpn verge exit < ~/.auto-vpn/verge-exit.txt     # same, from a pipe
+autovpn verge exit --from ~/.auto-vpn/verge-exit.txt --check
+autovpn verge status --test
+```
+
+The link is never taken on the command line: it comes from a `0600` file, a
+pipe, or a prompt that does not echo, so it stays out of argv and shell history.
+`--stdin` on a terminal uses that hidden prompt too; it reads cooked stdin only
+when the input is a pipe. Every line the command prints is masked to
+`scheme://***@host:port`, and an authority missing its `@` is refused instead of
+being printed as a host.
+
+Restarting Verge resets group selections to the profile's own defaults, so a
+`🚀 节点选择` that pointed at the exit group would come back on a plain airport
+node. The command remembers which selectors pointed at the exit group before
+the restart and puts them back once activation settles; `--use` selects it
+unconditionally.
+
+mihomo's `/proxies` API carries no address or credential, so a rotated link
+under the same name would look live. The command also reads the generated
+`clash-verge.yaml` and compares the entry field by field — type, host, port,
+user, credential, TLS — so rotating only the username does not read as
+verified. If the entry is exactly what it was before the restart, the profile
+was not rebuilt and the command exits `6` instead of reporting success.
+
+Liveness is read from the running exit group, not from the probe: in `MODE=all`
+the nodes are named after the subscription's own upstreams (`US 421 ➜ …`), which
+the probe cannot know, so the command waits for the group and checks that every
+member resolves.
+
+Only the `const STATIC_EXITS = [ … ];` literal inside `profiles/<uid>.js` is
+replaced. `MODE`, the group names, and `RULES_TO_EXIT` edited in Verge survive a
+write, and the write itself is a temp file in the same directory, fsynced and
+renamed, so a failed write never leaves half a script.
+
+The same link can be published for phones through the share Worker: `/sub`
+keeps its current output, and `/static?token=…` (or `/sub?…&static=1`) serves
+the same subscription with the static exit chained in. The Worker reads the
+exit from the Pages project's `STATIC_EXIT` env vars, which `deploy` syncs from
+`profile.toml`; the credential never enters this repository or a command line.
+See [docs/static-exit-chain.md](../../docs/static-exit-chain.md).
+
+| Flag | Meaning |
+| --- | --- |
+| `--from FILE` | Read the links from `FILE` (must be `0600`, owned by you) |
+| `--stdin` | Read the links from stdin |
+| `--check` | Parse, build, and compile; write nothing |
+| `--test` | Probe each link with curl before writing |
+| `--no-apply` | Write only; reactivate the profile in Verge yourself |
+| `--wait SECONDS` | How long to wait for the core to load the new nodes (default 25) |
+| `--use` | After the chain is live, select the exit group in `EXIT_GROUP_TARGETS` |
+| `--backup` | Keep one `profiles/<uid>.js.bak` before the first write |
+| `--script PATH` | Target a specific script instead of the attached one; a path inside a git work tree is refused (`4`) |
+| `--output json` | Machine-readable report; `credential` is `set`/`none`, `identity` is `verified`/`stale`/`unverified` |
+
+Exit codes: `0` done, `2` usage, `3` no Verge install or script, `4` the source
+file is readable by others, `5` a link did not answer, `6` the core never
+loaded the new nodes, or the generated config still carries the old entry.
+
 ## Server Web UI
 
 `autovpn serve` starts a single-user HTTP service that serves the AutoVPN Web UI

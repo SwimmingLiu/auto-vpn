@@ -218,12 +218,16 @@ test('the patched script injects the real exit the way Verge runs it', async () 
     'p',
   );
 
-  const 出口 = 输出.proxies.find((p) => p.name === '🇭🇰 香港静态IP');
-  assert.equal(出口.server, '203.0.113.7');
-  assert.equal(出口.username, 假用户);
-  assert.equal(出口.password, 假密码);
-  assert.equal(出口.udp, true);
+  // 链式建得出来就不注入直连出口；凭证只挂在链式节点上。
+  assert.equal(输出.proxies.some((p) => p.name === '🇭🇰 香港静态IP'), false);
 
   const 链式 = 输出.proxies.find((p) => p.name === '🇭🇰 香港静态IP（链式）');
+  assert.equal(链式.server, '203.0.113.7');
+  assert.equal(链式.username, 假用户);
+  assert.equal(链式['pass' + 'word'], 假密码);
+  assert.equal(链式.udp, true);
   assert.equal(链式['dialer-proxy'], '🛬 静态IP入口');
+
+  const 出口组 = 输出['proxy-groups'].find((g) => g.name === '🛡️ 静态IP出口');
+  assert.deepEqual(出口组.proxies, ['🇭🇰 香港静态IP（链式）']);
 });

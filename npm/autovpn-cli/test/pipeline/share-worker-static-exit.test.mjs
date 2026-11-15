@@ -88,7 +88,7 @@ test('share Worker emits a chained static exit into the Clash subscription', asy
       STATIC_EXIT: 'socks5://USER:PASS@198.51.100.10:1080#香港静态IP',
       HOST: 'sub-links.example'
     };
-    const request = new Request('https://sub-links.example/sub?token=harness-token', {
+    const request = new Request('https://sub-links.example/static?token=harness-token', {
       headers: { 'User-Agent': 'clash-verge/v2.0.0 mihomo' }
     });
     // `cf` is populated by the edge; the log path reads it synchronously.
@@ -121,6 +121,43 @@ test('share Worker emits a chained static exit into the Clash subscription', asy
   await writeFile(configPath, yaml, 'utf8');
   const { stdout, stderr } = await run(mihomoBin, ['-t', '-f', configPath, '-d', dir], { timeout: 120_000 });
   assert.match(`${stdout}${stderr}`, /test is successful/);
+});
+
+test('the plain subscription stays clean even when the project holds an exit', async () => {
+  const worker = await loadWorker();
+  const env = {
+    SUBAPI: 'http://127.0.0.1:1',
+    UUID: '179ba8dd-3854-4747-b853-fc1868ef3937',
+    PASSWORD: 'harness-password',
+    KV: mockKV({ 'static-exit.json': JSON.stringify([{ name: '香港静态IP', type: 'socks5', server: '198.51.100.10', port: 1080 }]) }),
+    STATIC_EXIT: 'socks5://USER:PASS@198.51.100.10:1080#香港静态IP',
+    HOST: 'sub-links.example'
+  };
+  const fetchWith = (path) => withSubconverterStub(async (subapi) => {
+    const request = new Request(`https://sub-links.example${path}`, {
+      headers: { 'User-Agent': 'clash-verge/v2.0.0 mihomo' }
+    });
+    Object.defineProperty(request, 'cf', { value: { asn: 1, asOrganization: 'harness', country: 'HK', city: 'HK' } });
+    return worker.default.fetch(request, { ...env, SUBAPI: subapi }, { waitUntil() {} });
+  });
+
+  // 项目上配了出口，也不能让默认入口跟着变：手机和桌面共用的还是原来的订阅。
+  const plain = await fetchWith('/sub?token=harness-token');
+  assert.equal(plain.status, 200);
+  const plainYaml = await plain.text();
+  assert.ok(!plainYaml.includes('静态IP出口'), 'the plain entry must not gain the exit group');
+  assert.ok(!plainYaml.includes('dialer-proxy'), 'the plain entry must not gain a chain node');
+  assert.match(plainYaml, /name: "US 421"/);
+
+  // 同一个清单出现在单独入口上；`?static=1` 是它的查询串写法。
+  for (const path of ['/static?token=harness-token', '/sub?token=harness-token&static=1']) {
+    const response = await fetchWith(path);
+    assert.equal(response.status, 200);
+    const yaml = await response.text();
+    assert.match(yaml, /- name: "🛡️ 静态IP出口"/, path);
+    assert.match(yaml, /- name: "🛬 静态IP入口"/, path);
+    assert.match(yaml, /name: "US 421"/, path);
+  }
 });
 
 test('share Worker leaves the Clash subscription alone without a static exit', async () => {
@@ -176,7 +213,7 @@ test('share Worker reads the KV static-exit list and serves it over the admin ro
   assert.match(await get.text(), /KV出口/);
 
   const yaml = await withSubconverterStub(async (subapi) => {
-    const response = await worker.default.fetch(withCf(new Request('https://sub-links.example/sub?token=harness-token', {
+    const response = await worker.default.fetch(withCf(new Request('https://sub-links.example/static?token=harness-token', {
       headers: { 'User-Agent': 'clash-verge/v2.0.0 mihomo' }
     })), { ...base, SUBAPI: subapi }, { waitUntil() {} });
     return response.text();

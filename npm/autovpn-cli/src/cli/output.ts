@@ -35,5 +35,6 @@ Commands:
   logs
   stop
   serve
+  verge exit|status|test
 `;
 }
