@@ -38,7 +38,7 @@ const RULES_TO_EXIT = [];
 // 出口分组挂进哪些 select 分组。写主选择器的名字就够了，比如 ['🚀 节点选择']：
 // 其它分组大多指向它，挂到每个分组上会让同一件事有好几个地方能改，看着像重复。
 // 留空 = 所有 select 分组。
-const EXIT_GROUP_TARGETS = [];
+const EXIT_GROUP_TARGETS = ['🚀 节点选择'];
 
 // ---- 以下不用改 --------------------------------------------------------------
 
@@ -75,18 +75,44 @@ function 解析出口(条目) {
   return 出口;
 }
 
-// 已经注入过就原样返回，避免脚本重复执行时叠加。
+// 分组名可能因避让改成 `EXIT_GROUP 2`。这两组分组归脚本所有：每一轮都先摘掉
+// 再重建，所以认家族名就够了。
+function 家族内(名, 基础名) {
+  if (typeof 名 !== 'string') return false;
+  if (名 === 基础名) return true;
+  return 名.startsWith(`${基础名} `) && /^\d+$/.test(名.slice(基础名.length + 1));
+}
+
+// 节点是不是上一轮注入的出口（直连或链式）。地址和名字都要对上：只看名字会
+// 误删订阅里同名但不同地址的节点，只看地址会误删用户自己加的同一台机器。
+function 是我们注入的节点(节点, 出口) {
+  if (!节点 || typeof 节点 !== 'object' || typeof 节点.name !== 'string') return false;
+  if (节点.server !== 出口.server || Number(节点.port) !== Number(出口.port)) return false;
+  const 段 = 节点.name.split(SEP).pop();
+  return 段 === 出口.name
+    || 段.startsWith(`${出口.name} `)
+    || 段 === `${出口.name}${TWIN_SUFFIX}`
+    || 段.startsWith(`${出口.name}${TWIN_SUFFIX} `);
+}
+
+// 摘掉上一轮注入的所有东西，让 main() 每一轮都从订阅原样重建。
 //
-// 判据不能是「分组名精确等于 EXIT_GROUP」：订阅里若本来就有个节点叫
-// 「🛡️ 静态IP出口」，注入时分组会被改名成「🛡️ 静态IP出口 2」，下一轮就
-// 认不出来，于是每次订阅更新都再注入一遍，节点和分组越滚越多。
-// 所以既接受 EXIT_GROUP 本身，也接受它加后缀的形态。
-function 已注入(分组列表, 候选名) {
-  return 分组列表.some((g) => {
-    if (!g || typeof g.name !== 'string') return false;
-    if (g.name === 候选名) return true;
-    return g.name.startsWith(`${候选名} `) && /^\d+$/.test(g.name.slice(候选名.length + 1));
-  });
+// 早退式的「已注入就不动」在用户删掉其中一个分组、或订阅换了节点时会留下悬空
+// 引用：链式节点的 dialer-proxy 指着已删的入口组，select 分组的成员指着已删的
+// 出口组，mihomo 一律报 not found 并拒收整份配置。整轮重建把这些状态全部
+// 收敛掉，重复执行的结果也完全一致。
+function 摘掉上一轮(config, 出口清单) {
+  const 分组 = Array.isArray(config['proxy-groups']) ? config['proxy-groups'] : [];
+  const 保留 = 分组
+    .filter((g) => !(g && typeof g === 'object' && (家族内(g.name, EXIT_GROUP) || 家族内(g.name, ENTRANCE_GROUP))))
+    .map((g) => {
+      if (!g || typeof g !== 'object' || !Array.isArray(g.proxies)) return g;
+      const 成员 = g.proxies.filter((m) => !(家族内(m, EXIT_GROUP) || 家族内(m, ENTRANCE_GROUP)));
+      return 成员.length === g.proxies.length ? g : { ...g, proxies: 成员 };
+    });
+  const 节点 = (Array.isArray(config.proxies) ? config.proxies : [])
+    .filter((p) => !出口清单.some((出口) => 是我们注入的节点(p, 出口)));
+  return { ...config, proxies: 节点, 'proxy-groups': 保留 };
 }
 
 
@@ -94,18 +120,14 @@ function main(config) {
   if (!config || typeof config !== 'object') return config;
   if (!Array.isArray(config.proxies) || config.proxies.length === 0) return config;
 
-  const 现有节点 = new Set(config.proxies.map((p) => p && p.name).filter(Boolean));
-  const 现有分组 = Array.isArray(config['proxy-groups']) ? config['proxy-groups'] : [];
-
-  // 已经注入过就原样返回，避免脚本重复执行时叠加。
-  //
-  // 判据是出口组存在：分组名可能因避让改成 `… 2`，所以按「EXIT_GROUP 或它加
-  // 数字后缀」认。用户可能在界面上删了分组但节点还在，那种情况不早退——下面
-  // 会靠命名避让把缺的东西补齐，不会重复。
-  if (已注入(现有分组, EXIT_GROUP)) return config;
-
   const 出口清单 = STATIC_EXITS.map(解析出口).filter((e) => e.server && e.port > 0);
   if (出口清单.length === 0) return config;
+
+  // 每一轮都摘掉上一轮注入的东西，再从订阅原样重建。
+  config = 摘掉上一轮(config, 出口清单);
+
+  const 现有节点 = new Set(config.proxies.map((p) => p && p.name).filter(Boolean));
+  const 现有分组 = config['proxy-groups'];
 
   const 已占 = new Set([...现有节点, ...现有分组.map((g) => g && g.name).filter(Boolean)]);
   const 唯一 = (候选) => {
@@ -123,79 +145,52 @@ function main(config) {
   const 出口组名 = 唯一(EXIT_GROUP);
   const 入口组名 = 唯一(ENTRANCE_GROUP);
 
+  // 摘掉上一轮之后，剩下的都是订阅自己的节点。名字里带 ` ➜ ` 的也能当入口：
+  // 有些机场本来就用这种名字，按名字过滤会把它们全部错杀。
   const 机场节点 = config.proxies
     .map((p) => p && p.name)
-    .filter((名) => typeof 名 === 'string' && 名 && !名.includes(SEP) && !名.endsWith(TWIN_SUFFIX));
+    .filter((名) => typeof 名 === 'string' && 名);
 
-  // 判断某个节点是不是本脚本上一轮注入的那条出口：类型、地址都一致，
-  // 且名字是「配置名」或「配置名 数字」——链式节点带 SEP 后缀，不算。
-  const 是已注入的出口 = (p, 出口) => {
-    if (!p || typeof p !== 'object' || typeof p.name !== 'string') return false;
-    if (p.server !== 出口.server || Number(p.port) !== Number(出口.port)) return false;
-    if (p.name.includes(SEP) || p.name.endsWith(TWIN_SUFFIX)) return false;
-    return p.name === 出口.name || p.name.startsWith(`${出口.name} `);
-  };
-
-  const 新节点 = [];
+  // 出口名先定下来：链式节点的名字由它拼出来，避让规则要和它一致。
   const 出口名 = new Map();
-  for (const 出口 of 出口清单) {
-    // 这个出口已经注入过（用户删掉了分组、节点还在）就复用它的名字，不再加
-    // 一份——否则每删一次分组就多一对节点。
-    const 已有 = config.proxies.find((p) => 是已注入的出口(p, 出口));
-    if (已有) {
-      出口名.set(出口, 已有.name);
-      continue;
-    }
-    const 名称 = 唯一(出口.name);
-    出口名.set(出口, 名称);
-    新节点.push({ ...出口, name: 名称 });
-  }
+  for (const 出口 of 出口清单) 出口名.set(出口, 唯一(出口.name));
+  const 全部出口名 = [...出口名.values()];
 
+  // MODE = 'direct' 只注入出口节点；chain / all 只注入链式节点。直连出口是一个
+  // 把本机 IP 直接交给出口服务商的开关，选错一次就绕过了整条链，所以链式模式
+  // 下连选项都不留。
+  const 新节点 = [];
   const 链式名 = [];
-  if (MODE !== 'direct' && 机场节点.length > 0) {
+  if (MODE === 'direct') {
+    for (const 出口 of 出口清单) 新节点.push({ ...出口, name: 出口名.get(出口) });
+  } else if (机场节点.length > 0) {
     if (MODE === 'all') {
       for (const 出口 of 出口清单) {
         for (const 入口 of 机场节点) {
-          const 期望名 = `${入口}${SEP}${出口名.get(出口)}`;
-          // 按名字认，不校验 dialer-proxy：入口组可能因避让换过名字，
-          // 旧链式节点的指向会与这一轮算出来的不同，但节点本身还是那条。
-          const 已有 = config.proxies.find((p) => p && typeof p === 'object' && typeof p.name === 'string'
-            && (p.name === 期望名 || p.name.startsWith(`${期望名} `)));
-          if (已有) { 链式名.push(已有.name); continue; }
-          const 名称 = 唯一(期望名);
-          新节点.push({ ...出口, name: 名称, 'dialer-proxy': 入口 });
-          链式名.push(名称);
+          新节点.push({ ...出口, name: 唯一(`${入口}${SEP}${出口名.get(出口)}`), 'dialer-proxy': 入口 });
         }
       }
     } else {
       for (const 出口 of 出口清单) {
-        const 期望名 = `${出口名.get(出口)}${TWIN_SUFFIX}`;
-        const 已有 = config.proxies.find((p) => p && typeof p === 'object' && typeof p.name === 'string'
-          && (p.name === 期望名 || p.name.startsWith(`${期望名} `)));
-        if (已有) { 链式名.push(已有.name); continue; }
-        const 名称 = 唯一(期望名);
-        新节点.push({ ...出口, name: 名称, 'dialer-proxy': 入口组名 });
-        链式名.push(名称);
+        新节点.push({ ...出口, name: 唯一(`${出口名.get(出口)}${TWIN_SUFFIX}`), 'dialer-proxy': 入口组名 });
       }
     }
+    for (const 节点 of 新节点) 链式名.push(节点.name);
+  } else {
+    // 要链式却连一个上一跳都没有：这一次什么都不注入，配置保持摘掉后的原样。
+    // 退回直连正好是这个脚本要堵的那道门，宁可这一轮没有出口。
+    return config;
   }
 
-  // 链式建得出来就不留直连出口。出口分组的全部意义是让流量先过「🛬 静态IP入口」
-  // 选中的节点再到出口；留一个直连选项，等于留了一个把本机 IP 直接交给出口服务商
-  // 的开关，选错一次就绕过了整条链。只有 MODE = 'direct' 明确表示不要链的时候才
-  // 退回直连出口，否则分组会是空的，mihomo 会拒收整份配置。
-  const 直连名 = 出口清单.map((e) => 出口名.get(e));
-  const 只用链式 = 链式名.length > 0;
-  const 采纳节点 = 只用链式 ? 新节点.filter((p) => !直连名.includes(p.name)) : 新节点;
-  config.proxies = [...config.proxies, ...采纳节点];
+  config.proxies = [...config.proxies, ...新节点];
 
   const 出口分组 = {
     name: 出口组名,
     type: 'select',
-    proxies: 只用链式 ? [...链式名] : [...直连名, 'DIRECT'],
+    proxies: MODE === 'direct' ? [...全部出口名, 'DIRECT'] : [...链式名],
   };
   const 新分组 = [出口分组];
-  if (只用链式 && MODE !== 'all') {
+  if (MODE !== 'direct' && MODE !== 'all') {
     // 入口组同样不给 DIRECT：入口选 DIRECT 等于把本机 IP 当作上一跳，
     // 和直连出口是一回事。
     新分组.push({ name: 入口组名, type: 'select', proxies: [...机场节点] });
@@ -203,13 +198,16 @@ function main(config) {
 
   // 让 select 分组能直接选到出口分组，不改变原有顺序与默认项。
   // EXIT_GROUP_TARGETS 非空时只挂到点名的那些分组。
-  const 目标分组 = Array.isArray(EXIT_GROUP_TARGETS) && EXIT_GROUP_TARGETS.length > 0
-    ? new Set(EXIT_GROUP_TARGETS)
-    : null;
+  // 字符串写错成单个名字时也当一项，不要悄悄退化成「所有分组」。
+  const 目标清单 = typeof EXIT_GROUP_TARGETS === 'string'
+    ? [EXIT_GROUP_TARGETS]
+    : Array.isArray(EXIT_GROUP_TARGETS)
+      ? EXIT_GROUP_TARGETS.filter((名) => typeof 名 === 'string' && 名)
+      : [];
+  const 目标分组 = 目标清单.length > 0 ? new Set(目标清单) : null;
   const 分组副本 = 现有分组.map((g) => {
     if (!g || typeof g !== 'object') return g;
     if (g.type !== 'select') return g;
-    if (g.name === 出口组名 || g.name === 入口组名) return g;
     if (目标分组 && !目标分组.has(g.name)) return g;
     const 成员 = Array.isArray(g.proxies) ? g.proxies : [];
     if (成员.includes(出口组名)) return g;

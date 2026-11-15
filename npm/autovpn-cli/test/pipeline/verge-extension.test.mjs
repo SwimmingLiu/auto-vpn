@@ -156,10 +156,8 @@ test('the Verge extension falls back to a direct exit only when no chain is want
   assert.equal(out['proxy-groups'].some((g) => g.name === '🛬 静态IP入口'), false);
 });
 
-test('the Verge extension appends the exit group only to the named select groups', async () => {
-  const source = (await readFile(scriptPath, 'utf8'))
-    .replace('const EXIT_GROUP_TARGETS = [];', "const EXIT_GROUP_TARGETS = ['🚀 节点选择'];");
-  const main = await loadExtension(source);
+test('the Verge extension appends the exit group only to the default main selector', async () => {
+  const main = await loadExtension(await readFile(scriptPath, 'utf8'));
 
   const profile = structuredClone(baseProfile);
   profile['proxy-groups'].push({ name: '☑️ 手动切换', type: 'select', proxies: ['US 421'] });
@@ -170,8 +168,39 @@ test('the Verge extension appends the exit group only to the named select groups
   // 没点名的 select 分组不挂，否则同一件事有两处能改，看着像重复。
   const manual = out['proxy-groups'].find((g) => g.name === '☑️ 手动切换');
   assert.deepEqual(manual.proxies, ['US 421']);
+});
+
+test('an empty EXIT_GROUP_TARGETS means every select group', async () => {
+  const source = (await readFile(scriptPath, 'utf8'))
+    .replace("const EXIT_GROUP_TARGETS = ['🚀 节点选择'];", 'const EXIT_GROUP_TARGETS = [];');
+  const main = await loadExtension(source);
+
+  const profile = structuredClone(baseProfile);
+  profile['proxy-groups'].push({ name: '☑️ 手动切换', type: 'select', proxies: ['US 421'] });
+  const out = main(profile, 'p');
+
+  for (const 名 of ['🚀 节点选择', '☑️ 手动切换']) {
+    const g = out['proxy-groups'].find((item) => item.name === 名);
+    assert.ok(g.proxies.includes('🛡️ 静态IP出口'), `${名} must receive the exit group`);
+  }
+  // url-test 分组不挂：出口只有一个，自动测速没有意义。
   const autoSelect = out['proxy-groups'].find((g) => g.name === '♻️ 自动选择');
   assert.deepEqual(autoSelect.proxies, ['US 421']);
+});
+
+test('a string EXIT_GROUP_TARGETS is one target, not "all groups"', async () => {
+  const source = (await readFile(scriptPath, 'utf8'))
+    .replace("const EXIT_GROUP_TARGETS = ['🚀 节点选择'];", "const EXIT_GROUP_TARGETS = '☑️ 手动切换';");
+  const main = await loadExtension(source);
+
+  const profile = structuredClone(baseProfile);
+  profile['proxy-groups'].push({ name: '☑️ 手动切换', type: 'select', proxies: ['US 421'] });
+  const out = main(profile, 'p');
+
+  const manual = out['proxy-groups'].find((g) => g.name === '☑️ 手动切换');
+  assert.ok(manual.proxies.includes('🛡️ 静态IP出口'));
+  const nodeSelect = out['proxy-groups'].find((g) => g.name === '🚀 节点选择');
+  assert.equal(nodeSelect.proxies.includes('🛡️ 静态IP出口'), false);
 });
 
 test('the Verge extension still injects when a node shares the exit address', async () => {
@@ -226,4 +255,102 @@ test('the Verge extension recovers a deleted group without duplicating nodes', a
   const 出口节点 = again.proxies.filter((p) => String(p.name).includes('静态IP'));
   assert.equal(出口节点.length, 1, 'the chain node must not be duplicated');
   assert.ok(again['proxy-groups'].some((g) => g.name.startsWith('🛡️')));
+});
+
+test('the Verge extension rebuilds a deleted entrance group instead of dangling the chain', async () => {
+  const main = await loadExtension(await readFile(scriptPath, 'utf8'));
+  const once = main(structuredClone(baseProfile), 'p');
+  const held = structuredClone(once);
+  held['proxy-groups'] = held['proxy-groups'].filter((g) => g.name !== '🛬 静态IP入口');
+  const again = main(held, 'p');
+
+  const entrance = again['proxy-groups'].find((g) => g.name === '🛬 静态IP入口');
+  assert.ok(entrance, 'the entrance group must come back');
+  const chain = again.proxies.find((p) => String(p.name).endsWith('（链式）'));
+  // dialer-proxy 必须指回真正存在的分组，否则 mihomo 报 not found 并拒收整份配置。
+  assert.equal(chain['dialer-proxy'], entrance.name);
+});
+
+test('the Verge extension rebuilds a deleted exit group without duplicating the entrance', async () => {
+  const source = (await readFile(scriptPath, 'utf8'))
+    .replace("const EXIT_GROUP_TARGETS = ['🚀 节点选择'];", 'const EXIT_GROUP_TARGETS = [];');
+  const main = await loadExtension(source);
+  const once = main(structuredClone(baseProfile), 'p');
+  const held = structuredClone(once);
+  held['proxy-groups'] = held['proxy-groups'].filter((g) => !g.name.startsWith('🛡️'));
+  const again = main(held, 'p');
+
+  const entrances = again['proxy-groups'].filter((g) => g.name.startsWith('🛬'));
+  assert.equal(entrances.length, 1, 'one entrance group, not a renamed duplicate');
+  // 入口组 → 出口组 → 链式节点 → 入口组 会形成 dialer 环，选错一次就解析回自身。
+  assert.equal(entrances[0].proxies.includes('🛡️ 静态IP出口'), false);
+});
+
+test('the Verge extension drops a member that points at a vanished exit group', async () => {
+  const main = await loadExtension(await readFile(scriptPath, 'utf8'));
+  const once = main(structuredClone(baseProfile), 'p');
+  const held = structuredClone(once);
+  held['proxy-groups'] = held['proxy-groups'].filter((g) => g.name !== '🛡️ 静态IP出口');
+  const 选择 = held['proxy-groups'].find((g) => g.name === '🚀 节点选择');
+  选择.proxies = 选择.proxies.filter((名) => 名 !== '🛡️ 静态IP出口');
+  选择.proxies.push('🛡️ 静态IP出口 2');
+  const out = main(held, 'p');
+
+  const 输出选择 = out['proxy-groups'].find((g) => g.name === '🚀 节点选择');
+  assert.equal(输出选择.proxies.includes('🛡️ 静态IP出口 2'), false);
+  assert.equal(输出选择.proxies.includes('🛡️ 静态IP出口'), true);
+});
+
+test('the Verge extension injects nothing when there is no upstream to chain through', async () => {
+  const main = await loadExtension(await readFile(scriptPath, 'utf8'));
+  const once = main(structuredClone(baseProfile), 'p');
+  // 订阅里只剩本脚本上一轮建的链式节点：没有可用的上一跳。
+  const held = structuredClone(once);
+  held.proxies = held.proxies.filter((p) => String(p.name).endsWith('（链式）'));
+  const out = main(held, 'p');
+
+  // 宁可这一轮没有出口，也不退回直连——那正是脚本要堵的那道门。
+  assert.equal(out.proxies.some((p) => String(p.name).includes('静态IP')), false);
+  assert.equal(out['proxy-groups'].some((g) => String(g.name).startsWith('🛡️')), false);
+  assert.equal(out['proxy-groups'].some((g) => String(g.name).startsWith('🛬')), false);
+});
+
+test('the Verge extension recovers every deleted-group shape into a loadable config', async (t) => {
+  let mihomoBin = '';
+  try {
+    await run('mihomo', ['-v']);
+    mihomoBin = 'mihomo';
+  } catch {
+    t.skip('mihomo binary is not installed');
+    return;
+  }
+
+  const source = (await readFile(scriptPath, 'utf8'))
+    .replace("const EXIT_GROUP_TARGETS = ['🚀 节点选择'];", 'const EXIT_GROUP_TARGETS = [];');
+  const main = await loadExtension(source);
+  const once = main(structuredClone(baseProfile), 'p');
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'verge-recovery-'));
+  const 场景 = {
+    noEntrance: (profile) => {
+      profile['proxy-groups'] = profile['proxy-groups'].filter((g) => g.name !== '🛬 静态IP入口');
+    },
+    noExit: (profile) => {
+      profile['proxy-groups'] = profile['proxy-groups'].filter((g) => !g.name.startsWith('🛡️'));
+    },
+    staleMember: (profile) => {
+      profile['proxy-groups'] = profile['proxy-groups'].filter((g) => g.name !== '🛡️ 静态IP出口');
+      const 选择 = profile['proxy-groups'].find((g) => g.name === '🚀 节点选择');
+      选择.proxies = 选择.proxies.filter((名) => 名 !== '🛡️ 静态IP出口');
+      选择.proxies.push('🛡️ 静态IP出口 2');
+    }
+  };
+
+  for (const [label, mutate] of Object.entries(场景)) {
+    const held = structuredClone(once);
+    mutate(held);
+    const configPath = path.join(dir, `${label}.yaml`);
+    await writeFile(configPath, JSON.stringify(main(held, 'p'), null, 2), 'utf8');
+    const { stdout, stderr } = await run(mihomoBin, ['-t', '-f', configPath, '-d', dir], { timeout: 120_000 });
+    assert.match(`${stdout}${stderr}`, /test is successful/, `${label} must recover into a loadable config`);
+  }
 });
