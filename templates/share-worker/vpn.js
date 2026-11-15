@@ -6795,7 +6795,12 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
 
 	// 环境变量兼容：上游把配置存在 KV 的 config.json 里，部署仍然只给 Pages
 	// 环境变量，所以这里把环境变量覆盖回配置对象（与旧模板的行为一致）。
-	if (env.SUB) config_JSON.优选订阅生成.SUB = env.SUB;
+	if (env.SUB) {
+		config_JSON.优选订阅生成.SUB = env.SUB;
+		// 分享 Worker 的 SUB 是主 Worker 的真实订阅：必须按订阅源聚合，
+		// 不能在上游默认的 local=true 下自己生成 CF 优选占位节点。
+		config_JSON.优选订阅生成.local = false;
+	}
 	if (env.SUBAPI) config_JSON.订阅转换配置.SUBAPI = env.SUBAPI;
 	if (env.SUBCONFIG) config_JSON.订阅转换配置.SUBCONFIG = env.SUBCONFIG;
 	if (env.SUBEMOJI !== undefined) {
@@ -7003,18 +7008,27 @@ async function 整理成数组(内容) {
 }
 
 async function 获取优选订阅生成器数据(优选订阅生成器HOST, uid = "000000") {
-	let 优选IP = [], 其他节点LINK = '', 格式化HOST = 优选订阅生成器HOST.replace(/^sub:\/\//i, 'https://').split('#')[0].split('?')[0];
+	let 优选IP = [], 其他节点LINK = '', 格式化HOST = 优选订阅生成器HOST.replace(/^sub:\/\//i, 'https://').split('#')[0];
 	if (!/^https?:\/\//i.test(格式化HOST)) 格式化HOST = `https://${格式化HOST}`;
 
+	let 优选订阅生成器URL = '';
 	try {
 		const url = new URL(格式化HOST);
-		格式化HOST = url.origin;
+		const 参数 = new URLSearchParams(url.search);
+		// 显式入口（带查询串或非根路径）原样使用：分享 Worker 的 SUB 指向主
+		// Worker 的 `/?serect_key=...`，这里不能把它改写成优选生成器格式。
+		const 有显式入口 = !!url.search || (url.pathname && url.pathname !== '/' && url.pathname !== '/sub');
+		if (有显式入口) {
+			优选订阅生成器URL = url.toString();
+		} else {
+			if (!参数.has('host')) 参数.set('host', 'example.com');
+			if (!参数.has('uuid')) 参数.set('uuid', '00000000-0000-4000-8000-000000000000');
+			优选订阅生成器URL = `${url.origin}/sub?${参数.toString()}`;
+		}
 	} catch (error) {
 		优选IP.push(`127.0.0.1:1234#${优选订阅生成器HOST}优选订阅生成器格式化异常:${error.message}`);
 		return [优选IP, 其他节点LINK];
 	}
-
-	const 优选订阅生成器URL = `${格式化HOST}/sub?host=example.com&uuid=00000000-0000-4000-8000-000000000000`;
 
 	try {
 		const response = await fetch(优选订阅生成器URL, {
