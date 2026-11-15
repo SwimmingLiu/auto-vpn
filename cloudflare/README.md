@@ -85,7 +85,7 @@ cloudflare/
 ├── worker/src/index.js         Worker routing + PipelineController Durable Object
 └── scripts/
     ├── fetch-mihomo.sh         vendor the linux binary for the image build
-    ├── egress-on-runner.mjs    the same supervisor, for the runner-based path
+    ├── egress-on-runner.mjs    the same supervisor, for the runner-based path (retired)
     ├── verify-published.mjs    decode what is served; a 200 alone is not success
     └── deploy.sh               build, push, deploy, seed secrets
 ```
@@ -93,10 +93,11 @@ cloudflare/
 ## Two ways to run the measure half
 
 The publishing half is always the same: `wrangler pages deploy` from the
-artifact the run measured. The measuring half has two hosts, and the choice is
-a plan question, not a design one.
+artifact the run measured. The measuring half had two hosts; the runner one is
+retired, so the container path is what remains. The choice was a plan question,
+not a design one.
 
-| | Container path | Runner path |
+| | Container path | Runner path (retired) |
 |---|---|---|
 | Where the crawl runs | Cloudflare Container (full Linux VM) | GitHub Actions `ubuntu-24.04` |
 | What it needs | Workers Paid (~$6.5/mo measured) | nothing beyond the repo |
@@ -111,11 +112,12 @@ path lived in `auto-vpn-runner` (`.github/workflows/scheduled-subscription.yml`,
 nightly and manual dispatch); the container path is
 `.github/workflows/deploy-cloudflare.yml` plus the Worker.
 
-The runner path is retired as of 2026-11-15: its workflows are disabled and its
-`sub-nodes-cf` Pages project is deleted. The container path is the remaining
-Cloudflare option described here.
+The runner path is retired as of 2026-11-15: its workflows are disabled and the
+`sub-nodes-cf` Pages project both paths published to is deleted. The container
+path is the remaining Cloudflare option described here; its deploy recreates
+that project through `ensure-pages-project.mjs` before the image build.
 
-The runner path exists because **Cloudflare Containers require the Workers Paid
+The runner path existed because **Cloudflare Containers require the Workers Paid
 plan**, and nothing else here does. If the plan is enabled, the container path
 is the better one: it keeps the schedule, the pool and the status API on
 Cloudflare, with no third party in the loop.
@@ -322,11 +324,11 @@ floor again.
 ### The deploy target is this deployment's own project
 
 `profile.cloudflare.toml` names `sub-nodes-cf`, and **the deploy stage writes to
-whatever project that is**. That project was deleted on 2026-11-15 when the
-runner path was retired; the profile remains as the historical container
-configuration. It was a separate project from the VPS's `sub-nodes-04` on
-purpose: the two installations served two subscriptions, and neither could
-replace the other's artifact.
+whatever project that is**. That project was deleted on 2026-11-15 with the
+runner retirement; `deploy.sh` creates it again on the next container deploy, so
+the name is still live rather than historical. It is a separate project from
+the VPS's `sub-nodes-04` on purpose: the two installations serve two
+subscriptions, and neither can replace the other's artifact.
 
 `wrangler pages deploy` replaces the whole production deployment of the named
 project. There is no per-branch isolation for a Direct Upload project and no dry
