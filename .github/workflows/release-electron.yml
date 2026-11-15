@@ -480,10 +480,12 @@ jobs:
   # is run once by hand. Opening a PR rather than pushing keeps the pin
   # reviewable, and the runner refuses a commit that is not ahead of its pin.
   dispatch-runner-pin:
-    name: Open runner pin PR
+    name: Dispatch runner pin update
     needs: publish-release-notes
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout release ref
@@ -504,8 +506,15 @@ jobs:
             exit 1
           fi
           RELEASE_SHA="$(git rev-list -n 1 "${TAG_NAME}")"
-          jq -n --arg tag "${TAG_NAME}" --arg sha "${RELEASE_SHA}" \
-            '{event_type: "autovpn-release", client_payload: {tag: $tag, sha: $sha}}' \
-            | gh api --method POST "repos/${RUNNER_REPO}/dispatches" --input -
-          echo "Dispatched ${TAG_NAME} (${RELEASE_SHA}) to ${RUNNER_REPO}."
+          PAYLOAD="$(jq -n --arg tag "${TAG_NAME}" --arg sha "${RELEASE_SHA}" \
+            '{event_type: "autovpn-release", client_payload: {tag: $tag, sha: $sha}}')"
+          for attempt in 1 2 3; do
+            if printf '%s' "${PAYLOAD}" | gh api --method POST "repos/${RUNNER_REPO}/dispatches" --input -; then
+              echo "Dispatched ${TAG_NAME} (${RELEASE_SHA}) to ${RUNNER_REPO}."
+              exit 0
+            fi
+            sleep $(( attempt * 10 ))
+          done
+          echo "::error::Could not dispatch ${TAG_NAME} to ${RUNNER_REPO} after 3 attempts."
+          exit 1
         shell: bash

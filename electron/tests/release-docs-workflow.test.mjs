@@ -273,13 +273,7 @@ test('release workflow packages AutoVPN for native OS and CPU variants from a ve
     'update release notes',
     'gh release edit "${RELEASE_TAG_NAME}"',
     'AutoVPN ${RELEASE_TAG_NAME}',
-    'dispatch-runner-pin:',
-    'needs: publish-release-notes',
-    'AUTOVPN_RUNNER_TOKEN',
-    'event_type: "autovpn-release"',
-    'client_payload',
-    'repos/${RUNNER_REPO}/dispatches',
-    'git rev-list -n 1 "${TAG_NAME}"'
+    'dispatch-runner-pin:'
   ]) {
     assert.ok(workflow.includes(requiredText), `workflow should contain ${requiredText}`);
   }
@@ -289,7 +283,21 @@ test('release workflow packages AutoVPN for native OS and CPU variants from a ve
   const notesIndex = workflow.indexOf('  publish-release-notes:');
   const dispatchIndex = workflow.indexOf('  dispatch-runner-pin:');
   assert.ok(notesIndex >= 0 && dispatchIndex > notesIndex, 'pin dispatch must run after release notes are published');
-  assert.match(workflow.slice(dispatchIndex), /needs: publish-release-notes/);
+  const dispatchJob = workflow.slice(dispatchIndex);
+  for (const requiredText of [
+    'needs: publish-release-notes',
+    'permissions:',
+    'contents: read',
+    'AUTOVPN_RUNNER_TOKEN',
+    'RELEASE_SHA="$(git rev-list -n 1 "${TAG_NAME}")"',
+    'event_type: "autovpn-release"',
+    'client_payload',
+    'repos/${RUNNER_REPO}/dispatches',
+    'for attempt in 1 2 3'
+  ]) {
+    assert.ok(dispatchJob.includes(requiredText), `pin dispatch should contain ${requiredText}`);
+  }
+  assert.doesNotMatch(dispatchJob, /id-token: write/, 'pin dispatch should not inherit the release token permissions');
 
   // A UI-created release fires `release: published` and the tag push, which ran
   // the whole release twice until the duplicate trigger was removed.
