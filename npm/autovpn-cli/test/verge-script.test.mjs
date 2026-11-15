@@ -14,7 +14,9 @@ import {
   loadScript,
   parseProfilesYaml,
   probeInjection,
+  proxyMatchesExit,
   replaceExitBlock,
+  sameConfigProxy,
 } from '../dist/verge/script.js';
 import { parseExitUri } from '../dist/verge/exit-uri.js';
 
@@ -74,6 +76,41 @@ test('a second declaration or a commented-out one stops the write', () => {
 
 test('a script without the literal is refused', () => {
   assert.throws(() => replaceExitBlock('function main(config) { return config; }', 'const STATIC_EXITS = [];'), /no `const STATIC_EXITS/);
+});
+
+test('a closing `];` with a trailing comment ends the block, not the next one in the file', () => {
+  const source = [
+    "const STATIC_EXITS = [",
+    "  { name: 'old', type: 'socks5', server: '203.0.113.9', port: 1080 },",
+    ']; // exits',
+    "const MODE = 'chain';",
+    "const RULES_TO_EXIT = ['DOMAIN,x.example']; // ];",
+    'function main(config) { return config; }',
+    '',
+  ].join('\n');
+  const next = replaceExitBlock(source, generateExitBlock([]));
+  // A later `];` inside an unrelated comment must survive.
+  assert.ok(next.includes("const RULES_TO_EXIT = ['DOMAIN,x.example']; // ];"));
+  assert.ok(!next.includes('203.0.113.9'));
+  assert.ok(next.includes("const MODE = 'chain';"));
+});
+
+test('a YAML-escaped name and credential are read back as the typed value', () => {
+  // Verge writes entries with YAML quoting, not raw JS; a single-quoted value
+  // doubles its quote and a double-quoted one escapes `\` and `"`.
+  const name = "it's a #1 exit";
+  const credential = 'a"b\\c#d';
+  const text = [
+    'proxies:',
+    "- name: 'it''s a #1 exit'",
+    '  type: socks5',
+    '  server: 203.0.113.7',
+    '  port: 1080',
+    `  ${CREDENTIAL_FIELD}: "a\\"b\\\\c#d"`,
+  ].join('\n');
+  const entry = findConfigProxy(text, name);
+  assert.ok(entry, 'the doubled-quote name must match the unescaped one');
+  assert.equal(entry.credential, credential);
 });
 
 test('profiles.yaml yields the current profile and its attached script', () => {
@@ -191,10 +228,41 @@ test('a generated-config entry is read by name and stops at the next node', () =
   ].join('\n');
 
   assert.deepEqual(findConfigProxy(text, 'Hong Kong exit（链式）'), {
+    type: 'socks5',
     server: '203.0.113.7',
     port: 1080,
     credential: 'quoted secret',
   });
   assert.equal(findConfigProxy(text, 'Hong Kong exit'), null);
   assert.equal(findConfigProxy(text, 'missing'), null);
+});
+
+test('the generated entry is compared field by field, not only by credential', () => {
+  const exit = {
+    name: 'HK',
+    type: 'socks5',
+    server: '203.0.113.7',
+    port: 1080,
+    username: 'alice',
+    credential: 'pw',
+  };
+  const text = [
+    'proxies:',
+    '- name: HK',
+    '  type: socks5',
+    '  server: 203.0.113.7',
+    '  port: 1080',
+    '  username: alice',
+    `  ${CREDENTIAL_FIELD}: pw`,
+    '  udp: true',
+  ].join('\n');
+  const entry = findConfigProxy(text, 'HK');
+
+  assert.equal(proxyMatchesExit(entry, exit), true);
+  // 只换用户名、协议或 TLS，地址和凭证不变，也是核心没收到的那一条。
+  assert.equal(proxyMatchesExit(entry, { ...exit, username: 'bob' }), false);
+  assert.equal(proxyMatchesExit(entry, { ...exit, type: 'http' }), false);
+  assert.equal(proxyMatchesExit(entry, { ...exit, tls: true }), false);
+  assert.equal(sameConfigProxy(entry, { ...entry, username: 'bob' }), false);
+  assert.equal(sameConfigProxy(entry, { ...entry }), true);
 });

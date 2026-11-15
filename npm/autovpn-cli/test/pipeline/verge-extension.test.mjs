@@ -268,13 +268,41 @@ test('the Verge extension removes its rules when the chain disappears', async ()
   assert.equal(out.rules.some((规则) => String(规则).includes('openai.com')), false);
 });
 
-test('the Verge extension removes its nodes when the exit list is emptied', async () => {
-  const withExit = await loadExtension(await readFile(scriptPath, 'utf8'));
-  const once = withExit(structuredClone(baseProfile), 'p');
-
-  const source = (await readFile(scriptPath, 'utf8'))
-    .replace(/const STATIC_EXITS = \[[\s\S]*?\n\];/, 'const STATIC_EXITS = [];');
+test('a rule written with spaces or no-resolve is cleaned up like any other', async () => {
+  const source = (await readFile(scriptPath, 'utf8')).replace(
+    'const RULES_TO_EXIT = [];',
+    "const RULES_TO_EXIT = ['DOMAIN-SUFFIX, openai.com, 🛡️ 静态IP出口', 'IP-CIDR,198.51.100.0/24,🛡️ 静态IP出口,no-resolve'];"
+  );
   const main = await loadExtension(source);
+  const count = (config, needle) => config.rules.filter((rule) => String(rule).includes(needle)).length;
+
+  const once = main(structuredClone(baseProfile), 'p');
+  assert.equal(count(once, 'openai.com'), 1);
+  assert.equal(count(once, '198.51.100.0'), 1);
+
+  // 目标字段两侧有空格、后面跟着 no-resolve，都不能妨碍认出这是上一轮的规则。
+  const twice = main(structuredClone(once), 'p');
+  assert.equal(count(twice, 'openai.com'), 1, 'a spaced rule must not pile up');
+  assert.equal(count(twice, '198.51.100.0'), 1, 'a no-resolve rule must not pile up');
+
+  const cleared = await loadExtension(
+    source.replace(/const STATIC_EXITS = \[[\s\S]*?\n\];/, 'const STATIC_EXITS = [];')
+  );
+  const out = cleared(twice, 'p');
+  assert.equal(out.rules.some((rule) => /openai\.com|198\.51\.100\.0/.test(String(rule))), false);
+  assert.equal(out.rules.some((rule) => String(rule).includes('静态IP')), false);
+});
+
+test('the Verge extension removes its nodes when the exit list is emptied', async () => {
+  const source = await readFile(scriptPath, 'utf8');
+  const withExit = await loadExtension(
+    source.replace('const RULES_TO_EXIT = [];', "const RULES_TO_EXIT = ['DOMAIN-SUFFIX,openai.com,🛡️ 静态IP出口'];")
+  );
+  const once = withExit(structuredClone(baseProfile), 'p');
+  // 前置条件：这一轮确实注入了规则，否则下面那条规则断言在空集上成立。
+  assert.ok(once.rules.some((规则) => String(规则).includes('openai.com')));
+
+  const main = await loadExtension(source.replace(/const STATIC_EXITS = \[[\s\S]*?\n\];/, 'const STATIC_EXITS = [];'));
   const out = main(once, 'p');
 
   assert.equal(out.proxies.some((p) => String(p.name).includes('静态IP')), false);
@@ -335,11 +363,16 @@ test('a cleared injection from the previous version still loads in mihomo', asyn
     return;
   }
 
-  const source = await readFile(scriptPath, 'utf8');
+  const source = (await readFile(scriptPath, 'utf8')).replace(
+    'const RULES_TO_EXIT = [];',
+    "const RULES_TO_EXIT = ['DOMAIN-SUFFIX, openai.com, 🛡️ 静态IP出口', 'IP-CIDR,198.51.100.0/24,🛡️ 静态IP出口,no-resolve'];"
+  );
   const withExit = await loadExtension(source);
   const legacy = withoutMarker(withExit(structuredClone(baseProfile), 'p'));
   const cleared = await loadExtension(source.replace(/const STATIC_EXITS = \[[\s\S]*?\n\];/, 'const STATIC_EXITS = [];'));
   const out = cleared(legacy, 'p');
+  // 带空格和 no-resolve 的规则也在这一轮里被清掉，否则清空出口后它们指向已删的分组。
+  assert.equal(out.rules.some((rule) => /openai\.com|198\.51\.100\.0/.test(String(rule))), false);
 
   const dir = await mkdtemp(path.join(os.tmpdir(), 'verge-extension-'));
   const configPath = path.join(dir, 'cleared.yaml');
@@ -363,6 +396,39 @@ test('renaming the exit drops the old node from the groups that listed it', asyn
     out['proxy-groups'].find((group) => group.name === '🚀 节点选择').proxies.includes('🇭🇰 香港静态IP（链式）'),
     false
   );
+  assertMembersResolve(out);
+});
+
+test('a subscription node whose name only looks like an exit survives', async () => {
+  const main = await loadExtension(await readFile(scriptPath, 'utf8'));
+  const profile = structuredClone(baseProfile);
+  // 和出口同地址，名字带上前导零。`唯一()` 只生成 `2`、`3`…，不会生成 `01`，
+  // 所以这是订阅自己的节点，不能当成上一轮的产物删掉。
+  profile.proxies.push({ name: '🇭🇰 香港静态IP 01', type: 'socks5', server: '198.51.100.10', port: 1080 });
+  profile.rules.unshift('DOMAIN-SUFFIX,intranet.example,🇭🇰 香港静态IP 01');
+  const out = main(profile, 'p');
+
+  assert.ok(out.proxies.some((proxy) => proxy.name === '🇭🇰 香港静态IP 01'));
+  assert.ok(out.rules.some((rule) => String(rule).includes('intranet.example')));
+});
+
+test('a node that dials a removed exit goes with it', async () => {
+  const source = await readFile(scriptPath, 'utf8');
+  const once = await loadExtension(source);
+  const held = once(structuredClone(baseProfile), 'p');
+  const chain = '🇭🇰 香港静态IP（链式）';
+  // 用户把一条规则和另一条节点都挂在这条注入的链式节点上。
+  held.rules = [`DOMAIN-SUFFIX,intranet.example,${chain}`, ...held.rules];
+  held.proxies.push({ name: '内网中转', type: 'socks5', server: '127.0.0.1', port: 1080, 'dialer-proxy': chain });
+
+  const renamed = await loadExtension(source.replace("name: '🇭🇰 香港静态IP'", "name: '🇭🇰 香港家宽'"));
+  const out = renamed(held, 'p');
+
+  assert.ok(out.proxies.some((proxy) => proxy.name === '🇭🇰 香港家宽（链式）'));
+  assert.equal(out.proxies.some((proxy) => proxy.name === chain), false);
+  // 指着已删节点的节点和规则都不能留下，mihomo 会因为 not found 拒收整份配置。
+  assert.equal(out.proxies.some((proxy) => proxy.name === '内网中转'), false);
+  assert.equal(out.rules.some((rule) => String(rule).includes('intranet.example')), false);
   assertMembersResolve(out);
 });
 

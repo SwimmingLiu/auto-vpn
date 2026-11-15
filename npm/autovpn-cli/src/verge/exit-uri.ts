@@ -120,6 +120,11 @@ export function parseExitUri(raw: string): StaticExit {
       host = hostPort.slice(0, colon);
       portText = hostPort.slice(colon + 1);
     }
+    // `user:secret:1080` without the `@` would otherwise parse as a host named
+    // `user:secret`, and that string is printed on every output path.
+    if (host.includes(':')) {
+      throw new Error('the authority has more than one colon but no @; write user:secret@host:port, and put IPv6 hosts in [brackets]');
+    }
   }
 
   if (!host) {

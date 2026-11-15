@@ -99,10 +99,51 @@ function 是我们注入的节点(节点, 出口) {
   if (!节点 || typeof 节点 !== 'object' || typeof 节点.name !== 'string') return false;
   if (节点[标记] === true) return true;
   if (节点.server !== 出口.server || Number(节点.port) !== Number(出口.port)) return false;
+  // 数字后缀只认 `唯一()` 真的会生成的那种：从 2 开始，不带前导零。
+  // `香港静态IP 01` 是订阅自己的节点，不是上一轮的产物。
   const 形态 = new RegExp(
-    `^(?:.+${转义(SEP)})?${转义(出口.name)}(?: \\d+)?(?:${转义(TWIN_SUFFIX)})?(?: \\d+)?$`,
+    `^(?:.+${转义(SEP)})?${转义(出口.name)}(?: [1-9]\\d*)?(?:${转义(TWIN_SUFFIX)})?(?: [1-9]\\d*)?$`,
   );
   return 形态.test(节点.name);
+}
+
+// 规则的目标是最后一个字段，但 `no-resolve` 这类选项排在目标后面，取目标时要
+// 先跳过它。字段两侧的空格 mihomo 不当成名字的一部分，比较前也得去掉——
+// `DOMAIN-SUFFIX, openai.com, 🛡️ 静态IP出口` 和不带空格的是同一条规则。
+const 规则尾选项 = new Set(['no-resolve', 'src']);
+
+/** 目标字段在整行里的起止（已去掉两侧空格）；不是一条规则时返回 null。 */
+function 规则目标区间(行) {
+  const 文本 = String(行);
+  const 字段 = [];
+  let 起 = 0;
+  for (let i = 0; i <= 文本.length; i += 1) {
+    if (i === 文本.length || 文本[i] === ',') {
+      字段.push({ 起, 止: i });
+      起 = i + 1;
+    }
+  }
+  if (字段.length < 2) return null;
+  let 位 = 字段.length - 1;
+  if (规则尾选项.has(文本.slice(字段[位].起, 字段[位].止).trim().toLowerCase())) {
+    位 -= 1;
+    if (位 < 1) return null;
+  }
+  const 段 = 字段[位];
+  const 原 = 文本.slice(段.起, 段.止);
+  return { 起: 段.起 + (原.length - 原.trimStart().length), 止: 段.止 - (原.length - 原.trimEnd().length) };
+}
+
+function 规则目标(行) {
+  const 区 = 规则目标区间(行);
+  return 区 ? String(行).slice(区.起, 区.止) : null;
+}
+
+function 换规则目标(行, 新目标) {
+  const 区 = 规则目标区间(行);
+  if (!区) return String(行);
+  const 文本 = String(行);
+  return `${文本.slice(0, 区.起)}${新目标}${文本.slice(区.止)}`;
 }
 
 // 摘掉上一轮注入的所有东西，让 main() 每一轮都从订阅原样重建。
@@ -146,6 +187,19 @@ function 摘掉上一轮(config, 出口清单) {
       .map((p) => (p && typeof p === 'object' ? p.name : undefined))
       .filter((名) => typeof 名 === 'string' && !节点.some((p) => p && p.name === 名)),
   );
+  // 节点被删掉后，`dialer-proxy` 指着它的节点也失效了（mihomo 报 not found 并
+  // 拒收整份配置）。这类节点一并删掉，直到没有新的依赖出现。
+  for (let 变 = true; 变;) {
+    变 = false;
+    for (let i = 节点.length - 1; i >= 0; i -= 1) {
+      const p = 节点[i];
+      if (!p || typeof p !== 'object') continue;
+      if (typeof p['dialer-proxy'] !== 'string' || !删掉的.has(p['dialer-proxy'])) continue;
+      删掉的.add(p.name);
+      节点.splice(i, 1);
+      变 = true;
+    }
+  }
   const 保留 = 保留的分组
     .map((g) => {
       if (!g || typeof g !== 'object' || !Array.isArray(g.proxies)) return g;
@@ -155,11 +209,18 @@ function 摘掉上一轮(config, 出口清单) {
     });
   // RULES_TO_EXIT 每一轮都会重新加，先把上一轮的摘掉，否则规则越叠越多；
   // 分组改名后旧规则还会指向不存在的名字（或更糟：指向同名的别的节点）。
+  // 目标指向被删掉的节点或分组的规则同样留着没用，mihomo 会因为 not found
+  // 拒收整份配置。出口被清空时分组不再重建，它们的规则也要一起走；出口还在时
+  // 入口分组会按原名重建，指着它的规则仍然有效，不能误删。
+  const 摘掉的目标 = new Set(删掉的);
+  if (出口清单.length === 0) {
+    for (const 名 of 摘掉的分组) 摘掉的目标.add(名);
+  }
   const 规则 = Array.isArray(config.rules) ? config.rules.filter((行) => {
-    const 文本 = String(行);
-    const 位 = 文本.lastIndexOf(',');
-    if (位 < 0) return true;
-    return !家族内(文本.slice(位 + 1), EXIT_GROUP);
+    const 目标 = 规则目标(行);
+    if (目标 === null) return true;
+    if (家族内(目标, EXIT_GROUP)) return false;
+    return !摘掉的目标.has(目标);
   }) : config.rules;
   const 结果 = { ...config, proxies: 节点, 'proxy-groups': 保留 };
   if (Array.isArray(config.rules)) 结果.rules = 规则;
@@ -271,16 +332,9 @@ function main(config) {
 
   if (Array.isArray(RULES_TO_EXIT) && RULES_TO_EXIT.length > 0) {
     // 规则里写的是配置区的分组名，但分组可能因避让改了名（`… 2`）。
-    // 规则格式是 `TYPE,payload,TARGET`，目标永远是最后一个逗号之后那段，
-    // 所以只替换尾段，不碰域名/进程名里可能出现的同名字符串。
-    const 改目标 = (规则行) => {
-      const 文本 = String(规则行);
-      const 位 = 文本.lastIndexOf(',');
-      if (位 < 0) return 文本;
-      const 目标 = 文本.slice(位 + 1);
-      if (目标 !== EXIT_GROUP) return 文本;
-      return `${文本.slice(0, 位 + 1)}${出口组名}`;
-    };
+    // 规则格式是 `TYPE,payload,TARGET[,no-resolve]`，只替换目标那一段，不碰
+    // 域名/进程名里可能出现的同名字符串。
+    const 改目标 = (规则行) => (规则目标(规则行) === EXIT_GROUP ? 换规则目标(规则行, 出口组名) : String(规则行));
     const 规则 = Array.isArray(config.rules) ? config.rules : [];
     config.rules = [...RULES_TO_EXIT.map(改目标), ...规则];
   }

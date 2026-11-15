@@ -87,6 +87,8 @@ export interface VergeContext {
   home?: string;
   /** Overridable so the apply path is testable on runners that are not macOS. */
   platform?: NodeJS.Platform;
+  /** Overridable so the terminal branches are reachable from a test runner. */
+  stdinIsTty?: () => boolean;
 }
 
 function flagValue(argv: string[], name: string): string | undefined {
@@ -191,11 +193,18 @@ async function readSource(context: VergeContext, argv: string[]): Promise<{ text
     return { text: readPrivateFile(from, hasFlag(argv, '--allow-insecure-source')), origin: from };
   }
 
+  const stdinIsTty = context.stdinIsTty ? context.stdinIsTty() : Boolean(process.stdin.isTTY);
   if (hasFlag(argv, '--stdin')) {
+    // A terminal in cooked mode echoes the paste, and the credential stays in
+    // the scrollback. `--stdin` means "this line", not "show it back to me".
+    if (stdinIsTty) {
+      const ask = context.readSecret
+        ?? (() => readHiddenLine('paste the proxy link (input is hidden), then press Enter:\n', context.io));
+      return { text: await ask(), origin: 'prompt' };
+    }
     return { text: String(await context.readStdin()), origin: 'stdin' };
   }
 
-  const stdinIsTty = Boolean(process.stdin.isTTY);
   if (!stdinIsTty) {
     const text = String(await context.readStdin());
     if (text.trim()) return { text, origin: 'stdin' };
@@ -282,6 +291,24 @@ async function sleepFor(context: VergeContext, ms: number): Promise<void> {
     return;
   }
   await new Promise<void>((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * The exit group as the running core names it (`… 2` when the name was taken).
+ *
+ * `/proxies` reports the type as Go spells it — `Selector` — while the profile
+ * writes `select`. Comparing the profile spelling here found nothing against a
+ * live core and made every correct apply read as "not live".
+ */
+function liveExitGroup(base: string, proxies: ProxyMap): string {
+  if (!base) return '';
+  return Object.keys(proxies).find((name) => sameFamily(name, base) && isSelectorType(proxies[name]?.type)) ?? '';
+}
+
+function isSelectorType(type: unknown): boolean {
+  if (typeof type !== 'string') return false;
+  const lowered = type.toLowerCase();
+  return lowered === 'select' || lowered === 'selector';
 }
 
 /** `name`, `name 2`, … — the suffix the extension adds when the name is taken. */
@@ -383,6 +410,29 @@ function writeScriptAtomically(file: string, text: string, backup: boolean): voi
   }
 }
 
+/**
+ * A script inside a git work tree is one commit away from publishing the exit.
+ *
+ * `--script` used to accept the tracked template in this repository: the
+ * placeholder list was replaced with a live credential, and the next
+ * `git add -A` would have carried it into a commit.
+ */
+function assertOutsideGitWorkTree(file: string): void {
+  let dir = path.dirname(path.resolve(file));
+  for (;;) {
+    if (fs.existsSync(path.join(dir, '.git'))) {
+      const error = new CliUsageError(
+        `refusing to write the exit into ${file}: it is inside a git work tree, so a commit could publish the credential; point --script at the Verge profile under Application Support`,
+      );
+      (error as CliUsageError & { code?: number }).code = EXIT_CODES.unsafeSource;
+      throw error;
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) return;
+    dir = parent;
+  }
+}
+
 function pickScript(context: VergeContext, argv: string[]): string {
   const explicit = flagValue(argv, '--script');
   if (explicit !== undefined) {
@@ -390,6 +440,7 @@ function pickScript(context: VergeContext, argv: string[]): string {
     if (!fs.existsSync(resolved)) {
       throw new CliUsageError(`no such script: ${resolved}`);
     }
+    assertOutsideGitWorkTree(resolved);
     return resolved;
   }
   const home = context.home ?? os.homedir();
@@ -492,22 +543,39 @@ async function runExit(context: VergeContext, argv: string[]): Promise<number> {
   const before = await readProxiesIfRunning(context.env);
   const home = context.home ?? os.homedir();
   const generatedPath = vergeGeneratedConfig(home, context.env);
-  const nodeName = injected.chain[0] ?? injected.direct[0] ?? '';
-  const generatedBefore = nodeName ? readGeneratedProxy(generatedPath, nodeName) : null;
+  // In `all` mode the probe only knows `PROBE-ENTRY ➜ <exit>`; the names the
+  // core loads are `<subscription node> ➜ <exit>`. The exit group in the
+  // running core is the one place that knows them, so the selection memory and
+  // the generated-config check key off that group, not off the probe names.
+  const exitFamilyName = loaded.settings.exitGroup || injected.exitGroup;
+  const groupBefore = before ? liveExitGroup(exitFamilyName, before) : '';
+  // Every member of the previous exit group is remembered, not just the first:
+  // with two exits, rotating only the second must not read as verified.
+  const beforeNames = groupBefore ? (before?.[groupBefore]?.all ?? []) : (injected.chain.length > 0 ? injected.chain : injected.direct);
+  const entriesBefore = new Map(beforeNames.map((name) => [name, readGeneratedProxy(generatedPath, name)]));
   const wasSelectedIn = before
     ? Object.entries(before)
-      .filter(([, record]) => sameFamily(record?.now, injected.exitGroup))
+      .filter(([, record]) => sameFamily(record?.now, exitFamilyName))
       .map(([group]) => group)
     : [];
   await restartVerge(context);
 
   // The quit removes the socket and the relaunched app recreates it: wait for
   // the file itself before asking the core anything, or a healthy restart is
-  // reported as an empty core.
-  const socketPath = await waitForSocket(context.env, { timeoutMs: waitSeconds * 1_000, sleep: context.sleep });
-  const expected = [...injected.chain, ...(loaded.settings.mode === 'direct' ? injected.direct : [])];
+  // reported as an empty core. The socket wait shares the --wait budget with
+  // the node wait; a fresh budget here would leave the nodes the 1 s floor.
+  const socketPath = await waitForSocket(context.env, {
+    timeoutMs: Math.max(1_000, deadline - Date.now()),
+    sleep: context.sleep,
+  });
   const live = socketPath
-    ? await waitForProxies(socketPath, (proxies) => expected.every((name) => Object.hasOwn(proxies, name)), {
+    ? await waitForProxies(socketPath, (proxies) => {
+      const group = liveExitGroup(exitFamilyName, proxies);
+      if (!group) return false;
+      const members = proxies[group]?.all ?? [];
+      return members.length > 0
+        && members.every((member) => member === 'DIRECT' || member === 'REJECT' || Object.hasOwn(proxies, member));
+    }, {
       timeoutMs: Math.max(1_000, deadline - Date.now()),
       sleep: context.sleep,
     })
@@ -528,7 +596,9 @@ async function runExit(context: VergeContext, argv: string[]): Promise<number> {
     return EXIT_CODES.applyFailed;
   }
 
-  lines.push(`live: ${injected.exitGroup} → ${injected.chain.join(', ')}`);
+  const exitGroup = liveExitGroup(exitFamilyName, live) || injected.exitGroup;
+  const liveChain = (live[exitGroup]?.all?.length ?? 0) > 0 ? live[exitGroup].all! : injected.chain;
+  lines.push(`live: ${exitGroup} → ${liveChain.join(', ')}`);
   if (injected.entranceGroup) {
     lines.push(`entrance: pick the hop in ${injected.entranceGroup}`);
   }
@@ -540,20 +610,30 @@ async function runExit(context: VergeContext, argv: string[]): Promise<number> {
   const settled = socketPath ? await readProxies(socketPath).catch(() => live) : live;
 
   // mihomo's API does not expose server, port or the credential, so a rotated
-  // link under the same name looks live. The generated config does carry them:
-  // if it still holds exactly what it held before the restart, Verge never
-  // rebuilt the profile and the old link is still in use.
-  const generatedAfter = nodeName ? readGeneratedProxy(generatedPath, nodeName) : null;
-  const identity = !generatedAfter
+  // link under the same name looks live. The generated config does carry them.
+  // Every live member is checked against every exit: with two exits, a rerun
+  // that rotated only the second one used to read as verified on the first.
+  const afterNames = liveChain.length > 0 ? liveChain : (injected.chain.length > 0 ? injected.chain : injected.direct);
+  const rows = afterNames.map((name) => {
+    const entry = readGeneratedProxy(generatedPath, name);
+    return {
+      name,
+      entry,
+      exit: entry ? exits.find((exit) => proxyMatchesExit(entry, exit)) : undefined,
+      unchanged: sameConfigProxy(entry, entriesBefore.get(name) ?? null),
+    };
+  });
+  const identity = rows.length === 0 || rows.every((row) => !row.entry)
     ? 'unverified'
-    : proxyMatchesExit(generatedAfter, exits[0])
+    : rows.every((row) => row.exit)
       ? 'verified'
-      : sameConfigProxy(generatedAfter, generatedBefore)
+      : rows.every((row) => row.unchanged)
         ? 'stale'
         : 'unverified';
+  const staleRow = rows.find((row) => row.entry && !row.exit);
 
-  if (identity === 'stale' && generatedAfter) {
-    lines.push(`not applied: ${generatedPath} still carries the previous ${nodeName} → ${generatedAfter.server}:${generatedAfter.port}`);
+  if (identity === 'stale' && staleRow?.entry) {
+    lines.push(`not applied: ${generatedPath} still carries the previous ${staleRow.name} → ${staleRow.entry.server}:${staleRow.entry.port}`);
     lines.push('the profile was not rebuilt; reactivate it in Verge, or rerun with --no-apply after doing so');
     emit(context, argv, {
       ok: false,
@@ -568,17 +648,19 @@ async function runExit(context: VergeContext, argv: string[]): Promise<number> {
     return EXIT_CODES.applyFailed;
   }
   if (identity === 'verified') {
-    lines.push(`verified: ${generatedPath} carries ${nodeName} → ${exits[0].server}:${exits[0].port}`);
-  } else if (nodeName) {
-    lines.push(`identity unverified: ${generatedPath} has no readable ${nodeName} entry`);
+    const carried = rows.map((row) => `${row.name} → ${row.exit?.server}:${row.exit?.port}`).join(', ');
+    lines.push(`verified: ${generatedPath} carries ${carried}`);
+  } else if (rows.some((row) => row.name)) {
+    const missing = rows.filter((row) => !row.entry).map((row) => row.name);
+    lines.push(`identity unverified: ${generatedPath} has no readable ${missing.length > 0 ? missing.join(', ') : rows[0].name} entry`);
   }
 
   const selected: Record<string, string> = {};
   for (const target of wasSelectedIn) {
-    if (!Object.hasOwn(settled, target) || sameFamily(settled[target]?.now, injected.exitGroup)) continue;
-    await selectProxy(socketPath, target, injected.exitGroup);
-    selected[target] = injected.exitGroup;
-    lines.push(`restored ${injected.exitGroup} in ${target}`);
+    if (!Object.hasOwn(settled, target) || sameFamily(settled[target]?.now, exitFamilyName)) continue;
+    await selectProxy(socketPath, target, exitGroup);
+    selected[target] = exitGroup;
+    lines.push(`restored ${exitGroup} in ${target}`);
   }
   if (hasFlag(argv, '--use')) {
     const targets = loaded.settings.targets.length > 0 ? loaded.settings.targets : [];
@@ -591,9 +673,9 @@ async function runExit(context: VergeContext, argv: string[]): Promise<number> {
         lines.push(`--use skipped: ${target} is not in the live config`);
         continue;
       }
-      await selectProxy(socketPath, target, injected.exitGroup);
-      selected[target] = injected.exitGroup;
-      lines.push(`selected ${injected.exitGroup} in ${target}`);
+      await selectProxy(socketPath, target, exitGroup);
+      selected[target] = exitGroup;
+      lines.push(`selected ${exitGroup} in ${target}`);
     }
   }
 
@@ -604,9 +686,9 @@ async function runExit(context: VergeContext, argv: string[]): Promise<number> {
     script,
     mode: loaded.settings.mode,
     exits: exits.map(maskExit),
-    exit_group: injected.exitGroup,
+    exit_group: exitGroup,
     entrance_group: injected.entranceGroup,
-    chain: injected.chain,
+    chain: liveChain,
     identity,
     selected,
   }, lines);
@@ -642,7 +724,9 @@ async function runStatus(context: VergeContext, argv: string[]): Promise<number>
   lines.push(`chain: ${injected.chain.length > 0 ? injected.chain.join(', ') : '(none)'}`);
 
   let exitCode: number = EXIT_CODES.ok;
-  const liveGroup = live?.[injected.exitGroup];
+  const exitFamilyName = loaded.settings.exitGroup || injected.exitGroup;
+  const groupName = live ? liveExitGroup(exitFamilyName, live) : '';
+  const liveGroup = groupName && live ? live[groupName] : undefined;
   if (!socketPath) {
     lines.push('runtime: mihomo socket not found (is the Clash Verge service running?)');
     exitCode = EXIT_CODES.applyFailed;
@@ -653,7 +737,7 @@ async function runStatus(context: VergeContext, argv: string[]): Promise<number>
       exitCode = EXIT_CODES.applyFailed;
     } else {
       const members = Array.isArray(liveGroup.all) ? liveGroup.all : [];
-      lines.push(`runtime: ${injected.exitGroup} → ${members.join(', ') || '(empty)'}`);
+      lines.push(`runtime: ${groupName} → ${members.join(', ') || '(empty)'}`);
       const target = loaded.settings.targets[0] ?? '';
       if (target && live) {
         const now = live[target]?.now;
@@ -676,9 +760,9 @@ async function runStatus(context: VergeContext, argv: string[]): Promise<number>
     script,
     mode: loaded.settings.mode,
     exits: loaded.exits.map(maskExit),
-    exit_group: injected.exitGroup,
+    exit_group: groupName || injected.exitGroup,
     entrance_group: injected.entranceGroup,
-    chain: injected.chain,
+    chain: liveGroup && Array.isArray(liveGroup.all) && liveGroup.all.length > 0 ? liveGroup.all : injected.chain,
     live: Boolean(liveGroup),
   }, lines);
   return exitCode;
@@ -695,9 +779,17 @@ async function runTest(context: VergeContext, argv: string[]): Promise<number> {
   }
   const injection = probeInjection(source);
   const injected = describeInjection(loaded.settings, injection, loaded.exits);
+  // The probe cannot know the subscription's node names, so in `all` mode its
+  // chain is `PROBE-ENTRY ➜ <exit>`, which the core never has. Probe the
+  // members of the live exit group instead; fall back to the probe only when
+  // the profile has not been rebuilt yet.
+  const live = await readProxies(socketPath).catch(() => null);
+  const group = live ? liveExitGroup(loaded.settings.exitGroup || injected.exitGroup, live) : '';
+  const members = group && live ? live[group]?.all ?? [] : [];
+  const names = members.length > 0 ? members : injected.chain;
   const lines: string[] = [];
   let exitCode: number = EXIT_CODES.ok;
-  for (const name of injected.chain) {
+  for (const name of names) {
     try {
       const probe = await probeDelay(socketPath, name);
       lines.push(`${name}: ${probe.delay} ms`);
@@ -706,11 +798,11 @@ async function runTest(context: VergeContext, argv: string[]): Promise<number> {
       exitCode = EXIT_CODES.probeFailed;
     }
   }
-  if (injected.chain.length === 0) {
+  if (names.length === 0) {
     lines.push('nothing to probe: the script injects no exit');
     exitCode = EXIT_CODES.environment;
   }
-  emit(context, argv, { ok: exitCode === EXIT_CODES.ok, chain: injected.chain }, lines);
+  emit(context, argv, { ok: exitCode === EXIT_CODES.ok, chain: names }, lines);
   return exitCode;
 }
 

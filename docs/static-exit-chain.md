@@ -16,9 +16,14 @@
 本机当前配置（`~/.auto-vpn/profile.toml`）：
 
 ```text
-https://www.swimmingliu.online/sub?token=...          # 分享 Worker，静态出口在这里生效
+https://www.swimmingliu.online/sub?token=...          # 分享 Worker，原样输出，不含静态出口
+https://www.swimmingliu.online/static?token=...       # 分享 Worker，同一份订阅 + 静态出口（手机用这个）
 https://sub-nodes-04.pages.dev/?serect_key=...    # 主 Worker，只吐 base64
 ```
+
+`/static` 是单独入口：默认 `/sub` 的内容和没有静态出口时逐字一致，静态出口只挂在 `/static` 上。`?static=1` 与 `/static` 等价，给不方便改路径的客户端用。两个地址的 token 相同。
+
+> 部署状态（2026-11-15）：`/static` 的 Worker 代码已在仓库里，但 `sub-links-share-07` 和 `-19` 都被 Cloudflare 以 `code: 8000119`（Pages project has been blocked）拒绝部署，线上仍是旧 Worker，`/static` 暂时 404。解封要发邮件到 abusereply@cloudflare.com；解封前手机端先用第 4.1 节的本地扩展脚本。
 
 ## 2. 配置
 
@@ -48,6 +53,16 @@ profile 里只要有 `[static_exit]` 段，这五个键就会整组写入，空�
 
 写进 env vars 意味着出口账号会落在 Cloudflare 项目的配置里，能被有权访问该项目的人读到。如果不想让它离开本机，用第 4.1 节的 Verge 扩展脚本，那里的凭证只存在你本地的 `profiles/*.js`。
 
+存放位置的取舍：
+
+| 位置 | 能不能用 | 说明 |
+| --- | --- | --- |
+| Pages 项目 env vars（`STATIC_EXIT` 等） | 推荐 | 部署时由 `profile.toml` 写入，只属于这一个项目；不进仓库、不进 CI 日志 |
+| GitHub Secrets | 只在 CI 负责部署时需要 | 本机 runner 直接读 `profile.toml`，没有 workflow 需要这个值；存了也不会被用到 |
+| KV `static-exit.json` | 不推荐 | 同一个 namespace 被多个项目共用，写进去等于让所有项目的 Worker 都能读到，旧 Worker 还会把它注入 `/sub` |
+
+仓库、测试和文档里只出现 `USER`/`PASS`/`198.51.100.x` 这类文档地址；真实 `socks5://…@…` 链接只存在 `~/.auto-vpn/profile.toml`（600）和 Cloudflare 项目配置里。
+
 `exit_json` 里的每条记录就是一条 mihomo 代理，字段原样透传：
 
 ```json
@@ -57,9 +72,9 @@ profile 里只要有 `[static_exit]` 段，这五个键就会整组写入，空�
 ]
 ```
 
-## 3. 订阅里会多出什么
+## 3. `/static` 订阅里会多出什么
 
-以 `twins = "entrance"` 为例，Clash 配置里会新增：
+以下内容只出现在 `/static` 入口。`/sub` 不会因为项目上配了出口而变化，同一份订阅可以继续给别的设备用。以 `twins = "entrance"` 为例，Clash 配置里会新增：
 
 ```yaml
 proxies:
@@ -86,6 +101,8 @@ proxy-groups:
 ```
 
 `🛡️ 静态IP出口` 会被追加到每个 `select` 分组的末尾，所以「🚀 节点选择」以及各类业务分组里都能直接选到它。`url-test` / `load-balance` 分组不会挂它——不是 mihomo 不允许（实测 1.19.33 允许测速分组里嵌套 `select`），而是把出口放进自动测速组没有意义：出口只有一两个，选中哪个用户也管不了，测速还会反复把流量切来切去。想让它进测速组，在 Verge 的代理页手动加即可。
+
+`/static` 输出的订阅名带 `-静态IP` 后缀，加到 Verge 或手机客户端里不会和原来的 `/sub` 混成一个订阅。这个入口只处理 Clash 格式（`UA` 里带 `clash`/`mihomo`）；v2ray 等其它格式拿到的是原样订阅，不含出口。
 
 ## 4. 在 Clash Verge Rev 里怎么用
 
@@ -142,17 +159,18 @@ autovpn verge exit --from ~/.auto-vpn/verge-exit.txt
 socks5://USER:PASS@203.0.113.7:1080#🇭🇰 香港静态IP
 ```
 
-路径默认是 `~/.auto-vpn/verge-exit.txt`。**用编辑器写**，别写成 `echo`/`printf` 命令——那样会留在 `~/.zsh_history` 里。CLI 会拒绝 group/other 可读的源文件，写完 `chmod 600` 它。
+路径默认是 `~/.auto-vpn/verge-exit.txt`。**用编辑器写**，别写成 `echo`/`printf` 命令——那样会留在 `~/.zsh_history` 里。CLI 会拒绝 group/other 可读的源文件，写完 `chmod 600` 它。`--stdin` 在终端里同样不回声：它走的是和默认提示符一样的隐藏输入，不会把粘贴的内容打到屏幕上；只有在管道里才读整段 stdin。少写 `@` 的链接（`socks5://USER:PASS:1080`）会被拒绝，不会把误当成主机名的那段原样打印出来。
 
 `autovpn verge exit` 做四件事：
 
 1. 解析链接（`socks5` / `socks5h` / `socks` / `http` / `https` / `http+tls`），输出里只有 `socks5://***@203.0.113.7:1080` 这种脱敏行；解析失败只报行号，不回声那一行的内容。
 2. 只替换 `STATIC_EXITS` 这一段——你在 Verge 里调过的 `MODE`、`EXIT_GROUP_TARGETS`、`RULES_TO_EXIT` 原样保留——写入走「临时文件 + fsync + rename」，权限 600，半截脚本不会留在原地。
-3. 重启 Clash Verge，让扩展脚本重新跑；先等核心的 socket 重新出现，再在 mihomo 的 unix socket 上轮询，确认新的链式节点真的加载了，打印出口分组和成员。等待时长用 `--wait` 调（默认 25 秒）。
+3. 重启 Clash Verge，让扩展脚本重新跑；先等核心的 socket 重新出现，再在 mihomo 的 unix socket 上轮询，确认出口分组和它的成员真的加载了，打印分组名和成员。`--wait` 是这两步合起来的预算（默认 25 秒）。成员从运行中的出口分组里读，所以 `MODE = 'all'` 下等的是订阅自己的节点名（`US 421 ➜ …`），不是探针里的 `PROBE-ENTRY ➜ …`。
 4. 重启会让 Verge 把分组选择恢复成订阅自己的默认值，原本选着出口分组的 `🚀 节点选择` 会悄悄切回某个机场节点。写入前记下哪些分组正指向出口分组，激活稳定后自动放回去（输出里的 `restored`）；`--use` 则是无条件选中。
 5. 另一件重启会掩盖的事是「同名换凭证」：mihomo 的 `/proxies` 不带地址和凭证，新链接和旧链接看起来一样。所以还会读一遍 Verge 生成的 `clash-verge.yaml`：如果里面那条节点跟重启前一模一样，说明配置根本没重建，命令按失败退出（`6`），不会报成功。
 
 - `--check`：只解析、只编译，不写任何东西。
+- `--script PATH`：写哪个脚本；路径在 git 工作区里时直接拒绝（退出码 `4`）——模板本身就在仓库里，写进去等于等一次 `git add -A` 把凭证提交上去。
 - `--test`：写之前先用 curl 通过每个出口拉一次 `https://api.ipify.org`，只打印返回的出口 IP；连不上就不写。
 - `--no-apply`：只写不重启，之后自己在 Verge 里重新激活订阅。
 - `autovpn verge status --test`：随时看当前状态——脚本里的出口、运行时是否已加载、当前选中的出口、链式节点的延迟。

@@ -34,6 +34,16 @@ test('splits on the last @ so an unescaped one in the credential still parses', 
   assert.equal(exit.credential, 'p@ss');
 });
 
+test('an authority without @ is refused, not printed as a host', () => {
+  // `alice:hunter2:1080` 少了 @：旧解析会把它当成主机名，原样打印出来。
+  assert.throws(() => parseExitUri('socks5://alice:hunter2:1080'), /no @/);
+  try {
+    parseExitUri('socks5://alice:hunter2:1080');
+  } catch (error) {
+    assert.doesNotMatch(error.message, /hunter2/);
+  }
+});
+
 test('fills in the default port per scheme', () => {
   assert.equal(parseExitUri('socks5://u:p@h.example').port, 1080);
   assert.equal(parseExitUri('http://u:p@h.example').port, 80);

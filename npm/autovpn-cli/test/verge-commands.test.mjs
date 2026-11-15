@@ -23,10 +23,14 @@ const CHAIN = 'Hong Kong exit（链式）';
 
 /** The merged config Verge writes for the core, with one injected node. */
 function writeGenerated(install, server, port, credential) {
+  writeGeneratedNamed(install, CHAIN, server, port, credential);
+}
+
+function writeGeneratedNamed(install, name, server, port, credential) {
   const text = [
     'mixed-port: 7897',
     'proxies:',
-    `- name: ${CHAIN}`,
+    `- name: ${name}`,
     '  type: socks5',
     `  server: ${server}`,
     `  port: ${port}`,
@@ -37,7 +41,7 @@ function writeGenerated(install, server, port, credential) {
     '- name: 🚀 节点选择',
     '  type: select',
     '  proxies:',
-    `  - ${CHAIN}`,
+    `  - ${name}`,
   ].join('\n');
   fs.writeFileSync(path.join(install.appDir, 'clash-verge.yaml'), text);
 }
@@ -199,8 +203,8 @@ test('the whole chain goes live and the selector can be pointed at it', async ()
   writeGenerated(install, '203.0.113.7', 1080, SECRET);
   const socketPath = socketDir();
   const mihomo = await startMihomo(socketPath, {
-    '🚀 节点选择': { type: 'select', all: ['PROBE', '🛡️ 静态IP出口'], now: 'PROBE' },
-    '🛡️ 静态IP出口': { type: 'select', all: [CHAIN], now: CHAIN },
+    '🚀 节点选择': { type: 'Selector', all: ['PROBE', '🛡️ 静态IP出口'], now: 'PROBE' },
+    '🛡️ 静态IP出口': { type: 'Selector', all: [CHAIN], now: CHAIN },
     [CHAIN]: { type: 'socks5' },
   });
   try {
@@ -240,8 +244,8 @@ test('a same-name rotation the core never received is reported as not applied', 
   writeGenerated(install, '203.0.113.7', 1080, SECRET);
   const socketPath = socketDir();
   const mihomo = await startMihomo(socketPath, {
-    '🚀 节点选择': { type: 'select', all: ['PROBE', '🛡️ 静态IP出口'], now: 'PROBE' },
-    '🛡️ 静态IP出口': { type: 'select', all: [CHAIN], now: CHAIN },
+    '🚀 节点选择': { type: 'Selector', all: ['PROBE', '🛡️ 静态IP出口'], now: 'PROBE' },
+    '🛡️ 静态IP出口': { type: 'Selector', all: [CHAIN], now: CHAIN },
     [CHAIN]: { type: 'socks5' },
   });
   try {
@@ -266,12 +270,71 @@ test('a same-name rotation the core never received is reported as not applied', 
   }
 });
 
+test('rotating only the second of two exits is still reported as not applied', async () => {
+  const install = createInstall();
+  const second = 'Tokyo exit（链式）';
+  // The last build carried both exits; only the second one is about to change.
+  fs.writeFileSync(path.join(install.appDir, 'clash-verge.yaml'), [
+    'proxies:',
+    `- name: ${CHAIN}`,
+    '  type: socks5',
+    '  server: 203.0.113.7',
+    '  port: 1080',
+    '  username: alice',
+    `  ${CREDENTIAL_FIELD}: ${SECRET}`,
+    `- name: ${second}`,
+    '  type: socks5',
+    '  server: 198.51.100.7',
+    '  port: 1080',
+    '  username: alice',
+    `  ${CREDENTIAL_FIELD}: ${SECRET}`,
+    'proxy-groups:',
+    '- name: 🚀 节点选择',
+    '  type: select',
+    '  proxies:',
+    `  - ${CHAIN}`,
+    `  - ${second}`,
+  ].join('\n'));
+  const socketPath = socketDir();
+  const mihomo = await startMihomo(socketPath, {
+    '🚀 节点选择': { type: 'Selector', all: ['PROBE', '🛡️ 静态IP出口'], now: 'PROBE' },
+    // The core reloaded the old nodes under both names, so the first row
+    // matches and the second one is the one that never arrived.
+    '🛡️ 静态IP出口': { type: 'Selector', all: [CHAIN, second], now: CHAIN },
+    [CHAIN]: { type: 'socks5' },
+    [second]: { type: 'socks5' },
+  });
+  try {
+    const io = createIo();
+    const links = [
+      LINK,
+      `socks5://alice:${encodeURIComponent(SECRET)}@198.51.100.9:1080#Tokyo exit`,
+    ].join('\n');
+    const code = await runVergeCommand(['verge', 'exit', '--wait', '5'], {
+      env: { AUTOVPN_MIHOMO_SOCKET: socketPath },
+      cwd: packageRoot,
+      home: install.home,
+      io,
+      readStdin: async () => links,
+      platform: 'darwin',
+      spawn: fakeSpawn([]),
+      sleep: async () => {}
+    });
+    assert.equal(code, 6, io.stdout);
+    assert.match(io.stdout, /still carries the previous Tokyo exit（链式） → 198\.51\.100\.7:1080/);
+    const written = loadScript(fs.readFileSync(install.script, 'utf8'));
+    assert.deepEqual(written.exits.map((exit) => exit.server), ['203.0.113.7', '198.51.100.9']);
+  } finally {
+    await mihomo.close();
+  }
+});
+
 test('a selection the restart reset is put back on the exit group', async () => {
   const install = createInstall();
   const socketPath = socketDir();
   const mihomo = await startMihomo(socketPath, {
-    '🚀 节点选择': { type: 'select', all: ['PROBE', '🛡️ 静态IP出口'], now: '🛡️ 静态IP出口' },
-    '🛡️ 静态IP出口': { type: 'select', all: [CHAIN], now: CHAIN },
+    '🚀 节点选择': { type: 'Selector', all: ['PROBE', '🛡️ 静态IP出口'], now: '🛡️ 静态IP出口' },
+    '🛡️ 静态IP出口': { type: 'Selector', all: [CHAIN], now: CHAIN },
     [CHAIN]: { type: 'socks5' },
   });
   try {
@@ -286,7 +349,7 @@ test('a selection the restart reset is put back on the exit group', async () => 
       // The relaunched app comes back with the profile's own default selection.
       spawn: fakeSpawn([], (command) => {
         if (command !== 'open') return;
-        mihomo.state.proxies['🚀 节点选择'] = { type: 'select', all: ['PROBE', '🛡️ 静态IP出口'], now: 'PROBE' };
+        mihomo.state.proxies['🚀 节点选择'] = { type: 'Selector', all: ['PROBE', '🛡️ 静态IP出口'], now: 'PROBE' };
       }),
       sleep: async () => {}
     });
@@ -302,7 +365,7 @@ test('a core that never loads the new nodes is reported as not live', async () =
   const install = createInstall();
   const socketPath = socketDir();
   const mihomo = await startMihomo(socketPath, {
-    '🚀 节点选择': { type: 'select', all: ['PROBE'], now: 'PROBE' },
+    '🚀 节点选择': { type: 'Selector', all: ['PROBE'], now: 'PROBE' },
   });
   try {
     const io = createIo();
@@ -359,8 +422,8 @@ test('status reports the installed exit, the live group and the current selectio
   fs.writeFileSync(install.script, replaceExitBlock(template, generateExitBlock([parseExitUri(LINK)])));
   const socketPath = socketDir();
   const mihomo = await startMihomo(socketPath, {
-    '🚀 节点选择': { type: 'select', all: ['PROBE', '🛡️ 静态IP出口'], now: '🛡️ 静态IP出口' },
-    '🛡️ 静态IP出口': { type: 'select', all: ['Hong Kong exit（链式）'], now: 'Hong Kong exit（链式）' },
+    '🚀 节点选择': { type: 'Selector', all: ['PROBE', '🛡️ 静态IP出口'], now: '🛡️ 静态IP出口' },
+    '🛡️ 静态IP出口': { type: 'Selector', all: ['Hong Kong exit（链式）'], now: 'Hong Kong exit（链式）' },
   });
   try {
     const io = createIo();
@@ -384,7 +447,7 @@ test('status exits non-zero when the profile has not been rebuilt', async () => 
   const install = createInstall();
   const socketPath = socketDir();
   const mihomo = await startMihomo(socketPath, {
-    '🚀 节点选择': { type: 'select', all: ['PROBE'], now: 'PROBE' },
+    '🚀 节点选择': { type: 'Selector', all: ['PROBE'], now: 'PROBE' },
   });
   try {
     const io = createIo();
@@ -410,4 +473,140 @@ test('a missing Verge install names the step that creates it', async () => {
   });
   assert.equal(code, 3);
   assert.match(io.stderr, /no Clash Verge extension script found/);
+});
+
+test('a username-only rotation the core never received is reported as not applied', async () => {
+  const install = createInstall();
+  // What the last build handed the core: the same address under `alice`.
+  writeGenerated(install, '203.0.113.7', 1080, SECRET);
+  const socketPath = socketDir();
+  const mihomo = await startMihomo(socketPath, {
+    '🚀 节点选择': { type: 'Selector', all: ['PROBE', '🛡️ 静态IP出口'], now: 'PROBE' },
+    '🛡️ 静态IP出口': { type: 'Selector', all: [CHAIN], now: CHAIN },
+    [CHAIN]: { type: 'socks5' },
+  });
+  try {
+    const io = createIo();
+    // Same host, port and credential; only the user changes.
+    const rotated = `socks5://bob:${encodeURIComponent(SECRET)}@203.0.113.7:1080#Hong Kong exit`;
+    const code = await runVergeCommand(['verge', 'exit', '--wait', '5'], {
+      env: { AUTOVPN_MIHOMO_SOCKET: socketPath },
+      cwd: packageRoot,
+      home: install.home,
+      io,
+      readStdin: async () => rotated,
+      platform: 'darwin',
+      spawn: fakeSpawn([]),
+      sleep: async () => {}
+    });
+    assert.equal(code, 6, io.stdout);
+    assert.match(io.stdout, /still carries the previous Hong Kong exit（链式） → 203\.0\.113\.7:1080/);
+  } finally {
+    await mihomo.close();
+  }
+});
+
+test('MODE=all waits for the names the subscription actually has', async () => {
+  const install = createInstall();
+  fs.writeFileSync(install.script, template.replace("const MODE = 'chain'", "const MODE = 'all'"), { mode: 0o600 });
+  const real = 'US 421 ➜ Hong Kong exit';
+  writeGeneratedNamed(install, real, '203.0.113.7', 1080, SECRET);
+  const socketPath = socketDir();
+  const mihomo = await startMihomo(socketPath, {
+    '🚀 节点选择': { type: 'Selector', all: ['US 421', '🛡️ 静态IP出口'], now: 'US 421' },
+    'US 421': { type: 'vmess' },
+    '🛡️ 静态IP出口': { type: 'Selector', all: [real], now: real },
+    [real]: { type: 'socks5' },
+  });
+  try {
+    const io = createIo();
+    const code = await runVergeCommand(['verge', 'exit', '--wait', '5'], {
+      env: { AUTOVPN_MIHOMO_SOCKET: socketPath },
+      cwd: packageRoot,
+      home: install.home,
+      io,
+      readStdin: async () => LINK,
+      platform: 'darwin',
+      spawn: fakeSpawn([]),
+      sleep: async () => {}
+    });
+    assert.equal(code, 0, io.stderr);
+    // The probe knows only `PROBE-ENTRY ➜ …`; the live group holds the real name.
+    assert.match(io.stdout, /live: 🛡️ 静态IP出口 → US 421 ➜ Hong Kong exit/);
+    assert.match(io.stdout, /verified: .* carries US 421 ➜ Hong Kong exit → 203\.0\.113\.7:1080/);
+  } finally {
+    await mihomo.close();
+  }
+});
+
+test('status and test read the live chain names, not the probe names', async () => {
+  const install = createInstall();
+  fs.writeFileSync(install.script, template.replace("const MODE = 'chain'", "const MODE = 'all'"), { mode: 0o600 });
+  const real = 'US 421 ➜ Hong Kong exit';
+  const socketPath = socketDir();
+  const mihomo = await startMihomo(socketPath, {
+    '🛡️ 静态IP出口': { type: 'Selector', all: [real], now: real },
+    [real]: { type: 'socks5' },
+  });
+  try {
+    const statusIo = createIo();
+    const status = await runVergeCommand(['verge', 'status', '--test'], {
+      env: { AUTOVPN_MIHOMO_SOCKET: socketPath },
+      cwd: packageRoot,
+      home: install.home,
+      io: statusIo,
+      readStdin: async () => ''
+    });
+    assert.equal(status, 0, statusIo.stderr);
+    assert.match(statusIo.stdout, /runtime: 🛡️ 静态IP出口 → US 421 ➜ Hong Kong exit/);
+    assert.match(statusIo.stdout, /probe US 421 ➜ Hong Kong exit: 42 ms/);
+
+    const testIo = createIo();
+    const probed = await runVergeCommand(['verge', 'test'], {
+      env: { AUTOVPN_MIHOMO_SOCKET: socketPath },
+      cwd: packageRoot,
+      home: install.home,
+      io: testIo,
+      readStdin: async () => ''
+    });
+    assert.equal(probed, 0, testIo.stderr);
+    assert.match(testIo.stdout, /US 421 ➜ Hong Kong exit: 42 ms/);
+    assert.equal(mihomo.state.probes.some((path) => path.includes('PROBE-ENTRY')), false);
+  } finally {
+    await mihomo.close();
+  }
+});
+
+test('a script inside a git work tree is refused', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'verge-repo-'));
+  fs.mkdirSync(path.join(dir, '.git'));
+  const script = path.join(dir, 'clash-verge-extension.js');
+  fs.writeFileSync(script, template, { mode: 0o600 });
+  const io = createIo();
+  const code = await runVergeCommand(['verge', 'exit', '--script', script, '--check'], {
+    env: {}, cwd: packageRoot, home: dir, io,
+    readStdin: async () => LINK,
+    platform: 'darwin',
+    spawn: fakeSpawn([]),
+    sleep: async () => {}
+  });
+  assert.equal(code, 4, io.stdout);
+  assert.match(io.stderr, /inside a git work tree/);
+  assert.equal(fs.readFileSync(script, 'utf8'), template);
+});
+
+test('--stdin on a terminal uses the hidden prompt', async () => {
+  const install = createInstall();
+  const io = createIo();
+  let readFromStdin = false;
+  const code = await runVergeCommand(['verge', 'exit', '--stdin', '--check'], {
+    env: {}, cwd: packageRoot, home: install.home, io,
+    stdinIsTty: () => true,
+    readSecret: async () => LINK,
+    readStdin: async () => { readFromStdin = true; return LINK; }
+  });
+  assert.equal(code, 0, io.stderr);
+  assert.equal(readFromStdin, false, 'a terminal must not take the cooked-mode path');
+  assert.match(io.stdout, /socks5:\/\/\*\*\*@203\.0\.113\.7:1080/);
+  assert.equal(io.stdout.includes(SECRET), false);
 });

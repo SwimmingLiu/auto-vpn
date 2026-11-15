@@ -95,7 +95,10 @@ export function replaceExitBlock(scriptText: string, block: string): string {
   if (/\]\s*;\s*(?:\/\/.*)?$/.test(firstLine)) {
     end = firstLineEnd;
   } else {
-    const rest = /^[ \t]*\];[ \t]*$/m.exec(scriptText.slice(firstLineEnd));
+    // A trailing comment on the closing line (`]; // exits`) is legal JS and
+    // common in hand-edited scripts; insisting on a bare `];` made the search
+    // run on to the next `];` in the file and delete everything between.
+    const rest = /^[ \t]*\];[ \t]*(?:\/\/.*)?$/m.exec(scriptText.slice(firstLineEnd));
     if (!rest) {
       throw new Error('the `const STATIC_EXITS = [` block is never closed with `];`');
     }
@@ -177,15 +180,23 @@ export function vergeGeneratedConfig(home: string, env: NodeJS.ProcessEnv = proc
 }
 
 export interface ConfigProxy {
+  type?: string;
   server?: string;
   port?: number;
+  username?: string;
   credential?: string;
+  tls?: boolean;
 }
 
 function unquote(value: string): string {
   const text = value.trim();
-  if (text.length >= 2 && ((text.startsWith("'") && text.endsWith("'")) || (text.startsWith('"') && text.endsWith('"')))) {
-    return text.slice(1, -1);
+  if (text.length >= 2 && text.startsWith("'") && text.endsWith("'")) {
+    // YAML single quotes double themselves: `'it''s #1'` is `it's #1`.
+    return text.slice(1, -1).replace(/''/g, "'");
+  }
+  if (text.length >= 2 && text.startsWith('"') && text.endsWith('"')) {
+    const escapes: Record<string, string> = { '"': '"', '\\': '\\', '/': '/', n: '\n', r: '\r', t: '\t' };
+    return text.slice(1, -1).replace(/\\(["\\/nrt])/g, (_, ch: string) => escapes[ch]);
   }
   return text;
 }
@@ -214,21 +225,36 @@ export function findConfigProxy(text: string, name: string): ConfigProxy | null 
     const match = /^\s*([A-Za-z0-9_-]+):\s*(.*?)\s*$/.exec(line);
     if (!match) continue;
     const value = unquote(match[2]);
-    if (match[1] === 'server') found.server = value;
+    if (match[1] === 'type') found.type = value;
+    else if (match[1] === 'server') found.server = value;
     else if (match[1] === 'port') found.port = Number(value);
+    else if (match[1] === 'username') found.username = value;
     else if (match[1] === CREDENTIAL_FIELD) found.credential = value;
+    else if (match[1] === 'tls') found.tls = value === 'true';
   }
   return found;
 }
 
+/** Every field the comparison uses: a change in any of them is a new identity. */
 export function sameConfigProxy(a: ConfigProxy | null, b: ConfigProxy | null): boolean {
   if (!a || !b) return a === b;
-  return a.server === b.server && Number(a.port) === Number(b.port) && a.credential === b.credential;
+  return a.type === b.type
+    && a.server === b.server
+    && Number(a.port) === Number(b.port)
+    && (a.username ?? '') === (b.username ?? '')
+    && a.credential === b.credential
+    && Boolean(a.tls) === Boolean(b.tls);
 }
 
 export function proxyMatchesExit(proxy: ConfigProxy, exit: StaticExit): boolean {
+  // The credential alone is not the identity: rotating only the username, the
+  // scheme or TLS under the same host:port left `verified` standing on an entry
+  // the core never received.
+  if (proxy.type !== undefined && proxy.type !== exit.type) return false;
   if (proxy.server !== exit.server) return false;
   if (Number(proxy.port) !== Number(exit.port)) return false;
+  if ((proxy.username ?? '') !== (exit.username ?? '')) return false;
+  if (Boolean(proxy.tls) !== Boolean(exit.tls)) return false;
   if (exit.credential !== undefined && proxy.credential !== exit.credential) return false;
   return true;
 }

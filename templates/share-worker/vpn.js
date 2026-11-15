@@ -1220,10 +1220,14 @@ export default {
 					const 响应 = new Response('重定向中...', { status: 302, headers: { 'Location': '/login' } });
 					响应.headers.set('Set-Cookie', 'auth=; Path=/; Max-Age=0; HttpOnly');
 					return 响应;
-				} else if (访问路径 === 'sub') {//处理订阅请求
+				} else if (访问路径 === 'sub' || 访问路径 === 'static') {//处理订阅请求
 					const 订阅TOKEN = await MD5MD5(host + userID), 作为优选订阅生成器 = ['1', 'true'].includes(env.BEST_SUB) && url.searchParams.get('host') === 'example.com' && url.searchParams.get('uuid') === '00000000-0000-4000-8000-000000000000' && UA.toLowerCase().includes('tunnel (https://github.com/cmliu/edge');
 					if (url.searchParams.get('token') === 订阅TOKEN || 作为优选订阅生成器) {
 						config_JSON = await 读取config_JSON(env, host, userID, UA);
+						// 静态出口只挂在单独入口上：默认订阅必须和没有静态出口时逐字一致，
+						// 否则每个订阅者都会被动多出一组固定出口。`/static` 与 `?static=1`
+						// 等价，前者是给手机客户端粘贴的独立地址。
+						const 注入静态出口 = 访问路径 === 'static' || ['1', 'true', 'static'].includes(String(url.searchParams.get('static') ?? '').toLowerCase());
 						if (作为优选订阅生成器) ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Get_Best_SUB', config_JSON, false));
 						else ctx.waitUntil(请求日志记录(env, request, 访问IP, 'Get_SUB', config_JSON));
 						const ua = UA.toLowerCase();
@@ -1262,7 +1266,8 @@ export default {
 													? 'loon'
 													: 'mixed';
 
-						if (!ua.includes('mozilla')) responseHeaders["Content-Disposition"] = `attachment; filename*=utf-8''${encodeURIComponent(config_JSON.优选订阅生成.SUBNAME)}`;
+						const 订阅显示名 = 注入静态出口 ? `${config_JSON.优选订阅生成.SUBNAME}-静态IP` : config_JSON.优选订阅生成.SUBNAME;
+						if (!ua.includes('mozilla')) responseHeaders["Content-Disposition"] = `attachment; filename*=utf-8''${encodeURIComponent(订阅显示名)}`;
 						const 协议类型 = ((url.searchParams.has('surge') || ua.includes('surge')) && config_JSON.协议类型 !== 'ss') ? 'tro' + 'jan' : config_JSON.协议类型;
 						let 订阅内容 = '';
 						if (订阅类型 === 'mixed') {
@@ -1372,7 +1377,10 @@ export default {
 							订阅内容 = await Singbox订阅配置文件热补丁(订阅内容, config_JSON);
 							responseHeaders["content-type"] = 'application/json; charset=utf-8';
 						} else if (订阅类型 === 'clash') {
-							订阅内容 = 收尾Clash配置(Clash订阅配置文件热补丁(订阅内容, config_JSON), config_JSON);
+							// 普通订阅传一份空清单进去，收尾只剩 pruneEmptyClashGroups；
+							// 出口清单来自 env 或 KV，不能因为项目上配了就漏给默认入口。
+							const 出口配置 = 注入静态出口 ? config_JSON : { ...config_JSON, 静态出口清单: [] };
+							订阅内容 = 收尾Clash配置(Clash订阅配置文件热补丁(订阅内容, config_JSON), 出口配置);
 							responseHeaders["content-type"] = 'application/x-yaml; charset=utf-8';
 						}
 						return new Response(订阅内容, { status: 200, headers: responseHeaders });
