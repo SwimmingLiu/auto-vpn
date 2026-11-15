@@ -104,7 +104,7 @@ proxy_mode = "proxy"
 proxy_url = "http://127.0.0.1:7897"
 
 [deploy]
-# This deployment's own project, never the VPS's (`sub-nodes-04`).
+# Own project only; never the VPS's `sub-nodes-<number>`/`sub-links-*`.
 project_name = "sub-nodes-cf"
 # No key here: the profile is committed and also uploaded as a Worker secret, so
 # a literal publishes the subscription. The deploy composes `<url>/?<secret_query>`.
