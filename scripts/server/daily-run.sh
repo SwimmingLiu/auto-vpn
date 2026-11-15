@@ -95,7 +95,10 @@ POOL_ENV_PATH="${AUTOVPN_POOL_ENV:-$RUNTIME_ROOT/pool-db.env}"
 pool_env=()
 if [ -f "$POOL_ENV_PATH" ]; then
   pool_url=""
-  while IFS= read -r pool_line; do
+  # `read` returns false on a final line with no trailing newline after still
+  # assigning it, so a hand-written file would silently look empty. The
+  # `|| [ -n ... ]` keeps that last line.
+  while IFS= read -r pool_line || [ -n "$pool_line" ]; do
     case "$pool_line" in
       AUTOVPN_ACCOUNTS_DB_URL=*) pool_url="${pool_line#AUTOVPN_ACCOUNTS_DB_URL=}" ;;
     esac

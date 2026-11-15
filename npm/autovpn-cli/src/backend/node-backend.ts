@@ -6,6 +6,7 @@ import { resumeNodePipeline, retryNodePipelineStage, runNodePipeline } from '../
 import { AccountStore } from '../pool/account-store.js';
 import { describeSharedPoolUrl, pullSharedPool, pushSharedPool, resolveSharedPoolUrl } from '../pool/pg-pool.js';
 import { resolveArtifactsRoot } from '../runtime/paths.js';
+import { redactText } from '../runtime/redaction.js';
 import { readLatestStageStatuses, readRunStatus } from '../pipeline/run-store.js';
 import {
   AutoVpnBackend,
@@ -206,11 +207,33 @@ export class NodeBackend implements AutoVpnBackend {
     try {
       await this.syncSharedPool(queue, 'push');
     } catch (error) {
+      // This line is mirrored into the run's artifact log, which is uploaded;
+      // a connection error can quote the URL and with it the database password.
       pushEvent(queue, {
         type: 'log',
         level: 'warn',
-        message: `shared pool push failed: ${error instanceof Error ? error.message : String(error)}`
+        message: `shared pool push failed: ${redactText(error instanceof Error ? error.message : String(error))}`
       });
+    }
+  }
+
+  /**
+   * One night on top of the shared pool: pull, run, push.
+   *
+   * Both `run` and `resume` need exactly this, and the order is the point — a
+   * push before the pull would overwrite rows the other host retired since
+   * this one last synced.
+   */
+  private async runWithSharedPool(
+    queue: EventQueueState,
+    emit: (event: AutoVpnEvent) => void,
+    run: () => Promise<unknown>
+  ): Promise<void> {
+    await this.syncSharedPool(queue, 'pull', emit);
+    try {
+      await run();
+    } finally {
+      await this.syncPushAfterRun(queue);
     }
   }
 
@@ -256,14 +279,7 @@ export class NodeBackend implements AutoVpnBackend {
       mirror.write(event);
       pushEvent(queue, event);
     };
-    const execute = async () => {
-      await this.syncSharedPool(queue, 'pull', emit);
-      try {
-        await runner();
-      } finally {
-        await this.syncPushAfterRun(queue);
-      }
-    };
+    const execute = () => this.runWithSharedPool(queue, emit, runner);
     void execute()
       .then(() => finishQueue(queue))
       .catch((error) => finishQueue(queue, error));
@@ -322,21 +338,15 @@ export class NodeBackend implements AutoVpnBackend {
       mirror.write(event);
       pushEvent(queue, event);
     };
-    const execute = async () => {
-      await this.syncSharedPool(queue, 'pull', emit);
-      try {
-        await resumeNodePipeline({
-          projectRoot: options.projectRoot,
-          mode: options.mode,
-          session: options.session,
-          output: options.output,
-          eventLog: options.eventLog,
-          humanLog: options.humanLog
-        }, { env: this.env, emit });
-      } finally {
-        await this.syncPushAfterRun(queue);
-      }
-    };
+    const resume = () => resumeNodePipeline({
+      projectRoot: options.projectRoot,
+      mode: options.mode,
+      session: options.session,
+      output: options.output,
+      eventLog: options.eventLog,
+      humanLog: options.humanLog
+    }, { env: this.env, emit });
+    const execute = () => this.runWithSharedPool(queue, emit, resume);
     void execute()
       .then(() => finishQueue(queue))
       .catch((error) => finishQueue(queue, error));

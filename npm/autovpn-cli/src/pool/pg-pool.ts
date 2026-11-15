@@ -27,12 +27,12 @@
 
 import pg from 'pg';
 
-import { retentionCutoffFor, type AccountStore, type MergeOutcome, type SyncedAccount } from './account-store.js';
+import { isoNow, retentionCutoffFor, type AccountStore, type MergeOutcome, type SyncedAccount } from './account-store.js';
 
 const { Client } = pg;
 
 /** Environment names a shared pool may arrive under, most specific first. */
-export const SHARED_POOL_ENV = ['AUTOVPN_ACCOUNTS_DB_URL', 'VPN_AUTOMATION_ACCOUNTS_DB_URL', 'PGSQL'] as const;
+const SHARED_POOL_ENV = ['AUTOVPN_ACCOUNTS_DB_URL', 'VPN_AUTOMATION_ACCOUNTS_DB_URL', 'PGSQL'] as const;
 
 /** The database URL, or '' when this host runs on its local pool alone. */
 export function resolveSharedPoolUrl(env: NodeJS.ProcessEnv = process.env): string {
@@ -75,14 +75,6 @@ export interface PushCounts {
   stale: number;
 }
 
-export interface SyncReport {
-  pool: string;
-  pulled: MergeOutcome | null;
-  pushed: PushCounts | null;
-  pruned: number;
-  at: string;
-}
-
 const SCHEMA = `
 CREATE SCHEMA IF NOT EXISTS autovpn;
 CREATE TABLE IF NOT EXISTS autovpn.accounts (
@@ -114,10 +106,6 @@ const COLUMNS = [
   'brand', 'account', 'password', 'official_site', 'expires_at', 'status', 'status_reason', 'note',
   'created_at', 'updated_at', 'last_used_at', 'use_count', 'success_count', 'fail_count', 'deleted_at'
 ] as const;
-
-function isoNow(now: Date): string {
-  return now.toISOString().replace(/\.\d{3}Z$/, 'Z');
-}
 
 interface ConnectOptions {
   connectTimeoutMs: number;
@@ -157,8 +145,13 @@ async function connect(url: string, options: ConnectOptions) {
   };
 
   if (sslmode === 'disable') return open(false);
-  if (sslmode === 'require' || sslmode === 'verify-ca' || sslmode === 'verify-full') {
-    return open({ rejectUnauthorized: sslmode !== 'verify-ca' && sslmode !== 'verify-full' });
+  // libpq's `require` encrypts but does not verify the server certificate;
+  // only `verify-ca` / `verify-full` do. Matching that here keeps a
+  // self-signed server reachable under `require` without ever downgrading it
+  // to plaintext.
+  if (sslmode === 'require') return open({ rejectUnauthorized: false });
+  if (sslmode === 'verify-ca' || sslmode === 'verify-full') {
+    return open({ rejectUnauthorized: true });
   }
   if (sslmode === 'prefer') {
     try {
@@ -276,7 +269,9 @@ export async function pushSharedPool(store: AccountStore, options: SharedPoolOpt
       const result = await client.query(
         `INSERT INTO autovpn.accounts (${COLUMNS.join(', ')}) VALUES ${tuples.join(', ')}
          ON CONFLICT (brand, account) DO UPDATE SET ${updateSet}
-         WHERE EXCLUDED.updated_at >= autovpn.accounts.updated_at
+         WHERE EXCLUDED.updated_at > autovpn.accounts.updated_at
+            OR (EXCLUDED.updated_at = autovpn.accounts.updated_at
+                AND (autovpn.accounts.deleted_at IS NULL OR EXCLUDED.deleted_at IS NOT NULL))
          RETURNING (xmax = 0) AS inserted`,
         values
       );

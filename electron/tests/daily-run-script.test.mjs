@@ -184,6 +184,20 @@ test('the nightly tick reads the shared pool URL from the runtime root and never
   assert.doesNotMatch(audit, /u:p@/, 'the pool URL reached the log');
   assert.match(audit, /shared database configured from/);
 
+  // An editor or `printf` can leave the last line without a newline; the reader
+  // is written for that, and a URL silently dropped there would leave the night
+  // on a stale local copy without saying so.
+  const noNewline = await fs.mkdtemp(path.join(os.tmpdir(), 'daily-run-pool-eof-'));
+  await fs.writeFile(
+    path.join(noNewline, 'pool-db.env'),
+    'AUTOVPN_ACCOUNTS_DB_URL=postgresql://u:p@db.example:5432/autonet?sslmode=prefer',
+    'utf8'
+  );
+  await fs.chmod(path.join(noNewline, 'pool-db.env'), 0o600);
+  const eof = spawnSync('bash', ['-c', runner, 'bash', noNewline], { encoding: 'utf8' });
+  assert.equal(eof.status, 0, eof.stderr);
+  assert.equal(eof.stdout.trim(), 'AUTOVPN_ACCOUNTS_DB_URL=postgresql://u:p@db.example:5432/autonet?sslmode=prefer');
+
   // A host without the file still runs on its local copy; it must say so
   // rather than fail the night or quietly diverge.
   const bare = await fs.mkdtemp(path.join(os.tmpdir(), 'daily-run-pool-bare-'));

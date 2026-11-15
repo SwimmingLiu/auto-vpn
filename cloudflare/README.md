@@ -100,7 +100,7 @@ a plan question, not a design one.
 |---|---|---|
 | Where the crawl runs | Cloudflare Container (full Linux VM) | GitHub Actions `ubuntu-24.04` |
 | What it needs | Workers Paid (~$6.5/mo measured) | nothing beyond the repo |
-| Schedule | Worker Cron + Durable Object alarm | the workflow's own `cron` |
+| Schedule | Worker Cron + Durable Object alarm | the nightly trigger in `auto-vpn-runner` |
 | Where the pool lives | Durable Object SQLite | the shared Postgres pool (`autovpn.accounts`) |
 | Orchestration | DO phases: measuring → gating → deploying → verifying | the workflow's steps |
 | Failure visibility | `/api/status`, `/api/events` | the Actions run page |

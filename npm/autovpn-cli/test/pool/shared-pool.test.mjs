@@ -66,11 +66,11 @@ test('the shared pool URL is read from the most specific name first', () => {
 
 test('a pool URL is never printed with its password', () => {
   assert.equal(
-    describeSharedPoolUrl('postgresql://autonet:s3cret@118.25.65.206:5432/autonet?sslmode=prefer'),
-    '118.25.65.206:5432/autonet'
+    describeSharedPoolUrl('postgresql://autonet:x@db.example:5432/autonet?sslmode=prefer'),
+    'db.example:5432/autonet'
   );
   assert.equal(
-    describeSharedPoolUrl('postgresql://autonet:s3cret@db.example/autonet'),
+    describeSharedPoolUrl('postgresql://autonet:x@db.example/autonet'),
     'db.example:5432/autonet'
   );
   assert.equal(describeSharedPoolUrl('not a url'), 'postgres (unparsable url)');

@@ -28,7 +28,11 @@ const SECRET_FIELD_PATTERN = new RegExp(
 const SECRET_TEXT_PATTERNS: Array<[RegExp, string | ((...args: string[]) => string)]> = [
   [SECRET_FIELD_PATTERN, (_match, keyQuote, key, separator, valueQuote, _value, closingQuote) => `${keyQuote}${key}${keyQuote}${separator}${valueQuote}<redacted>${closingQuote}`],
   [/(Bearer\s+)[A-Za-z0-9._~+/\-=]+/gi, '$1<redacted>'],
-  [/vmess:\/\/[A-Za-z0-9_\-+/=]+/g, 'vmess://<redacted>']
+  [/vmess:\/\/[A-Za-z0-9_\-+/=]+/g, 'vmess://<redacted>'],
+  // A Postgres URL carries the database password in its userinfo. Error
+  // messages from the shared-pool sync pass through here before they reach a
+  // log or an event, so the credential cannot survive in a connection failure.
+  [/(\bpostgres(?:ql)?:\/\/)[^\s"'@]+@/gi, '$1<redacted>@']
 ];
 
 export function redactText(value: string): string {

@@ -186,7 +186,7 @@ export function maskAccount(value: string): string {
   return `${text.slice(0, 2)}${'*'.repeat(Math.min(6, text.length - 4))}${text.slice(-2)}`;
 }
 
-function isoNow(now: Date): string {
+export function isoNow(now: Date): string {
   return now.toISOString().replace(/\.\d{3}Z$/, 'Z');
 }
 
@@ -750,9 +750,14 @@ export class AccountStore {
       .get(key) as StoredAccount | undefined;
     if (!row) return null;
     const stamp = isoNow(this.now());
+    // Usage does not move `updated_at`. That column is the shared pool's
+    // conflict clock, and a lease is not a change of intent: if it advanced the
+    // clock, a host that merely logged in during another host's run would push
+    // a fresher `status = 'active'` row and resurrect an account the other side
+    // retired. `use_count` / `last_used_at` are merged by value instead.
     this.db
-      .prepare('UPDATE accounts SET last_used_at = ?, use_count = use_count + 1, updated_at = ? WHERE id = ?')
-      .run(stamp, stamp, row.id);
+      .prepare('UPDATE accounts SET last_used_at = ?, use_count = use_count + 1 WHERE id = ?')
+      .run(stamp, row.id);
     this.event(row.id, 'leased');
     return { ...row, last_used_at: stamp, use_count: row.use_count + 1 };
   }
@@ -790,10 +795,11 @@ export class AccountStore {
   }
 
   markSuccess(id: number): void {
-    const stamp = isoNow(this.now());
+    // Same rule as `lease`: a successful login is usage, not a change of
+    // intent, so it must not win a conflict against another host's retirement.
     this.db
-      .prepare('UPDATE accounts SET success_count = success_count + 1, fail_count = 0, updated_at = ? WHERE id = ?')
-      .run(stamp, id);
+      .prepare('UPDATE accounts SET success_count = success_count + 1, fail_count = 0 WHERE id = ?')
+      .run(id);
     this.event(id, 'login_ok');
   }
 
@@ -996,7 +1002,13 @@ export class AccountStore {
           );
           continue;
         }
-        if (existing.updated_at > updatedAt) {
+        // Equal timestamps are the normal tie for usage-only rows, and a
+        // retirement recorded in the same second must not be undone by one.
+        // So a live row never overwrites a retired row, while a retirement
+        // always applies.
+        const remoteWins = updatedAt > existing.updated_at
+          || (updatedAt === existing.updated_at && (existing.deleted_at === null || row.deleted_at !== null));
+        if (!remoteWins) {
           outcome.local_newer += 1;
           continue;
         }

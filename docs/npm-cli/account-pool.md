@@ -44,6 +44,23 @@ Postgres 这台机器没有编译 SSL 支持（`postgres -C ssl` 报 `SSL is not
 this build`），所以 URL 用 `sslmode=prefer`：先试 TLS，服务端不支持时回落到明文。
 `require` / `verify-ca` / `verify-full` 不降级，在这台服务器上会直接连不上。
 
+CLI 不会读项目的 `.env`：变量必须真的在进程环境里。手跑时用
+`AUTOVPN_ACCOUNTS_DB_URL=... autovpn …` 或先 `set -a; . .env; set +a`。
+
+第一次把本地池迁进数据库，从存着完整 `accounts.db` 的那台机器执行：
+
+```bash
+autovpn accounts sync --push    # 本地 631 行推上去
+autovpn accounts sync --check   # 确认远端 total/active 对得上
+```
+
+之后其他主机只要配好 URL，第一次运行会自动 pull，不需要手工导入。
+
+源服务器由 `scripts/server/daily-run.sh` 每晚调用，它从
+`~/.auto-vpn/pool-db.env`（可用 `AUTOVPN_POOL_ENV` 覆盖）读取
+`AUTOVPN_ACCOUNTS_DB_URL=` 一行，权限必须是 `600`；文件不存在时该主机只用本地副本，
+并在日志里说明。`pool-db.env` 只有这一行，不复用整个 `.env`。
+
 ## 上传格式
 
 UTF-8 CSV，第一行必须是表头。列顺序固定，尾部可选列可以整列省略。

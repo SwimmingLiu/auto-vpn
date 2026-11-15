@@ -21,6 +21,7 @@ import {
   sharedPoolStatus,
   type PushCounts
 } from '../pool/pg-pool.js';
+import { redactText } from '../runtime/redaction.js';
 import { CliUsageError } from './errors.js';
 import { readOptionValue } from './global-options.js';
 import type { CliIo } from './output.js';
@@ -294,7 +295,10 @@ async function runSync(argv: string[], context: AccountsContext): Promise<number
       : jsonLine({ ok: true, pool, pulled, pushed, pruned, stats }));
     return 0;
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    // A connection failure quotes what it was handed. `pg` can include the
+    // connection string in its message, and that string carries the database
+    // password, so the message is reduced before it is printed.
+    const message = redactText(error instanceof Error ? error.message : String(error));
     context.io.writeStdout(jsonLine({ ok: false, pool: describeSharedPoolUrl(url), error: message }));
     context.io.writeStderr(`accounts sync: ${message}\n`);
     return 1;
@@ -389,7 +393,9 @@ async function runRefreshExpiry(argv: string[], context: AccountsContext): Promi
           const pushed = await pushSharedPool(store, { url: sharedUrl, env: context.env, now: context.now });
           context.io.writeStderr(`accounts refresh-expiry: pushed the shared pool (${renderPushHuman(pushed)})\n`);
         } catch (error) {
-          context.io.writeStderr(`accounts refresh-expiry: shared pool push failed: ${error instanceof Error ? error.message : String(error)}\n`);
+          context.io.writeStderr(
+            `accounts refresh-expiry: shared pool push failed: ${redactText(error instanceof Error ? error.message : String(error))}\n`
+          );
         }
       }
       store.close();
@@ -436,7 +442,7 @@ export async function runAccountsCommand(argv: string[], context: AccountsContex
       }
       return true;
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = redactText(error instanceof Error ? error.message : String(error));
       context.io.writeStderr(`accounts: shared pool push failed: ${message}\n`);
       return false;
     }
