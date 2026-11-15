@@ -100,7 +100,7 @@ a plan question, not a design one.
 |---|---|---|
 | Where the crawl runs | Cloudflare Container (full Linux VM) | GitHub Actions `ubuntu-24.04` |
 | What it needs | Workers Paid (~$6.5/mo measured) | nothing beyond the repo |
-| Schedule | Worker Cron + Durable Object alarm | the nightly trigger in `auto-vpn-runner` |
+| Schedule | Worker Cron + Durable Object alarm | the nightly trigger in `auto-vpn-runner` (retired) |
 | Where the pool lives | Durable Object SQLite | the shared Postgres pool (`autovpn.accounts`) |
 | Orchestration | DO phases: measuring → gating → deploying → verifying | the workflow's steps |
 | Failure visibility | `/api/status`, `/api/events` | the Actions run page |
@@ -110,6 +110,10 @@ Both use `container/profile.cloudflare.toml`, both crawl through
 path lives in `auto-vpn-runner` (`.github/workflows/scheduled-subscription.yml`,
 nightly and manual dispatch); the container path is
 `.github/workflows/deploy-cloudflare.yml` plus the Worker.
+
+The runner path is retired as of 2026-11-15: its workflows are disabled and its
+`sub-nodes-cf` Pages project is deleted. The container path is the remaining
+Cloudflare option described here.
 
 The runner path exists because **Cloudflare Containers require the Workers Paid
 plan**, and nothing else here does. If the plan is enabled, the container path
@@ -318,9 +322,11 @@ floor again.
 ### The deploy target is this deployment's own project
 
 `profile.cloudflare.toml` names `sub-nodes-cf`, and **the deploy stage writes to
-whatever project that is**. It is a separate project from the VPS's
-`sub-nodes-04` on purpose: the two installations serve two subscriptions, and
-neither can replace the other's artifact.
+whatever project that is**. That project was deleted on 2026-11-15 when the
+runner path was retired; the profile remains as the historical container
+configuration. It was a separate project from the VPS's `sub-nodes-04` on
+purpose: the two installations served two subscriptions, and neither could
+replace the other's artifact.
 
 `wrangler pages deploy` replaces the whole production deployment of the named
 project. There is no per-branch isolation for a Direct Upload project and no dry

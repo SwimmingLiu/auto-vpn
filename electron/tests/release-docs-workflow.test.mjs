@@ -272,32 +272,10 @@ test('release workflow packages AutoVPN for native OS and CPU variants from a ve
     'node scripts/generate-release-notes.mjs',
     'update release notes',
     'gh release edit "${RELEASE_TAG_NAME}"',
-    'AutoVPN ${RELEASE_TAG_NAME}',
-    'dispatch-runner-pin:'
+    'AutoVPN ${RELEASE_TAG_NAME}'
   ]) {
     assert.ok(workflow.includes(requiredText), `workflow should contain ${requiredText}`);
   }
-
-  // The pin PR is the only way a release reaches the nightly run, and it must
-  // run after the release assets are complete.
-  const notesIndex = workflow.indexOf('  publish-release-notes:');
-  const dispatchIndex = workflow.indexOf('  dispatch-runner-pin:');
-  assert.ok(notesIndex >= 0 && dispatchIndex > notesIndex, 'pin dispatch must run after release notes are published');
-  const dispatchJob = workflow.slice(dispatchIndex);
-  for (const requiredText of [
-    'needs: publish-release-notes',
-    'permissions:',
-    'contents: read',
-    'AUTOVPN_RUNNER_TOKEN',
-    'RELEASE_SHA="$(git rev-list -n 1 "${TAG_NAME}")"',
-    'event_type: "autovpn-release"',
-    'client_payload',
-    'repos/${RUNNER_REPO}/dispatches',
-    'for attempt in 1 2 3'
-  ]) {
-    assert.ok(dispatchJob.includes(requiredText), `pin dispatch should contain ${requiredText}`);
-  }
-  assert.doesNotMatch(dispatchJob, /id-token: write/, 'pin dispatch should not inherit the release token permissions');
 
   // A UI-created release fires `release: published` and the tag push, which ran
   // the whole release twice until the duplicate trigger was removed.
