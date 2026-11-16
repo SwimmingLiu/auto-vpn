@@ -89,17 +89,19 @@ test('the claude availability target is the trace endpoint', () => {
   assert.match(block, /url\s*=\s*"https:\/\/claude\.ai\/cdn-cgi\/trace"/);
 });
 
-test('the deploy target is not a project the VPS publishes to', () => {
+test('the deploy target is the subscription project, never a share project', () => {
   // `wrangler pages deploy` replaces the whole production deployment of the
-  // project it names. The two installations must stay separate: this one has
-  // its own project (`sub-nodes-cf`), and the VPS publishes to the
-  // `sub-nodes-<number>` and `sub-links-*` families. deploy.sh enforces the
-  // same rule, so a profile edit cannot quietly merge the two into one blast
-  // radius.
+  // project it names. Publishing to the VPS's `sub-nodes-<number>` project is
+  // intended — the runner and the server are two writers of one subscription,
+  // and the later run wins. A `sub-links-*` project is different: it is the
+  // share Worker the already-sent links point at, so replacing it swaps the
+  // entry point under every subscriber. deploy.sh enforces the refusal; the
+  // positive shape is pinned here too, so a typo cannot point the night at an
+  // orphan project that `/sub` never reads.
   const project = /^project_name\s*=\s*"([^"]+)"/m.exec(raw)?.[1] ?? '';
   assert.ok(project, 'the profile names no project');
-  assert.doesNotMatch(project, /^sub-nodes-[0-9]/, 'this would replace a VPS subscription');
-  assert.doesNotMatch(project, /^sub-links-/, 'this names a VPS share project');
+  assert.match(project, /^sub-nodes-\d+$/, 'this does not name a subscription project');
+  assert.doesNotMatch(project, /^sub-links-/, 'this names a share project');
 });
 
 test('the account file is small enough to survive the route body limit', () => {

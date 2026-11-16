@@ -45,9 +45,9 @@ step "container image dependencies"
 "$ROOT/scripts/fetch-mihomo.sh"
 
 step "worker secrets"
-# The profile the container reads must be the *Cloudflare* one. Taking
-# `state/profile.toml` would ship the live VPS profile, whose `project_name`
-# points at a real subscription — the first run would then publish over it.
+# The profile the container reads must be the *Cloudflare* one. `state/profile.toml`
+# is the workstation's own file and is not reviewed with the repository, so it
+# cannot be the thing this deploy publishes from.
 CONTAINER_PROFILE="$ROOT/container/profile.cloudflare.toml"
 if [ ! -f "$CONTAINER_PROFILE" ]; then
   echo "missing $CONTAINER_PROFILE" >&2
@@ -56,20 +56,19 @@ fi
 PROFILE_PROJECT="$(grep -E '^[[:space:]]*project_name[[:space:]]*=' "$CONTAINER_PROFILE" \
   | head -n1 | sed -E 's/^[^=]*=[[:space:]]*"(.*)"/\1/')"
 echo "deploy target: $PROFILE_PROJECT"
-# The projects this deploy must never touch are the VPS's. They rotate
-# (`sub-nodes-04` → `sub-nodes-05`, `sub-links-share-06` → … → `-21`), so the
-# guard matches the families rather than one snapshot. That is different from
-# "only a scratch name is allowed": the Cloudflare deployment has its own
-# production project, and refusing it would mean the real service could only
-# ever be deployed by weakening this guard.
+# This deploy publishes to the VPS's own subscription project on purpose: the
+# runner and the server are two writers of one subscription, and the later run
+# wins. What it must never touch is a *share* project (`sub-links-*`) — those
+# serve the domain the already-sent links point at, and replacing one swaps the
+# entry point under every subscriber. `sub-nodes-<number>` is the normal target.
 case "$PROFILE_PROJECT" in
   "")
     echo "  the profile names no project; refusing" >&2
     exit 1
     ;;
-  sub-nodes-[0-9]* | sub-links-*)
-    echo "  $PROFILE_PROJECT is in the project family the VPS publishes to" >&2
-    echo "  the two deployments must stay separate; refusing" >&2
+  sub-links-*)
+    echo "  $PROFILE_PROJECT is a share project the sent links point at" >&2
+    echo "  replacing it swaps the subscriber entry point; refusing" >&2
     exit 1
     ;;
 esac
