@@ -1,0 +1,168 @@
+name: Subscription health
+
+# The subscription is a Pages project behind two CNAMEs. A deployment can be
+# green while the service is not: the project can be blocked by Cloudflare, a
+# CNAME can be left on a project that was deleted (HTTP 403 / 1014), and a
+# hostname can be missing from the project's custom domains. None of that is
+# visible to `wrangler pages deploy`, so this runs the checker on a schedule
+# instead.
+#
+# A red run is the alert. The step summary carries the diagnosis and every
+# repair the run attempted, so the failure reads without downloading logs.
+#
+# 每十刻巡关一次；关隘不通，或符误指废馆，则修之；修而不愈，则红以告。
+
+on:
+  schedule:
+    # Every ten minutes. GitHub may delay cron runs under load; this is a
+    # detector, not a service-level guarantee.
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A repair holds the project, its env vars and both CNAMEs. Two overlapping
+# runs would race each other through a rotation, so runs queue rather than
+# cancel: a cancelled run can stop between "detach old domain" and "attach to
+# the new project", which is the state nobody wants to land in.
+concurrency:
+  group: subscription-health
+  cancel-in-progress: false
+
+jobs:
+  health:
+    name: Check and repair
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # The checker is dependency-free; the suite is pure `node --test` with a
+      # stubbed fetch. If it fails, the checker must not be trusted to repair.
+      - name: Test the checker
+        run: node --test cloudflare/scripts/check-subscription-health.test.mjs
+
+      # A rotation creates a project with no deployment, so the checker needs a
+      # bundle to deploy or the new project answers 404 forever. The share
+      # Worker template is one file; staging it here keeps the repair
+      # self-contained instead of depending on a workstation's artifact.
+      - name: Stage the share worker bundle
+        run: |
+          mkdir -p "$RUNNER_TEMP/share-bundle"
+          cp templates/share-worker/vpn.js "$RUNNER_TEMP/share-bundle/_worker.js"
+
+      # The probe URL carries the share Worker's token, which is derived, not
+      # stored: MD5MD5(host + UUID), where MD5MD5(x) = md5(md5(x) hex, 7..27).
+      # Deriving it here means the schedule needs no extra secret and cannot
+      # drift from the project's own UUID. Unset UUID simply leaves the probe
+      # off; the host checks still run.
+      - name: Derive the subscription probe URL
+        id: probe
+        env:
+          SHARE_UUID: ${{ vars.HEALTH_SUBSCRIPTION_UUID }}
+          PROBE_HOST: ${{ vars.HEALTH_PROBE_HOST || 'www.swimmingliu.online' }}
+        run: |
+          if [ -z "$SHARE_UUID" ]; then
+            echo "url=" >> "$GITHUB_OUTPUT"
+            echo "HEALTH_SUBSCRIPTION_UUID is unset; probing hosts only" >&2
+            exit 0
+          fi
+          url="$(node --input-type=module -e '
+            import { createHash } from "node:crypto";
+            const md5 = (text) => createHash("md5").update(text, "utf8").digest("hex");
+            const token = md5(md5(process.env.PROBE_HOST + process.env.SHARE_UUID).slice(7, 27));
+            process.stdout.write(`https://${process.env.PROBE_HOST}/sub?token=${token}`);
+          ')"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: Check subscription health
+        id: health
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+          HEALTH_SUBSCRIPTION_PROBE: ${{ steps.probe.outputs.url }}
+          HEALTH_HOSTS: ${{ vars.HEALTH_HOSTS || 'swimmingliu.online,www.swimmingliu.online' }}
+          HEALTH_DEPLOY_DIR: ${{ runner.temp }}/share-bundle
+          HEALTH_SECRET_ADMIN: ${{ secrets.AUTOVPN_PAGES_ADMIN }}
+        # Deliberately no `continue-on-error`: a non-zero exit is the alert.
+        # The output is captured so the summary step can render it even when
+        # the checker exits 1.
+        run: |
+          set +e
+          node cloudflare/scripts/check-subscription-health.mjs --repair --json > health-report.json
+          status=$?
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit "$status"
+
+      # Runs even when the checker failed, so a red run still shows what was
+      # found and what was attempted. Node renders the summary and reads the
+      # status from the environment; no jq, no shell heredoc nesting.
+      - name: Write summary
+        if: always()
+        env:
+          CHECK_STATUS: ${{ steps.health.outputs.status }}
+        run: |
+          node --input-type=module - >> "$GITHUB_STEP_SUMMARY" <<'NODE'
+          import { readFileSync } from 'node:fs';
+
+          console.log('## Subscription health');
+          console.log('');
+          console.log(`checker exit: \`${process.env.CHECK_STATUS || 'unknown'}\` (0 healthy/repaired, 1 findings remain, 2 usage/config)`);
+          console.log('');
+
+          let report;
+          try {
+            report = JSON.parse(readFileSync('health-report.json', 'utf8'));
+          } catch {
+            console.log('_No JSON report was produced (the checker failed before it could observe). See the job log._');
+            process.exit(0);
+          }
+
+          const cell = (value) => String(value ?? '').replace(/\|/g, '\\|');
+          const observations = report.observations;
+          if (observations) {
+            console.log('| host | status | cf-ray | note |');
+            console.log('| --- | --- | --- | --- |');
+            for (const entry of observations.hosts) {
+              const note = [entry.error1014 ? '1014' : '', entry.decoy ? 'html' : ''].filter(Boolean).join(' ');
+              console.log(`| ${cell(entry.host)} | ${cell(entry.status || 'error')} | ${cell(entry.cfRay || '-')} | ${cell(note || '-')} |`);
+            }
+            console.log('');
+            const probe = observations.probe?.configured
+              ? `${cell(observations.probe.status)}, ${cell(observations.probe.linkCount)} link(s)`
+              : 'not configured';
+            console.log(`serving project: \`${cell(observations.servingProject || 'none')}\`; probe: ${probe}`);
+            console.log('');
+          }
+
+          console.log('### Findings');
+          if (report.findings.length) {
+            console.log('| code | host | project | repairable | detail |');
+            console.log('| --- | --- | --- | --- | --- |');
+            for (const finding of report.findings) {
+              console.log(`| ${cell(finding.code)} | ${cell(finding.host || '-')} | ${cell(finding.project || '-')} | ${finding.repairable ? 'yes' : 'no'} | ${cell(finding.detail)} |`);
+            }
+          } else {
+            console.log('none');
+          }
+          console.log('');
+
+          console.log('### Repairs');
+          if (report.repairs.length) {
+            console.log('| action | host | project | status | detail |');
+            console.log('| --- | --- | --- | --- | --- |');
+            for (const repair of report.repairs) {
+              console.log(`| ${cell(repair.action)} | ${cell(repair.host || '-')} | ${cell(repair.project || '-')} | ${cell(repair.status)} | ${cell(repair.detail || '-')} |`);
+            }
+          } else {
+            console.log('none');
+          }
+          NODE
+

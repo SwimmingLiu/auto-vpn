@@ -469,7 +469,12 @@ export function buildShareStaticExitEnv(deploy: DeployLike): Record<string, stri
     ['STATIC_EXIT_JSON', getString(deploy, 'static_exit_json')],
     ['STATIC_EXIT_GROUP', getString(deploy, 'static_exit_group')],
     ['STATIC_EXIT_ENTRANCE', getString(deploy, 'static_exit_entrance')],
-    ['STATIC_EXIT_TWINS', getString(deploy, 'static_exit_twins')]
+    ['STATIC_EXIT_TWINS', getString(deploy, 'static_exit_twins')],
+    // The share Worker writes one node per cipher named here, and negotiates
+    // its inbound cipher from the same list. Empty means "keep the old single
+    // AES-128 output", so a profile that never mentions ciphers is unchanged.
+    ['SS_CIPHERS', getString(deploy, 'ssh_ciphers')],
+    ['SS_ENC', getString(deploy, 'ssh_enc')]
   ];
   // The caller (`deployStaticExitFields`) only emits these keys when the profile
   // actually has a [static_exit] section, so reaching here means every one of
