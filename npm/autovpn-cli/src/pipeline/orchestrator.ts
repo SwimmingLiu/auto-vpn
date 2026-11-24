@@ -102,6 +102,7 @@ interface PipelineProfile {
   availability_targets?: unknown;
   deploy?: Record<string, unknown>;
   static_exit?: Record<string, unknown>;
+  share_ciphers?: Record<string, unknown>;
   worker_build?: Record<string, unknown>;
   filters?: Record<string, unknown>;
 }
@@ -161,6 +162,23 @@ function deployStaticExitFields(profile: PipelineProfile): Record<string, string
     fields[`static_${key}`] = String(section[key] ?? '').trim();
   }
   return fields;
+}
+
+/**
+ * Fold `[share_ciphers]` into the deploy input.
+ *
+ * The share Worker receives these as plain env vars (`SS_CIPHERS`, `SS_ENC`).
+ * An absent section emits nothing, so a project that already carries a cipher
+ * list is not blanked by deploying from a profile that never mentions it.
+ */
+function deployShareCipherFields(profile: PipelineProfile): Record<string, string> {
+  const section = (profile.share_ciphers ?? {}) as Record<string, unknown>;
+  if (Object.keys(section).length === 0) return {};
+  const ciphers = Array.isArray(section.ciphers) ? section.ciphers : [];
+  return {
+    ssh_ciphers: ciphers.map((item) => String(item ?? '').trim()).filter(Boolean).join(','),
+    ssh_enc: String(section.enc ?? '').trim()
+  };
 }
 
 function enabledSources(profile: PipelineProfile): Array<[string, SourceConfigInput]> {
@@ -989,7 +1007,7 @@ export async function runNodePipeline(options: NodePipelineOptions, context: Run
       assertDeployMinimumFinalLinks(profile, postprocessed.links);
       const deployment = context.stages?.deploy
         ? await context.stages.deploy({ projectRoot, bundleDir, profile })
-        : await deployPagesWithBackend({ projectRoot, bundleDir, deploy: { ...(profile.deploy ?? {}), ...deployStaticExitFields(profile) } }, { cwd: projectRoot, env });
+        : await deployPagesWithBackend({ projectRoot, bundleDir, deploy: { ...(profile.deploy ?? {}), ...deployStaticExitFields(profile), ...deployShareCipherFields(profile) } }, { cwd: projectRoot, env });
       if (Number(deployment.returncode ?? 1) !== 0) {
         summary.deployment = safeDeployment(deployment);
         throw new Error(`Cloudflare deployment failed: ${JSON.stringify(summary.deployment)}`);
@@ -1248,7 +1266,7 @@ export async function retryNodePipelineStage(options: NodeRetryStageOptions, con
       assertDeployMinimumFinalLinks(profile, finalLinks);
       const deployment = context.stages?.deploy
         ? await context.stages.deploy({ projectRoot, bundleDir, profile })
-        : await deployPagesWithBackend({ projectRoot, bundleDir, deploy: { ...(profile.deploy ?? {}), ...deployStaticExitFields(profile) } }, { cwd: projectRoot, env });
+        : await deployPagesWithBackend({ projectRoot, bundleDir, deploy: { ...(profile.deploy ?? {}), ...deployStaticExitFields(profile), ...deployShareCipherFields(profile) } }, { cwd: projectRoot, env });
       if (Number(deployment.returncode ?? 1) !== 0) {
         summary.deployment = safeDeployment(deployment);
         throw new Error(`Cloudflare deployment failed: ${JSON.stringify(summary.deployment)}`);
@@ -1767,7 +1785,7 @@ export async function resumeNodePipeline(options: NodeResumeOptions, context: Ru
       assertDeployMinimumFinalLinks(profile, postprocessed.links);
       const deployment = context.stages?.deploy
         ? await context.stages.deploy({ projectRoot, bundleDir, profile })
-        : await deployPagesWithBackend({ projectRoot, bundleDir, deploy: { ...(profile.deploy ?? {}), ...deployStaticExitFields(profile) } }, { cwd: projectRoot, env });
+        : await deployPagesWithBackend({ projectRoot, bundleDir, deploy: { ...(profile.deploy ?? {}), ...deployStaticExitFields(profile), ...deployShareCipherFields(profile) } }, { cwd: projectRoot, env });
       if (Number(deployment.returncode ?? 1) !== 0) {
         summary.deployment = safeDeployment(deployment);
         throw new Error(`Cloudflare deployment failed: ${JSON.stringify(summary.deployment)}`);

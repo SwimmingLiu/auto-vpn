@@ -202,6 +202,25 @@ export function networkEnv(section: unknown, base: NodeJS.ProcessEnv = {}): Node
  * only the twin mode gets a default: an absent address list must stay absent,
  * otherwise the share Worker would build an empty egress group.
  */
+/**
+ * The cipher list the share Worker derives its node families from.
+ *
+ * Kept out of `[static_exit]` on purpose: an exit is egress, a cipher list is
+ * the shape of the subscription itself, and clearing one must not touch the
+ * other. Absent or empty means "one node per address, AES-128 only", which is
+ * what every profile written before this section already gets.
+ */
+export function normalizeShareCiphersSection(value: unknown): Record<string, any> {
+  const raw = (value && typeof value === 'object' ? value : {}) as Record<string, any>;
+  const list = Array.isArray(raw.ciphers)
+    ? raw.ciphers
+    : String(raw.ciphers ?? '').split(/[,\s]+/);
+  return {
+    ciphers: list.map((item) => String(item ?? '').trim().toLowerCase()).filter(Boolean),
+    enc: String(raw.enc ?? '').trim().toLowerCase()
+  };
+}
+
 export function normalizeStaticExitSection(value: unknown): Record<string, any> {
   const raw = (value && typeof value === 'object' ? value : {}) as Record<string, any>;
   const twins = String(raw.twins ?? 'entrance').trim().toLowerCase();
@@ -324,6 +343,7 @@ export function profilePayload(projectRoot: string, env: NodeJS.ProcessEnv = pro
     sources: normalizeOfficialSources((raw.sources ?? {}) as Record<string, any>),
     network: normalizeNetworkSection(raw.network),
     static_exit: normalizeStaticExitSection(raw.static_exit),
+    share_ciphers: normalizeShareCiphersSection(raw.share_ciphers),
     paths,
     workspace: paths
   };
@@ -338,6 +358,7 @@ export function saveProfilePayload(projectRoot: string, payload: Record<string, 
   persisted.sources = normalizeOfficialSources((persisted.sources ?? {}) as Record<string, any>);
   persisted.network = normalizeNetworkSection((persisted as Record<string, any>).network);
   persisted.static_exit = normalizeStaticExitSection((persisted as Record<string, any>).static_exit);
+  persisted.share_ciphers = normalizeShareCiphersSection((persisted as Record<string, any>).share_ciphers);
   fs.writeFileSync(profilePath, stringify(persisted as any), 'utf8');
   return profilePayload(projectRoot, env);
 }

@@ -1311,6 +1311,19 @@ export function membershipDate(value: unknown): string {
     // `new Date('0')` would otherwise read as the year 2000.
     return /^\d{10,13}$/.test(text) ? membershipDate(Number(text)) : '';
   }
+  // A bare `YYYY-MM-DD` carries no time and no zone. `new Date('2027-06-05')`
+  // is UTC midnight, so `localDay` renders it as the previous day anywhere west
+  // of Greenwich — the vendor's date would drift a day per machine. The text is
+  // already the day it means, so return it unchanged.
+  const bareDay = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+  if (bareDay) {
+    const [, year, month, day] = bareDay;
+    const probe = new Date(Number(year), Number(month) - 1, Number(day));
+    const valid = probe.getFullYear() === Number(year)
+      && probe.getMonth() === Number(month) - 1
+      && probe.getDate() === Number(day);
+    return valid ? `${year}-${month}-${day}` : '';
+  }
   const parsed = new Date(text);
   return Number.isNaN(parsed.getTime()) ? '' : localDay(parsed);
 }

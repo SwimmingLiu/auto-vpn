@@ -862,6 +862,104 @@ test('Node deploy backend clears an egress the profile no longer configures', as
   }
 });
 
+test('a profile with no cipher list leaves the project cipher vars untouched', async () => {
+  // Cipher keys are not egress keys: an absent `[share_ciphers]` means "no
+  // opinion", not "clear it". Writing `SS_CIPHERS=""` here would silently
+  // collapse a multi-cipher subscription back to a single AES-128 family on
+  // the next scheduled deploy — the exact regression this test pins.
+  const projectRoot = await makeShareProjectRoot();
+  const calls = [];
+  const client = {
+    async getPagesProject(projectName) {
+      return {
+        name: projectName,
+        deployment_configs: {
+          preview: { env_vars: { SUB: { type: 'plain_text', value: 'https://old.pages.dev' }, SS_CIPHERS: { type: 'plain_text', value: 'aes-128-gcm,aes-256-gcm' }, SS_ENC: { type: 'plain_text', value: 'aes-256-gcm' } } },
+          production: { env_vars: { SUB: { type: 'plain_text', value: 'https://old.pages.dev' }, SS_CIPHERS: { type: 'plain_text', value: 'aes-128-gcm,aes-256-gcm' }, SS_ENC: { type: 'plain_text', value: 'aes-256-gcm' } } }
+        }
+      };
+    },
+    async updatePagesProject(projectName, payload) {
+      calls.push(['updatePagesProject', projectName, payload]);
+      return { name: projectName };
+    },
+    async listPagesProjects() { return []; },
+    async createPagesProject(name) { return { name }; }
+  };
+
+  await deployPagesWithBackend({
+    projectRoot,
+    bundleDir: path.join(projectRoot, 'artifacts/pages_bundle'),
+    deploy: {
+      project_name: 'sub-nodes',
+      pages_project_url: 'https://sub-nodes.pages.dev',
+      subscription_url: 'https://origin.example/sub',
+      share_project_name: 'sub-links-share-03',
+      static_exit: 'socks5://user:pass@198.51.100.10:1080#exit',
+      cloudflare_api_token: 'token-1'
+    }
+  }, {
+    env: {},
+    resolveManagedNpmTool: resolveTestManagedWrangler,
+    cloudflareDeployClient: client,
+    runCommand: async () => ({ returncode: 0, stdout: 'ok', stderr: '' })
+  });
+
+  const update = calls.find((call) => call[0] === 'updatePagesProject');
+  assert.ok(update, 'the share project must be updated');
+  for (const environment of ['preview', 'production']) {
+    const envVars = update[2].deployment_configs[environment].env_vars;
+    assert.equal(envVars.SS_CIPHERS.value, 'aes-128-gcm,aes-256-gcm');
+    assert.equal(envVars.SS_ENC.value, 'aes-256-gcm');
+    // The egress keys still behave the documented way: present section means
+    // authoritative, so the configured exit is written.
+    assert.equal(envVars.STATIC_EXIT.value, 'socks5://user:pass@198.51.100.10:1080#exit');
+  }
+});
+
+test('a configured cipher list is written to both environments', async () => {
+  const projectRoot = await makeShareProjectRoot();
+  const calls = [];
+  const client = {
+    async getPagesProject(projectName) {
+      return { name: projectName, deployment_configs: { preview: { env_vars: {} }, production: { env_vars: {} } } };
+    },
+    async updatePagesProject(projectName, payload) {
+      calls.push(['updatePagesProject', projectName, payload]);
+      return { name: projectName };
+    },
+    async listPagesProjects() { return []; },
+    async createPagesProject(name) { return { name }; }
+  };
+
+  await deployPagesWithBackend({
+    projectRoot,
+    bundleDir: path.join(projectRoot, 'artifacts/pages_bundle'),
+    deploy: {
+      project_name: 'sub-nodes',
+      pages_project_url: 'https://sub-nodes.pages.dev',
+      subscription_url: 'https://origin.example/sub',
+      share_project_name: 'sub-links-share-03',
+      ssh_ciphers: 'aes-128-gcm,aes-256-gcm',
+      ssh_enc: 'aes-256-gcm',
+      cloudflare_api_token: 'token-1'
+    }
+  }, {
+    env: {},
+    resolveManagedNpmTool: resolveTestManagedWrangler,
+    cloudflareDeployClient: client,
+    runCommand: async () => ({ returncode: 0, stdout: 'ok', stderr: '' })
+  });
+
+  const update = calls.find((call) => call[0] === 'updatePagesProject');
+  assert.ok(update, 'the share project must be updated');
+  for (const environment of ['preview', 'production']) {
+    const envVars = update[2].deployment_configs[environment].env_vars;
+    assert.equal(envVars.SS_CIPHERS.value, 'aes-128-gcm,aes-256-gcm');
+    assert.equal(envVars.SS_ENC.value, 'aes-256-gcm');
+  }
+});
+
 test('Node deploy backend falls back when share project update is blocked', async () => {
   const projectRoot = await makeShareProjectRoot();
   const calls = [];

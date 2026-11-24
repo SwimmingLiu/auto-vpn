@@ -431,7 +431,7 @@ function cloneProjectDeploymentConfigs(projectPayload: Record<string, unknown>, 
 
 function rewriteShareProjectSubValue(
   deploymentConfigs: Record<string, unknown>,
-  options: { envKey: string; subValue: string; staticExitEnv?: Record<string, string> }
+  options: { envKey: string; subValue: string; staticExitEnv?: Record<string, string>; cipherEnv?: Record<string, string> }
 ): Record<string, unknown> {
   const rewritten: Record<string, unknown> = {};
   for (const [environmentName, config] of Object.entries(deploymentConfigs)) {
@@ -440,6 +440,14 @@ function rewriteShareProjectSubValue(
   const staticExitEnv = Object.fromEntries(
     Object.entries(options.staticExitEnv ?? {}).filter(([, value]) => value !== undefined && value !== null)
   );
+  // Cipher keys are the opposite of the egress keys: an empty value means "no
+  // opinion", not "clear it". A profile that never mentions `[share_ciphers]`
+  // must leave a project's existing list alone, so only non-empty values are
+  // written — writing `SS_CIPHERS=""` would silently collapse a multi-cipher
+  // subscription back to a single AES-128 node family on the next deploy.
+  const cipherEnv = Object.fromEntries(
+    Object.entries(options.cipherEnv ?? {}).filter(([, value]) => typeof value === 'string' && value.trim() !== '')
+  );
   for (const environmentName of ['preview', 'production']) {
     const envConfig = { ...((rewritten[environmentName] as Record<string, unknown> | undefined) ?? {}) };
     const envVars = { ...((envConfig.env_vars as Record<string, unknown> | undefined) ?? {}) };
@@ -447,10 +455,26 @@ function rewriteShareProjectSubValue(
     for (const [key, value] of Object.entries(staticExitEnv)) {
       envVars[key] = { type: 'plain_text', value };
     }
+    for (const [key, value] of Object.entries(cipherEnv)) {
+      envVars[key] = { type: 'plain_text', value };
+    }
     envConfig.env_vars = envVars;
     rewritten[environmentName] = envConfig;
   }
   return rewritten;
+}
+
+/**
+ * The cipher list the share Worker derives its node families from.
+ *
+ * Unlike the egress keys this is opt-in: an empty list means "keep whatever the
+ * project already has", so the caller can pass it unconditionally.
+ */
+export function buildShareCipherEnv(deploy: DeployLike): Record<string, string> {
+  return {
+    SS_CIPHERS: getString(deploy, 'ssh_ciphers'),
+    SS_ENC: getString(deploy, 'ssh_enc')
+  };
 }
 
 /**
@@ -480,7 +504,7 @@ export function buildShareStaticExitEnv(deploy: DeployLike): Record<string, stri
 function buildShareProjectUpdatePayload(
   sourceProject: Record<string, unknown>,
   runtimeEnv: Record<string, string | undefined>,
-  options: { envKey: string; subValue: string; staticExitEnv?: Record<string, string> }
+  options: { envKey: string; subValue: string; staticExitEnv?: Record<string, string>; cipherEnv?: Record<string, string> }
 ): Record<string, unknown> {
   const clonedConfigs = cloneProjectDeploymentConfigs(sourceProject, runtimeEnv);
   return {
@@ -958,7 +982,8 @@ async function syncShareProjectSub(
   const payload = buildShareProjectUpdatePayload(sourceProject, options.runtimeEnv, {
     envKey,
     subValue,
-    staticExitEnv: buildShareStaticExitEnv(deploy)
+    staticExitEnv: buildShareStaticExitEnv(deploy),
+    cipherEnv: buildShareCipherEnv(deploy)
   });
   const shareBundle = await stageShareProjectWorkerBundle(options.projectRoot, options.env);
   result.share_project_source_path = shareBundle.sourcePath;
