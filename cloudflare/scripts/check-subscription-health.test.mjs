@@ -225,7 +225,7 @@ function api(world, method, url, init) {
         if (findProject(world, body?.name)) {
           return jsonResponse({ success: false, errors: [{ code: 8000007, message: 'Project already exists.' }] }, 409);
         }
-        const project = { name: body.name, blocked: false, deployment_configs: {} };
+        const project = { name: body.name, blocked: Boolean(world.blockNewProjects), deployment_configs: {} };
         world.projects.push(project);
         return jsonResponse({ success: true, result: { name: project.name } });
       }
@@ -883,4 +883,27 @@ test('the cap is configurable and a single blocked project still rotates', async
   const refused = await runChecker(capped, ['--json', '--repair'], { HEALTH_MAX_BLOCKED_PROJECTS: '1' });
   assert.equal(refused.code, 1);
   assert.equal(writes(capped).length, 0);
+});
+
+test('a project blocked right after its deploy is retried at the next suffix', async () => {
+  const world = makeWorld();
+  findProject(world, LIVE).blocked = true;
+  // Cloudflare blocked `sub-links-share-23` minutes after its first deploy on
+  // 2026-11-24. A rotation that stopped there would leave every client down and
+  // report success, so the checker must notice the dead-on-arrival project and
+  // try the next suffix before moving any domain or CNAME.
+  world.blockNewProjects = true;
+
+  const result = await runChecker(world, ['--json', '--repair']);
+  const report = JSON.parse(result.stdout);
+
+  const retries = report.repairs.filter((repair) => repair.action === 'rotation_retry');
+  assert.ok(retries.length > 0, `no rotation_retry was recorded: ${JSON.stringify(report.repairs)}`);
+  assert.equal(retries[0].project, 'sub-links-share-23');
+  // The retry is bounded by the same cap: 22 blocked + 23 blocked reaches 3, so
+  // it stops there rather than minting a project per run forever.
+  assert.ok(world.projects.filter((project) => project.blocked).length <= 3,
+    `the retry ran away: ${world.projects.map((project) => `${project.name}:${project.blocked}`).join(', ')}`);
+  assert.equal(result.code, 1, 'a family that blocks every new project is not healthy');
+  assert.ok(!world.domains['sub-links-share-23']?.length, 'a dead project must not receive the domains');
 });

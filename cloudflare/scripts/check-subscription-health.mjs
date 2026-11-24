@@ -880,6 +880,29 @@ class HealthMonitor {
       });
     }
 
+    // A project can be blocked within minutes of its first deploy — that is
+    // what happened to `sub-links-share-23` on 2026-11-24. Probing here, before
+    // any domain or CNAME moves, means a dead-on-arrival project costs one
+    // deploy and no client-visible churn. The retry is bounded by the same cap
+    // as the outer call: each blocked attempt adds one more blocked project to
+    // the family, so the recursion stops at `maxBlockedProjects`.
+    if (!this.dryRun) {
+      const probe = await this.probeProject(next);
+      if (probe.blocked) {
+        repairs.push({
+          action: 'rotation_retry',
+          project: next,
+          status: 'failed',
+          detail: `${next} answered the project-blocked page (8000119) immediately after its deploy; trying the next suffix`
+        });
+        const retryObservations = {
+          ...observations,
+          projects: [...observations.projects, { name: next, suffix: projectSuffix(next, prefix), blocked: true }]
+        };
+        return this.rotate(retryObservations, repairs);
+      }
+    }
+
     // A hostname can be attached to one Pages project at a time, so detach from
     // the old project before attaching to the new one. A blocked project may
     // reject the DELETE; the attach is attempted anyway and reported.
