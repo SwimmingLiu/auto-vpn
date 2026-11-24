@@ -838,3 +838,49 @@ test('nextProjectName takes max(suffix)+1 with at least two digits', () => {
   assert.equal(nextProjectName('sub-links-share-', []), 'sub-links-share-01');
   assert.equal(nextProjectName('sub-links-share-', ['sub-links-share-99']), 'sub-links-share-100');
 });
+
+// ---------------------------------------------------------------------------
+// (f) rotation is bounded
+// ---------------------------------------------------------------------------
+
+test('rotation stops once the family already has the maximum blocked projects', async () => {
+  const world = makeWorld();
+  // Fill the family with blocked projects: every one of them is a rotation that
+  // Cloudflare has already refused to serve.
+  for (const name of ['sub-links-share-20', 'sub-links-share-21', LIVE]) {
+    const project = findProject(world, name);
+    if (project) project.blocked = true;
+    else world.projects.push({ name, blocked: true, deployment_configs: {} });
+  }
+
+  const before = await runChecker(world, ['--json']);
+  assert.equal(before.code, 1);
+  const diagnosis = JSON.parse(before.stdout);
+  const blockedFindings = diagnosis.findings.filter((finding) => finding.code === 'project_blocked');
+  assert.ok(blockedFindings.length > 0, 'a blocked project must still be reported');
+  assert.ok(blockedFindings.every((finding) => finding.repairable === false),
+    'past the cap a blocked project must not be advertised as auto-repairable');
+
+  const result = await runChecker(world, ['--json', '--repair']);
+  assert.equal(result.code, 1, 'a capped run is not healthy');
+  // The whole point: no new project, and no write of any kind.
+  assert.equal(writes(world).length, 0, `a capped run still wrote: ${JSON.stringify(writes(world))}`);
+  assert.ok(!world.projects.some((project) => project.name === 'sub-links-share-23'));
+});
+
+test('the cap is configurable and a single blocked project still rotates', async () => {
+  const world = makeWorld();
+  findProject(world, LIVE).blocked = true;
+
+  // Default cap is 3, one blocked project is below it: rotation proceeds.
+  const result = await runChecker(world, ['--json', '--repair']);
+  assert.equal(result.code, 0, result.stdout + result.stderr);
+  assert.ok(findProject(world, 'sub-links-share-23'), 'rotation below the cap must still create a project');
+
+  // With the cap set to 1 the same world is refused instead.
+  const capped = makeWorld();
+  findProject(capped, LIVE).blocked = true;
+  const refused = await runChecker(capped, ['--json', '--repair'], { HEALTH_MAX_BLOCKED_PROJECTS: '1' });
+  assert.equal(refused.code, 1);
+  assert.equal(writes(capped).length, 0);
+});

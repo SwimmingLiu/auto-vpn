@@ -54,6 +54,13 @@ const DEFAULT_HOSTS = ['swimmingliu.online', 'www.swimmingliu.online'];
 const DEFAULT_PROJECT_PREFIX = 'sub-links-share-';
 const DEFAULT_VERIFY_ATTEMPTS = 6;
 const DEFAULT_VERIFY_DELAY_MS = 10000;
+// How many blocked projects in one family this checker will tolerate before it
+// stops rotating. The schedule runs every ten minutes; without a ceiling a
+// vendor-side block that hits every new project turns the schedule into a
+// project factory — dozens per night, each one blocked on arrival, none of them
+// serving. At the ceiling the checker stops writing and reports the state as
+// needing a human, which is the only thing that can resolve it.
+const DEFAULT_MAX_BLOCKED_PROJECTS = 3;
 const HTTP_TIMEOUT_MS = 15000;
 const API_TIMEOUT_MS = 20000;
 const MAX_BASE64_LAYERS = 4;
@@ -77,6 +84,8 @@ environment:
   HEALTH_DEPLOY_DIR          worker bundle directory for \`wrangler pages deploy\`
   HEALTH_SECRET_<NAME>       value for a secret_text env var of that name; a
                              rotation cannot read the old one back
+  HEALTH_MAX_BLOCKED_PROJECTS default: ${DEFAULT_MAX_BLOCKED_PROJECTS}; stop
+                             rotating once this many are blocked
   HEALTH_VERIFY_ATTEMPTS     default: ${DEFAULT_VERIFY_ATTEMPTS}
   HEALTH_VERIFY_DELAY_MS     default: ${DEFAULT_VERIFY_DELAY_MS}`;
 
@@ -251,6 +260,7 @@ export function readConfig(env = process.env) {
     projectPrefix: clean(env.HEALTH_PROJECT_PREFIX) || DEFAULT_PROJECT_PREFIX,
     deployDir: clean(env.HEALTH_DEPLOY_DIR),
     envSecrets,
+    maxBlockedProjects: readInteger(env.HEALTH_MAX_BLOCKED_PROJECTS, DEFAULT_MAX_BLOCKED_PROJECTS, 'HEALTH_MAX_BLOCKED_PROJECTS', 1),
     verifyAttempts: readInteger(env.HEALTH_VERIFY_ATTEMPTS, DEFAULT_VERIFY_ATTEMPTS, 'HEALTH_VERIFY_ATTEMPTS', 1),
     verifyDelayMs: readInteger(env.HEALTH_VERIFY_DELAY_MS, DEFAULT_VERIFY_DELAY_MS, 'HEALTH_VERIFY_DELAY_MS', 0),
     secrets
@@ -742,6 +752,18 @@ class HealthMonitor {
   async rotate(observations, repairs) {
     const prefix = this.config.projectPrefix;
     const existing = observations.projects.map((project) => project.name);
+    // The cap is also enforced here, not only in `diagnose`: `repairAll` decides
+    // from the findings, and a caller that reaches this method some other way
+    // must not mint an unbounded series of projects either.
+    const blockedCount = observations.projects.filter((project) => project.blocked).length;
+    if (blockedCount >= this.config.maxBlockedProjects) {
+      repairs.push({
+        action: 'rotation_refused',
+        status: 'manual',
+        detail: `${blockedCount} projects in the ${prefix}NN family are already blocked (cap ${this.config.maxBlockedProjects}); a further rotation would only add another blocked name — a human must decide`
+      });
+      return '';
+    }
     const next = nextProjectName(prefix, existing);
 
     // The old project's config must be read before anything new exists. The
@@ -946,7 +968,16 @@ export function diagnose(observations, config) {
 
   const serving = observations.servingProject;
   const blocked = observations.projects.filter((project) => project.blocked);
-  const canRotate = !observations.projects.length || blocked.length > 0;
+  // Rotation is a bounded repair, not a loop. Every rotation leaves one more
+  // blocked project in the family, and a family that keeps getting blocked is
+  // a platform-side decision about this account, not a bad project name — so
+  // past the cap the finding stays visible but stops being auto-repairable and
+  // a human reads it instead. Without this, a ten-minute schedule would mint a
+  // new project every run and never converge.
+  //
+  // 迁馆有度：同族被封者已满，则不再筑新馆，止而待人也。
+  const rotationCapped = blocked.length >= config.maxBlockedProjects;
+  const canRotate = !rotationCapped && (!observations.projects.length || blocked.length > 0);
 
   if (!observations.projects.length) {
     add({
@@ -959,8 +990,10 @@ export function diagnose(observations, config) {
       add({
         code: 'project_blocked',
         project: project.name,
-        detail: `Pages project ${project.name} is blocked (8000119); it cannot serve and must be rotated`,
-        repairable: true
+        detail: rotationCapped
+          ? `Pages project ${project.name} is blocked (8000119); ${blocked.length} blocked projects in the family reaches HEALTH_MAX_BLOCKED_PROJECTS=${config.maxBlockedProjects}, so rotation has stopped — a human must investigate the account`
+          : `Pages project ${project.name} is blocked (8000119); it cannot serve and must be rotated`,
+        repairable: canRotate
       });
     }
   } else {
@@ -976,8 +1009,10 @@ export function diagnose(observations, config) {
       add({
         code: 'project_blocked',
         project: project.name,
-        detail: `Pages project ${project.name} is blocked (8000119) and a hostname still depends on it; rotate to a new project`,
-        repairable: true
+        detail: rotationCapped
+          ? `Pages project ${project.name} is blocked (8000119) and a hostname still depends on it; ${blocked.length} blocked projects reaches HEALTH_MAX_BLOCKED_PROJECTS=${config.maxBlockedProjects}, so rotation has stopped — a human must investigate the account`
+          : `Pages project ${project.name} is blocked (8000119) and a hostname still depends on it; rotate to a new project`,
+        repairable: canRotate
       });
     }
   }
