@@ -14,11 +14,13 @@ name: Subscription health
 
 on:
   schedule:
-    # Every thirty minutes. GitHub's scheduler does not honour sub-hourly
-    # cadences reliably: in this repository a `*/10` schedule produced zero
-    # runs in eight hours, while the same account's daily cron runs four to
-    # eight hours late. Thirty minutes is the shortest interval that has been
-    # observed to deliver. This is a detector, not a service-level guarantee.
+    # Every thirty minutes. GitHub's scheduler did not honour the previous
+    # `*/10` cadence at all: it produced zero runs in eight hours, while the
+    # same account's daily cron runs four to eight hours late. Thirty minutes
+    # is the shortest cadence this repository has evidence for on the
+    # scheduler's daily-scale behaviour, and the push and dispatch triggers
+    # below cover the case where cron still does not deliver. This is a
+    # detector, not a service-level guarantee.
     #
     # 三十刻一巡。十刻之约，八时未发一次，故退为三十刻。
     - cron: '*/30 * * * *'
