@@ -71,13 +71,25 @@ jobs:
         run: node --test cloudflare/scripts/check-subscription-health.test.mjs
 
       # A rotation creates a project with no deployment, so the checker needs a
-      # bundle to deploy or the new project answers 404 forever. The share
-      # Worker template is one file; staging it here keeps the repair
-      # self-contained instead of depending on a workstation's artifact.
-      - name: Stage the share worker bundle
+      # bundle to deploy or the new project answers 404 forever. The bundle is
+      # minified then obfuscated before it is staged: a repair must publish the
+      # same protected bundle a normal deploy does, or the repaired project
+      # would serve readable source from then on.
+      #
+      # 修馆之时，所出亦当为密文；不则新馆所供者，天下皆可读也。
+      - name: Build the obfuscated share worker bundle
         run: |
+          npm --prefix npm/autovpn-cli ci --no-audit --no-fund --ignore-scripts
+          npm --prefix npm/autovpn-cli run build
           mkdir -p "$RUNNER_TEMP/share-bundle"
-          cp templates/share-worker/vpn.js "$RUNNER_TEMP/share-bundle/_worker.js"
+          node --input-type=module -e '
+            import { readFile, writeFile } from "node:fs/promises";
+            import { obfuscateBundle } from "./npm/autovpn-cli/dist/pipeline/bundle-obfuscator.js";
+            const source = await readFile("templates/share-worker/vpn.js", "utf8");
+            const built = await obfuscateBundle(source, { projectRoot: process.cwd() });
+            await writeFile(process.env.RUNNER_TEMP + "/share-bundle/_worker.js", built.source, "utf8");
+            console.log(`bundle: source ${source.length} B -> minified ${built.minifiedBytes} B -> obfuscated ${built.obfuscatedBytes} B`);
+          '
 
       # The probe URL carries the share Worker's token, which is derived, not
       # stored: MD5MD5(host + UUID), where MD5MD5(x) = md5(md5(x) hex, 7..27).
