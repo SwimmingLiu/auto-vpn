@@ -10,13 +10,34 @@ name: Subscription health
 # A red run is the alert. The step summary carries the diagnosis and every
 # repair the run attempted, so the failure reads without downloading logs.
 #
-# 每十刻巡关一次；关隘不通，或符误指废馆，则修之；修而不愈，则红以告。
+# 三十刻巡关一次；关隘不通，或符误指废馆，则修之；修而不愈，则红以告。
 
 on:
   schedule:
-    # Every ten minutes. GitHub may delay cron runs under load; this is a
+    # Every thirty minutes. GitHub's scheduler did not honour the previous
+    # `*/10` cadence at all: it produced zero runs in eight hours, while the
+    # same account's daily cron runs four to eight hours late. Thirty minutes
+    # is the shortest cadence this repository has evidence for on the
+    # scheduler's daily-scale behaviour, and the push and dispatch triggers
+    # below cover the case where cron still does not deliver. This is a
     # detector, not a service-level guarantee.
-    - cron: '*/10 * * * *'
+    #
+    # 三十刻一巡。十刻之约，八时未发一次，故退为三十刻。
+    - cron: '*/30 * * * *'
+  # An external scheduler can drive the check directly when GitHub's own cron
+  # is not delivering: POST /repos/{owner}/{repo}/dispatches with
+  # {"event_type":"subscription-health"}. Same token, same job.
+  repository_dispatch:
+    types: [subscription-health]
+  # A merge that changes the checker, the bundle it deploys, or this workflow
+  # runs the check once, so the change is exercised against the live service
+  # instead of waiting for a cron that may not fire.
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/subscription-health.yml'
+      - 'cloudflare/scripts/check-subscription-health.mjs'
+      - 'templates/share-worker/vpn.js'
   workflow_dispatch:
 
 permissions:
