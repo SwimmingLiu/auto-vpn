@@ -25,6 +25,8 @@ https://sub-nodes-05.pages.dev/?serect_key=...    # 主 Worker，只吐 base64
 
 > 部署状态（2026-11-15）：`sub-links-share-07`、`-19`、`-20` 和 `-21` 先后被 Cloudflare 以 `code: 8000119`（Pages project has been blocked）拒绝部署，已按“新建项目 + 迁移环境变量”的方式切到 `sub-links-share-22`，`www.swimmingliu.online` 的 CNAME 和自定义域都指向新项目，`/sub` 与 `/static` 均已实测可用，旧项目和它们专用的 KV 命名空间已删除。分享 Worker 模板同时升级到 cmliu/edgetunnel `2026-11-10`（新的 `KEY`/`userIDMD5` token 派生和 SS AEAD）。分享 Worker 的 `SUB` 指向主 Worker 的真实订阅（`sub-nodes-05.pages.dev/?serect_key=...`），因此环境变量兼容层会在 `SUB` 存在时设置 `优选订阅生成.local = false`；订阅里是主 Worker 的 37 个真实节点，不是分享 Worker 自己生成的 16 个 CF 占位节点。旧模板里的 `env.SUB` 等环境变量覆盖在新模板中不再存在，`templates/share-worker/vpn.js` 里保留了一段兼容层，部署仍只写 Pages 环境变量。
 
+> 部署状态（2026-11-25）：`sub-links-share-24` 亦遭 `code: 8000119` 封禁——项目 API 仍读得，既有部署照旧供流，唯新建部署被拒。已迁至 `sub-links-share-25`，环境变量、KV 绑定与 `ADMIN` 密文、两条自定义域与 CNAME 俱已随迁；两域实测 200 / 29400 B / 65 关 / 三法。上传之 `_worker.js` 为压缩后混淆之产物（2,609,472 B），非明文模板。
+
 ## 2. 配置
 
 在 `~/.auto-vpn/profile.toml` 增加：
