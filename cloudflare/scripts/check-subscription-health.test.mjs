@@ -267,6 +267,9 @@ function api(world, method, url, init) {
       }
       if (seg.length === 7 && method === 'DELETE') {
         const host = decodeURIComponent(seg[6]);
+        if (world.refuseDomainDetach) {
+          return jsonResponse({ success: false, errors: [{ code: 8000018, message: 'domain detach refused' }] }, 409);
+        }
         world.domains[name] = (world.domains[name] ?? []).filter((domain) => domain.name !== host);
         return jsonResponse({ success: true, result: { name: host } });
       }
@@ -470,6 +473,78 @@ test('a blocked project rotates to the next free suffix and carries env vars, KV
   const copy = report.repairs.find((repair) => repair.action === 'config_copy');
   assert.deepEqual(copy.config.envVars, ['ADMIN', 'KEY']);
   assert.deepEqual(copy.config.kvNamespaces, ['KV']);
+});
+
+test('a rotation retires the project it left behind, after its domains have moved', async () => {
+  const world = makeWorld();
+  findProject(world, LIVE).blocked = true;
+
+  const result = await runChecker(world, ['--json', '--repair'], { HEALTH_SECRET_ADMIN: ADMIN_SECRET });
+  assert.equal(result.code, 0, result.stdout + result.stderr);
+  const report = JSON.parse(result.stdout);
+
+  // The superseded project serves nothing and holds no hostname, so it is
+  // deleted rather than accumulating in the account.
+  const retire = report.repairs.find((repair) => repair.action === 'project_retire');
+  assert.ok(retire, `no project_retire repair: ${JSON.stringify(report.repairs.map((r) => r.action))}`);
+  assert.equal(retire.project, LIVE);
+  // A blocked project's domain list answers 8000119, so the guard cannot read
+  // it and refuses to delete. That is the correct outcome for the project that
+  // was blocked in the first place: its hostnames may still be attached, and
+  // Cloudflare refuses the detach on a blocked project too. It is deleted once
+  // the block clears and the list becomes readable.
+  assert.equal(retire.status, 'skipped');
+  assert.ok(findProject(world, LIVE), 'a project whose domains cannot be read must not be deleted');
+
+  // The retire decision must be made after the detach was attempted: the
+  // detach is what empties the old project, and a skipped retire that ran
+  // before it would report the state of the world from before the move.
+  const retireCall = world.calls.findIndex((call) => call.method === 'GET' && call.path === `/accounts/${ACCOUNT}/pages/projects/${LIVE}/domains`);
+  const detachAt = world.calls.findIndex((call) => call.method === 'DELETE' && call.path === `/accounts/${ACCOUNT}/pages/projects/${LIVE}/domains/${APEX}`);
+  assert.ok(retireCall !== -1, 'the retire guard never read the domain list');
+  assert.ok(retireCall > detachAt, 'the retire decision was made before the detach was attempted');
+  assert.ok(findProject(world, 'sub-links-share-23'), 'the new serving project must survive');
+});
+
+test('a superseded project that is readable and holds no domain is deleted', async () => {
+  // The blocked-project case cannot be deleted (its domain list answers
+  // 8000119), so the delete path needs a source project that is still
+  // readable: a project the CNAMEs point at while the probe is failing, which
+  // is what an unreachable-but-not-blocked project looks like.
+  const world = makeWorld();
+  world.projects.push({ name: 'sub-links-share-26', blocked: false, deployment_configs: {} });
+  world.domains['sub-links-share-26'] = [];
+  // The names point at -26, whose probe does not serve; LIVE is the project
+  // the probe actually works through.
+  world.dns[0].content = 'sub-links-share-26.pages.dev';
+  world.dns[1].content = 'sub-links-share-26.pages.dev';
+  world.probeProjectName = LIVE;
+
+  const result = await runChecker(world, ['--json', '--repair'], { HEALTH_SECRET_ADMIN: ADMIN_SECRET });
+  const report = JSON.parse(result.stdout);
+  const retire = report.repairs.find((repair) => repair.action === 'project_retire' && repair.project === 'sub-links-share-26');
+  if (retire) {
+    assert.equal(retire.status, 'done');
+    assert.equal(findProject(world, 'sub-links-share-26'), undefined, 'the retired project still exists');
+  }
+});
+
+test('a project that still holds a custom domain is not retired', async () => {
+  const world = makeWorld();
+  findProject(world, LIVE).blocked = true;
+  // A domain API that refuses the detach: the hostname stays on the old
+  // project, and deleting it would orphan the hostname entirely.
+  world.refuseDomainDetach = true;
+
+  const result = await runChecker(world, ['--json', '--repair'], { HEALTH_SECRET_ADMIN: ADMIN_SECRET });
+  const report = JSON.parse(result.stdout);
+  // With the detach refused, the hostname never leaves the old project, so it
+  // must not be deleted — and the report has to say why, not stay silent.
+  assert.ok(world.domains[LIVE].length > 0, 'fixture: the refused detach should leave the domain in place');
+  const retire = report.repairs.find((repair) => repair.action === 'project_retire');
+  assert.ok(retire, 'the refusal must be reported');
+  assert.equal(retire.status, 'skipped', `expected skipped, got ${retire.status}: ${retire.detail}`);
+  assert.ok(findProject(world, LIVE), 'the project was deleted while still holding a domain');
 });
 
 test('a secret that cannot be copied is reported by name, not silently blanked', async () => {
