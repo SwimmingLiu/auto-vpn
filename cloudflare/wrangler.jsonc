@@ -5,6 +5,13 @@
   "compatibility_date": "2026-11-12",
   "compatibility_flags": ["nodejs_compat"],
 
+  // `wrangler deploy` uploads the bundle it builds here, and Cloudflare keeps
+  // that bundle verbatim: without this flag the deployed copy carries every
+  // identifier, literal and comment of `worker/src/index.js`. Keep minification
+  // on so the uploaded module is not the readable source tree. This Worker also
+  // holds the Durable Object class that the container controller runs.
+  "minify": true,
+
   "containers": [
     {
       "class_name": "PipelineController",

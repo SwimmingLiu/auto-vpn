@@ -3,6 +3,7 @@ import { spawn as defaultSpawn, ChildProcess } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { mergeProjectEnv } from '../runtime/env.js';
 import { resolveShareWorkerTemplatePath } from '../runtime/templates.js';
+import { obfuscateBundle } from './bundle-obfuscator.js';
 import {
   normalizeManagedToolCommandForSpawn,
   resolveManagedNpmTool,
@@ -64,6 +65,8 @@ export interface DeployVerifyBackendOptions {
   fetch?: typeof fetch;
   runCommand?: RunCommandLike;
   resolveManagedNpmTool?: (options: ResolveManagedNpmToolOptions) => Promise<ManagedNpmToolResolution>;
+  /** Injected in tests; production uses the minify+obfuscate pipeline. */
+  obfuscateBundle?: typeof obfuscateBundle;
 }
 
 const PAGES_PRODUCTION_BRANCH = 'main';
@@ -516,13 +519,31 @@ function buildShareProjectBundleDir(projectRoot: string): string {
   return path.join(projectRoot, 'electron', 'runtime', 'share-worker', 'share_pages_bundle');
 }
 
-async function stageShareProjectWorkerBundle(projectRoot: string, env: NodeJS.ProcessEnv): Promise<{ sourcePath: string; bundleDir: string; workerEntry: string }> {
+/**
+ * Stage the share Worker for upload.
+ *
+ * The bundle is minified and obfuscated before it is written. The source is a
+ * single-file Worker that Cloudflare stores verbatim; uploading it as-is leaves
+ * every identifier, literal and comment readable in the deployed copy, and the
+ * template also carries a decoy comment corpus that minification drops. The
+ * obfuscate step fails closed: if the toolchain is missing the deploy stops
+ * rather than uploading the plain source.
+ */
+async function stageShareProjectWorkerBundle(
+  projectRoot: string,
+  env: NodeJS.ProcessEnv,
+  options: { obfuscateBundle?: typeof obfuscateBundle } = {}
+): Promise<{ sourcePath: string; bundleDir: string; workerEntry: string; obfuscatedBytes: number }> {
   const sourcePath = resolveShareWorkerTemplatePath(projectRoot, env);
   const bundleDir = buildShareProjectBundleDir(projectRoot);
   const workerEntry = path.join(bundleDir, '_worker.js');
   await mkdir(bundleDir, { recursive: true });
-  await writeFile(workerEntry, await readFile(sourcePath, 'utf8'), 'utf8');
-  return { sourcePath, bundleDir, workerEntry };
+  const obfuscated = await (options.obfuscateBundle ?? obfuscateBundle)(await readFile(sourcePath, 'utf8'), {
+    projectRoot,
+    deps: { env }
+  });
+  await writeFile(workerEntry, obfuscated.source, 'utf8');
+  return { sourcePath, bundleDir, workerEntry, obfuscatedBytes: obfuscated.obfuscatedBytes };
 }
 
 function runCommandWithSpawn(
@@ -927,6 +948,7 @@ async function syncShareProjectSub(
     env: NodeJS.ProcessEnv;
     runCommand: RunCommandLike;
     wranglerExecutable: string;
+    obfuscateBundle?: typeof obfuscateBundle;
   }
 ): Promise<Record<string, unknown>> {
   let requestedName = getString(deploy, 'share_project_name');
@@ -985,10 +1007,13 @@ async function syncShareProjectSub(
     staticExitEnv: buildShareStaticExitEnv(deploy),
     cipherEnv: buildShareCipherEnv(deploy)
   });
-  const shareBundle = await stageShareProjectWorkerBundle(options.projectRoot, options.env);
+  const shareBundle = await stageShareProjectWorkerBundle(options.projectRoot, options.env, {
+    obfuscateBundle: options.obfuscateBundle
+  });
   result.share_project_source_path = shareBundle.sourcePath;
   result.share_project_bundle_dir = shareBundle.bundleDir;
   result.share_project_worker_entry = shareBundle.workerEntry;
+  result.share_project_worker_bytes = shareBundle.obfuscatedBytes;
   const shareCustomDomains = typeof options.client.listPagesDomains === 'function'
     ? (await options.client.listPagesDomains(requestedName)).map((item) => clean(item.name)).filter(Boolean)
     : [];
@@ -1182,7 +1207,8 @@ export async function deployPagesWithBackend(input: DeployInput, options: Deploy
         client,
         env,
         runCommand,
-        wranglerExecutable: wrangler.command
+        wranglerExecutable: wrangler.command,
+        obfuscateBundle: options.obfuscateBundle
       });
     }
     if (result.returncode === 0 && customDomain) {

@@ -65,6 +65,15 @@ async function resolveTestManagedWrangler() {
   return { command: '/managed/bin/wrangler', args: [], source: 'managed', packageName: 'wrangler', version: '4.106.0' };
 }
 
+/**
+ * The share bundle is minified and obfuscated before upload. These tests are
+ * about the deploy orchestration, not the obfuscator (which has its own suite),
+ * so the step is stubbed to a marker that the deploy still writes through.
+ */
+async function stubObfuscateBundle(source) {
+  return { source: `/*obfuscated*/${source}`, minifiedBytes: source.length, obfuscatedBytes: source.length + 14, obfuscatorVersion: '5.4.3' };
+}
+
 test('Cloudflare URL helpers match Python deploy semantics', () => {
   const deploy = {
     pages_project_url: 'https://sub-nodes.pages.dev/',
@@ -290,6 +299,7 @@ test('Node deploy backend retries transient failures and uses configured proxy l
   }, {
     env: { VPN_AUTOMATION_DEPLOY_PROXY: 'http://127.0.0.1:7897' },
     resolveManagedNpmTool: resolveTestManagedWrangler,
+    obfuscateBundle: stubObfuscateBundle,
     runCommand: async (_command, options) => {
       calls.push(options);
       return results.shift();
@@ -349,6 +359,7 @@ test('Node deploy backend falls back when primary Pages project is blocked', asy
   }, {
     env: {},
     resolveManagedNpmTool: resolveTestManagedWrangler,
+    obfuscateBundle: stubObfuscateBundle,
     cloudflareDeployClient: client,
     runCommand: async () => deployResults.shift()
   });
@@ -412,6 +423,7 @@ test('Node deploy backend binds custom domain and upserts DNS after successful d
   }, {
     env: {},
     resolveManagedNpmTool: resolveTestManagedWrangler,
+    obfuscateBundle: stubObfuscateBundle,
     cloudflareDeployClient: client,
     runCommand: async () => ({ returncode: 0, stdout: 'ok', stderr: '' })
   });
@@ -487,6 +499,7 @@ test('Node deploy backend rebinds custom domain when primary fallback is used', 
   }, {
     env: {},
     resolveManagedNpmTool: resolveTestManagedWrangler,
+    obfuscateBundle: stubObfuscateBundle,
     cloudflareDeployClient: client,
     runCommand: async () => deployResults.shift()
   });
@@ -535,6 +548,7 @@ test('Node deploy backend fails result when custom domain DNS upsert fails', asy
   }, {
     env: {},
     resolveManagedNpmTool: resolveTestManagedWrangler,
+    obfuscateBundle: stubObfuscateBundle,
     cloudflareDeployClient: client,
     runCommand: async () => ({ returncode: 0, stdout: 'ok', stderr: '' })
   });
@@ -730,6 +744,7 @@ test('Node deploy backend syncs share project SUB to final Pages URL', async () 
   }, {
     env: {},
     resolveManagedNpmTool: resolveTestManagedWrangler,
+    obfuscateBundle: stubObfuscateBundle,
     cloudflareDeployClient: client,
     runCommand: async (command, options) => {
       runCalls.push({ command, options });
@@ -792,6 +807,7 @@ test('Node deploy backend forwards the static-exit profile section to the share 
   }, {
     env: {},
     resolveManagedNpmTool: resolveTestManagedWrangler,
+    obfuscateBundle: stubObfuscateBundle,
     cloudflareDeployClient: client,
     runCommand: async () => ({ returncode: 0, stdout: 'ok', stderr: '' })
   });
@@ -851,6 +867,7 @@ test('Node deploy backend clears an egress the profile no longer configures', as
   }, {
     env: {},
     resolveManagedNpmTool: resolveTestManagedWrangler,
+    obfuscateBundle: stubObfuscateBundle,
     cloudflareDeployClient: client,
     runCommand: async () => ({ returncode: 0, stdout: 'ok', stderr: '' })
   });
@@ -901,6 +918,7 @@ test('a profile with no cipher list leaves the project cipher vars untouched', a
   }, {
     env: {},
     resolveManagedNpmTool: resolveTestManagedWrangler,
+    obfuscateBundle: stubObfuscateBundle,
     cloudflareDeployClient: client,
     runCommand: async () => ({ returncode: 0, stdout: 'ok', stderr: '' })
   });
@@ -947,6 +965,7 @@ test('a configured cipher list is written to both environments', async () => {
   }, {
     env: {},
     resolveManagedNpmTool: resolveTestManagedWrangler,
+    obfuscateBundle: stubObfuscateBundle,
     cloudflareDeployClient: client,
     runCommand: async () => ({ returncode: 0, stdout: 'ok', stderr: '' })
   });
@@ -1010,6 +1029,7 @@ test('Node deploy backend falls back when share project update is blocked', asyn
   }, {
     env: {},
     resolveManagedNpmTool: resolveTestManagedWrangler,
+    obfuscateBundle: stubObfuscateBundle,
     cloudflareDeployClient: client,
     runCommand: async (command, options) => {
       runCalls.push({ command, options });
@@ -1105,6 +1125,7 @@ test('Node deploy backend falls back when share project redeploy is blocked', as
   }, {
     env: {},
     resolveManagedNpmTool: resolveTestManagedWrangler,
+    obfuscateBundle: stubObfuscateBundle,
     cloudflareDeployClient: client,
     runCommand: async (command) => {
       runCalls.push(command);
@@ -1174,6 +1195,7 @@ test('Node deploy backend recovers latest existing share project when requested 
   }, {
     env: {},
     resolveManagedNpmTool: resolveTestManagedWrangler,
+    obfuscateBundle: stubObfuscateBundle,
     cloudflareDeployClient: client,
     runCommand: async (command) => {
       runCalls.push(command);
