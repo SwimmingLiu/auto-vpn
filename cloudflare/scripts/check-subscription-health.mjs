@@ -916,7 +916,81 @@ class HealthMonitor {
     for (const host of this.config.hosts) {
       await this.repointCname(host, next, observations, repairs);
     }
+    // The project this rotation left behind serves nothing and holds no
+    // hostname, so it is dead weight: it keeps the account's project list
+    // growing and, once blocked, can never be deployed to again. Delete it
+    // after the move, and only when it is genuinely not the project traffic
+    // now lands on.
+    if (hasSource) await this.retireProject(source, repairs);
     return next;
+  }
+
+  /**
+   * Delete a superseded project.
+   *
+   * Deliberately narrow: never the project that now serves, never one still
+   * holding a custom domain (the domains were just moved off it, so a failure
+   * there leaves them attached and this refuses rather than orphaning them).
+   * The delete is best-effort and reported; a failure leaves the project for a
+   * human instead of failing the whole rotation.
+   */
+  async retireProject(project, repairs) {
+    if (!project) return;
+    // Read the domains back rather than trusting the snapshot from the start
+    // of the run: a detach that failed up the stack leaves the hostname on the
+    // old project, and deleting it would orphan that hostname entirely. The
+    // live read is the only thing that distinguishes the two cases.
+    let remaining = [];
+    let known = false;
+    try {
+      const response = await this.api.call('GET', `/accounts/${this.config.accountId}/pages/projects/${project}/domains`);
+      if (response.ok && Array.isArray(response.payload?.result)) {
+        remaining = response.payload.result;
+        known = true;
+      }
+    } catch {
+      known = false;
+    }
+    // A blocked project answers this endpoint with 8000119, so "no answer" is
+    // not "no domains". Treating an unreadable domain list as empty is the one
+    // mistake that orphans a hostname, so an unreadable list means no delete.
+    if (!known) {
+      repairs.push({
+        action: 'project_retire',
+        project,
+        status: 'skipped',
+        detail: 'the project domain list could not be read, so the project was left in place'
+      });
+      return;
+    }
+    if (remaining.length > 0) {
+      repairs.push({
+        action: 'project_retire',
+        project,
+        status: 'skipped',
+        detail: `still holds custom domain(s): ${remaining.map((entry) => entry.name).join(', ')}`
+      });
+      return;
+    }
+    if (this.dryRun) {
+      repairs.push({
+        action: 'project_retire',
+        project,
+        status: 'planned',
+        detail: '',
+        call: { method: 'DELETE', path: `/accounts/${this.config.accountId}/pages/projects/${project}` }
+      });
+      return;
+    }
+    const path = `/accounts/${this.config.accountId}/pages/projects/${project}`;
+    const response = await this.api.call('DELETE', path);
+    repairs.push({
+      action: 'project_retire',
+      project,
+      status: response.ok || response.status === 404 ? 'done' : 'failed',
+      detail: response.ok || response.status === 404 ? '' : errorDetail(response.payload, response.text),
+      call: { method: 'DELETE', path }
+    });
   }
 
   async repairAll(findings, observations) {
