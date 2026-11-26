@@ -926,9 +926,9 @@ test('a profile with no cipher leaves the project cipher vars untouched', async 
   for (const environment of ['preview', 'production']) {
     const envVars = update[2].deployment_configs[environment].env_vars;
     assert.equal(envVars.SS_ENC.value, 'aes-256-gcm');
-    // The legacy list is dropped on the way through: the project still carries
-    // it from an earlier deploy, and nothing reads it any more.
-    assert.equal(envVars.SS_CIPHERS, undefined, 'the legacy SS_CIPHERS key must be removed');
+    // The legacy list is removed with an explicit null. The Pages PATCH merges
+    // `env_vars`, so an omitted key keeps the stored value; only null deletes.
+    assert.equal(envVars.SS_CIPHERS, null, 'the legacy SS_CIPHERS key must be sent as null, not omitted');
     // The egress keys still behave the documented way: present section means
     // authoritative, so the configured exit is written.
     assert.equal(envVars.STATIC_EXIT.value, 'socks5://user:pass@198.51.100.10:1080#exit');
@@ -975,8 +975,9 @@ test('a configured cipher is written to both environments, and no cipher list', 
     const envVars = update[2].deployment_configs[environment].env_vars;
     assert.equal(envVars.SS_ENC.value, 'aes-256-gcm');
     // The list form is gone: a cipher list used to emit one self node per
-    // entry, each holding the live UUID. Nothing writes `SS_CIPHERS` again.
-    assert.equal(envVars.SS_CIPHERS, undefined, 'SS_CIPHERS must no longer be written');
+    // entry, each holding the live UUID. Nothing writes `SS_CIPHERS` again; a
+    // project that never carried one is not sent a null either.
+    assert.equal(envVars.SS_CIPHERS, undefined, 'SS_CIPHERS must not be written for a project that has none');
   }
 });
 
