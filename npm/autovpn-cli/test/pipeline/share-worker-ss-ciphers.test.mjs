@@ -132,7 +132,7 @@ async function fetchLinkLines(worker, env) {
   return Buffer.from(body, 'base64').toString('utf8').split('\n').map((line) => line.trim()).filter(Boolean);
 }
 
-/** ss://base64(method:password)@host:port?enc=...&plugin=...#remark */
+/** ss://base64(method:password)@host:port?plugin=...%3Bpath%3D%2F%3Fenc%3D...#remark — `enc` rides inside `plugin`. */
 function parseSsLink(link) {
   const match = /^ss:\/\/([^@]+)@([^?]+)\?(.*)#(.*)$/.exec(link);
   assert.ok(match, `not an ss link: ${link.slice(0, 100)}`);
@@ -155,9 +155,9 @@ test('每址一关，备注不缀加密法', async () => {
   const KV = mockKV({ 'config.json': configJson(), 'ADD.txt': TWO_ADDRESSES });
   const links = await withCidrStub(() => fetchLinkLines(worker, { ...baseEnv(), KV }));
   assert.equal(links.length, 2, `expected one node per address, got ${links.length}`);
-  for (const link of links) {
-    assert.ok(!/·(AES-128|AES-256|ChaCha20)$/.test(decodeURIComponent(link)), '备注不得缀加密法');
-  }
+  // The remark is the address's own, verbatim. A cipher suffix would have to
+  // show up here: `甲` and `乙` are the whole remark.
+  assert.deepEqual(links.map((link) => parseSsLink(link).remark), ['甲', '乙']);
 });
 
 test('约中无指向本驿之关', async () => {
@@ -181,6 +181,28 @@ test('馆中旧存 SS_CIPHERS 亦不复生关', async () => {
   assert.equal(all.length, 2, `SS_CIPHERS must not multiply nodes, got ${all.length}`);
   for (const link of all) {
     assert.ok(!link.includes(`@${HOST}:`), 'SS_CIPHERS must not emit self nodes');
+  }
+});
+
+test('作优选生成器时亦只出一址一关', async () => {
+  // The upstream-generator role is the other branch that used to spell out a
+  // node; a per-cipher loop reintroduced only there would otherwise go unseen.
+  const worker = await loadWorker();
+  const KV = mockKV({ 'config.json': configJson({ 协议类型: 'ss' }), 'ADD.txt': TWO_ADDRESSES });
+  const env = { ...baseEnv(), KV, BEST_SUB: 'true', SS_CIPHERS: 'aes-128-gcm,aes-256-gcm' };
+  const request = new Request(
+    `https://${HOST}/sub?token=${SUB_TOKEN}&host=example.com&uuid=00000000-0000-4000-8000-000000000000`,
+    { headers: { 'User-Agent': 'v2rayN/6.0 edge' + 'tunnel (https://github.com/cmliu/edge' + 'tunnel) Uid/0x0' } }
+  );
+  Object.defineProperty(request, 'cf', { value: { asn: 1, asOrganization: 'harness', country: 'HK', city: 'HK' } });
+  const response = await withCidrStub(() => worker.default.fetch(request, env, { waitUntil() {} }));
+  assert.equal(response.status, 200);
+  const body = Buffer.from(await response.text(), 'base64').toString('utf8');
+  const links = body.split('\n').map((line) => line.trim()).filter(Boolean);
+  // Two addresses, one node each, and none pointing at the share host.
+  assert.equal(links.length, 2, `the generator role must not multiply nodes, got ${links.length}`);
+  for (const link of links) {
+    assert.ok(!link.includes(`@${HOST}:`), 'the generator role must not emit self nodes');
   }
 });
 

@@ -168,9 +168,10 @@ function deployStaticExitFields(profile: PipelineProfile): Record<string, string
  * Fold `[share_ciphers]` into the deploy input.
  *
  * Only `enc` reaches the share Worker (`SS_ENC`): the subscription carries one
- * node per upstream address, all encoded with that one cipher. The `ciphers`
- * list is accepted for profile compatibility but no longer emits a node per
- * entry — those self nodes pointed at the share host and carried the live UUID.
+ * node per upstream address, all encoded with that one cipher. A legacy
+ * `ciphers` list is ignored by the profile normaliser and never reaches here —
+ * it used to emit one self node per entry, each pointing at the share host and
+ * carrying the live UUID.
  */
 function deployShareCipherFields(profile: PipelineProfile): Record<string, string> {
   const section = (profile.share_ciphers ?? {}) as Record<string, unknown>;

@@ -452,7 +452,14 @@ function rewriteShareProjectSubValue(
     // Legacy key: older CLIs wrote the cipher *list* that made the share Worker
     // emit one self node per entry. Nothing reads it any more, and leaving it
     // on the project makes a rollback look like it is still in play.
-    delete envVars.SS_CIPHERS;
+    //
+    // `null`, not `delete`: the Pages project PATCH merges `env_vars`, so an
+    // omitted key keeps its stored value and only an explicit null removes it
+    // (wrangler's `pages secret delete` sends the same shape). Deleting the key
+    // here would leave the old list on every project that already had one.
+    if (Object.prototype.hasOwnProperty.call(envVars, 'SS_CIPHERS')) {
+      envVars.SS_CIPHERS = null;
+    }
     envVars[options.envKey] = { type: 'plain_text', value: options.subValue };
     for (const [key, value] of Object.entries(staticExitEnv)) {
       envVars[key] = { type: 'plain_text', value };

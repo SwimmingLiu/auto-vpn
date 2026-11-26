@@ -208,8 +208,8 @@ export function networkEnv(section: unknown, base: NodeJS.ProcessEnv = {}): Node
  * Kept out of `[static_exit]` on purpose: an exit is egress, the cipher is how
  * the subscription's own node is framed, and clearing one must not touch the
  * other. Absent or empty means AES-128, which is what every profile written
- * before this section already gets. A legacy `ciphers = [...]` key is read and
- * ignored: it used to emit one self node per entry.
+ * before this section already gets. A legacy `ciphers = [...]` key is dropped
+ * without being read: it used to emit one self node per entry.
  */
 export function normalizeShareCiphersSection(value: unknown): Record<string, any> {
   const raw = (value && typeof value === 'object' ? value : {}) as Record<string, any>;
