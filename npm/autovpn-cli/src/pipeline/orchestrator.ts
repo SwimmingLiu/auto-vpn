@@ -167,16 +167,15 @@ function deployStaticExitFields(profile: PipelineProfile): Record<string, string
 /**
  * Fold `[share_ciphers]` into the deploy input.
  *
- * The share Worker receives these as plain env vars (`SS_CIPHERS`, `SS_ENC`).
- * An absent section emits nothing, so a project that already carries a cipher
- * list is not blanked by deploying from a profile that never mentions it.
+ * Only `enc` reaches the share Worker (`SS_ENC`): the subscription carries one
+ * node per upstream address, all encoded with that one cipher. The `ciphers`
+ * list is accepted for profile compatibility but no longer emits a node per
+ * entry — those self nodes pointed at the share host and carried the live UUID.
  */
 function deployShareCipherFields(profile: PipelineProfile): Record<string, string> {
   const section = (profile.share_ciphers ?? {}) as Record<string, unknown>;
   if (Object.keys(section).length === 0) return {};
-  const ciphers = Array.isArray(section.ciphers) ? section.ciphers : [];
   return {
-    ssh_ciphers: ciphers.map((item) => String(item ?? '').trim()).filter(Boolean).join(','),
     ssh_enc: String(section.enc ?? '').trim()
   };
 }

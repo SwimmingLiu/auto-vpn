@@ -6,11 +6,11 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 /**
- * 多加密之验：分享 Worker 中，影梭之流依 `SS.加密方式列表`，一法一组而出关。
+ * 影梭之验：分享驿只出上游之关，不自出其关。
  *
- * 三事必验：其一，旧约不破——未设列表者，每地址仍出一节点，标不缀加密法；
- * 其二，众法俱出——列表所命之法各成一节点，`enc=` 与备注各随其法；
- * 其三，怪法不入——表外之名一概弃之，免约中出现客所不能解之一行。
+ * 三者必验：其一，每址一关，备注不缀加密法；其二，约中无指向本驿之关——
+ * 旧版曾按 `SS_CIPHERS` 逐法出关，其口令即真 UUID，且红框之节点令客不能择；
+ * 其三，`SS_CIPHERS` 虽存于馆中，亦不复生关。
  *
  * 配置藏于 KV 之 `config.json`（模板之实），故测试以此注入；随机网阯之源
  * 在 GitHub，测试桩之，免暗访外网。
@@ -33,9 +33,6 @@ function md5md5(text) {
 
 const HOST = 'sub-links.example';
 const PASSWORD = 'harness-password';
-// 令牌乃 `MD5MD5(host + userID)`；userID 取 UUID（envUUID 之支），UUID 可由
-// `MD5MD5(password + KEY)` 派生，故此处按模板之序复算，不桩任何东西。
-const KEY = '勿动此默认密钥，有需求请自行通过添加变量KEY进行修改';
 const SUB_TOKEN = md5md5(HOST + UUID);
 
 async function loadWorker() {
@@ -73,7 +70,7 @@ function mockKV(seed = {}) {
   };
 }
 
-/** 一份足以让订阅支流走「本地生成」的配置；protocol 与 cipher 由各测自定。 */
+/** 一份足以让订阅支流走「本地生成」的配置；cipher 由各测自定。 */
 function configJson(overrides = {}) {
   return JSON.stringify({
     UUID,
@@ -135,15 +132,12 @@ async function fetchLinkLines(worker, env) {
   return Buffer.from(body, 'base64').toString('utf8').split('\n').map((line) => line.trim()).filter(Boolean);
 }
 
-/** 本驿自出之关：其址即本驿，名缀「本驿·法标」。 */
-const isLocalNode = (line) => line.includes(`@${HOST}:`);
-
-/** ss://base64(method:uuid)@host:port?enc=...&plugin=...#remark */
+/** ss://base64(method:password)@host:port?enc=...&plugin=...#remark */
 function parseSsLink(link) {
   const match = /^ss:\/\/([^@]+)@([^?]+)\?(.*)#(.*)$/.exec(link);
   assert.ok(match, `not an ss link: ${link.slice(0, 100)}`);
-  const [method, uuid] = Buffer.from(match[1], 'base64').toString('utf8').split(':');
-  return { method, uuid, hostPort: match[2], query: match[3], remark: decodeURIComponent(match[4]) };
+  const [method, password] = Buffer.from(match[1], 'base64').toString('utf8').split(':');
+  return { method, password, hostPort: match[2], query: match[3], remark: decodeURIComponent(match[4]) };
 }
 
 const baseEnv = () => ({
@@ -151,56 +145,55 @@ const baseEnv = () => ({
   UUID,
   PASSWORD,
   HOST,
-  // 桩掉优选源，故给两条固定地址，输出才可预期。
   SUB: undefined
 });
 
-test('未设 SS_CIPHERS 时，每地址只出一节点，备注不带加密法之缀', async () => {
+const TWO_ADDRESSES = '104.16.1.1:443#甲\n104.16.1.2:443#乙';
+
+test('每址一关，备注不缀加密法', async () => {
   const worker = await loadWorker();
-  const KV = mockKV({ 'config.json': configJson(), 'ADD.txt': '104.16.1.1:443#甲\n104.16.1.2:443#乙' });
+  const KV = mockKV({ 'config.json': configJson(), 'ADD.txt': TWO_ADDRESSES });
   const links = await withCidrStub(() => fetchLinkLines(worker, { ...baseEnv(), KV }));
   assert.equal(links.length, 2, `expected one node per address, got ${links.length}`);
   for (const link of links) {
-    assert.ok(!/·(AES-128|AES-256|ChaCha20)$/.test(link), '备注不得缀加密法');
+    assert.ok(!/·(AES-128|AES-256|ChaCha20)$/.test(decodeURIComponent(link)), '备注不得缀加密法');
   }
 });
 
-test('SS_CIPHERS 命三法，则每地址各出三节点，enc 与备注各随其法', async () => {
+test('约中无指向本驿之关', async () => {
+  // 旧版每法出一关，其址即本驿、其口令即真 UUID；此关既泄凭据，又与上游之关
+  // 同名不辨，故一概不出。指向本驿者只可为域名替换之后，仍以 ADD 之址为本。
   const worker = await loadWorker();
-  const KV = mockKV({ 'config.json': configJson(), 'ADD.txt': '104.16.1.1:443#甲' });
+  const KV = mockKV({ 'config.json': configJson(), 'ADD.txt': TWO_ADDRESSES });
+  const links = await withCidrStub(() => fetchLinkLines(worker, { ...baseEnv(), KV }));
+  for (const link of links) {
+    assert.ok(!link.includes(`@${HOST}:`), `a node points at the share host itself: ${link.slice(0, 80)}`);
+  }
+});
+
+test('馆中旧存 SS_CIPHERS 亦不复生关', async () => {
+  // 项目上留着上一版写下的 SS_CIPHERS（回滚与迁移都会留下），它不得再改变
+  // 订阅的形状：仍是一址一关，仍无本驿之关。
+  const worker = await loadWorker();
+  const KV = mockKV({ 'config.json': configJson(), 'ADD.txt': TWO_ADDRESSES });
   const env = { ...baseEnv(), KV, SS_CIPHERS: 'aes-128-gcm,aes-256-gcm,chacha20-ietf-poly1305' };
   const all = await withCidrStub(() => fetchLinkLines(worker, env));
-  const local = all.filter(isLocalNode);
-  const upstream = all.filter((line) => !isLocalNode(line));
-  // 本驿自出一组（三法），上游之关亦各出三法：二者并列，故六行。
-  assert.equal(local.length, 3, `local nodes: expected 3, got ${local.length}`);
-  assert.equal(upstream.length, 3, `upstream nodes: expected 3, got ${upstream.length}`);
-  const links = upstream;
-
-  const parsed = links.map(parseSsLink);
-  assert.deepEqual(parsed.map((item) => item.method), ['aes-128-gcm', 'aes-256-gcm', 'chacha20-ietf-poly1305']);
-  for (const item of parsed) {
-    // ss 链接里带的是**占位 UUID**，真值替换只在链接尾部（另在订阅里明文做），
-    // 故此处只验其为合法 UUID，不验其等于真 UUID。
-    assert.match(item.uuid, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/, 'uuid field must be a UUID');
-    // `enc` 藏于 plugin 参数之内，编码后再出现，故解之而验。
-    // 路径里的 `=` 与 `,` 会被转义成 `\=`/`\,`（订阅器所要求），故先去转义再比对。
-    const plugin = (new URLSearchParams(item.query).get('plugin') ?? '').replace(/\\([=,])/g, '$1');
-    assert.ok(plugin.includes(`enc=${item.method}`), `enc= must match the method: ${plugin}`);
+  assert.equal(all.length, 2, `SS_CIPHERS must not multiply nodes, got ${all.length}`);
+  for (const link of all) {
+    assert.ok(!link.includes(`@${HOST}:`), 'SS_CIPHERS must not emit self nodes');
   }
-  assert.deepEqual(parsed.map((item) => item.remark), ['甲·AES-128', '甲·AES-256', '甲·ChaCha20']);
 });
 
-test('SS_CIPHERS 中的表外之法一概弃之', async () => {
+test('SS_ENC 仍定影梭之法', async () => {
   const worker = await loadWorker();
   const KV = mockKV({ 'config.json': configJson(), 'ADD.txt': '104.16.1.1:443#甲' });
-  const env = { ...baseEnv(), KV, SS_CIPHERS: 'rc4-md5,2022-blake3-aes-128-gcm,aes-128-gcm' };
-  const all = await withCidrStub(() => fetchLinkLines(worker, env));
-  const links = all.filter((line) => !isLocalNode(line));
-  assert.equal(links.length, 1, `only the known cipher may be emitted, got ${links.length}`);
-  assert.equal(all.filter(isLocalNode).length, 1, 'unknown ciphers must not reach the local node group either');
-  assert.equal(parseSsLink(links[0]).method, 'aes-128-gcm');
-  assert.ok(!links[0].includes('2022-blake3'), '2022 系未实现，不得以近似之法冒充');
+  const env = { ...baseEnv(), KV, SS_ENC: 'aes-256-gcm' };
+  const links = await withCidrStub(() => fetchLinkLines(worker, env));
+  assert.equal(links.length, 1);
+  const parsed = parseSsLink(links[0]);
+  assert.equal(parsed.method, 'aes-256-gcm');
+  const plugin = (new URLSearchParams(parsed.query).get('plugin') ?? '').replace(/\\([=,])/g, '$1');
+  assert.ok(plugin.includes('enc=aes-256-gcm'), `enc= must follow SS_ENC: ${plugin}`);
 });
 
 test('模板里的法名即 SIP004 之名，客户端方能识', async () => {

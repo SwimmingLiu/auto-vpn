@@ -443,17 +443,16 @@ function rewriteShareProjectSubValue(
   const staticExitEnv = Object.fromEntries(
     Object.entries(options.staticExitEnv ?? {}).filter(([, value]) => value !== undefined && value !== null)
   );
-  // Cipher keys are the opposite of the egress keys: an empty value means "no
-  // opinion", not "clear it". A profile that never mentions `[share_ciphers]`
-  // must leave a project's existing list alone, so only non-empty values are
-  // written — writing `SS_CIPHERS=""` would silently collapse a multi-cipher
-  // subscription back to a single AES-128 node family on the next deploy.
   const cipherEnv = Object.fromEntries(
     Object.entries(options.cipherEnv ?? {}).filter(([, value]) => typeof value === 'string' && value.trim() !== '')
   );
   for (const environmentName of ['preview', 'production']) {
     const envConfig = { ...((rewritten[environmentName] as Record<string, unknown> | undefined) ?? {}) };
     const envVars = { ...((envConfig.env_vars as Record<string, unknown> | undefined) ?? {}) };
+    // Legacy key: older CLIs wrote the cipher *list* that made the share Worker
+    // emit one self node per entry. Nothing reads it any more, and leaving it
+    // on the project makes a rollback look like it is still in play.
+    delete envVars.SS_CIPHERS;
     envVars[options.envKey] = { type: 'plain_text', value: options.subValue };
     for (const [key, value] of Object.entries(staticExitEnv)) {
       envVars[key] = { type: 'plain_text', value };
@@ -468,14 +467,19 @@ function rewriteShareProjectSubValue(
 }
 
 /**
- * The cipher list the share Worker derives its node families from.
+ * The one cipher the share Worker encodes its own node with.
  *
- * Unlike the egress keys this is opt-in: an empty list means "keep whatever the
- * project already has", so the caller can pass it unconditionally.
+ * This is a cipher, not a node source. The share Worker used to be handed a
+ * list and emit one self node per cipher — three nodes pointing at the share
+ * host itself, holding the live UUID in the password field. Those nodes made
+ * the name-based proxy selectors ambiguous and leaked the credential, so the
+ * list is gone; `SS_ENC` (whichever cipher the clients negotiate) remains.
+ *
+ * Opt-in: an empty value writes nothing, so a project that never mentions
+ * `[share_ciphers]` keeps whatever it already has.
  */
 export function buildShareCipherEnv(deploy: DeployLike): Record<string, string> {
   return {
-    SS_CIPHERS: getString(deploy, 'ssh_ciphers'),
     SS_ENC: getString(deploy, 'ssh_enc')
   };
 }
