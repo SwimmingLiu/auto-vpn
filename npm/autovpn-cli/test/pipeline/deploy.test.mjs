@@ -879,11 +879,9 @@ test('Node deploy backend clears an egress the profile no longer configures', as
   }
 });
 
-test('a profile with no cipher list leaves the project cipher vars untouched', async () => {
-  // Cipher keys are not egress keys: an absent `[share_ciphers]` means "no
-  // opinion", not "clear it". Writing `SS_CIPHERS=""` here would silently
-  // collapse a multi-cipher subscription back to a single AES-128 family on
-  // the next scheduled deploy — the exact regression this test pins.
+test('a profile with no cipher leaves the project cipher vars untouched', async () => {
+  // A cipher is not an egress: an absent `[share_ciphers]` means "no opinion",
+  // not "clear it". The project's own values survive the deploy untouched.
   const projectRoot = await makeShareProjectRoot();
   const calls = [];
   const client = {
@@ -927,15 +925,17 @@ test('a profile with no cipher list leaves the project cipher vars untouched', a
   assert.ok(update, 'the share project must be updated');
   for (const environment of ['preview', 'production']) {
     const envVars = update[2].deployment_configs[environment].env_vars;
-    assert.equal(envVars.SS_CIPHERS.value, 'aes-128-gcm,aes-256-gcm');
     assert.equal(envVars.SS_ENC.value, 'aes-256-gcm');
+    // The legacy list is dropped on the way through: the project still carries
+    // it from an earlier deploy, and nothing reads it any more.
+    assert.equal(envVars.SS_CIPHERS, undefined, 'the legacy SS_CIPHERS key must be removed');
     // The egress keys still behave the documented way: present section means
     // authoritative, so the configured exit is written.
     assert.equal(envVars.STATIC_EXIT.value, 'socks5://user:pass@198.51.100.10:1080#exit');
   }
 });
 
-test('a configured cipher list is written to both environments', async () => {
+test('a configured cipher is written to both environments, and no cipher list', async () => {
   const projectRoot = await makeShareProjectRoot();
   const calls = [];
   const client = {
@@ -958,7 +958,6 @@ test('a configured cipher list is written to both environments', async () => {
       pages_project_url: 'https://sub-nodes.pages.dev',
       subscription_url: 'https://origin.example/sub',
       share_project_name: 'sub-links-share-03',
-      ssh_ciphers: 'aes-128-gcm,aes-256-gcm',
       ssh_enc: 'aes-256-gcm',
       cloudflare_api_token: 'token-1'
     }
@@ -974,8 +973,10 @@ test('a configured cipher list is written to both environments', async () => {
   assert.ok(update, 'the share project must be updated');
   for (const environment of ['preview', 'production']) {
     const envVars = update[2].deployment_configs[environment].env_vars;
-    assert.equal(envVars.SS_CIPHERS.value, 'aes-128-gcm,aes-256-gcm');
     assert.equal(envVars.SS_ENC.value, 'aes-256-gcm');
+    // The list form is gone: a cipher list used to emit one self node per
+    // entry, each holding the live UUID. Nothing writes `SS_CIPHERS` again.
+    assert.equal(envVars.SS_CIPHERS, undefined, 'SS_CIPHERS must no longer be written');
   }
 });
 

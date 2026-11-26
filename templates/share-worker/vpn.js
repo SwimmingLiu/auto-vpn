@@ -1367,14 +1367,7 @@ export default {
 							const ECHLINK参数 = config_JSON.ECH ? `&ech=${encodeURIComponent((config_JSON.ECHConfig.SNI ? config_JSON.ECHConfig.SNI + '+' : '') + config_JSON.ECHConfig.DNS)}` : '';
 							const isLoonOrSurge = ua.includes('loon') || ua.includes('surge');
 							const { type: 传输协议, 路径字段名, 域名字段名 } = 获取传输协议配置(config_JSON);
-							// 一关一法：影梭之流可按所授之法各出一关，名缀法标，
-							// 故一约之中三法并存。未授法则一关如旧。
-							const SS多法之列 = 协议类型 === 'ss' && !作为优选订阅生成器
-								? (Array.isArray(config_JSON.SS?.加密方式列表) ? config_JSON.SS.加密方式列表 : [])
-									.map(名称 => SS支持加密配置[String(名称).toLowerCase()])
-									.filter(Boolean)
-								: [];
-							const 出节点 = (原始地址, 加密配置, 方法序) => {
+							订阅内容 = 其他节点LINK + 完整优选IP.map(原始地址 => {
 								// 一统之正则: 合域名/IPv4/IPv6之址 + 可择端口 + 可择备注
 								// 例:
 								//   - 域名: hj.xmm1993.top:2096#注 或 example.com
@@ -1414,26 +1407,19 @@ export default {
 								if (isLoonOrSurge) 完整节点路径 = 完整节点路径.replace(/,/g, '%2C');
 
 								if (协议类型 === 'ss' && !作为优选订阅生成器) {
-									const SS之加密方式 = 加密配置 ? 加密配置.method : config_JSON.SS.加密方式;
 									if (!config_JSON.SS.TLS) {
 										const TLS端口 = [443, 2053, 2083, 2087, 2096, 8443];
 										const NOTLS端口 = [80, 2052, 2082, 2086, 2095, 8080];
 										节点端口 = String(NOTLS端口[TLS端口.indexOf(Number(节点端口))] ?? 节点端口);
 									}
-									完整节点路径 = (完整节点路径.includes('?') ? 完整节点路径.replace('?', '?enc=' + SS之加密方式 + '&') : (完整节点路径 + '?enc=' + SS之加密方式)).replace(/([=,])/g, '\\$1');
+									完整节点路径 = (完整节点路径.includes('?') ? 完整节点路径.replace('?', '?enc=' + config_JSON.SS.加密方式 + '&') : (完整节点路径 + '?enc=' + config_JSON.SS.加密方式)).replace(/([=,])/g, '\\$1');
 									if (!isSubConverterRequest) 完整节点路径 = 完整节点路径 + ';mux=0';
-									const 节点之标 = 加密配置 ? `${节点备注}·${加密配置.标}` : 节点备注;
-									return `${协议类型}://${btoa(SS之加密方式 + ':00000000-0000-4000-8000-000000000000')}@${节点地址}:${节点端口}?plugin=v2${encodeURIComponent('ray-plugin;mode=websocket;host=example.com;path=' + (config_JSON.随机路径 ? 随机路径(完整节点路径) : 完整节点路径) + (config_JSON.SS.TLS ? ';tls' : '')) + ECHLINK参数 + TLS分片参数}#${encodeURIComponent(节点之标)}`;
+									return `${协议类型}://${btoa(config_JSON.SS.加密方式 + ':00000000-0000-4000-8000-000000000000')}@${节点地址}:${节点端口}?plugin=v2${encodeURIComponent('ray-plugin;mode=websocket;host=example.com;path=' + (config_JSON.随机路径 ? 随机路径(完整节点路径) : 完整节点路径) + (config_JSON.SS.TLS ? ';tls' : '')) + ECHLINK参数 + TLS分片参数}#${encodeURIComponent(节点备注)}`;
 								} else {
 									const 传输路径参数值 = 获取传输路径参数值(config_JSON, 完整节点路径, 作为优选订阅生成器);
 									return `${协议类型}://00000000-0000-4000-8000-000000000000@${节点地址}:${节点端口}?security=tls&type=${传输协议 + ECHLINK参数}&${域名字段名}=example.com&fp=${config_JSON.Fingerprint}&sni=example.com&${路径字段名}=${encodeURIComponent(传输路径参数值) + TLS分片参数}&encryption=none&alpn=${encodeURIComponent(config_JSON.ALPN)}#${encodeURIComponent(节点备注)}`;
 								}
-							};
-							订阅内容 = 其他节点LINK + 完整优选IP.map(原始地址 => {
-								if (SS多法之列.length === 0) return 出节点(原始地址, null, 0);
-								return SS多法之列.map((加密配置, 方法序) => 出节点(原始地址, 加密配置, 方法序)).filter(Boolean).join('\n');
 							}).filter(item => item !== null).join('\n');
-							if (config_JSON.本驿之关) 订阅内容 = (订阅内容 ? 订阅内容 + '\n' : '') + config_JSON.本驿之关;
 						} else { // 订阅之转换
 							const 订阅转换URL = `${config_JSON.订阅转换配置.SUBAPI}/sub?target=${订阅类型}&url=${encodeURIComponent(url.protocol + '//' + url.host + '/sub?target=mixed&token=' + 今日订阅转换后端专属TOKEN + '&cnIspCode=' + 识别运营商(request) + (url.searchParams.has('sub') && url.searchParams.get('sub') != '' ? `&sub=${url.searchParams.get('sub')}` : ''))}&config=${encodeURIComponent(config_JSON.订阅转换配置.SUBCONFIG)}&emoji=${config_JSON.订阅转换配置.SUBEMOJI}&list=${config_JSON.订阅转换配置.SUBLIST}&scv=${config_JSON.跳过证书验证}&xudp=${config_JSON.订阅转换配置.XUDP}&udp=${config_JSON.订阅转换配置.UDP}&tls13=${config_JSON.订阅转换配置.TLS13}&append_type=${config_JSON.订阅转换配置.APPEND_TYPE}&sort=${config_JSON.订阅转换配置.SORT}&expand=${config_JSON.订阅转换配置.EXPAND}`;
 							try {
@@ -2996,13 +2982,13 @@ function 解析魏烈思请求(chunk, token) {
 }
 
 // 影梭之封缄，凡三法：甲乙二法假手于平台之密器，丙法则以纯文演算。
-// 另有新法（二〇二二之属）倚外援，平台不备，故不列；宁阙，不以近似者冒充。
-// 丙法耗算，配额有限者慎之。法名析而为二，免为字面所识。
+// 另有三法（二〇二二之属）倚外援，平台不备，故不列；宁阙，不以近似者冒充。
+// 一约只书一法（`SS.加密方式`），丙法耗算，配额有限者慎之。法名析而为二，免为字面所识。
 const SS_CHACHA20方法 = 'chacha' + '20-ietf-poly1305';
 const SS支持加密配置 = {
-	'aes-128-gcm': { method: 'aes-128-gcm', kind: 'aes-gcm', keyLen: 16, saltLen: 16, maxChunk: 0x3fff, aesLength: 128, 标: 'AES-128' },
-	'aes-256-gcm': { method: 'aes-256-gcm', kind: 'aes-gcm', keyLen: 32, saltLen: 32, maxChunk: 0x3fff, aesLength: 256, 标: 'AES-256' },
-	[SS_CHACHA20方法]: { method: SS_CHACHA20方法, kind: 'chacha20', keyLen: 32, saltLen: 32, maxChunk: 0x3fff, 标: 'ChaCha20' },
+	'aes-128-gcm': { method: 'aes-128-gcm', kind: 'aes-gcm', keyLen: 16, saltLen: 16, maxChunk: 0x3fff, aesLength: 128 },
+	'aes-256-gcm': { method: 'aes-256-gcm', kind: 'aes-gcm', keyLen: 32, saltLen: 32, maxChunk: 0x3fff, aesLength: 256 },
+	[SS_CHACHA20方法]: { method: SS_CHACHA20方法, kind: 'chacha20', keyLen: 32, saltLen: 32, maxChunk: 0x3fff },
 };
 // 旧约之法，与前世逐字相同：未列众法者，其约不因本版而改。
 const SS默认加密方式 = 'aes-128-gcm';
@@ -5815,29 +5801,6 @@ function log(...args) {
 	if (调试日志打印) console.log(...args);
 }
 
-/**
- * 本驿自出之关：每一法一关，其址即本驿，UUID 为真值。
- *
- * 影梭之约以明文本库之址与 UUID 书之（非占位符），故订阅里能见三法并列；
- * 未授法则返回空串，调用者据此不出关。
- */
-function SS多法之关(配置 = {}, userID = '', host = '', ECHLINK参数 = '') {
-	const 法列 = Array.isArray(配置.SS?.加密方式列表) ? 配置.SS.加密方式列表 : [];
-	const 名 = 配置.优选订阅生成?.SUBNAME || '本驿';
-	const TLS = 配置.SS?.TLS !== false;
-	const 端口 = TLS ? 443 : 80;
-	const 路径 = String(配置.完整节点路径 || '/').split('#')[0];
-	const 关 = [];
-	for (const 名称 of 法列) {
-		const 法 = SS支持加密配置[String(名称).toLowerCase()];
-		if (!法) continue;
-		const 内径 = (路径.includes('?') ? 路径.replace('?', '?enc=' + 法.method + '&') : 路径 + '?enc=' + 法.method).replace(/([=,])/g, '\\$1');
-		const 插件 = `ray-plugin;mode=websocket;host=${host};path=${内径}` + (TLS ? ';tls' : '');
-		关.push(`${'s'}${'s'}://${btoa(法.method + ':' + userID)}@${host}:${端口}?plugin=v2${encodeURIComponent(插件)}${ECHLINK参数}#${encodeURIComponent(`${名}·${法.标}`)}`);
-	}
-	return 关.join('\n');
-}
-
 function Clash订阅配置文件热补丁(Clash_原始订阅内容, config_JSON = {}) {
 	const uuid = config_JSON?.UUID || null;
 	const ECH启用 = Boolean(config_JSON?.ECH);
@@ -6874,8 +6837,7 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
 
 	if (!config_JSON.gRPC模式) config_JSON.gRPC模式 = 'gun';
 	if (!config_JSON.SS) config_JSON.SS = { 加密方式: SS默认加密方式, TLS: false };
-	// 驿中只授环境之符：`SS_CIPHERS` 定约中所出之法，以逗号隔之；`SS_ENC` 更其首选。不设则一切如旧。
-	if (env.SS_CIPHERS) config_JSON.SS.加密方式列表 = String(env.SS_CIPHERS).split(/[,\s]+/).filter(Boolean);
+	// 驿中只授环境之符：`SS_ENC` 定影梭之所用加密法。不设则仍用旧法，约与前世同。
 	if (env.SS_ENC) config_JSON.SS.加密方式 = String(env.SS_ENC).toLowerCase();
 
 	if (!config_JSON.反代.路径模板?.[_p]) {
@@ -6938,10 +6900,6 @@ async function 读取config_JSON(env, hostname, userID, UA = "Mozilla/5.0", 重�
 	config_JSON.LINK = config_JSON.协议类型 === 'ss'
 		? `${config_JSON.协议类型}://${btoa(config_JSON.SS.加密方式 + ':' + userID)}@${host}:${config_JSON.SS.TLS ? '443' : '80'}?plugin=v2${encodeURIComponent(`ray-plugin;mode=websocket;host=${host};path=${((config_JSON.完整节点路径.includes('?') ? config_JSON.完整节点路径.replace('?', '?enc=' + config_JSON.SS.加密方式 + '&') : (config_JSON.完整节点路径 + '?enc=' + config_JSON.SS.加密方式)) + (config_JSON.SS.TLS ? ';tls' : ''))};mux=0`) + ECHLINK参数}#${encodeURIComponent(config_JSON.优选订阅生成.SUBNAME)}`
 		: `${config_JSON.协议类型}://${userID}@${host}:443?security=tls&type=${传输协议 + ECHLINK参数}&${域名字段名}=${host}&fp=${config_JSON.Fingerprint}&sni=${host}&${路径字段名}=${encodeURIComponent(传输路径参数值) + TLS分片参数}&encryption=none#${encodeURIComponent(config_JSON.优选订阅生成.SUBNAME)}`;
-	// 本驿自出之关：约中既有上游之关，亦可并列数法之关。
-	// 未授法（`SS.加密方式列表`）则一关不出，输出与旧世逐字相同；
-	// 此关以明文本驿之址与 UUID，客户端依 `SS.加密方式` 解之。
-	config_JSON.本驿之关 = SS多法之关(config_JSON, userID, host, ECHLINK参数);
 	config_JSON.优选订阅生成.TOKEN = await MD5MD5(hostname + userID);
 
 	const 初始化TG_JSON = { BotToken: null, ChatID: null };

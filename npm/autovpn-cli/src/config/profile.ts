@@ -203,20 +203,17 @@ export function networkEnv(section: unknown, base: NodeJS.ProcessEnv = {}): Node
  * otherwise the share Worker would build an empty egress group.
  */
 /**
- * The cipher list the share Worker derives its node families from.
+ * The cipher the share Worker encodes its subscription with.
  *
- * Kept out of `[static_exit]` on purpose: an exit is egress, a cipher list is
- * the shape of the subscription itself, and clearing one must not touch the
- * other. Absent or empty means "one node per address, AES-128 only", which is
- * what every profile written before this section already gets.
+ * Kept out of `[static_exit]` on purpose: an exit is egress, the cipher is how
+ * the subscription's own node is framed, and clearing one must not touch the
+ * other. Absent or empty means AES-128, which is what every profile written
+ * before this section already gets. A legacy `ciphers = [...]` key is read and
+ * ignored: it used to emit one self node per entry.
  */
 export function normalizeShareCiphersSection(value: unknown): Record<string, any> {
   const raw = (value && typeof value === 'object' ? value : {}) as Record<string, any>;
-  const list = Array.isArray(raw.ciphers)
-    ? raw.ciphers
-    : String(raw.ciphers ?? '').split(/[,\s]+/);
   return {
-    ciphers: list.map((item) => String(item ?? '').trim().toLowerCase()).filter(Boolean),
     enc: String(raw.enc ?? '').trim().toLowerCase()
   };
 }

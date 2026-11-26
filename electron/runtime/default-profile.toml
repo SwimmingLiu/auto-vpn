@@ -98,10 +98,8 @@ entrance = ""
 twins = "entrance"
 
 [share_ciphers]
-# 分享驿所出之法：每法一关。空则不设，约中仍是一关、一法。
-# 法名须为客户所识：aes-128-gcm、aes-256-gcm、chacha20-ietf-poly1305。
-ciphers = []
-# 首选之法，留空则用 aes-128-gcm。
+# 分享驿所用之法，写进 `SS_ENC`。留空则用 aes-128-gcm（aes-256-gcm、
+# chacha20-ietf-poly1305 亦可）。约中一址一关，不因法数而增。
 enc = ""
 
 [worker_build]
